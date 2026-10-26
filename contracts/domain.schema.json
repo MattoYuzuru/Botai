@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/domain.schema.json",
+  "title": "Botai domain",
+  "description": "Учебные сущности в общем формате. Специфика вуза живёт в рецепте, а не здесь. У каждой записи известно происхождение и свежесть.",
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "description": "ULID" },
+    "externalId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "sourceUrl", "fetchedAt"],
+      "properties": {
+        "sourceId": { "$ref": "#/$defs/id", "description": "connectionId" },
+        "sourceUrl": { "type": "string", "format": "uri" },
+        "fetchedAt": { "type": "string", "format": "date-time" },
+        "recipeRev": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "entityBase": {
+      "type": "object",
+      "required": ["id", "connectionId", "externalId", "provenance"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "connectionId": { "$ref": "#/$defs/id" },
+        "externalId": { "$ref": "#/$defs/externalId" },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+
+    "Space": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "userId", "universityId", "title", "accentToken", "timeZone", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "userId": { "$ref": "#/$defs/id" },
+        "universityId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,48}$" },
+        "title": { "type": "string", "maxLength": 120 },
+        "accentToken": { "type": "string", "pattern": "^accent-[a-z0-9-]{1,40}$" },
+        "timeZone": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "Connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "spaceId", "origin", "kind", "title", "status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "spaceId": { "$ref": "#/$defs/id" },
+        "origin": { "type": "string", "pattern": "^https://[a-z0-9.-]+$" },
+        "kind": { "enum": ["lms", "schedule", "portal", "sheet", "document", "mail", "other"] },
+        "title": { "type": "string", "maxLength": 120 },
+        "status": {
+          "enum": ["draft", "learning", "active", "syncing", "stale", "needs_reauth", "error", "disabled"]
+        },
+        "lastSyncAt": { "type": ["string", "null"], "format": "date-time" },
+        "nextSyncAt": { "type": ["string", "null"], "format": "date-time" },
+        "recipeId": { "type": ["string", "null"] },
+        "recipeRev": { "type": ["integer", "null"] },
+        "error": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["code", "at"],
+          "properties": {
+            "code": { "type": "string" },
+            "at": { "type": "string", "format": "date-time" },
+            "detail": { "type": "string", "maxLength": 500 }
+          }
+        }
+      },
+      "description": "Секрет подключения в этой структуре отсутствует и никогда не возвращается клиентом."
+    },
+
+    "Course": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 300 },
+            "code": { "type": ["string", "null"], "maxLength": 60 },
+            "term": { "type": ["string", "null"], "maxLength": 60 },
+            "description": { "type": ["string", "null"], "maxLength": 4000 },
+            "url": { "type": ["string", "null"], "format": "uri" },
+            "archived": { "type": "boolean", "default": false }
+          }
+        }
+      ]
+    },
+
+    "ScheduleEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title", "kind", "startsAt", "endsAt"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 300 },
+            "kind": { "enum": ["lecture", "seminar", "lab", "exam", "consultation", "other"] },
+            "courseId": { "type": ["string", "null"] },
+            "startsAt": { "type": "string", "format": "date-time" },
+            "endsAt": { "type": "string", "format": "date-time" },
+            "format": { "enum": ["offline", "online", "hybrid", "unknown"], "default": "unknown" },
+            "locationId": { "type": ["string", "null"] },
+            "locationText": { "type": ["string", "null"], "maxLength": 200 },
+            "teacherIds": { "type": "array", "items": { "$ref": "#/$defs/id" }, "maxItems": 10 },
+            "teacherText": { "type": ["string", "null"], "maxLength": 300 },
+            "url": { "type": ["string", "null"], "format": "uri" },
+            "recurrence": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "description": "Если источник отдаёт правило, а не список занятий. Runner разворачивает его в события на горизонте синхронизации.",
+              "required": ["dayOfWeek", "intervalWeeks", "until"],
+              "properties": {
+                "dayOfWeek": { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+                "intervalWeeks": { "type": "integer", "minimum": 1, "maximum": 8 },
+                "until": { "type": "string", "format": "date" }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Assignment": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 300 },
+            "courseId": { "type": ["string", "null"] },
+            "description": { "type": ["string", "null"], "maxLength": 20000 },
+            "url": { "type": ["string", "null"], "format": "uri" },
+            "maxScore": { "type": ["number", "null"] }
+          }
+        }
+      ]
+    },
+
+    "Deadline": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title", "dueAt", "state"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 300 },
+            "assignmentId": { "type": ["string", "null"] },
+            "courseId": { "type": ["string", "null"] },
+            "dueAt": { "type": "string", "format": "date-time" },
+            "effectiveDueAt": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "Срок с учётом продления, если источник его отдаёт. Срочность считается по нему."
+            },
+            "state": { "enum": ["open", "submitted", "graded", "missed", "unknown"] },
+            "url": { "type": ["string", "null"], "format": "uri" }
+          }
+        }
+      ]
+    },
+
+    "Grade": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["value"],
+          "properties": {
+            "courseId": { "type": ["string", "null"] },
+            "assignmentId": { "type": ["string", "null"] },
+            "title": { "type": ["string", "null"], "maxLength": 300 },
+            "value": { "type": ["number", "string"] },
+            "scale": { "type": ["string", "null"], "maxLength": 60 },
+            "weight": { "type": ["number", "null"] },
+            "gradedAt": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      ]
+    },
+
+    "Person": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["name", "role"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 200 },
+            "role": { "enum": ["teacher", "assistant", "staff", "other"] },
+            "contacts": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "properties": {
+                "email": { "type": ["string", "null"] },
+                "url": { "type": ["string", "null"], "format": "uri" }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Location": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 200 },
+            "building": { "type": ["string", "null"], "maxLength": 200 },
+            "address": { "type": ["string", "null"], "maxLength": 300 }
+          }
+        }
+      ]
+    },
+
+    "NewsItem": {
+      "allOf": [
+        { "$ref": "#/$defs/entityBase" },
+        {
+          "type": "object",
+          "required": ["title", "publishedAt"],
+          "properties": {
+            "title": { "type": "string", "maxLength": 300 },
+            "body": { "type": ["string", "null"], "maxLength": 20000 },
+            "publishedAt": { "type": "string", "format": "date-time" },
+            "url": { "type": ["string", "null"], "format": "uri" }
+          }
+        }
+      ]
+    },
+
+    "Document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "spaceId", "kind", "title", "fetchedAt", "hash"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "spaceId": { "$ref": "#/$defs/id" },
+        "connectionId": { "type": ["string", "null"] },
+        "kind": { "enum": ["file", "sheet", "page"] },
+        "title": { "type": "string", "maxLength": 300 },
+        "url": { "type": ["string", "null"], "format": "uri" },
+        "mime": { "type": ["string", "null"], "maxLength": 120 },
+        "fetchedAt": { "type": "string", "format": "date-time" },
+        "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+
+    "Fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Подтверждённый ответ на процедурный вопрос. Имеет срок годности и перепроверяется.",
+      "required": ["id", "spaceId", "question", "answer", "sources", "confirmedAt", "staleAfter", "confidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "spaceId": { "$ref": "#/$defs/id" },
+        "question": { "type": "string", "maxLength": 500 },
+        "answer": { "type": "string", "maxLength": 8000 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["url", "fetchedAt"],
+            "properties": {
+              "url": { "type": "string", "format": "uri" },
+              "title": { "type": ["string", "null"], "maxLength": 200 },
+              "fetchedAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "confirmedAt": { "type": "string", "format": "date-time" },
+        "staleAfter": { "type": "string", "format": "date-time" },
+        "confidence": { "enum": ["confirmed", "likely", "unverified"] }
+      }
+    }
+  }
+}
