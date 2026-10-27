@@ -182,4 +182,5 @@ class PgJobContext:
 
 
 def _dump(block: AgentUiBlock) -> dict[str, object]:
-    return block.model_dump(mode="json", by_alias=True)
+    # Optional fields in the wire schema are absent, never null (including nested items).
+    return block.model_dump(mode="json", by_alias=True, exclude_none=True)
