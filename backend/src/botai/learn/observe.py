@@ -58,7 +58,7 @@ class Observations:
     origin: str
     pages: list[PageView] = field(default_factory=list)
     calls: list[CallView] = field(default_factory=list)
-    observed: set[str] = field(default_factory=set)
+    observed: set[str] = field(default_factory=set, repr=False)
     injections: int = 0
     plain_text: str = ""  # redacted visible text of the pages, for light keyword checks
 
@@ -132,7 +132,7 @@ def _body_view(redactor: Redactor, sample: str | None) -> str:
     if text[:1] in "{[":
         try:
             doc = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):
             doc = None
         if doc is not None:
             return json.dumps(redactor.json(doc), ensure_ascii=False, separators=(",", ":"))[
@@ -246,5 +246,5 @@ def raw_json_values(sample: str | None) -> list[str]:
         return []
     try:
         return list(collect_values(json.loads(sample)))
-    except ValueError:
+    except (ValueError, RecursionError):
         return []

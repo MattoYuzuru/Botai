@@ -68,13 +68,16 @@ def build_spec(
 def parse_json(content: str) -> Any:
     """The model's answer as JSON, tolerating a code fence or a sentence around the object."""
     text = _FENCE.sub("", content.strip())
-    try:
-        return json.loads(text)
-    except ValueError:
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (ValueError, RecursionError):
+            continue
+    raise ValueError("the answer is not JSON")
 
 
 @dataclass(slots=True)
@@ -145,7 +148,7 @@ async def _ask(llm: LlmProvider, request: LlmRequest) -> tuple[Any, int]:
     response = await llm.complete(request)
     try:
         return parse_json(response.content), _tokens(response)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, _tokens(response)
 
 

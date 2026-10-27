@@ -336,3 +336,28 @@ def test_workers_handler_table_has_the_new_handlers() -> None:
 
     table = handler_table()
     assert {JobKind.SYNC, JobKind.CONNECT, JobKind.LEARN} <= set(table)
+
+
+def test_secrets_do_not_show_up_in_reprs_that_might_reach_a_log() -> None:
+    from botai.learn.lint import LintContext
+    from botai.sources.adapter import SyncContext
+
+    r = Redactor()
+    r.know("Иванова Анна", "P@ssw0rd-FIXTURE")
+    r.pseudonym("u-1001")
+    assert "Иванова" not in repr(r)
+    assert "P@ssw0rd" not in repr(r)
+    assert "u-1001" not in repr(r)
+    ctx = LintContext(observed=["Иванова Анна 2026", "u-1001"])
+    assert "Иванова" not in repr(ctx)
+    assert "u-1001" not in repr(ctx)
+    sync = SyncContext(
+        user_id="u",
+        connection_id="c",
+        origin="https://x.test",
+        allow_hosts=(),
+        now=NOW,
+        vault=None,  # type: ignore[arg-type]
+        content=b"%PDF secret-bytes",
+    )
+    assert "secret-bytes" not in repr(sync)

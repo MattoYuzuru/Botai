@@ -119,7 +119,7 @@ class MoodleWsAdapter:
                     raise _FunctionFailed("status")
                 try:
                     doc: Any = response.json()
-                except ValueError:
+                except (ValueError, RecursionError):
                     raise _FunctionFailed("format") from None
                 if isinstance(doc, dict) and "exception" in doc:
                     code = str(doc.get("errorcode", ""))

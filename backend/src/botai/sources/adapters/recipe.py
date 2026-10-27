@@ -46,6 +46,7 @@ from botai.sources.templates import MAX_PARAM_VALUE, TemplateError, render
 from botai.sources.vocab import VOCAB
 
 ABSOLUTE_MAX_PAGES = 20
+MAX_ITEMS_PER_ENDPOINT = 5000
 DEFAULT_LIMIT_PARAM_VALUE = 100
 
 
@@ -96,7 +97,7 @@ class RecipeAdapter:
                 url = self._url(step.path, ctx, params)
                 response = await client.request("GET", url)
                 doc = response.json() if response.status_code == 200 else MISSING
-            except (TemplateError, ValueError):
+            except (TemplateError, ValueError, RecursionError):
                 failed.update(step.extract)
                 continue
             for name, pointer in step.extract.items():
@@ -196,6 +197,9 @@ class RecipeAdapter:
                     break
             if pagination.total_path and _reached_total(doc, pagination, len(collected)):
                 break
+            if len(collected) >= MAX_ITEMS_PER_ENDPOINT:
+                break
+        collected = collected[:MAX_ITEMS_PER_ENDPOINT]
         outcome.items_seen = seen
         outcome.items_valid = len(collected)
         if seen == 0:
@@ -237,7 +241,7 @@ class RecipeAdapter:
         if isinstance(spec, JsonResponse):
             try:
                 doc: Any = response.json()
-            except ValueError:
+            except (ValueError, RecursionError):
                 _raise_if_login_page(response)
                 return "format"
             items = resolve(doc, spec.items_path)

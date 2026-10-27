@@ -66,6 +66,11 @@ STRONG_SECRET = re.compile(r"(?i)" + _STRONG)
 FORBIDDEN_HEADERS = frozenset(
     {"cookie", "set-cookie", "host", "content-length", "transfer-encoding", "connection"}
 )
+# A GET that changes things on the source (log out, delete, edit...) must never be a read.
+DESTRUCTIVE = re.compile(
+    r"(?i)(?:^|[/_.-])(?:log-?out|sign-?out|log-?off|logoff|exit|delete|remove|destroy|drop|"
+    r"unsubscribe|revoke|cancel|submit|edit|выход|выйти|удал\w*)(?:$|[/_.-])"
+)
 _CLEAN_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 # Keys whose string value is structural and may look like a long hex number or a date.
 _STRUCTURAL_KEYS = frozenset({"learnedAt", "learnedByDigest", "adapter", "version"})
@@ -89,8 +94,8 @@ class LintContext:
     expected_origin: str | None = None
     # Strings seen in this user's responses (cell values, JSON leaves, visible text). No literal
     # of the spec may equal one of the sensitive ones.
-    observed: Collection[str] = ()
-    sensitive_values: frozenset[str] = field(init=False, default=frozenset())
+    observed: Collection[str] = field(default=(), repr=False)
+    sensitive_values: frozenset[str] = field(init=False, default=frozenset(), repr=False)
 
     def __post_init__(self) -> None:
         self.sensitive_values = frozenset(
@@ -217,6 +222,10 @@ def _check_path(path: str, where: str, issues: list[LintIssue]) -> None:
     if "#" in decoded or "?" in path:
         issues.append(
             LintIssue("url.fragment_or_query", where, "фрагмент и запрос в пути запрещены")
+        )
+    if DESTRUCTIVE.search(decoded):
+        issues.append(
+            LintIssue("url.destructive", where, "адрес похож на действие, а не на чтение")
         )
 
 

@@ -365,3 +365,63 @@ async def test_source_down_raises_unavailable_and_secrets_stay_out_of_results(
     result = await run(recipes.recipe_spec(), ctx)
     dump = repr(result)
     assert "tok-fixture-session" not in dump
+
+
+async def test_one_sync_cannot_become_a_flood() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        page = int(request.url.params.get("page", "1"))
+        return httpx.Response(200, json=[{"id": f"{request.url.path}-{page}", "t": "x"}])
+
+    def endpoint(i: int) -> dict[str, Any]:
+        return {
+            "id": f"rows{i}",
+            "kind": "courses",
+            "request": {"method": "GET", "path": f"/rows{i}"},
+            "pagination": {"type": "page", "param": "page", "maxPages": 20},
+            "response": {
+                "format": "json",
+                "itemsPath": "",
+                "fields": {"externalId": {"path": "/id"}, "title": {"path": "/t"}},
+            },
+        }
+
+    spec = recipes.recipe_spec([endpoint(i) for i in range(10)], require=("courses",))
+    with pytest.raises(BotaiError) as exc:
+        await run(spec, make_ctx(transport=httpx.MockTransport(handler)))
+    assert exc.value.code == ErrorCode.SOURCE_RATE_LIMITED
+    assert calls["n"] == 120  # the budget, not 200
+
+
+async def test_absurdly_nested_json_is_a_format_problem_not_a_crash() -> None:
+    body = "[" * 200_000 + "]" * 200_000
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, content=body, headers={"content-type": "application/json"})
+    )
+    result = await run(
+        recipes.recipe_spec([recipes.deadlines_endpoint()], require=("deadlines",)),
+        make_ctx(transport=transport),
+    )
+    assert result.outcomes[0].problem == "format"
+
+
+async def test_one_endpoint_cannot_flood_the_database_with_items() -> None:
+    rows = [{"id": f"r{i}", "t": "x"} for i in range(6000)]
+    endpoint = {
+        "id": "rows",
+        "kind": "courses",
+        "request": {"method": "GET", "path": "/rows"},
+        "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {"externalId": {"path": "/id"}, "title": {"path": "/t"}},
+        },
+    }
+    result = await run(
+        recipes.recipe_spec([endpoint], require=("courses",)),
+        make_ctx(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=rows))),
+    )
+    assert len(result.records) == 5000
+    assert result.outcomes[0].items_seen == 6000

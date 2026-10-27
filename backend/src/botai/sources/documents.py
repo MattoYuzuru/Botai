@@ -23,6 +23,8 @@ MAX_PDF_PAGES = 300
 MAX_ROWS = 5000
 MAX_COLS = 40
 MAX_TEXT_CHARS = 2_000_000
+MAX_UNZIPPED = 120 * 1024 * 1024  # DOCX/XLSX are zip files: a small file may unpack to gigabytes
+MAX_ZIP_ENTRIES = 5000
 CHUNK_CHARS = 1200
 
 
@@ -132,9 +134,20 @@ def _pdf(data: bytes) -> Extracted:
     return Extracted("pdf", text)
 
 
+def _check_zip(data: bytes) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            entries = zf.infolist()
+    except zipfile.BadZipFile:
+        raise BotaiError(ErrorCode.VALIDATION, "Файл повреждён") from None
+    if len(entries) > MAX_ZIP_ENTRIES or sum(e.file_size for e in entries) > MAX_UNZIPPED:
+        raise BotaiError(ErrorCode.VALIDATION, "Файл слишком велик после распаковки")
+
+
 def _docx(data: bytes) -> Extracted:
     import docx
 
+    _check_zip(data)
     try:
         document = docx.Document(io.BytesIO(data))
     except Exception as exc:
@@ -151,6 +164,7 @@ def _docx(data: bytes) -> Extracted:
 def _xlsx(data: bytes) -> Extracted:
     from openpyxl import load_workbook
 
+    _check_zip(data)
     try:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:

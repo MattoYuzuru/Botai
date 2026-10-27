@@ -9,6 +9,7 @@ model sees a redacted sample; free-form documents are not sent to a model at all
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import ipaddress
@@ -196,7 +197,7 @@ class Ingestor:
             )
             raise BotaiError(code, "Файл по ссылке недоступен")
         data, content_type = raw
-        loaded = adapter.process(data, content_type, sctx)
+        loaded = await asyncio.to_thread(adapter.process, data, content_type, sctx)
         doc = loaded.document
         await stage.finish("ok", f"Тип: {loaded.format}; фрагментов для поиска: {len(doc.chunks)}")
 

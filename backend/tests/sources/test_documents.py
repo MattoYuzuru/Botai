@@ -308,3 +308,20 @@ async def test_deadline_table_without_time_is_due_at_the_end_of_the_day() -> Non
     }
     result = await ingest(spec, make_xlsx(rows, "Лист1"))
     assert result.records[0].fields == {"title": "Курсовая", "dueAt": "2026-12-30T20:59:00+00:00"}
+
+
+def test_a_zip_bomb_is_refused_before_it_is_unpacked(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zipfile
+
+    from botai.sources import documents
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", b"0" * (3 * 1024 * 1024))  # tiny when compressed
+    assert len(buf.getvalue()) < 20_000
+    monkeypatch.setattr(documents, "MAX_UNZIPPED", 1024 * 1024)
+    with pytest.raises(BotaiError) as exc:
+        extract(buf.getvalue(), "docx")
+    assert exc.value.code == ErrorCode.VALIDATION
+    with pytest.raises(BotaiError):
+        extract(buf.getvalue(), "xlsx")

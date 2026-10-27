@@ -275,6 +275,17 @@ CASES: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
         lambda s: ep(s, 2)["response"]["fields"]["title"].update(pattern="Математический анализ"),
         "observed.value",
     ),
+    # a read that is really an action
+    ("logout", lambda s: ep(s)["request"].update(path="/auth/logout"), "url.destructive"),
+    ("sign out", lambda s: ep(s)["request"].update(path="/api/sign-out"), "url.destructive"),
+    ("delete", lambda s: ep(s)["request"].update(path="/api/news/delete/17"), "url.destructive"),
+    ("edit", lambda s: ep(s)["request"].update(path="/portal/edit-profile"), "url.destructive"),
+    ("submit", lambda s: ep(s)["request"].update(path="/tasks/submit"), "url.destructive"),
+    (
+        "russian logout",
+        lambda s: ep(s)["request"].update(path="/%D0%B2%D1%8B%D1%85%D0%BE%D0%B4"),
+        "url.destructive",
+    ),
     # names
     (
         "secret query key",
@@ -538,3 +549,14 @@ def test_a_copied_token_is_rejected_even_under_an_innocent_name() -> None:
         spec = recipes.recipe_spec()
         ep(spec)["request"]["query"]["k"] = token
         assert "personal.token" in lint_spec(spec, CTX).codes()
+
+
+def test_ordinary_paths_that_only_resemble_actions_pass() -> None:
+    for path in (
+        "/api/v2/submissions",
+        "/api/editorial/news",
+        "/api/exits-map",
+        "/api/v2/cancellations",
+    ):
+        spec = edit(recipes.recipe_spec(), lambda s, path=path: ep(s)["request"].update(path=path))
+        assert "url.destructive" not in lint_spec(spec, CTX).codes(), path
