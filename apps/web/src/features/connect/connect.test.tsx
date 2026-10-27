@@ -9,7 +9,7 @@ import { renderApp } from "@/test/render-app";
 import { createTestServer } from "@/test/server";
 
 let current = createTestServer("empty");
-function useScenario(scenario: Scenario, variant: JobVariant = "basic", jobPace = 0) {
+function switchScenario(scenario: Scenario, variant: JobVariant = "basic", jobPace = 0) {
   current.server.close();
   current = createTestServer(scenario, { jobPace });
   current.db.jobVariant = variant;
@@ -22,7 +22,7 @@ beforeEach(() => {
   jobManager.stopAll();
   useActiveJob.setState({ job: null });
   window.sessionStorage.clear();
-  useScenario("empty");
+  switchScenario("empty");
 });
 afterEach(() => current.server.resetHandlers());
 
@@ -125,7 +125,7 @@ describe("ProgressWall: подключение вуза", () => {
   });
 
   it("вуз не принял пароль: вопрос повторяется с понятным текстом и счётчиком попыток", async () => {
-    useScenario("empty", "wrong-password");
+    switchScenario("empty", "wrong-password");
     await startHse();
     await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
     await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
@@ -142,7 +142,7 @@ describe("ProgressWall: подключение вуза", () => {
 
   it("вход по push: карточка ожидания без кнопок, работа продолжается сама", async () => {
     // Ожидание на телефоне — пауза сценария: ей нужно время, иначе карточка исчезнет раньше, чем её найдёт тест.
-    useScenario("empty", "push", 0.5);
+    switchScenario("empty", "push", 0.5);
     await startHse();
     await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
     await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
@@ -159,7 +159,7 @@ describe("ProgressWall: подключение вуза", () => {
   });
 
   it("сбой источника: человеческий текст и «Спросить в чате», кнопки повтора нет", async () => {
-    useScenario("empty", "failure");
+    switchScenario("empty", "failure");
     const { router } = await startHse();
     await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
     await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
@@ -186,7 +186,7 @@ describe("ProgressWall: подключение вуза", () => {
   });
 
   async function reachApproval() {
-    useScenario("empty", "approval");
+    switchScenario("empty", "approval");
     await startHse();
     await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
     await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
@@ -222,7 +222,7 @@ describe("ProgressWall: подключение вуза", () => {
   });
 
   it("второй источник того же вуза идёт в то же пространство", async () => {
-    useScenario("connected");
+    switchScenario("connected");
     renderApp("/connect");
     await choose(/Высшая школа экономики/);
     await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
