@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from botai.agent import bench
+from botai.agent import bench, bench_learn
 from botai.agent.bench import (
     TOTAL_CAP_USD,
     B4Chat,
@@ -454,11 +454,22 @@ async def test_unavailable_scenarios_and_missing_opt_in_are_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     parser = bench.build_parser()
+
+    def no_tests(name: str) -> Any:  # the production image has no backend/tests
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(bench_learn, "import_module", no_tests)
     b1 = parser.parse_args(
         ["--scenario", "B1", "--results-dir", str(tmp_path), "--replay", str(tmp_path)]
     )
     assert await bench.run_launch(b1) == 2
-    assert "Explorer" in capsys.readouterr().err
+    assert "backend/tests" in capsys.readouterr().err
+    assert not (tmp_path / "ledger.json").exists()  # nothing was started, nothing is booked
+    monkeypatch.undo()
+
+    nothing = parser.parse_args(["--scenario", "B9", "--results-dir", str(tmp_path)])
+    assert await bench.run_launch(nothing) == 2
+    assert "B1, B2, B3, B4" in capsys.readouterr().err
 
     monkeypatch.delenv("BOTAI_LIVE_LLM", raising=False)
     live = parser.parse_args(["--scenario", "B4", "--results-dir", str(tmp_path)])
