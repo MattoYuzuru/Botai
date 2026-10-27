@@ -7,6 +7,7 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { retryPolicy } from "./api/queries";
+import { registerServiceWorker } from "./features/pwa/register";
 import { routeTree } from "./routeTree.gen";
 
 // Сбой сети и сайта вуза обрабатывается в фоне: ретраи с нарастающей паузой, без кнопки «Повторить».
@@ -17,6 +18,9 @@ const queryClient = new QueryClient({
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
       staleTime: 30_000,
       refetchOnWindowFocus: false,
+      // Первый запрос уходит и без сети: его отвечает service worker последним снимком (офлайн-чтение, FR-027).
+      // Повторы при этом ждут сети, а не молотят впустую.
+      networkMode: "offlineFirst",
     },
   },
 });
@@ -49,3 +53,4 @@ async function start() {
 }
 
 void start();
+void registerServiceWorker();

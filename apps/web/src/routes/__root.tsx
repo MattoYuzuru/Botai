@@ -1,6 +1,7 @@
 import { Button, EmptyState, Toaster } from "@botai/design";
 import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+import { PwaPrompts } from "@/features/pwa/pwa-prompts";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
@@ -40,6 +41,7 @@ function Root() {
     <>
       <Outlet />
       <Toaster />
+      <PwaPrompts />
     </>
   );
 }

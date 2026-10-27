@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { api, call } from "@/api/client";
 import { humanMessage } from "@/api/errors";
 import { meQuery } from "@/api/queries";
+import { clearSnapshots } from "@/features/pwa/snapshots";
 import { AppearanceSettings } from "./appearance";
 
 /** «Профиль и настройки» — внизу экрана «Учёба» (styleguide §7.1). */
@@ -15,8 +16,10 @@ export function AccountSettings() {
   const logout = useMutation({
     mutationFn: () => call(api.POST("/api/v1/auth/logout")),
     onSuccess: async () => {
-      // Прежние данные не должны пережить выход: следующий вход начинается с чистого кэша.
+      // Прежние данные не должны пережить выход: следующий вход начинается с чистого кэша — и в памяти,
+      // и в офлайн-снимках service worker.
       queryClient.clear();
+      await clearSnapshots();
       await navigate({ to: "/login" });
     },
     onError: (error) => toast("Не удалось выйти", { tone: "warning", description: humanMessage(error) }),

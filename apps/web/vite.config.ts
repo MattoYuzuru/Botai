@@ -3,6 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
+import { botaiServiceWorker } from "./vite-sw-plugin.ts";
 
 /**
  * Целевые браузеры: iOS Safari 17.5+, Android Chrome 123+ и свежие настольные. На них нативно работает
@@ -34,6 +35,8 @@ export default defineConfig({
     TanStackRouterVite({ target: "react", autoCodeSplitting: true }),
     react(),
     tailwindcss(),
+    // Service worker с офлайн-оболочкой: только в сборке, в dev работает MSW.
+    botaiServiceWorker(TARGETS),
   ],
   resolve: {
     alias: { "@": new URL("./src", import.meta.url).pathname },
