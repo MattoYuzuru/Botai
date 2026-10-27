@@ -442,7 +442,7 @@ async def fetch_with_reauth(
             await ctx.status("Вхожу заново")
             try:
                 sctx.session = await services.sessions.ensure(
-                    ctx, user_id=snap.user_id, connection_id=snap.connection_id
+                    ctx, user_id=snap.user_id, connection_id=snap.connection_id, force=True
                 )
             except BotaiError as err:
                 if err.code not in {ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION}:
