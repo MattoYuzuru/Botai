@@ -1,3 +1,4 @@
+import type { IconName } from "@botai/design";
 import type { AnswerValues } from "@/features/jobs/job-manager";
 import type { AnswerState } from "@/features/jobs/job-state";
 
@@ -13,4 +14,16 @@ export interface BlockContext {
   /** Одобрение предложенного действия (ApprovalCard): метод, хост и поля уже подтверждены человеком. */
   onApprove: (blockId: string, proposalId: string, fields: Record<string, string>) => void;
   onReject: (blockId: string, proposalId: string) => void;
+  /**
+   * Чат: честная пометка «Не уверен» для текстового блока. Без функции блок рисуется как обычный ответ
+   * (подключение вуза не оценивает уверенность).
+   */
+  confidence?: (markdown: string) => "ok" | "unsure";
+  /**
+   * Чат: внутренняя ссылка источника (`botai://documents/<id>`) открывается в приложении. Возвращает `null`,
+   * если адрес не внутренний; тогда источник рисуется как обычный (http(s) — в новой вкладке).
+   */
+  internalLink?: (
+    url: string,
+  ) => { href: string; label: string; icon?: IconName; onOpen?: () => void } | null;
 }

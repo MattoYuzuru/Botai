@@ -13,6 +13,8 @@ export interface ScreenHeaderProps {
   /** Подзаголовок: вуз, дата. */
   subtitle?: ReactNode;
   sticky?: boolean;
+  /** Колонка чата: шапка не шире колонки 46rem и на ноутбуке (по умолчанию — на всю ширину страницы). */
+  narrow?: boolean;
   className?: string;
 }
 
@@ -24,6 +26,7 @@ export function ScreenHeader({
   trailing,
   subtitle,
   sticky = true,
+  narrow = false,
   className,
 }: ScreenHeaderProps) {
   const [scrolled, setScrolled] = useState(false);
@@ -45,7 +48,12 @@ export function ScreenHeader({
         className,
       )}
     >
-      <div className="mx-auto flex min-h-14 w-full max-w-col items-center gap-2 lg:max-w-page">
+      <div
+        className={cn(
+          "mx-auto flex min-h-14 w-full max-w-col items-center gap-2",
+          !narrow && "lg:max-w-page",
+        )}
+      >
         {leading === "back" ? (
           <IconButton icon="back" label="Назад" onClick={onBack} className="-ml-2" />
         ) : (
