@@ -87,7 +87,7 @@ export function ChoiceCard({ block, ctx }: { block: Choice; ctx: BlockContext })
           Ответить
         </Button>
         {!block.required && (
-          <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, null, "Не знаю")}>
+          <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, [], "Не знаю")}>
             Не знаю
           </Button>
         )}

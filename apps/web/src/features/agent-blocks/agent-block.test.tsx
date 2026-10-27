@@ -71,11 +71,11 @@ describe("choice", () => {
     expect(ctx.onAnswer).toHaveBeenCalledWith(ID(1), "Физика", "Физика");
   });
 
-  it("необязательный вопрос: есть «Не знаю», ответ — null", async () => {
+  it("необязательный вопрос: есть «Не знаю», ответ — пустой список (так принимает сервер)", async () => {
     const ctx = setup(choice({ required: false }));
     expect(screen.queryByText("Без ответа работа не продолжится.")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Не знаю" }));
-    expect(ctx.onAnswer).toHaveBeenCalledWith(ID(1), null, "Не знаю");
+    expect(ctx.onAnswer).toHaveBeenCalledWith(ID(1), [], "Не знаю");
   });
 
   it("отправленный ответ остаётся в истории как сообщение человека", () => {
@@ -129,7 +129,7 @@ describe("input", () => {
   it("необязательное поле можно пропустить", async () => {
     const ctx = setup(input({ required: false }));
     await userEvent.click(screen.getByRole("button", { name: "Пропустить" }));
-    expect(ctx.onAnswer).toHaveBeenCalledWith(ID(2), null, "Пропущено");
+    expect(ctx.onAnswer).toHaveBeenCalledWith(ID(2), "", "Пропущено");
   });
 
   it("секретное поле: SecretField, пароль уходит без подписи, поле очищается, в истории нет значения", async () => {

@@ -74,7 +74,7 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
           onSubmit={(value) => ctx.onAnswer(block.id, value, null)}
         />
         {!block.required && (
-          <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, null, "Пропущено")}>
+          <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, "", "Пропущено")}>
             Пропустить
           </Button>
         )}
@@ -121,7 +121,7 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
             Ответить
           </Button>
           {!block.required && (
-            <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, null, "Пропущено")}>
+            <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, "", "Пропущено")}>
               Пропустить
             </Button>
           )}

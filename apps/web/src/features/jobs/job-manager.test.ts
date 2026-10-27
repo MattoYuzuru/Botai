@@ -113,7 +113,7 @@ describe("поток задания подключения на MSW", () => {
     await manager.answer(jobId, "01JAAAAAAAAAAAAAAAAAAAAAAA", "секрет", null);
     const answer = manager.get(jobId)?.answers["01JAAAAAAAAAAAAAAAAAAAAAAA"];
     expect(answer?.status).toBe("failed");
-    expect(answer?.error).toBe("Вопрос не найден");
+    expect(answer?.error).toBe("Блок не найден");
     expect(JSON.stringify(manager.get(jobId))).not.toContain("секрет");
     manager.stop(jobId);
   });

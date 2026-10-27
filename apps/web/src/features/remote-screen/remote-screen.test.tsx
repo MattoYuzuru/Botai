@@ -30,9 +30,9 @@ class FakeSocket implements SocketLike {
   receive(message: object) {
     this.onmessage?.({ data: JSON.stringify(message) });
   }
-  drop() {
+  drop(code = 1006) {
     this.readyState = 3;
-    this.onclose?.({ code: 1006 });
+    this.onclose?.({ code });
   }
   messages() {
     return this.sent.map((text) => JSON.parse(text) as Record<string, unknown>);
@@ -146,6 +146,20 @@ describe("сессия запасного экрана", () => {
     expect(onStatus).toHaveBeenLastCalledWith("ended");
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(FakeSocket.all).toHaveLength(1);
+  });
+
+  it("экран занят другим окном или вход уже не ждёт человека: переподключения нет, текст человеческий", async () => {
+    for (const code of [4001, 4404]) {
+      FakeSocket.all = [];
+      const { session, renew, onMessage } = make();
+      session.start();
+      FakeSocket.all[0]?.open();
+      FakeSocket.all[0]?.drop(code);
+      expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ t: "error", code: `closed_${code}` }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(renew).not.toHaveBeenCalled();
+      expect(FakeSocket.all).toHaveLength(1);
+    }
   });
 
   it("не удаётся переподключиться — человеческий текст, без бесконечных попыток", async () => {

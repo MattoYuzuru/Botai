@@ -40,6 +40,17 @@ export interface RemoteSessionOptions {
 const OPEN = 1;
 
 /**
+ * Коды закрытия сервера (`botai/browser/screen.py`), после которых переподключаться нельзя: экран занят
+ * другим окном, адрес не наш, вход уже не ждёт человека, слишком частый ввод.
+ */
+const FINAL_CLOSE: Record<number, string> = {
+  4001: "Этот экран открыт в другом окне или на другом устройстве.",
+  4403: "Запасной экран открыт с недопустимого адреса. Откройте вход заново.",
+  4404: "Вход сейчас не ждёт вас на экране. Если подключение продолжается, дождитесь его в основном окне.",
+  1008: "Экран закрыт из-за слишком частого ввода. Откройте вход заново.",
+};
+
+/**
  * Соединение с запасным экраном входа. Обрыв — автоматическое переподключение с новым одноразовым билетом
  * за ≤ 3 с; сессия браузера на сервере при этом не теряется. Ввод ограничен по размеру и частоте (лимиты контракта).
  */
@@ -96,8 +107,13 @@ export class RemoteSession {
       this.options.onMessage(message);
     };
     socket.onerror = () => {};
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.ended || this.socket !== socket) return;
+      const final = FINAL_CLOSE[event.code];
+      if (final) {
+        this.finish({ t: "error", code: `closed_${event.code}`, detail: final });
+        return;
+      }
       void this.reconnect();
     };
   }

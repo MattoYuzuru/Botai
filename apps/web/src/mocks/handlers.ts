@@ -36,6 +36,45 @@ const meOut = (db: MockDb, user: MockUser): S["MeOut"] => ({
  * Обработчики MSW по OpenAPI бэкенда. Один набор на браузер (`VITE_MOCKS=1`), Vitest и Playwright.
  * Эндпоинтов, которых нет в OpenAPI, здесь нет и не будет.
  */
+type AskedBlock = {
+  type?: string;
+  mode?: string;
+  required?: boolean;
+  allowOther?: boolean;
+  secret?: boolean;
+  maxLength?: number;
+  options?: { value: string }[];
+};
+
+/** Совпадает ли ответ по форме с вопросом. Повторяет проверки сервера: см. `_check_values` в `botai/jobs/answers.py`. */
+export function answerFits(asked: unknown, values: S["AnswerIn"]["values"]): boolean {
+  const block = (asked ?? {}) as AskedBlock;
+  switch (block.type) {
+    case "choice": {
+      const picked = typeof values === "string" ? [values] : Array.isArray(values) ? values : null;
+      if (!picked) return false;
+      if (block.mode === "single" && picked.length !== 1) return false;
+      if (block.required && picked.length === 0) return false;
+      const allowed = new Set((block.options ?? []).map((option) => option.value));
+      return picked.every(
+        (value) =>
+          allowed.has(value) || (block.allowOther === true && value.length > 0 && value.length <= 500),
+      );
+    }
+    case "input":
+      if (typeof values !== "string") return false;
+      if ((block.required || block.secret) && values === "") return false;
+      return values.length <= (block.maxLength ?? 200);
+    case "confirm":
+    case "approval":
+      return typeof values === "boolean";
+    case "login":
+      return values === null || values === undefined || typeof values === "boolean";
+    default:
+      return false;
+  }
+}
+
 export function createHandlers(
   db: MockDb,
   { latency = 0, persist = false, jobPace = 0 }: HandlerOptions = {},
@@ -223,7 +262,11 @@ export function createHandlers(
       const asked = sim.events.find(
         (event) => event.event === "block" && (event.data as { id?: string }).id === body.blockId,
       );
-      const secret = (asked?.data as { secret?: boolean } | undefined)?.secret === true;
+      if (!asked) return problem(404, "not_found", "Блок не найден");
+      // Форма и размер — как у настоящего сервера (`botai/jobs/answers.py`); значение в ответе не повторяется.
+      if (!answerFits(asked.data, body.values))
+        return problem(422, "validation", "Ответ не подходит к вопросу");
+      const secret = (asked.data as { secret?: boolean }).secret === true;
       const result = sim.answer(body.blockId, body.values, secret);
       if (result === "answered") return problem(409, "block_answered", "На этот вопрос уже ответили");
       if (!result) return problem(404, "not_found", "Вопрос не найден");
