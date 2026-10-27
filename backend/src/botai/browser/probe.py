@@ -92,8 +92,15 @@ async def check_session(
     return not any(response.url.path.startswith(a) for a in areas)
 
 
-def candidates(log: Sequence[ObservedRequest], hosts: Sequence[str], final_url: str) -> list[str]:
-    """GET URLs (path only) the page made after login, JSON first, the landing page last."""
+def candidates(
+    log: Sequence[ObservedRequest],
+    hosts: Sequence[str],
+    final_url: str,
+    avoid: Sequence[str] = (),
+) -> list[str]:
+    """GET URLs (path only) the page made after login, JSON first, the landing page last.
+    Paths holding something the student typed (`avoid`) are never candidates, and the landing page
+    only when it is a shallow, shared address (`/app`), not `/students/<someone>/dashboard`."""
     allowed = {h.lower() for h in hosts}
     json_first: list[str] = []
     other: list[str] = []
@@ -106,7 +113,12 @@ def candidates(log: Sequence[ObservedRequest], hosts: Sequence[str], final_url: 
         if parts.scheme != "https" or (parts.hostname or "").lower() not in allowed:
             continue
         url = f"https://{parts.netloc}{parts.path}"
-        if not parts.path or looks_personal(parts.path) or safe_path(parts.path) != parts.path:
+        if (
+            not parts.path
+            or looks_personal(parts.path)
+            or safe_path(parts.path, avoid) != parts.path
+            or any(t in parts.path.lower() for t in avoid)
+        ):
             continue
         bucket = json_first if "json" in (r.response_content_type or "") else other
         if url not in json_first and url not in other:
@@ -117,7 +129,8 @@ def candidates(log: Sequence[ObservedRequest], hosts: Sequence[str], final_url: 
         final.scheme == "https"
         and (final.hostname or "").lower() in allowed
         and not looks_personal(final.path)
-        and safe_path(final.path) == final.path
+        and safe_path(final.path, avoid) == final.path
+        and len([s for s in final.path.split("/") if s]) <= 1
         and landing not in json_first
         and landing not in other
     ):
@@ -132,9 +145,10 @@ async def learn_probe(
     final_url: str,
     *,
     egress: Egress,
+    avoid: Sequence[str] = (),
 ) -> dict[str, Any] | None:
     """A request that answers 2xx with the session and is refused without it, or None."""
-    for url in candidates(log, hosts, final_url):
+    for url in candidates(log, hosts, final_url, avoid):
         try:
             with_session = await _status(egress, hosts, url, state=state)
             if not 200 <= with_session.status_code < 300:

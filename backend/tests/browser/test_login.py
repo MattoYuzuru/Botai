@@ -416,6 +416,83 @@ async def test_nobody_answering_cancels_the_job(make_rig: Callable[..., Rig]) ->
 # --------------------------------------------------------------------------------- push wait
 
 
+async def test_a_push_page_is_not_a_finished_login_even_without_a_probe(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """No learned probe must not turn "confirm on your phone" into a successful login."""
+    rig = make_rig(timing=replace(FAST, push_wait_s=1.5))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login", probe=False))
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(Student())
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert "не подтвердили" in exc.value.detail
+    for kind in (SecretKind.SESSION, SecretKind.PASSWORD, SecretKind.LOGIN):
+        assert not await rig.vault.has(rig.user, rig.conn, kind)  # nothing kept from a half login
+
+
+async def test_the_same_push_login_succeeds_once_approved_and_learns_its_probe(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login", probe=False))
+    ctx = rig.ctx(Student())
+
+    async def approve_when_asked() -> None:
+        while not any(isinstance(b, WaitBlock) for b in ctx.blocks):  # noqa: ASYNC110
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        login.approve_push()
+
+    approver = asyncio.create_task(approve_when_asked())
+    session = await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    await approver
+    assert await works(session)
+    assert rig.store.presets[ORIGIN][-1]["success"]["probe"]["url"] == f"{ORIGIN}/api/v2/me"
+
+
+async def test_a_refusal_shown_at_another_address_is_still_a_refusal(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """Keycloak-like: the form is served at /kc/auth, the refusal comes back at
+    /kc/auth/authenticate. Three tries, not four; the stored password is tried once."""
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/kc/auth"))
+    before = len(login.ATTEMPTS)
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(Student(wrong_passwords=99))
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert len(login.ATTEMPTS) - before == 3
+
+    stale = make_rig()
+    stale.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/kc/auth"))
+    await stale.vault.put(stale.user, stale.conn, SecretKind.LOGIN, data.USERNAME)
+    await stale.vault.put(stale.user, stale.conn, SecretKind.PASSWORD, "an-old-password")
+    before = len(login.ATTEMPTS)
+    student = Student()
+    session, _ = await stale.ensure(student)
+    assert await works(session)
+    assert len(login.ATTEMPTS) - before == 1  # the stale password is not sent a second time
+    assert student.count("password") == 1
+
+
+async def test_the_preset_keeps_what_the_student_typed_out_of_paths_and_probes(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    await rig.ensure(Student())
+    text = json.dumps(rig.store.presets[ORIGIN][-1], ensure_ascii=False).lower()
+    assert "student" not in text  # the local part of the login, anywhere
+
+
+async def test_push_wait_is_a_wait_block_only_once_per_wait(make_rig: Callable[..., Rig]) -> None:
+    rig = make_rig(timing=replace(FAST, push_wait_s=2.0))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login"))
+    ctx = rig.ctx(Student())
+    with pytest.raises(BotaiError):
+        await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    assert len([b for b in ctx.blocks if isinstance(b, WaitBlock)]) == 1
+
+
 async def test_push_approval_is_a_wait_block_and_needs_no_field(
     make_rig: Callable[..., Rig],
 ) -> None:
