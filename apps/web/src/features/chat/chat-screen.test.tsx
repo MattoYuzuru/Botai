@@ -60,14 +60,13 @@ describe("чат: история, источники и шкала контек�
       await screen.findByText("Что сегодня по расписанию?", { selector: "p, span, div" }, wait),
     ).toBeTruthy();
     const link = await screen.findByRole("link", { name: /Открыть подключение в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/study\?connection=/));
+    expect(link).toHaveAttribute("href", "/study/connections");
     // Внешний источник — в новой вкладке, внутренний — в той же.
     const external = screen.getByRole("link", { name: /lk\.fakeuni\.test/ });
     expect(external).toHaveAttribute("target", "_blank");
     expect(link).not.toHaveAttribute("target");
     await userEvent.setup().click(link);
-    await waitFor(() => expect(router.state.location.pathname).toBe("/study"));
-    expect(router.state.location.search).toMatchObject({ connection: expect.any(String) });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/study/connections"));
   });
 
   it("шкала контекста в шапке: число из ответа сервера, шит с сегментами и источниками", async () => {
@@ -152,7 +151,7 @@ describe("чат: ответ агента", () => {
     const user = await openNewChat(userEvent.setup());
     await ask(user, "Какие правила сдачи курсовых?");
     const link = await screen.findByRole("link", { name: /Открыть документ в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/study\?document=/));
+    expect(link).toHaveAttribute("href", "/study/documents");
   });
 
   it("«Не знаю: …» помечено «Не уверен», источника нет и он не имитируется", async () => {

@@ -94,7 +94,7 @@ test.describe("ответ агента", () => {
     await expect(external).toHaveAttribute("target", "_blank");
     const internal = page.getByRole("link", { name: /Открыть подключение в «Учёбе»/ });
     await internal.click();
-    await expect(page).toHaveURL(/\/study\?connection=/);
+    await expect(page).toHaveURL(/\/study\/connections$/);
   });
 
   test("шкала контекста: плоская полоса в шапке, шит с сегментами и источниками", async ({ page }) => {

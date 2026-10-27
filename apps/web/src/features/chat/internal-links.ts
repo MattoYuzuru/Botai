@@ -16,9 +16,12 @@ export function parseInternalLink(url: string | null | undefined): InternalLink 
   return { kind: match[1] === "documents" ? "document" : "connection", id: match[2] as string };
 }
 
-/** Адрес экрана «Учёбы», где открываются документ или подключение. */
+/**
+ * Раздел «Учёбы», где лежит документ или подключение: `/study/documents`, `/study/connections`. Экран раздела
+ * хранит открытую карточку у себя и пока не читает идентификатор из адреса, поэтому ссылка ведёт в нужный раздел.
+ */
 export function internalHref(link: InternalLink): string {
-  return `/study?${link.kind}=${encodeURIComponent(link.id)}`;
+  return link.kind === "document" ? "/study/documents" : "/study/connections";
 }
 
 export function internalLabel(link: InternalLink): string {

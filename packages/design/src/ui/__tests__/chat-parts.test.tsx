@@ -90,7 +90,7 @@ describe("SourceCitation: внутренняя ссылка", () => {
         {...base}
         url="botai://documents/doc-2"
         internal={{
-          href: "/study?document=doc-2",
+          href: "/study/documents",
           label: "Открыть документ в «Учёбе»",
           icon: "document",
           onOpen,
@@ -98,7 +98,7 @@ describe("SourceCitation: внутренняя ссылка", () => {
       />,
     );
     const link = screen.getByRole("link", { name: /Правила сдачи/ });
-    expect(link).toHaveAttribute("href", "/study?document=doc-2");
+    expect(link).toHaveAttribute("href", "/study/documents");
     expect(link).not.toHaveAttribute("target");
     expect(screen.getByText("Открыть документ в «Учёбе»")).toBeInTheDocument();
     expect(screen.queryByText("Источник недоступен")).toBeNull();
@@ -112,7 +112,7 @@ describe("SourceCitation: внутренняя ссылка", () => {
       <SourceCitation
         {...base}
         url={null}
-        internal={{ href: "/study?document=x", label: "Открыть", onOpen }}
+        internal={{ href: "/study/documents", label: "Открыть", onOpen }}
       />,
     );
     const link = screen.getByRole("link");
