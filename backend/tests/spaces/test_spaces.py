@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from botai.core.clock import FrozenClock
 from botai.core.ids import new_id
@@ -420,3 +420,19 @@ async def test_sections_list_only_kinds_with_data(
         {"kind": "deadlines", "count": 1},
         {"kind": "documents", "count": 1},
     ]
+
+
+async def test_sections_ignore_disabled_connections(
+    new_client: Make, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    a, alice = await _login(new_client, tx_sessionmaker, clock, "a@example.com")
+    space = await make_space(tx_sessionmaker, alice)
+    conn = await make_connection(tx_sessionmaker, alice, space)
+    await _seed_domain(tx_sessionmaker, alice, conn, space)
+    kinds = {s["kind"] for s in (await a.get(f"/api/v1/spaces/{space}/sections")).json()}
+    assert "courses" in kinds
+    async with tx_sessionmaker() as s:
+        await s.execute(update(Connection).where(Connection.id == conn).values(status="disabled"))
+        await s.commit()
+    kinds = {s["kind"] for s in (await a.get(f"/api/v1/spaces/{space}/sections")).json()}
+    assert kinds == {"documents"}  # documents belong to the space, not to the switched-off source
