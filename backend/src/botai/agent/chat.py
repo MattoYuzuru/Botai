@@ -257,6 +257,9 @@ async def handle_chat(
         "tokens": result.total_tokens,
         "cacheShare": round(result.cache_share, 3),
         "prefixVersion": result.prefix_version,
+        "tools": [t.name for t in result.tool_calls],
+        "blockedCalls": result.blocked_calls,
+        "injections": len(result.findings),
         "context": meter_segments(result, ctx_msg, summary_msg, recent_msgs, question_msg),
         "sources": [
             {
