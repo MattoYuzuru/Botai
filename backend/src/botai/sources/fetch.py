@@ -1,0 +1,113 @@
+"""The single way adapters talk to a source: allowlisted client, retries, session, expiry signs.
+
+Every request goes through `core.http` (`build_client` with the connection's allowlist and the
+EgressProxy URL, `request_with_retries` with LLD §5 timeouts), so no adapter can reach a host the
+connection was not granted.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from types import TracebackType
+from typing import Any, Self
+from urllib.parse import urlsplit
+
+import httpx
+
+from botai.core.errors import BotaiError, ErrorCode
+from botai.core.http import build_client, host_allowed, request_with_retries
+from botai.sources.adapter import ExpiredRules, SessionExpired, SyncContext
+from botai.sources.session import auth_headers, cookie_jar, known_expired
+
+MAX_BODY = 10 * 1024 * 1024
+
+
+def origin_host(origin: str) -> str:
+    host = urlsplit(origin).hostname
+    if not host:
+        raise BotaiError(ErrorCode.VALIDATION, "Некорректный адрес источника")
+    return host.lower()
+
+
+def check_expired(response: httpx.Response, rules: ExpiredRules) -> None:
+    """Raise SessionExpired on 401/403 or a redirect to a login page (preset rules, other host)."""
+    if response.status_code in (401, 403):
+        raise SessionExpired(f"HTTP {response.status_code}")
+    if not response.history:
+        return
+    landing = [r.url for r in response.history[1:]] + [response.url]
+    if response.url.host != response.history[0].url.host:
+        raise SessionExpired("redirected to another host")
+    for url in landing:
+        if any(url.path.startswith(prefix) for prefix in rules.redirect_path_prefixes):
+            raise SessionExpired("redirected to the login page")
+
+
+class SourceClient:
+    """Async context manager around one allowlisted httpx client for a single fetch."""
+
+    def __init__(
+        self,
+        ctx: SyncContext,
+        *,
+        auth_type: str = "none",
+        header_name: str | None = None,
+        use_session: bool = True,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self._ctx = ctx
+        session = ctx.session if use_session else None
+        if auth_type != "none" and session is not None and known_expired(session, ctx.now):
+            raise SessionExpired("session is past its expiry hint")
+        self._client = build_client(
+            allow_hosts=ctx.allow_hosts,
+            proxy_url=ctx.proxy_url,
+            cookies=cookie_jar(session, ctx.now) if auth_type == "cookie" else None,
+            headers={
+                **auth_headers(session, auth_type=auth_type, header_name=header_name),
+                **(headers or {}),
+            },
+            transport=ctx.transport,
+        )
+
+    async def __aenter__(self) -> Self:
+        await self._client.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._client.__aexit__(exc_type, exc, tb)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        data: Mapping[str, str] | None = None,
+        json: Any = None,
+        check_session: bool = True,
+    ) -> httpx.Response:
+        if not host_allowed(url, self._ctx.allow_hosts):
+            raise BotaiError(
+                ErrorCode.EGRESS_BLOCKED,
+                "Адрес не входит в разрешённые для этого подключения",
+                extra={"host": urlsplit(url).hostname or ""},
+            )
+        kwargs: dict[str, Any] = {"policy": self._ctx.retry}
+        if params:
+            kwargs["params"] = dict(params)
+        if data is not None:
+            kwargs["data"] = dict(data)
+        if json is not None:
+            kwargs["json"] = json
+        response = await request_with_retries(self._client, method, url, **kwargs)
+        if check_session:
+            check_expired(response, self._ctx.expired)
+        if len(response.content) > MAX_BODY:
+            raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Ответ источника слишком большой")
+        return response
