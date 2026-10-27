@@ -69,6 +69,8 @@ class ConnectionOut(ApiModel):
     title: str
     status: ConnectionStatus
     has_password: bool
+    # kinds of user-supplied secrets present, never their values
+    stored_secrets: list[Literal["token", "ical_url", "api_key"]] = Field(default_factory=list)
     last_sync_at: datetime | None
     next_sync_at: datetime | None
     error_code: str | None = None

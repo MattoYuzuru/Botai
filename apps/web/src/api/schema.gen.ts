@@ -791,6 +791,8 @@ export interface components {
              * @enum {string}
              */
             status: "draft" | "learning" | "active" | "syncing" | "stale" | "needs_reauth" | "waiting_user" | "repairing" | "error" | "disabled";
+            /** Storedsecrets */
+            storedSecrets?: ("token" | "ical_url" | "api_key")[];
             /** Title */
             title: string;
         };
@@ -853,6 +855,8 @@ export interface components {
         DeadlineOut: {
             /** Coursetitle */
             courseTitle: string | null;
+            /** Description */
+            description?: string | null;
             /** Dueat */
             dueAt: string | null;
             /** Effectivedueat */

@@ -98,6 +98,13 @@ function DeadlineDetails({
         </DetailRow>
       </DetailList>
 
+      {deadline.description && (
+        <section aria-label="Условие задания" className="flex flex-col gap-1.5">
+          <h3 className="type-label text-fg-muted">Условие</h3>
+          <p className="type-body whitespace-pre-line text-fg">{deadline.description}</p>
+        </section>
+      )}
+
       <SourceCitation
         title={connection?.title ?? "Задания"}
         url={deadline.provenance.sourceUrl}

@@ -153,6 +153,24 @@ async def _course_titles(
     return {(c, e): t for c, e, t in rows.all() if (c, e) in wanted}
 
 
+async def _assignment_descriptions(
+    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str, str | None]]
+) -> dict[tuple[str, str], str]:
+    """Task text of a deadline comes from its assignment, when the source gave one."""
+    wanted = {(c, e) for c, e in pairs if e}
+    if not wanted:
+        return {}
+    rows = await session.execute(
+        select(Assignment.connection_id, Assignment.external_id, Assignment.description).where(
+            Assignment.user_id == user_id,
+            Assignment.connection_id.in_({c for c, _ in wanted}),
+            Assignment.external_id.in_({e for _, e in wanted}),
+            Assignment.description.is_not(None),
+        )
+    )
+    return {(c, e): d for c, e, d in rows.all() if (c, e) in wanted and d}
+
+
 # --- sections -----------------------------------------------------------------------------------
 
 
@@ -326,6 +344,9 @@ async def _deadlines(
     titles = await _course_titles(
         session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
     )
+    texts = await _assignment_descriptions(
+        session, user_id, ((r.connection_id, r.assignment_external_id) for r in rows)
+    )
     return [
         DeadlineOut(
             id=r.id,
@@ -334,6 +355,7 @@ async def _deadlines(
             effective_due_at=r.effective_due_at,
             state=_choice(r.state, _DEADLINE_STATES, "unknown"),
             course_title=titles.get((r.connection_id, r.course_external_id or "")),
+            description=texts.get((r.connection_id, r.assignment_external_id or "")),
             url=r.url,
             provenance=_prov(r, conns[r.connection_id]),
         )

@@ -43,6 +43,11 @@ async def connection_out(vault: Vault, conn: Connection) -> ConnectionOut:
         title=conn.title,
         status=conn.status,  # type: ignore[arg-type]
         has_password=await vault.has(conn.user_id, conn.id, SecretKind.PASSWORD),
+        stored_secrets=[
+            kind.value  # type: ignore[misc]
+            for kind in (SecretKind.TOKEN, SecretKind.ICAL_URL, SecretKind.API_KEY)
+            if await vault.has(conn.user_id, conn.id, kind)
+        ],
         last_sync_at=conn.last_sync_at,
         next_sync_at=conn.next_sync_at,
         error_code=conn.error_code,
