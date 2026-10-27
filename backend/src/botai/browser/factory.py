@@ -20,6 +20,7 @@ def build_sessions(settings: Settings, gateway: BrowserGateway, vault: Vault) ->
     from botai.browser.gateway import PlaywrightGateway
     from botai.browser.login import LoginFlow
     from botai.browser.presets import PgLoginStore
+    from botai.browser.screen import get_screens
     from botai.db.session import get_sessionmaker
 
     if not isinstance(gateway, PlaywrightGateway):
@@ -29,4 +30,5 @@ def build_sessions(settings: Settings, gateway: BrowserGateway, vault: Vault) ->
         vault=vault,
         store=PgLoginStore(get_sessionmaker()),
         egress=get_egress(settings),
+        screens=get_screens(settings),
     )

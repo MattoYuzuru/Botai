@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import uvicorn
@@ -70,9 +71,29 @@ def tls(tmp_path_factory: pytest.TempPathFactory) -> Tls:
     return paths
 
 
-class _QuietServer(uvicorn.Server):
+class QuietServer(uvicorn.Server):
     def capture_signals(self) -> contextlib.AbstractContextManager[None]:
         return contextlib.nullcontext()
+
+
+@contextlib.asynccontextmanager
+async def serve(app: Any) -> AsyncIterator[int]:
+    """Run an ASGI app on a free loopback port for the length of the block."""
+    server = QuietServer(
+        uvicorn.Config(
+            app, host="127.0.0.1", port=0, log_level="warning", access_log=False, lifespan="off"
+        )
+    )
+    task = asyncio.create_task(server.serve())
+    while not server.started:
+        if task.done():
+            task.result()
+        await asyncio.sleep(0.01)
+    try:
+        yield int(server.servers[0].sockets[0].getsockname()[1])
+    finally:
+        server.should_exit = True
+        await task
 
 
 @pytest.fixture(scope="session")
@@ -87,7 +108,7 @@ async def fakeuni_port(tls: Tls) -> AsyncIterator[int]:
         access_log=False,
         lifespan="off",
     )
-    server = _QuietServer(config)
+    server = QuietServer(config)
     task = asyncio.create_task(server.serve())
     while not server.started:
         if task.done():

@@ -145,6 +145,7 @@ class PlaywrightHandle:
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
         self._close_callbacks: list[Callable[[], None]] = []
+        self._page_callbacks: list[Callable[[], None]] = []
         self.closed = False
         self._reaper: asyncio.Task[None] | None = None
         context.on("page", self._on_page)
@@ -173,8 +174,14 @@ class PlaywrightHandle:
     def on_close(self, callback: Callable[[], None]) -> None:
         self._close_callbacks.append(callback)
 
+    def on_page_change(self, callback: Callable[[], None]) -> None:
+        """Called when a popup or new tab becomes the current page."""
+        self._page_callbacks.append(callback)
+
     def _on_page(self, page: Page) -> None:
         self._page = page
+        for callback in list(self._page_callbacks):
+            callback()
 
     def _on_request(self, request: Request) -> None:
         host = urlsplit(request.url).hostname

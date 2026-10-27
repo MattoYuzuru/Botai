@@ -389,6 +389,50 @@ async def blocked() -> HTMLResponse:
     )
 
 
+# --- a page for the remote-screen tests ---------------------------------------------------------
+
+
+@router.get("/screen/lab", response_class=HTMLResponse)
+async def screen_lab() -> str:
+    """A full-screen black/white box that flips on every click, a text input, a link, a tall page."""
+    return """<!doctype html><html><head><title>Screen lab</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;font:18px sans-serif}
+#box{position:fixed;inset:0;background:#000;z-index:-1}
+#t{position:fixed;top:10px;left:10px;width:180px;height:36px;font-size:18px}
+#a{position:fixed;top:70px;left:10px;padding:8px;background:#fff}</style></head>
+<body><div id="box"></div><input id="t" autocomplete="off"><a id="a" href="/screen/lab2">next page</a>
+<div style="height:4000px"></div>
+<script>
+if (location.search.includes('busy')) {
+  // a page that is expensive to encode: random 6px blocks, like a photo-heavy portal
+  const c = document.createElement('canvas');
+  c.width = 400; c.height = 800;
+  c.style.cssText = 'position:fixed;left:0;top:0;z-index:-2';
+  const g = c.getContext('2d');
+  for (let y = 0; y < 800; y += 6) for (let x = 0; x < 400; x += 6) {
+    g.fillStyle = 'hsl(' + ((x * 7 + y * 13) % 360) + ',' + (30 + (x * y) % 60) + '%,' + (20 + (x + y) % 60) + '%)';
+    g.fillRect(x, y, 6, 6);
+  }
+  document.body.appendChild(c);
+  document.getElementById('box').style.cssText = 'position:fixed;top:auto;left:auto;right:0;bottom:0;width:60px;height:60px;z-index:-1;background:#000';
+}
+let on = false;
+const box = document.getElementById('box');
+if (location.search.includes('anim')) setInterval(() => { on = !on; box.style.background = on ? '#fff' : '#000'; }, 20);
+const flip = () => { on = !on; box.style.background = on ? '#fff' : '#000'; };
+window.__log = [];
+document.addEventListener('mousedown', (e) => { window.__log.push('md'); if (!['INPUT', 'A'].includes(e.target.tagName)) flip(); });
+document.addEventListener('keydown', (e) => { window.__log.push('kd:' + e.code); if (e.key === 'F9') flip(); });
+document.addEventListener('wheel', () => window.__log.push('wheel'), {passive: true});
+</script></body></html>"""
+
+
+@router.get("/screen/lab2", response_class=HTMLResponse)
+async def screen_lab2() -> str:
+    return _page("Screen lab 2", "<h1>Second page</h1>")
+
+
 # --- a bearer-token SPA, a download (gateway tests) ------------------------------------------------
 
 
