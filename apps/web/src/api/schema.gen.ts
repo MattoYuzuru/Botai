@@ -385,7 +385,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Answer */
+        /**
+         * Answer
+         * @description Answers a block. A secret input goes straight into the Vault (`transient`, 10 minutes);
+         *     only the fact of the answer is stored. A second answer to the same block is `409`.
+         */
         post: operations["answer_api_v1_jobs__job_id__answers_post"];
         delete?: never;
         options?: never;
@@ -420,6 +424,9 @@ export interface paths {
         /**
          * Job Events
          * @description text/event-stream: status | block | block_update | error | done; resume by Last-Event-ID.
+         *
+         *     Only the owner of the job may listen. The stream replays the buffered events after
+         *     `Last-Event-ID`, then follows the job until it ends; `: keepalive` every 15 seconds.
          */
         get: operations["job_events_api_v1_jobs__job_id__events_get"];
         put?: never;

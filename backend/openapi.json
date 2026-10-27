@@ -2754,6 +2754,7 @@
     },
     "/api/v1/jobs/{job_id}/answers": {
       "post": {
+        "description": "Answers a block. A secret input goes straight into the Vault (`transient`, 10 minutes);\nonly the fact of the answer is stored. A second answer to the same block is `409`.",
         "operationId": "answer_api_v1_jobs__job_id__answers_post",
         "parameters": [
           {
@@ -2834,7 +2835,7 @@
     },
     "/api/v1/jobs/{job_id}/events": {
       "get": {
-        "description": "text/event-stream: status | block | block_update | error | done; resume by Last-Event-ID.",
+        "description": "text/event-stream: status | block | block_update | error | done; resume by Last-Event-ID.\n\nOnly the owner of the job may listen. The stream replays the buffered events after\n`Last-Event-ID`, then follows the job until it ends; `: keepalive` every 15 seconds.",
         "operationId": "job_events_api_v1_jobs__job_id__events_get",
         "parameters": [
           {
