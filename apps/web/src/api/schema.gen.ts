@@ -681,8 +681,32 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usage */
+        /**
+         * Usage
+         * @description Tokens spent today against the daily budget, and the last seven days (quota days run
+         *     from local midnight in Moscow).
+         */
         get: operations["usage_api_v1_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pool Usage
+         * @description Owner only: the spend of every user of the shared model key (FR-024).
+         */
+        get: operations["pool_usage_api_v1_usage_pool_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1050,6 +1074,38 @@ export interface components {
             provenance: components["schemas"]["Provenance"];
             /** Role */
             role: string;
+        };
+        /**
+         * PoolUsageOut
+         * @description Owner's view of the shared key: who spends what.
+         */
+        PoolUsageOut: {
+            /**
+             * Resetsat
+             * Format: date-time
+             */
+            resetsAt: string;
+            /** Tokenslimit */
+            tokensLimit: number;
+            /** Users */
+            users: components["schemas"]["PoolUserUsage"][];
+        };
+        /** PoolUserUsage */
+        PoolUserUsage: {
+            /** Costusdtoday */
+            costUsdToday: number;
+            /** Costusdweek */
+            costUsdWeek: number;
+            /** Displayname */
+            displayName: string;
+            /** Email */
+            email: string;
+            /** Tokenstoday */
+            tokensToday: number;
+            /** Tokensweek */
+            tokensWeek: number;
+            /** Userid */
+            userId: string;
         };
         /** Provenance */
         Provenance: {
@@ -2607,6 +2663,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageOut"];
+                };
+            };
+        };
+    };
+    pool_usage_api_v1_usage_pool_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolUsageOut"];
                 };
             };
         };

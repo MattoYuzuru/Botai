@@ -43,9 +43,13 @@ def status_data(job: Job, now: datetime) -> dict[str, Any]:
     }
 
 
-def error_event(job: Job, code: str, detail: str, status: int) -> dict[str, Any]:
-    """problem+json for the `error` event: code, job id and source, never page contents."""
-    body = {
+def error_event(
+    job: Job, code: str, detail: str, status: int, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """problem+json for the `error` event: code, job id and source, never page contents.
+    `extra` carries machine-readable fields of the error (a quota error's `resetsAt`)."""
+    body: dict[str, Any] = {
+        **(extra or {}),
         "type": f"https://botai.mnema.app/errors/{code}",
         "title": code,
         "status": status,

@@ -1123,6 +1123,77 @@
         "title": "PersonOut",
         "type": "object"
       },
+      "PoolUsageOut": {
+        "description": "Owner's view of the shared key: who spends what.",
+        "properties": {
+          "resetsAt": {
+            "format": "date-time",
+            "title": "Resetsat",
+            "type": "string"
+          },
+          "tokensLimit": {
+            "title": "Tokenslimit",
+            "type": "integer"
+          },
+          "users": {
+            "items": {
+              "$ref": "#/components/schemas/PoolUserUsage"
+            },
+            "title": "Users",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tokensLimit",
+          "resetsAt",
+          "users"
+        ],
+        "title": "PoolUsageOut",
+        "type": "object"
+      },
+      "PoolUserUsage": {
+        "properties": {
+          "costUsdToday": {
+            "title": "Costusdtoday",
+            "type": "number"
+          },
+          "costUsdWeek": {
+            "title": "Costusdweek",
+            "type": "number"
+          },
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "tokensToday": {
+            "title": "Tokenstoday",
+            "type": "integer"
+          },
+          "tokensWeek": {
+            "title": "Tokensweek",
+            "type": "integer"
+          },
+          "userId": {
+            "title": "Userid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "displayName",
+          "tokensToday",
+          "costUsdToday",
+          "tokensWeek",
+          "costUsdWeek"
+        ],
+        "title": "PoolUserUsage",
+        "type": "object"
+      },
       "Provenance": {
         "properties": {
           "connectionId": {
@@ -3590,6 +3661,7 @@
     },
     "/api/v1/usage": {
       "get": {
+        "description": "Tokens spent today against the daily budget, and the last seven days (quota days run\nfrom local midnight in Moscow).",
         "operationId": "usage_api_v1_usage_get",
         "responses": {
           "200": {
@@ -3604,6 +3676,28 @@
           }
         },
         "summary": "Usage",
+        "tags": [
+          "usage"
+        ]
+      }
+    },
+    "/api/v1/usage/pool": {
+      "get": {
+        "description": "Owner only: the spend of every user of the shared model key (FR-024).",
+        "operationId": "pool_usage_api_v1_usage_pool_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolUsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pool Usage",
         "tags": [
           "usage"
         ]
