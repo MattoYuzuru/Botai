@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     env: Literal["dev", "test", "prod"] = "dev"
     database_url: str = "postgresql+asyncpg://botai:botai@127.0.0.1:55432/botai"
     public_base_url: str = "http://localhost:5173"
+    static_dir: str | None = None  # built PWA (apps/web/dist) served by the API in production
 
     # Master key (KEK) for the Vault: base64 of 32 random bytes. Never stored in the DB.
     botai_kek: SecretStr = SecretStr("")
