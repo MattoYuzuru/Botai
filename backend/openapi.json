@@ -63,6 +63,18 @@
             "contentMediaType": "application/octet-stream",
             "title": "File",
             "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
           }
         },
         "required": [
@@ -3370,6 +3382,7 @@
     },
     "/api/v1/spaces/{space_id}/documents/upload": {
       "post": {
+        "description": "PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB.",
         "operationId": "upload_document_api_v1_spaces__space_id__documents_upload_post",
         "parameters": [
           {
@@ -3422,6 +3435,7 @@
     },
     "/api/v1/spaces/{space_id}/documents/url": {
       "post": {
+        "description": "A link to a file, a page, or a link-shared Google document or sheet.",
         "operationId": "add_document_url_api_v1_spaces__space_id__documents_url_post",
         "parameters": [
           {

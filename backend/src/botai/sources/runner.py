@@ -287,6 +287,18 @@ def build_context(
     )
 
 
+async def known_document_hash(session: AsyncSession, connection_id: str) -> str | None:
+    """Hash of the document stored for a connection: the same file is not processed again."""
+    return (
+        await session.execute(
+            select(m.Document.hash)
+            .where(m.Document.connection_id == connection_id)
+            .order_by(m.Document.fetched_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 # --- assessment -----------------------------------------------------------------------------
 
 
@@ -465,6 +477,8 @@ async def sync_connection(
         snap = await load_snapshot(db, user_id, connection_id)
     if snap.status in {"disabled", "learning", "draft", "repairing"}:
         return SyncOutcome("skipped", detail=snap.status)
+    if snap.adapter == "document" and snap.spec.get("source", {}).get("kind") == "upload":
+        return SyncOutcome("skipped", detail="upload")  # nothing to fetch again: no source address
     previous_status = snap.status
     await set_connection(services, connection_id, user_id, status="syncing")
     await ctx.status("Обновляю данные")
@@ -476,10 +490,13 @@ async def sync_connection(
             transport=transport,
             retry=retry,
         )
+        if snap.adapter == "document":
+            async with services.db() as db:
+                sctx.known_hash = await known_document_hash(db, connection_id)
         fetched = await fetch_with_reauth(ctx, services, snap, sctx)
         if isinstance(fetched, SyncOutcome):
             return fetched
-        return await _commit(
+        return await commit_result(
             services, snap, fetched, sctx.now, accept_empty=accept_empty, queue_repair=queue_repair
         )
     except BotaiError as err:
@@ -531,7 +548,7 @@ async def _record_failure(services: Services, snap: Snapshot, err: BotaiError) -
     return SyncOutcome("error", detail=err.code.value)
 
 
-async def _commit(
+async def commit_result(
     services: Services,
     snap: Snapshot,
     result: AdapterResult,
@@ -566,6 +583,21 @@ async def _commit(
             mark_missing=result.complete_kinds() - verdict.suspicious,
         )
         kinds = {k: v.as_dict() for k, v in stats.items()}
+        for doc in result.documents:
+            await normalize.store_document(
+                db,
+                user_id=snap.user_id,
+                space_id=snap.space_id,
+                connection_id=snap.connection_id,
+                doc=doc,
+                now=now,
+            )
+        if result.unchanged:  # the same file again: still current as of now
+            await db.execute(
+                update(m.Document)
+                .where(m.Document.connection_id == snap.connection_id)
+                .values(fetched_at=now)
+            )
         if verdict.drift:
             repairable = snap.adapter in REPAIRABLE_ADAPTERS
             current.status = "repairing" if repairable else "stale"

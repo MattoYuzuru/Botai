@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
@@ -53,44 +54,48 @@ def _norm(value: str) -> str:
     return collapse(value).casefold().replace("ё", "е")
 
 
+@dataclass(slots=True)
+class LoadedDocument:
+    format: DocFormat
+    extracted: Extracted
+    document: ExtractedDocument
+
+
 class DocumentAdapter:
     kind: ClassVar[AdapterKind] = "document"
 
     def __init__(self, spec: DocumentSpec) -> None:
         self.spec = spec
 
-    async def fetch(self, ctx: SyncContext) -> AdapterResult:
+    async def fetch_bytes(self, ctx: SyncContext) -> tuple[bytes, str | None] | EndpointOutcome:
+        """The raw document: the uploaded bytes, or the download. A failed download is a problem
+        of the source (an outcome), not an exception."""
         source = self.spec.source
         kind = str(source.get("kind", "upload"))
         url: str | None = source.get("url")
-        content_type: str | None = None
         if kind == "upload":
             if ctx.content is None:
                 raise BotaiError(ErrorCode.VALIDATION, "Файл не передан")
-            data = ctx.content
-        else:
-            if not url:
-                raise BotaiError(ErrorCode.VALIDATION, "У источника нет ссылки")
-            target = google_export_url(kind, url) if kind.startswith("google_") else url
-            async with SourceClient(ctx, auth_type="none", use_session=False) as client:
-                response = await client.request("GET", target, check_session=False)
-            if response.status_code >= 400:
-                problem: Problem = "not_found" if response.status_code in (404, 410) else "status"
-                outcome = EndpointOutcome(
-                    "document", None, ok=False, problem=problem, source_url=url
-                )
-                return AdapterResult([], ctx.now, [outcome], spec_revision=ctx.spec_revision)
-            data = response.content
-            content_type = response.headers.get("content-type")
-        digest = hashlib.sha256(data).hexdigest()
-        if ctx.known_hash == digest:
-            return AdapterResult([], ctx.now, [], spec_revision=ctx.spec_revision, unchanged=True)
+            return ctx.content, None
+        if not url:
+            raise BotaiError(ErrorCode.VALIDATION, "У источника нет ссылки")
+        target = google_export_url(kind, url) if kind.startswith("google_") else url
+        async with SourceClient(ctx, auth_type="none", use_session=False) as client:
+            response = await client.request("GET", target, check_session=False)
+        if response.status_code >= 400:
+            problem: Problem = "not_found" if response.status_code in (404, 410) else "status"
+            return EndpointOutcome("document", None, ok=False, problem=problem, source_url=url)
+        return response.content, response.headers.get("content-type")
 
+    def process(self, data: bytes, content_type: str | None, ctx: SyncContext) -> LoadedDocument:
+        url: str | None = self.spec.source.get("url")
         fmt: DocFormat = self.spec.format or detect_format(data, ctx.filename or url, content_type)
         extracted = extract(data, fmt)
+        leaf = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if url else ""
         title = (
             (ctx.filename or "").rsplit(".", 1)[0]
             or extracted.title
+            or leaf
             or (urlsplit(url).netloc if url else "")
             or "Документ"
         )
@@ -98,19 +103,33 @@ class DocumentAdapter:
         document = ExtractedDocument(
             title=title[:300],
             kind=doc_kind,
-            hash=digest,
+            hash=hashlib.sha256(data).hexdigest(),
             chunks=to_chunks(extracted),
             mime=content_type.split(";")[0] if content_type else None,
             url=url,
         )
+        return LoadedDocument(fmt, extracted, document)
+
+    def result_for(self, loaded: LoadedDocument, ctx: SyncContext) -> AdapterResult:
         records: list[Record] = []
         outcomes: list[EndpointOutcome] = []
         if self.spec.table:
-            records, outcome = self._table(extracted, self.spec.table, ctx, url or "upload:")
+            records, outcome = self._table(
+                loaded.extracted, self.spec.table, ctx, loaded.document.url or "upload:"
+            )
             outcomes.append(outcome)
         return AdapterResult(
-            records, ctx.now, outcomes, [document], spec_revision=ctx.spec_revision
+            records, ctx.now, outcomes, [loaded.document], spec_revision=ctx.spec_revision
         )
+
+    async def fetch(self, ctx: SyncContext) -> AdapterResult:
+        raw = await self.fetch_bytes(ctx)
+        if isinstance(raw, EndpointOutcome):
+            return AdapterResult([], ctx.now, [raw], spec_revision=ctx.spec_revision)
+        data, content_type = raw
+        if ctx.known_hash == hashlib.sha256(data).hexdigest():
+            return AdapterResult([], ctx.now, [], spec_revision=ctx.spec_revision, unchanged=True)
+        return self.result_for(self.process(data, content_type, ctx), ctx)
 
     # --- table -> records --------------------------------------------------------------------
 

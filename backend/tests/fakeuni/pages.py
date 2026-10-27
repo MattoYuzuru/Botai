@@ -63,3 +63,66 @@ async def deadlines_page(request: Request) -> Response:
         f'<table id="tasks"><thead><tr><th>Задание</th><th>Курс</th><th>Срок</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></body></html>"
     )
+
+
+# --- files (for document sources) --------------------------------------------------------------
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+STUDENT = "Иванова Анна Сергеевна"
+
+
+def exam_rows(version: str = "v1") -> list[list[str]]:
+    moved = version == "v2"
+    return [
+        ["ФИО", "Предмет", "Дата", "Время", "Аудитория"],
+        ["Петров Пётр Петрович", "Алгоритмы", "20.12.2026", "10:00", "Б-204"],
+        [STUDENT, "Базы данных", "22.12.2026", "13:00", "В-310"],
+        [
+            STUDENT,
+            "Математический анализ",
+            "26.12.2026" if moved else "25.12.2026",
+            "09:30",
+            "Г-1" if moved else "А-101",
+        ],
+    ]
+
+
+def exams_xlsx(version: str = "v1") -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Сессия"
+    for row in exam_rows(version):
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def rules_docx() -> bytes:
+    import io
+
+    import docx
+
+    doc = docx.Document()
+    doc.add_paragraph("Правила пересдачи")
+    doc.add_paragraph("Заявление на пересдачу подаётся за три дня до экзамена.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/files/exams.xlsx", response_model=None)
+async def exams_file() -> Response:
+    version = getattr(_state(), "exams_version", "v1")
+    return Response(exams_xlsx(version), media_type=XLSX)
+
+
+@router.get("/files/rules.docx", response_model=None)
+async def rules_file() -> Response:
+    return Response(rules_docx(), media_type=DOCX)

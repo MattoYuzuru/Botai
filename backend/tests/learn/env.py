@@ -14,6 +14,7 @@ from botai.core.queue import InMemoryJobQueue
 from botai.core.vault import InMemoryVault, SecretKind
 from botai.db import models as m
 from botai.learn.handlers import make_handlers
+from botai.sources.ingest import make_ingest_handler
 from botai.sources.runner import make_sync_handler
 from botai.sources.session import dump_session
 from tests.fakeuni import data
@@ -51,6 +52,7 @@ class Env:
         )
         self.transport = httpx.ASGITransport(app=app)  # type: ignore[arg-type]
         self.handlers = make_handlers(transport=self.transport, retry=FAST)
+        self.handlers[JobKind.INGEST] = make_ingest_handler(transport=self.transport, retry=FAST)
         self.ctx: InMemoryJobContext
         self.asked: list[Any] = []
 
@@ -134,6 +136,18 @@ class Env:
                 select(func.count())
                 .select_from(model)
                 .where(model.connection_id == self.seeded.connection_id)
+            )
+        ).scalar_one()
+
+    async def chunks(self) -> int:
+        """Search fragments of the documents of this connection."""
+        self.db.expire_all()
+        return (
+            await self.db.execute(
+                select(func.count())
+                .select_from(m.Chunk)
+                .join(m.Document, m.Document.id == m.Chunk.document_id)
+                .where(m.Document.connection_id == self.seeded.connection_id)
             )
         ).scalar_one()
 

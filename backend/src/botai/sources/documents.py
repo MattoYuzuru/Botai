@@ -70,6 +70,8 @@ def detect_format(
         return "csv"
     if lower_name.endswith(".pdf") or "pdf" in ctype:
         raise BotaiError(ErrorCode.VALIDATION, "Файл не похож на PDF")
+    if b"\x00" in data[:4096]:
+        raise BotaiError(ErrorCode.VALIDATION, "Этот тип файла не поддерживается")
     return "text"
 
 

@@ -6,8 +6,10 @@ it finishes (a block is idempotent by id). Nothing here carries page contents or
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from botai.contracts.agent_ui import (
     AgentUiAnswer,
@@ -21,9 +23,12 @@ from botai.contracts.agent_ui import (
     TextBlock,
     ThinkingBlock,
 )
+from botai.contracts.specs import Kind
 from botai.core.clock import Clock
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
+from botai.sources.adapter import Record
+from botai.sources.vocab import KIND_LABELS
 
 State = Literal["running", "ok", "failed", "skipped"]
 
@@ -91,7 +96,9 @@ class Ui:
         )
         return truthy(answer)
 
-    async def choose(self, question: str, options: list[tuple[str, str, str | None]]) -> str | None:
+    async def choose(
+        self, question: str, options: Sequence[tuple[str, str, str | None]]
+    ) -> str | None:
         """Single choice among (value, label, hint). Returns the chosen value."""
         answer = await self.ctx.ask(
             ChoiceBlock(
@@ -127,6 +134,22 @@ class Ui:
         text = value[0] if isinstance(value, list) and value else value
         return text.strip() if isinstance(text, str) and text.strip() else None
 
+    async def ask_text(self, question: str, placeholder: str = "") -> str | None:
+        answer = await self.ctx.ask(
+            InputBlock(
+                id=new_id(),
+                at=self._now(),
+                question=question[:500],
+                input_kind="text",
+                placeholder=placeholder[:120] or None,
+                required=True,
+                max_length=200,
+            )
+        )
+        value = answer.values
+        text = value[0] if isinstance(value, list) and value else value
+        return text.strip()[:200] if isinstance(text, str) and text.strip() else None
+
 
 def truthy(answer: AgentUiAnswer) -> bool:
     value = answer.values
@@ -143,4 +166,58 @@ def item(label: str, value: str, url: str | None = None, *, confirmed: bool = Tr
         value=value[:500],
         source_url=url,  # type: ignore[arg-type]
         confidence="confirmed" if confirmed else "guess",
+    )
+
+
+SAMPLE = 3
+_WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+_MONTHS = ("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+
+
+def _day(moment: datetime, tz: ZoneInfo) -> str:
+    local = moment.astimezone(tz)
+    return f"{_WEEKDAYS[local.weekday()]}, {local.day} {_MONTHS[local.month - 1]}"
+
+
+def describe(record: Record, tz: ZoneInfo) -> tuple[str, str]:
+    """A one-line (label, value) for the summary of what was collected."""
+    f = record.fields
+
+    def when(name: str) -> datetime | None:
+        value = f.get(name)
+        return datetime.fromisoformat(value) if isinstance(value, str) else None
+
+    title = str(f.get("title") or f.get("name") or f.get("value") or "Без названия")
+    if record.kind == "scheduleEvents" and (start := when("startsAt")):
+        end = when("endsAt")
+        span = f"{start.astimezone(tz):%H:%M}" + (
+            f"–{end.astimezone(tz):%H:%M}" if end and end != start else ""
+        )
+        place = f", {f['location']}" if f.get("location") else ""
+        return title, f"{_day(start, tz)}, {span}{place}"
+    if record.kind == "deadlines" and (due := when("dueAt")):
+        return title, f"до {_day(due, tz)}, {due.astimezone(tz):%H:%M}"
+    if record.kind == "news" and (published := when("publishedAt")):
+        return title, _day(published, tz)
+    if record.kind == "grades":
+        return str(f.get("title") or "Оценка"), str(f.get("value", "—"))
+    return title, str(f.get("code") or "—")
+
+
+def sample_of(records: list[Record], kind: Kind, now: datetime) -> list[Record]:
+    key = {"scheduleEvents": "startsAt", "deadlines": "dueAt", "news": "publishedAt"}.get(kind)
+    if key is None:
+        return records[:SAMPLE]
+    ordered = sorted(records, key=lambda r: str(r.fields.get(key, "")))
+    upcoming = [r for r in ordered if str(r.fields.get(key, "")) >= now.isoformat()]
+    return (upcoming or ordered)[:SAMPLE]
+
+
+def kinds_text(kinds: dict[str, dict[str, int]], only: Collection[str] | None = None) -> str:
+    """Counts per kind in a fixed order, from the Normalizer's per-kind stats."""
+    return ", ".join(
+        f"{KIND_LABELS[k].lower()}: {v['inserted'] + v['updated'] + v['unchanged']}"
+        for k in KIND_LABELS
+        if k in kinds and (only is None or k in only)
+        for v in [kinds[k]]
     )

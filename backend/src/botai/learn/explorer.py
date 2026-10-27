@@ -21,9 +21,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections import Counter
-from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -54,8 +52,8 @@ from botai.learn.lint import LintContext, lint_spec
 from botai.learn.observe import Observations, observe
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
-from botai.learn.ui import Ui, item
-from botai.sources.adapter import Record, SessionExpired, SyncContext
+from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
+from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
     SyncOutcome,
@@ -72,9 +70,6 @@ log = logging.getLogger(__name__)
 DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents", "deadlines")
 TOKEN_BUDGET = 1_500_000
 MAX_LINK_ROUNDS = 2
-SAMPLE = 3
-_WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
-_MONTHS = ("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 
 
 @dataclass(slots=True)
@@ -105,55 +100,6 @@ def wanted_kinds(payload: dict[str, Any]) -> list[Kind]:
             if isinstance(k, str) and k in VOCAB and k not in kinds:
                 kinds.append(k)  # type: ignore[arg-type]
     return kinds or list(DEFAULT_KINDS)
-
-
-def _day(moment: datetime, tz: ZoneInfo) -> str:
-    local = moment.astimezone(tz)
-    return f"{_WEEKDAYS[local.weekday()]}, {local.day} {_MONTHS[local.month - 1]}"
-
-
-def describe(record: Record, tz: ZoneInfo) -> tuple[str, str]:
-    """A one-line (label, value) for the summary of what was collected."""
-    f = record.fields
-
-    def when(name: str) -> datetime | None:
-        value = f.get(name)
-        return datetime.fromisoformat(value) if isinstance(value, str) else None
-
-    title = str(f.get("title") or f.get("name") or f.get("value") or "Без названия")
-    if record.kind == "scheduleEvents" and (start := when("startsAt")):
-        end = when("endsAt")
-        span = f"{start.astimezone(tz):%H:%M}" + (
-            f"–{end.astimezone(tz):%H:%M}" if end and end != start else ""
-        )
-        place = f", {f['location']}" if f.get("location") else ""
-        return title, f"{_day(start, tz)}, {span}{place}"
-    if record.kind == "deadlines" and (due := when("dueAt")):
-        return title, f"до {_day(due, tz)}, {due.astimezone(tz):%H:%M}"
-    if record.kind == "news" and (published := when("publishedAt")):
-        return title, _day(published, tz)
-    if record.kind == "grades":
-        return str(f.get("title") or "Оценка"), str(f.get("value", "—"))
-    return title, str(f.get("code") or "—")
-
-
-def sample_of(records: list[Record], kind: Kind, now: datetime) -> list[Record]:
-    key = {"scheduleEvents": "startsAt", "deadlines": "dueAt", "news": "publishedAt"}.get(kind)
-    if key is None:
-        return records[:SAMPLE]
-    ordered = sorted(records, key=lambda r: str(r.fields.get(key, "")))
-    upcoming = [r for r in ordered if str(r.fields.get(key, "")) >= now.isoformat()]
-    return (upcoming or ordered)[:SAMPLE]
-
-
-def kinds_text(kinds: dict[str, dict[str, int]], only: Collection[str] | None = None) -> str:
-    """Counts per kind in a fixed order, from the Normalizer's per-kind stats."""
-    return ", ".join(
-        f"{KIND_LABELS[k].lower()}: {v['inserted'] + v['updated'] + v['unchanged']}"
-        for k in KIND_LABELS
-        if k in kinds and (only is None or k in only)
-        for v in [kinds[k]]
-    )
 
 
 class Explorer:

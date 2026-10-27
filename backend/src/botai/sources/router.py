@@ -2,29 +2,60 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, UploadFile
+from typing import Annotated
 
-from botai.core.errors import not_implemented
+from fastapi import APIRouter, Form, UploadFile
+
+from botai.api.deps import ServicesDep
+from botai.auth.deps import AuthUser
+from botai.db.session import DbSession
+from botai.sources import service
+from botai.sources.ingest import MAX_UPLOAD
 from botai.sources.schemas import DocumentFromUrl, DocumentOut, DocumentStarted
 
 router = APIRouter(prefix="/api/v1", tags=["sources"])
 
 
 @router.get("/spaces/{space_id}/documents", response_model=list[DocumentOut])
-async def list_documents(space_id: str) -> list[DocumentOut]:
-    raise not_implemented("list_documents")
+async def list_documents(space_id: str, user: AuthUser, session: DbSession) -> list[DocumentOut]:
+    return await service.list_documents(session, user.id, space_id)
 
 
 @router.post("/spaces/{space_id}/documents/url", response_model=DocumentStarted, status_code=201)
-async def add_document_url(space_id: str, body: DocumentFromUrl) -> DocumentStarted:
-    raise not_implemented("add_document_url")
+async def add_document_url(
+    space_id: str,
+    body: DocumentFromUrl,
+    user: AuthUser,
+    session: DbSession,
+    services: ServicesDep,
+) -> DocumentStarted:
+    """A link to a file, a page, or a link-shared Google document or sheet."""
+    return await service.start_url(session, services.queue, user.id, space_id, body)
 
 
 @router.post("/spaces/{space_id}/documents/upload", response_model=DocumentStarted, status_code=201)
-async def upload_document(space_id: str, file: UploadFile) -> DocumentStarted:
-    raise not_implemented("upload_document")
+async def upload_document(
+    space_id: str,
+    file: UploadFile,
+    user: AuthUser,
+    session: DbSession,
+    services: ServicesDep,
+    note: Annotated[str | None, Form(max_length=1000)] = None,
+) -> DocumentStarted:
+    """PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB."""
+    data = await file.read(MAX_UPLOAD + 1)
+    return await service.start_upload(
+        session,
+        services.queue,
+        user.id,
+        space_id,
+        filename=file.filename,
+        content_type=file.content_type,
+        data=data,
+        note=note,
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=204)
-async def delete_document(document_id: str) -> None:
-    raise not_implemented("delete_document")
+async def delete_document(document_id: str, user: AuthUser, session: DbSession) -> None:
+    await service.delete_document(session, user.id, document_id)

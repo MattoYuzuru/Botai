@@ -25,6 +25,8 @@ class FakeState:
     timetable_version: str = "v2"
     # "v1": li.news-item markup. "v2": the same list in article.post markup.
     news_markup: str = "v1"
+    # "v1" or "v2" of the exam list served at /files/exams.xlsx (one exam moves in v2).
+    exams_version: str = "v1"
     # When set, every API call answers with this status (503 to test outages).
     fail_status: int | None = None
 
@@ -35,6 +37,7 @@ STATE = FakeState()
 def reset() -> None:
     STATE.timetable_version = "v2"
     STATE.news_markup = "v1"
+    STATE.exams_version = "v1"
     STATE.fail_status = None
     ical.reset()
 
