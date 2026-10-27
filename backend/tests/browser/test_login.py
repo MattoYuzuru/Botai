@@ -292,6 +292,28 @@ async def test_a_valid_stored_session_is_returned_without_a_browser(
     assert len(rig.store.presets[ORIGIN]) == 1
 
 
+async def test_force_skips_a_session_the_caller_has_just_seen_refused(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = await make_rig_first_login(make_rig)
+    first = await rig.vault.get(rig.user, rig.conn, SecretKind.SESSION)
+    student = Student()
+    ctx = rig.ctx(student)
+    again = await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn, force=True)
+    assert await works(again)
+    stored = await rig.vault.get(rig.user, rig.conn, SecretKind.SESSION)
+    assert first is not None
+    assert stored is not None
+    assert stored.get_secret_value() != first.get_secret_value()
+    assert student.asked == [("code", "one-time-code")]  # logged in anew, password from the Vault
+
+
+async def make_rig_first_login(make_rig: Callable[..., Rig]) -> Rig:
+    rig = make_rig()
+    await rig.ensure(Student())
+    return rig
+
+
 async def test_expired_session_logs_in_again_with_the_stored_password(
     make_rig: Callable[..., Rig],
 ) -> None:

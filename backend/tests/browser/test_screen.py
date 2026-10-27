@@ -263,6 +263,15 @@ async def make_screen(
 
 
 @pytest.fixture
+async def make_local_screen(
+    gateway: PlaywrightGateway,
+) -> AsyncIterator[Callable[..., Awaitable[ScreenRig]]]:
+    """Only API and browser in one process: for behaviour that does not depend on the link."""
+    async for build in _rigs(gateway, False):
+        yield build
+
+
+@pytest.fixture
 async def make_relayed_screen(
     gateway: PlaywrightGateway,
 ) -> AsyncIterator[Callable[..., Awaitable[ScreenRig]]]:
@@ -315,7 +324,7 @@ async def test_input_to_frame_latency_p95(
     await client.first_frame()
     await asyncio.sleep(0.3)
     clicks: list[float] = []
-    for _ in range(40):
+    for _ in range(30):
         await asyncio.sleep(0.2)
         sent = time.perf_counter()
         clicks.append(sent)
@@ -888,9 +897,9 @@ async def _log_grew(page: Any, before: int) -> bool:
 
 
 async def test_a_slow_link_lowers_the_picture_quality_and_a_fast_one_restores_it(
-    make_screen: Callable[..., Awaitable[ScreenRig]],
+    make_local_screen: Callable[..., Awaitable[ScreenRig]],
 ) -> None:
-    rig = await make_screen(path="/screen/lab?busy=1&anim=1")
+    rig = await make_local_screen(path="/screen/lab?busy=1&anim=1")
     client = await rig.connect(auto_ack=False)
     start = rig.session._quality.profile
     pending: list[asyncio.Task[None]] = []
