@@ -14,6 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent import harness
 from botai.agent.memory import (
@@ -117,6 +118,27 @@ def compose_answer(
     return text, done
 
 
+async def load_thread_scope(
+    session: AsyncSession, user_id: str, thread: ChatThread
+) -> tuple[Space | None, list[str]]:
+    """The thread's space (if any) and the titles of all the student's spaces."""
+    space = None
+    if thread.space_id:
+        space = (
+            await session.execute(
+                select(Space).where(Space.id == thread.space_id, Space.user_id == user_id)
+            )
+        ).scalar_one_or_none()
+    titles = list(
+        (
+            await session.execute(
+                select(Space.title).where(Space.user_id == user_id).order_by(Space.created_at)
+            )
+        ).scalars()
+    )
+    return space, titles
+
+
 async def _load(
     services: Services, user_id: str, thread_id: str
 ) -> tuple[ChatThread, Space | None, list[str]]:
@@ -128,20 +150,7 @@ async def _load(
         ).scalar_one_or_none()
         if thread is None:
             raise BotaiError(ErrorCode.NOT_FOUND, "Чат не найден")
-        space = None
-        if thread.space_id:
-            space = (
-                await session.execute(
-                    select(Space).where(Space.id == thread.space_id, Space.user_id == user_id)
-                )
-            ).scalar_one_or_none()
-        titles = list(
-            (
-                await session.execute(
-                    select(Space.title).where(Space.user_id == user_id).order_by(Space.created_at)
-                )
-            ).scalars()
-        )
+        space, titles = await load_thread_scope(session, user_id, thread)
         return thread, space, titles
 
 

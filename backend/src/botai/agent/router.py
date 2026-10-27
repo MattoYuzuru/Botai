@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.chat import DEFAULT_TITLE
+from botai.agent.context_meter import build_context
 from botai.agent.schemas import (
     ApproveIn,
     ContextOut,
@@ -160,8 +161,11 @@ async def post_message(
 
 
 @router.get("/chat/threads/{thread_id}/context", response_model=ContextOut)
-async def thread_context(thread_id: str) -> ContextOut:
-    raise not_implemented("thread_context")
+async def thread_context(
+    thread_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> ContextOut:
+    thread = await own_thread(session, user.id, thread_id)
+    return await build_context(session, services, user.id, thread)
 
 
 @router.post("/actions/{proposal_id}/approve", status_code=202)
