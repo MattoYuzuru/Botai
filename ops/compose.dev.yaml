@@ -1,0 +1,23 @@
+# Local development Postgres. One shared container for all worktrees (runtime owner: coordinator).
+# Tests create and drop their own database per run (botai_test_<random>), so parallel agents
+# do not collide. Never `down -v` this project to fix a test.
+name: botai-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: botai
+      POSTGRES_PASSWORD: botai
+      POSTGRES_DB: botai
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botai"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off", "-c", "full_page_writes=off"]
+volumes:
+  pgdata: {}

@@ -1,0 +1,12 @@
+[
+  {"id": "fakeuni-lk", "name": "Фейкуни — личный кабинет", "start": {"url": "https://fakeuni.test/auth/login"},
+   "allowHosts": ["fakeuni.test"], "success": {"probe": {"method": "GET", "url": "https://fakeuni.test/api/v2/me", "expectStatus": 200}},
+   "expired": {"probe401": ["/api/v2/me"]}, "mfa": {"possible": "yes", "kinds": ["sms"], "automate": false},
+   "captcha": {"possible": "no", "automate": false}, "capture": {"cookiesFor": ["fakeuni.test"], "storage": "encrypted"},
+   "mode": "assisted",
+   "steps": [
+     {"id": "credentials", "match": {"urlPathPrefix": "/auth/login"}, "fields": [
+        {"role": "username", "selector": "#username", "label": "Почта"}, {"role": "password", "selector": "#password", "label": "Пароль"}],
+      "submit": "#kc-login"},
+     {"id": "otp", "match": {"selectorPresent": "#otp"}, "fields": [{"role": "otp", "selector": "#otp", "label": "Код из SMS"}], "submit": "#kc-otp-submit"}]}
+]

@@ -15,7 +15,9 @@
 | Оценить риск, стоимость или конкурентов | [Реализуемость](research/feasibility.md) |
 | Делаю экран или компонент | [Стайлгайд](design/styleguide.md) |
 | Делаю маскота, прогресс или пустое состояние | [Маскот](design/mascot.md) |
-| Понять, кто что пишет и в каком порядке | [План работ](plan/workstreams.md) |
+| Понять, кто что пишет и в каком порядке | [План работ](plan/workstreams.md), [брифы потоков](plan/briefs/README.md) |
+| Харнес агента, профили рассуждения | [agent-harness.md](architecture/agent-harness.md), [бенчмарк](plan/benchmark.md) |
+| Деплой на сервер | [deployment.md](plan/deployment.md) |
 | Написать тест, использовать ключ модели | [Тесты и ключ модели](development/testing.md) |
 | Узнать, почему решено именно так | [Решения (ADR)](#решения) |
 
@@ -29,6 +31,7 @@
 | [0004](adr/0004-agent-ui-blocks.md) | Своя схема блоков интерфейса агента вместо полного A2UI | accepted |
 | [0005](adr/0005-source-adapter-factory.md) | Фабрика источников и самопочинка | accepted |
 | [0006](adr/0006-retrieval-mvp.md) | Поиск в MVP: SQL + полнотекстовый Postgres | accepted |
+| [0007](adr/0007-agent-harness.md) | Свой тонкий харнес агента над DeepSeek | accepted |
 
 Решения владельца — [QUESTIONS.md](../QUESTIONS.md).
 

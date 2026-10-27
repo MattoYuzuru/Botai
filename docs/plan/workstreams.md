@@ -52,12 +52,15 @@ ops/, .github/                  W0
 | Стык | Кто | Как снимается |
 |---|---|---|
 | Блоки агента в SSE | W1 ↔ W2, W3, W5 ↔ W4 | `agent-ui.schema.json`; производители вызывают `JobContext.emit/ask` |
-| Секретные ответы | W1 ↔ W2 ↔ W4 | `input.secret` → `POST /jobs/{id}/answers` → Vault `transient` → `take_secret()` |
+| Секретные ответы | W1 ↔ W2 ↔ W4 | `input.secret` → `POST /jobs/{id}/answers` → Vault `transient` → `ask_secret()` |
 | Сессия для sync | W2 → W3 | `SessionState` в Vault (`kind=session`), Runner читает через `Vault` |
 | Спецификации | W3 ↔ W1 | Таблицы `adapter_specs`, `login_presets` из этапа 0 |
 | Домен для чата | W3 → W1 → W5 | Таблицы домена из этапа 0, репозитории W1 |
 
 ## 4. Процесс
+
+Брифы исполнителей — [briefs/](briefs/README.md): общие правила и по файлу на поток.
+
 
 - Каждый поток работает в своём git worktree, ветка `feat/w<N>-<тема>`.
 - Готовый вертикальный срез → PR в `main` с описанием на русском (что закрыто: FR/NFR, что не

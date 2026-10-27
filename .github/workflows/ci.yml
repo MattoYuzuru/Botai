@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: botai
+          POSTGRES_PASSWORD: botai
+          POSTGRES_DB: botai
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U botai" --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://botai:botai@127.0.0.1:5432/botai
+      BOTAI_REQUIRE_DB: "1"
+      LLM_PROVIDER: mock
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.13
+      - run: uv sync --frozen
+      - name: Playwright Chromium
+        run: uv run --frozen playwright install --with-deps chromium
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen pyright
+      - run: uv run --frozen pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec biome check .
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm --filter @botai/web build
+
+  generated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.13
+      - run: cd backend && uv sync --frozen
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generated files are up to date
+        run: ./scripts/gen.sh && git diff --exit-code -- backend/openapi.json backend/src/botai/contracts/schemas apps/web/src/api
+
+  guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secrets in tracked files
+        run: |
+          if git grep -nE 'sk-[a-f0-9]{32}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' -- ':!*.md'; then
+            echo "secret-like value found"; exit 1; fi
+      - name: No .env committed
+        run: test -z "$(git ls-files | grep -E '(^|/)\.env$')"
+
+  ci-ok:
+    if: always()
+    needs: [backend, web, generated, guards]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            [ "$r" = "success" ] || { echo "a required job did not succeed: $r"; exit 1; }
+          done

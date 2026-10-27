@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import Field
+
+from botai.core.api import ApiModel
+
+ConnectionStatus = Literal[
+    "draft",
+    "learning",
+    "active",
+    "syncing",
+    "stale",
+    "needs_reauth",
+    "waiting_user",
+    "repairing",
+    "error",
+    "disabled",
+]
+ConnectionKind = Literal["lms", "schedule", "portal", "sheet", "document", "mail", "other"]
+SecretKindIn = Literal["token", "ical_url", "api_key"]
+
+
+class UniversityOut(ApiModel):
+    id: str
+    title: str
+    short_title: str
+    origins: list[str]
+    accent_hue: float
+    third_party_warning: str | None = None
+
+
+class SpaceCreate(ApiModel):
+    title: str = Field(
+        min_length=1, max_length=120, description="Название вуза, как его пишет студент"
+    )
+    university_id: str | None = None  # from GET /universities, if already learned
+    homepage_url: str | None = Field(default=None, max_length=500)
+
+
+class SpaceUpdate(ApiModel):
+    title: str | None = Field(default=None, max_length=120)
+    time_zone: str | None = None
+
+
+class SpaceOut(ApiModel):
+    id: str
+    title: str
+    university_id: str | None
+    accent_hue: float
+    time_zone: str
+    created_at: datetime
+
+
+class ConnectionCreate(ApiModel):
+    kind: ConnectionKind | None = None  # None: let the agent discover what to connect
+    url: str | None = Field(default=None, max_length=1000)
+    title: str | None = Field(default=None, max_length=120)
+
+
+class ConnectionOut(ApiModel):
+    id: str
+    space_id: str
+    origin: str
+    kind: ConnectionKind
+    adapter: str | None
+    title: str
+    status: ConnectionStatus
+    has_password: bool
+    last_sync_at: datetime | None
+    next_sync_at: datetime | None
+    error_code: str | None = None
+    error_detail: str | None = None
+
+
+class ConnectionStarted(ApiModel):
+    connection: ConnectionOut
+    job_id: str
+
+
+class SecretIn(ApiModel):
+    kind: SecretKindIn
+    value: str = Field(min_length=1, max_length=4000)
+
+
+class JobRef(ApiModel):
+    job_id: str
+
+
+class SectionOut(ApiModel):
+    """Dynamic sections (FR-014): only kinds that have data appear."""
+
+    kind: Literal[
+        "courses",
+        "scheduleEvents",
+        "deadlines",
+        "assignments",
+        "grades",
+        "people",
+        "locations",
+        "news",
+        "documents",
+    ]
+    count: int

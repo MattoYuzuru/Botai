@@ -1,0 +1,5 @@
+[
+  {"type": "choice", "id": "01JAAAAAAAAAAAAAAAAAAAAAA2", "at": "2026-10-27T10:00:01Z", "question": "Один вариант", "mode": "single", "required": true, "options": [{"value": "a", "label": "А"}]},
+  {"type": "input", "id": "not-a-ulid", "at": "2026-10-27T10:00:02Z", "question": "?", "inputKind": "text", "required": false},
+  {"type": "script", "id": "01JAAAAAAAAAAAAAAAAAAAAAA3", "at": "2026-10-27T10:00:02Z", "code": "alert(1)"}
+]

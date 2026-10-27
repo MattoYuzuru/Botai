@@ -1,0 +1,6 @@
+[
+  {"adapter": "recipe", "recipe": {"version": 1, "origin": "https://fakeuni.test/path", "revision": 1, "learnedAt": "2026-10-27T10:00:00Z",
+    "auth": {"type": "cookie"}, "endpoints": [], "validation": {"requireKinds": ["scheduleEvents"]}}},
+  {"adapter": "moodle_ws", "origin": "https://lms.fakeuni.test", "functions": ["core_user_update_users"]},
+  {"adapter": "python", "code": "import os"}
+]

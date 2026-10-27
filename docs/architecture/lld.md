@@ -60,7 +60,7 @@ classDiagram
         +status(stage, state)
         +emit(block: AgentUiBlock)
         +ask(block) AgentUiAnswer
-        +take_secret(block_id) SecretStr
+        +ask_secret(block) SecretStr
     }
     class BrowserGateway {
         <<protocol>>
@@ -201,7 +201,7 @@ stateDiagram-v2
 `job_events` пишутся в Postgres и раздаются по SSE (`GET /api/v1/jobs/{id}/events`), см.
 [events.md](../../contracts/events.md). Ответы на блоки — `POST /api/v1/jobs/{id}/answers`.
 Секретные ответы (`input.secret: true`) API сразу кладёт в Vault как `transient` с TTL 10 мин;
-воркер забирает их через `JobContext.take_secret()` и удаляет. В `job_events` и логах их нет.
+воркер забирает их через `JobContext.ask_secret()` и удаляет. В `job_events` и логах их нет.
 
 ## 7. Процессы
 

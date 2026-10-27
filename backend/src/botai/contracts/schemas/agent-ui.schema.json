@@ -1,0 +1,660 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/agent-ui.schema.json",
+  "title": "AgentUiBlock",
+  "description": "Блок интерфейса, который агент отдаёт клиенту. Клиент рисует его своими компонентами и никогда не исполняет ничего из блока. См. ADR-0004.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/text"
+    },
+    {
+      "$ref": "#/$defs/thinking"
+    },
+    {
+      "$ref": "#/$defs/choice"
+    },
+    {
+      "$ref": "#/$defs/input"
+    },
+    {
+      "$ref": "#/$defs/confirm"
+    },
+    {
+      "$ref": "#/$defs/summary"
+    },
+    {
+      "$ref": "#/$defs/approval"
+    },
+    {
+      "$ref": "#/$defs/login"
+    },
+    {
+      "$ref": "#/$defs/wait"
+    },
+    {
+      "$ref": "#/$defs/handoff"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID"
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "type",
+        "id",
+        "at"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "markdown"
+      ],
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "markdown": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Рендерится без HTML и без ссылок-действий."
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        }
+      }
+    },
+    "thinking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "stage"
+      ],
+      "properties": {
+        "type": {
+          "const": "thinking"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stage": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Короткое имя этапа для ProgressWall."
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "state": {
+          "enum": [
+            "running",
+            "ok",
+            "failed",
+            "skipped"
+          ],
+          "default": "running"
+        }
+      }
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "question",
+        "mode",
+        "options",
+        "required"
+      ],
+      "properties": {
+        "type": {
+          "const": "choice"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "question": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "mode": {
+          "enum": [
+            "single",
+            "multi"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value",
+              "label"
+            ],
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "hint": {
+                "type": "string",
+                "maxLength": 300
+              }
+            }
+          }
+        },
+        "allowOther": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "question",
+        "inputKind",
+        "required"
+      ],
+      "properties": {
+        "type": {
+          "const": "input"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "question": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "inputKind": {
+          "enum": [
+            "text",
+            "url",
+            "number",
+            "date",
+            "email",
+            "password",
+            "code"
+          ]
+        },
+        "placeholder": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000,
+          "default": 500
+        },
+        "secret": {
+          "type": "boolean",
+          "default": false,
+          "description": "Пароль, код MFA, токен. Значение идёт API → Vault → воркер, мимо LLM, не пишется в события и логи; клиент не хранит его в состоянии после отправки."
+        },
+        "autocomplete": {
+          "enum": [
+            "off",
+            "username",
+            "email",
+            "current-password",
+            "one-time-code",
+            "url"
+          ],
+          "default": "off"
+        }
+      }
+    },
+    "confirm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "question",
+        "confirmLabel",
+        "cancelLabel"
+      ],
+      "properties": {
+        "type": {
+          "const": "confirm"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "question": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "confirmLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "cancelLabel": {
+          "type": "string",
+          "maxLength": 40
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "title",
+        "groups"
+      ],
+      "properties": {
+        "type": {
+          "const": "summary"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "items"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "items": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "label",
+                    "value"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "maxLength": 120
+                    },
+                    "value": {
+                      "type": "string",
+                      "maxLength": 500
+                    },
+                    "sourceUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "confidence": {
+                      "enum": [
+                        "confirmed",
+                        "guess"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "proposal"
+      ],
+      "properties": {
+        "type": {
+          "const": "approval"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "proposal": {
+          "$ref": "#/$defs/actionProposal"
+        }
+      }
+    },
+    "login": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "connectionId",
+        "ticket",
+        "wsUrl",
+        "expiresAt"
+      ],
+      "properties": {
+        "type": {
+          "const": "login"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "connectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "ticket": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Одноразовый тикет на WS-подключение."
+        },
+        "wsUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "hint": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Запасной экран: капча или шаг, который нельзя зеркалить нативными полями (ADR-0001)."
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "url",
+          "fetchedAt"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "fetchedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stale": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    },
+    "actionProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "connectionId",
+        "intent",
+        "request",
+        "reversible",
+        "expiresAt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "connectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "intent": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Человеческими словами: что произойдёт."
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "url",
+            "bodyKind",
+            "fields"
+          ],
+          "properties": {
+            "method": {
+              "enum": [
+                "POST",
+                "PUT",
+                "PATCH"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Хост обязан входить в allowHosts подключения."
+            },
+            "headers": {
+              "type": "object",
+              "maxProperties": 10,
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "description": "Без секретов: cookie и токен подставит ActionBroker."
+            },
+            "bodyKind": {
+              "enum": [
+                "form",
+                "json",
+                "multipart"
+              ]
+            },
+            "fields": {
+              "type": "array",
+              "maxItems": 60,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "label",
+                  "value",
+                  "editable"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 120
+                  },
+                  "label": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "value": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "editable": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "message"
+      ],
+      "properties": {
+        "type": {
+          "const": "wait"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Что происходит и что сделать человеку, например «Подтвердите вход в приложении на телефоне»."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "title",
+        "url",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "handoff"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Страница вуза, которую студент откроет в новой вкладке."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Готовый текст или значения полей для копирования. Write-действие, которое агент не может отправить сам (приоритет 3)."
+        }
+      }
+    }
+  }
+}

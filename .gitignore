@@ -10,3 +10,17 @@ coverage/
 .pnpm-store/
 playwright-report/
 test-results/
+
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+
+# web
+apps/web/dist/
+*.tsbuildinfo
+
+# local
+.claude/worktrees/

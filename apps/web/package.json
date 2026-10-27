@@ -1,0 +1,47 @@
+{
+  "name": "@botai/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run",
+    "gen:api": "openapi-typescript ../../backend/openapi.json -o src/api/schema.gen.ts",
+    "gen:blocks": "json2ts -i ../../contracts/agent-ui.schema.json -o src/api/agent-ui.gen.ts --unreachableDefinitions --maxItems -1"
+  },
+  "dependencies": {
+    "@botai/design": "workspace:*",
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@tabler/icons-react": "3.48.0",
+    "@tanstack/react-query": "5.104.0",
+    "@tanstack/react-router": "1.170.41",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "openapi-fetch": "0.17.0",
+    "radix-ui": "1.6.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "sonner": "2.0.8",
+    "tailwind-merge": "3.7.0",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@tanstack/router-plugin": "1.168.42",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "jsdom": "30.1.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

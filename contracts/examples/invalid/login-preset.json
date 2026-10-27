@@ -1,0 +1,5 @@
+[
+  {"id": "x", "name": "captcha automation", "start": {"url": "https://fakeuni.test/"}, "allowHosts": ["fakeuni.test"],
+   "success": {"urlOrigin": "https://fakeuni.test"}, "expired": {"probe401": ["/api"]}, "mfa": {"possible": "no", "automate": false},
+   "captcha": {"possible": "yes", "automate": true}, "capture": {"cookiesFor": ["fakeuni.test"], "storage": "encrypted"}, "mode": "assisted"}
+]

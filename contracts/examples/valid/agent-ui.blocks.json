@@ -1,0 +1,13 @@
+[
+  {"type": "thinking", "id": "01JAAAAAAAAAAAAAAAAAAAAAA1", "at": "2026-10-27T10:00:00Z", "stage": "Ищу личный кабинет", "state": "running"},
+  {"type": "choice", "id": "01JAAAAAAAAAAAAAAAAAAAAAA2", "at": "2026-10-27T10:00:01Z", "question": "Это твои предметы?", "mode": "multi", "required": true,
+   "options": [{"value": "c1", "label": "Алгоритмы"}, {"value": "c2", "label": "Базы данных"}]},
+  {"type": "input", "id": "01JAAAAAAAAAAAAAAAAAAAAAA3", "at": "2026-10-27T10:00:02Z", "question": "Пароль от личного кабинета", "inputKind": "password",
+   "required": true, "secret": true, "autocomplete": "current-password"},
+  {"type": "wait", "id": "01JAAAAAAAAAAAAAAAAAAAAAA4", "at": "2026-10-27T10:00:03Z", "message": "Подтвердите вход в приложении на телефоне"},
+  {"type": "summary", "id": "01JAAAAAAAAAAAAAAAAAAAAAA5", "at": "2026-10-27T10:00:04Z", "title": "Что собрано",
+   "groups": [{"title": "Профиль", "items": [{"label": "Программа", "value": "Прикладная математика", "confidence": "confirmed"}]}]},
+  {"type": "handoff", "id": "01JAAAAAAAAAAAAAAAAAAAAAA6", "at": "2026-10-27T10:00:05Z", "title": "Заявка на справку", "url": "https://fakeuni.test/requests/new", "text": "Прошу выдать справку об обучении"},
+  {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAA7", "at": "2026-10-27T10:00:06Z", "markdown": "Следующая пара — **Алгоритмы** в 11:10.",
+   "sources": [{"title": "Расписание", "url": "https://fakeuni.test/api/v2/timetable", "fetchedAt": "2026-10-27T09:00:00Z"}]}
+]

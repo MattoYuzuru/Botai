@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from botai.core.api import ApiModel
+
+
+class Provenance(ApiModel):
+    connection_id: str
+    space_id: str
+    source_url: str
+    fetched_at: datetime
+    stale: bool
+
+
+class ScheduleEventOut(ApiModel):
+    id: str
+    title: str
+    kind: Literal["lecture", "seminar", "lab", "exam", "consultation", "other"]
+    starts_at: datetime
+    ends_at: datetime
+    format: Literal["offline", "online", "hybrid", "unknown"]
+    location: str | None
+    teacher: str | None
+    course_title: str | None
+    url: str | None
+    changed: bool
+    conflicts_with: list[str]  # ids of overlapping events from other spaces (FR-013)
+    provenance: Provenance
+
+
+class DeadlineOut(ApiModel):
+    id: str
+    title: str
+    due_at: datetime | None
+    effective_due_at: datetime | None
+    state: Literal["open", "submitted", "graded", "missed", "unknown"]
+    course_title: str | None
+    url: str | None
+    provenance: Provenance
+
+
+class CourseOut(ApiModel):
+    id: str
+    title: str
+    code: str | None
+    term: str | None
+    url: str | None
+    provenance: Provenance
+
+
+class GradeOut(ApiModel):
+    id: str
+    title: str | None
+    value: str
+    scale: str | None
+    weight: float | None
+    course_title: str | None
+    graded_at: datetime | None
+    provenance: Provenance
+
+
+class PersonOut(ApiModel):
+    id: str
+    name: str
+    role: str
+    email: str | None
+    provenance: Provenance
+
+
+class NewsOut(ApiModel):
+    id: str
+    title: str
+    body: str | None
+    published_at: datetime
+    url: str | None
+    provenance: Provenance
+
+
+class TodayOut(ApiModel):
+    """Home screen: today's classes across spaces + nearest deadlines + connection health."""
+
+    date: str
+    events: list[ScheduleEventOut]
+    deadlines: list[DeadlineOut]
+    attention: list[str]  # connection ids that are not ok (needs_reauth, repairing, ...)

@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/login-preset.schema.json",
+  "title": "LoginPreset",
+  "description": "Выученный пресет входа одного origin: шаги формы с селекторами полей, признаки успеха и протухания. Капча и защита от ботов не автоматизируются. Без личных значений. См. ADR-0001.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "start",
+    "allowHosts",
+    "success",
+    "expired",
+    "mfa",
+    "captcha",
+    "capture",
+    "mode"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,48}$"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "universityId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,48}$"
+    },
+    "timeZone": {
+      "type": "string",
+      "default": "Europe/Moscow"
+    },
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "allowHosts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+      },
+      "description": "Становится allowlist'ом EgressProxy для этого подключения. Подстановочные знаки запрещены."
+    },
+    "idp": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Справочно: что наблюдали. Не используется для автоматического входа.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "oidc-keycloak",
+            "oidc-other",
+            "saml",
+            "form",
+            "unknown"
+          ]
+        },
+        "issuer": {
+          "type": "string",
+          "format": "uri"
+        },
+        "clientId": {
+          "type": "string",
+          "maxLength": 120
+        }
+      }
+    },
+    "success": {
+      "type": "object",
+      "description": "Признак успешного входа. Либо проба эндпоинта, либо признак страницы, либо оба.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "urlOrigin": {
+          "type": "string",
+          "format": "uri"
+        },
+        "urlPathNot": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "expired": {
+      "type": "object",
+      "description": "Признак протухания. Переводит подключение в needs_reauth без ретраев.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "probe401": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        },
+        "redirectPathPrefix": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "mfa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "possible",
+        "automate"
+      ],
+      "properties": {
+        "possible": {
+          "enum": [
+            "yes",
+            "no",
+            "unknown"
+          ]
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "totp",
+              "sms",
+              "email",
+              "push",
+              "other"
+            ]
+          }
+        },
+        "automate": {
+          "const": false,
+          "description": "Неизменяемо: MFA всегда проходит человек."
+        }
+      }
+    },
+    "captcha": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "possible",
+        "automate"
+      ],
+      "properties": {
+        "possible": {
+          "enum": [
+            "yes",
+            "no",
+            "unknown"
+          ]
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 60
+          }
+        },
+        "automate": {
+          "const": false,
+          "description": "Неизменяемо: капчу всегда решает человек."
+        }
+      }
+    },
+    "botProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "waf": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "automate": {
+          "const": false
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cookiesFor",
+        "storage"
+      ],
+      "properties": {
+        "cookiesFor": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string"
+          },
+          "description": "Хосты, cookies которых сохраняются. Должны входить в allowHosts."
+        },
+        "bearerFrom": {
+          "enum": [
+            "none",
+            "localStorage",
+            "sessionStorage",
+            "authorizationHeader"
+          ]
+        },
+        "bearerKey": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "storage": {
+          "const": "encrypted"
+        },
+        "lifetimeHintDays": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lifetimeKnown": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "mode": {
+      "enum": [
+        "assisted",
+        "screen"
+      ],
+      "default": "assisted",
+      "description": "assisted — поля шагов зеркалятся нативными полями BotAI и вводятся сервером; screen — шаги проходит человек на запасном экране."
+    },
+    "errors": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "signal",
+          "code"
+        ],
+        "properties": {
+          "signal": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "code": {
+            "enum": [
+              "login_failed",
+              "source_auth_required",
+              "source_bot_protection",
+              "source_unavailable",
+              "source_rate_limited"
+            ]
+          }
+        }
+      }
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "steps": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "description": "Выученные шаги формы. Пусто — шаги ещё не выучены, агент определяет их на первом входе."
+    }
+  },
+  "$defs": {
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "url",
+        "expectStatus"
+      ],
+      "properties": {
+        "method": {
+          "const": "GET"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "expectStatus": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "match",
+        "fields"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,30}$"
+        },
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "urlHost": {
+              "type": "string"
+            },
+            "urlPathPrefix": {
+              "type": "string"
+            },
+            "selectorPresent": {
+              "type": "string",
+              "maxLength": 300
+            }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "selector",
+              "label"
+            ],
+            "properties": {
+              "role": {
+                "enum": [
+                  "username",
+                  "password",
+                  "otp",
+                  "text",
+                  "checkbox"
+                ]
+              },
+              "selector": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 120
+              }
+            }
+          }
+        },
+        "submit": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "kind": {
+          "enum": [
+            "form",
+            "push_wait",
+            "captcha",
+            "choice"
+          ],
+          "default": "form"
+        }
+      }
+    }
+  }
+}
