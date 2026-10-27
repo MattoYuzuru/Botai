@@ -6,12 +6,19 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 /**
- * Хеш полей предложения действия: `POST /actions/{id}/approve` принимает поля, которые человек видел,
- * и их хеш; при расхождении сервер отказывает (`action_changed`). Каноническая форма: JSON-массив пар
- * `[имя, значение]`, отсортированных по имени, без пробелов. Контракт API называет хеш («sha256 канонических
- * полей»), но форму не фиксирует — договорённость с W5 записана в PR.
+ * Каноническая форма полей предложения: JSON-объект с ключами по возрастанию, без пробелов, без экранирования
+ * не-ASCII. Побайтово совпадает с `canonical_fields` сервера (`botai/agent/actions.py`):
+ * `json.dumps(dict(sorted(fields.items())), ensure_ascii=False, separators=(",", ":"))`.
+ */
+export function canonicalFields(fields: Record<string, string>): string {
+  const entries = Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([name, value]) => `${JSON.stringify(name)}:${JSON.stringify(value)}`).join(",")}}`;
+}
+
+/**
+ * Хеш полей, которые человек видел: `POST /actions/{id}/approve` принимает итоговые поля и хеш показанных.
+ * Если показанное изменилось на сервере, он ответит `action_changed`.
  */
 export async function fieldsHash(fields: Record<string, string>): Promise<string> {
-  const pairs = Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return sha256Hex(JSON.stringify(pairs));
+  return sha256Hex(canonicalFields(fields));
 }

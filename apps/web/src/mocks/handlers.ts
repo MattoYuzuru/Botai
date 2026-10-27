@@ -1,5 +1,6 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
+import { fieldsHash } from "@/lib/hash";
 import { runConnect } from "./connect-script";
 import { findUser, type MockDb, type MockUser, persistDb, ulid } from "./db";
 import { JobSim } from "./job-sim";
@@ -73,6 +74,24 @@ export function answerFits(asked: unknown, values: S["AnswerIn"]["values"]): boo
     default:
       return false;
   }
+}
+
+type Proposal = {
+  id: string;
+  expiresAt: string;
+  request: { fields: { name: string; value: string; editable: boolean }[] };
+};
+
+/** Блок `approval` с этим предложением среди заданий мока: так сервер находит предложение по id. */
+function findApproval(db: MockDb, proposalId: string) {
+  for (const sim of db.sims.values()) {
+    for (const event of sim.events) {
+      const data = event.data as { type?: string; id?: string; proposal?: Proposal };
+      if (event.event === "block" && data.type === "approval" && data.proposal?.id === proposalId && data.id)
+        return { sim, blockId: data.id, proposal: data.proposal };
+    }
+  }
+  return null;
 }
 
 export function createHandlers(
@@ -280,15 +299,39 @@ export function createHandlers(
       return new HttpResponse(null, { status: 204 });
     }),
 
-    http.post("*/api/v1/actions/:proposalId/approve", async () => {
+    http.post("*/api/v1/actions/:proposalId/approve", async ({ params, request }) => {
       await wait();
       if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const found = findApproval(db, String(params.proposalId));
+      if (!found) return problem(404, "not_found", "Предложение не найдено");
+      const body = (await request.json()) as S["ApproveIn"];
+      const { proposal } = found;
+      if (Date.parse(proposal.expiresAt) <= db.now())
+        return problem(409, "action_expired", "Время подтверждения истекло, запросите заново");
+      // Как `approve` на сервере: хеш считается по тому, что человек видел, а итоговые поля — по правкам.
+      const original = Object.fromEntries(proposal.request.fields.map((field) => [field.name, field.value]));
+      if (body.fieldsHash !== (await fieldsHash(original)))
+        return problem(409, "action_changed", "Содержимое изменилось, посмотрите его ещё раз");
+      const editable = new Set(
+        proposal.request.fields.filter((field) => field.editable).map((field) => field.name),
+      );
+      const sameKeys =
+        Object.keys(body.fields).sort().join("\u0000") === Object.keys(original).sort().join("\u0000");
+      const untouched = Object.keys(original).every(
+        (name) => editable.has(name) || body.fields[name] === original[name],
+      );
+      if (!sameKeys || !untouched)
+        return problem(409, "action_changed", "Поля не совпадают с показанными вам");
+      found.sim.answer(found.blockId, true, false);
       return HttpResponse.json({}, { status: 202 });
     }),
 
-    http.post("*/api/v1/actions/:proposalId/reject", async () => {
+    http.post("*/api/v1/actions/:proposalId/reject", async ({ params }) => {
       await wait();
       if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const found = findApproval(db, String(params.proposalId));
+      if (!found) return problem(404, "not_found", "Предложение не найдено");
+      found.sim.answer(found.blockId, false, false);
       return new HttpResponse(null, { status: 204 });
     }),
   ];

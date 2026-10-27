@@ -231,7 +231,7 @@ export class JobManager {
   }
 
   /**
-   * Одобрение записи: `POST /actions/{id}/approve` с полями, которые человек видел, и их хешем.
+   * Одобрение записи: `POST /actions/{id}/approve` с итоговыми полями и хешем тех, что человек видел.
    * Подтверждение одноразовое: `action_changed` — подтвердить заново, `action_expired` — ждать нового предложения.
    */
   async approve(
@@ -242,10 +242,16 @@ export class JobManager {
   ): Promise<void> {
     this.patchAnswer(jobId, blockId, { status: "sending", shown: null, error: null });
     try {
+      // Хеш считается по полям, которые человек увидел (из блока), а не по итоговым: правки уходят в `fields`.
+      const block = this.get(jobId)?.blocks.find((item) => item.id === blockId);
+      const shownFields =
+        block?.type === "approval"
+          ? Object.fromEntries(block.proposal.request.fields.map((field) => [field.name, field.value]))
+          : fields;
       await call(
         api.POST("/api/v1/actions/{proposal_id}/approve", {
           params: { path: { proposal_id: proposalId } },
-          body: { fields, fieldsHash: await fieldsHash(fields) },
+          body: { fields, fieldsHash: await fieldsHash(shownFields) },
         }),
       );
       this.patchAnswer(jobId, blockId, { status: "answered", shown: null, error: null, outcome: "approved" });

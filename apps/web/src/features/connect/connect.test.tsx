@@ -185,6 +185,31 @@ describe("ProgressWall: подключение вуза", () => {
     expect(await screen.findByText("Вход в lk.fakeuni.test. Логин")).toBeInTheDocument();
   });
 
+  async function reachApproval() {
+    useScenario("empty", "approval");
+    await startHse();
+    await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
+    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+    await userEvent.type(await screen.findByLabelText("Ответ"), "pw");
+    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /Алгоритмы/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+    return screen.findByLabelText("Комментарий");
+  }
+
+  it("запись от имени студента: правка поля, хеш показанного, работа идёт дальше", async () => {
+    await userEvent.type(await reachApproval(), "Очно");
+    await userEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+    expect(await screen.findByRole("heading", { level: 3, name: "Что подключено" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("«Не делать» отклоняет предложение, работа идёт дальше", async () => {
+    await reachApproval();
+    await userEvent.click(screen.getByRole("button", { name: "Не делать" }));
+    expect(await screen.findByRole("heading", { level: 3, name: "Что подключено" })).toBeInTheDocument();
+  });
+
   it("отмена: подтверждение в Dialog, затем «Подключение отменено»", async () => {
     await startHse();
     await screen.findByText("Вход в lk.fakeuni.test. Логин");
