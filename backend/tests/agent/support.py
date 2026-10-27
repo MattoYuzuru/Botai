@@ -26,7 +26,9 @@ NOW = datetime(2026, 10, 28, 8, 0, tzinfo=UTC)  # Wednesday; the fakeuni week st
 
 
 class NoSessions:
-    async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> Any:
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> Any:
         raise AssertionError("the chat agent never logs in to a university")
 
 

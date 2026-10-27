@@ -32,10 +32,14 @@ class FakeSessions:
         self.works = works
         self.fail = fail
         self.calls = 0
+        self.forced: list[bool] = []
         self.vault: Vault | None = None  # set by make_services: like W2, ensure() saves the session
 
-    async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> SessionState:
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> SessionState:
         self.calls += 1
+        self.forced.append(force)
         if self.fail is not None:
             raise self.fail
         token = new_session_token(f"relogin-{self.calls}") if self.works else "not-a-session"

@@ -172,4 +172,8 @@ class SessionProvider(Protocol):
     push-wait, fallback screen). Raises BotaiError(login_failed | source_bot_protection) on failure.
     """
 
-    async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> SessionState: ...
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> SessionState:
+        """`force` skips the stored session: the caller has just seen the site refuse it."""
+        ...

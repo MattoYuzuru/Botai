@@ -59,6 +59,16 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "botai.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://botai:${POSTGRES_PASSWORD:?}@postgres:5432/botai
+      EGRESS_PROXY_URL: http://proxy:3128
+      ENV: prod
+      BOTAI_ENV: prod
+      PUBLIC_BASE_URL: https://botai.mnema.app
+      LLM_PROVIDER: deepseek
+      BOTAI_BROWSER_TMPDIR: /tmp/chromium  # browser profiles live in tmpfs, never on disk
+    tmpfs:
+      - /tmp:size=512m,mode=1777
     depends_on:
       postgres: { condition: service_healthy }
       proxy: { condition: service_started }

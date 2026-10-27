@@ -229,6 +229,7 @@ async def test_dead_session_logs_in_again_once_and_succeeds(env: Env) -> None:
     result = await env.sync()
     assert result["status"] == "ok"
     assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
+    assert env.services.sessions.forced == [True]  # type: ignore[attr-defined]
     assert (await env.conn())["status"] == "active"
     assert len(await env.rows(m.ScheduleEvent, "external_id")) == 4
 
