@@ -73,6 +73,20 @@ class CaptureConfig:
     bearer_key: str | None = None
 
 
+def in_container() -> bool:
+    """Docker and Podman mark themselves; a container is the isolation boundary there."""
+    return Path("/.dockerenv").exists() or bool(os.environ.get("container"))  # noqa: SIM112
+
+
+def sandbox_default() -> bool:
+    """Chromium's own sandbox: on, except inside a container (its default seccomp profile forbids
+    the user namespaces the sandbox needs) or when `BOTAI_BROWSER_SANDBOX=0|1` says otherwise."""
+    explicit = os.environ.get("BOTAI_BROWSER_SANDBOX")
+    if explicit is not None:
+        return explicit != "0"
+    return not in_container()
+
+
 def scrub_sample(text: str) -> str | None:
     """A response sample safe to hand to the learner: nothing that looks like a credential."""
     if _TOKEN_KEYS.search(text):
@@ -422,10 +436,7 @@ class PlaywrightGateway:
     ) -> None:
         self._egress = egress
         self._headless = headless
-        # Chromium's own sandbox is on unless the deployment says it runs in a container
-        self._sandbox = (
-            sandbox if sandbox is not None else os.environ.get("BOTAI_BROWSER_SANDBOX", "1") != "0"
-        )
+        self._sandbox = sandbox if sandbox is not None else sandbox_default()
         self._ignore_https_errors = ignore_https_errors  # tests only: fixture certificates
         self._slots = asyncio.Semaphore(max_contexts)
         self._lifetime_s = lifetime_s
@@ -453,6 +464,7 @@ class PlaywrightGateway:
             # With a proxy the browser needs no DNS of its own: only the proxy host resolves.
             proxy_host = urlsplit(proxy_server).hostname or ""
             resolver_rules = f"MAP * ~NOTFOUND, EXCLUDE {proxy_host}"
+            log.info("starting Chromium (sandbox %s)", "on" if self._sandbox else "off")
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless,
                 chromium_sandbox=self._sandbox,
