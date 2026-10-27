@@ -1,5 +1,5 @@
 {
-  "totalUsd": 0.071314,
+  "totalUsd": 0.095412,
   "capUsd": 12.0,
   "runs": [
     {
@@ -36,7 +36,8 @@
         "flash/high"
       ],
       "runs": 90,
-      "partial": false
+      "partial": false,
+      "note": "отчёт заменён: бенчмарк перешёл на настоящий botai.domain.repo вместо своего читателя"
     },
     {
       "at": "2026-10-27T13:09:00+00:00",
@@ -51,6 +52,18 @@
       "runs": 16,
       "partial": false,
       "note": "проверка, что max и deepseek-v4-pro работают с API; отчёт не сохранён"
+    },
+    {
+      "at": "2026-10-27T13:13:05.782458+00:00",
+      "scenario": "B4",
+      "usd": 0.024099,
+      "cells": [
+        "flash/disabled",
+        "flash/low",
+        "flash/high"
+      ],
+      "runs": 90,
+      "partial": false
     }
   ]
 }

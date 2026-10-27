@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from botai.agent.bench_data import SqlReader, seed
+from botai.agent.bench_data import seed
 from botai.agent.chat import handle_chat
 from botai.agent.llm import BudgetExceeded, CallRecord, DeepSeekProvider, is_peak
 from botai.agent.tools import TOOL_SPECS
@@ -526,7 +526,6 @@ class B4Chat:
                     ctx,
                     services,
                     {"thread_id": thread_id, "message_id": question_id},
-                    reader=SqlReader(),
                 )
                 or {}
             )

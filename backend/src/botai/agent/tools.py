@@ -230,7 +230,12 @@ async def get_schedule(env: ChatEnv, args: dict[str, Any]) -> str:
     end = datetime.combine(end_d + timedelta(days=1), time.min, tzinfo=tz)
     async with env.services.db() as session:
         events = await env.reader.events(
-            session, env.user_id, start=start, end=end, space_id=env.space_id
+            session,
+            env.user_id,
+            start=start,
+            end=end,
+            space_id=env.space_id,
+            now=env.services.clock.now(),
         )
     title = f"Расписание с {start_d} по {end_d}"
     if not events:
@@ -264,7 +269,11 @@ async def get_deadlines(env: ChatEnv, args: dict[str, Any]) -> str:
     now = env.services.clock.now()
     async with env.services.db() as session:
         rows = await env.reader.deadlines(
-            session, env.user_id, space_id=env.space_id, include_done=include_done
+            session,
+            env.user_id,
+            space_id=env.space_id,
+            include_done=include_done,
+            now=env.services.clock.now(),
         )
     if not rows:
         return await _empty_note(env, "Дедлайны")
@@ -288,7 +297,9 @@ async def get_deadlines(env: ChatEnv, args: dict[str, Any]) -> str:
 
 async def get_courses(env: ChatEnv, args: dict[str, Any]) -> str:
     async with env.services.db() as session:
-        rows = await env.reader.courses(session, env.user_id, space_id=env.space_id)
+        rows = await env.reader.courses(
+            session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
+        )
     if not rows:
         return await _empty_note(env, "Курсы")
     lines = [f"Курсы ({len(rows)})."]
@@ -302,7 +313,9 @@ async def get_courses(env: ChatEnv, args: dict[str, Any]) -> str:
 async def get_grades(env: ChatEnv, args: dict[str, Any]) -> str:
     needle = _clean(str(args.get("course", "")), 100).lower()
     async with env.services.db() as session:
-        rows = await env.reader.grades(session, env.user_id, space_id=env.space_id)
+        rows = await env.reader.grades(
+            session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
+        )
     if needle:
         rows = [g for g in rows if needle in (g.course_title or "").lower()]
     if not rows:
@@ -325,7 +338,9 @@ async def get_grades(env: ChatEnv, args: dict[str, Any]) -> str:
 async def get_people(env: ChatEnv, args: dict[str, Any]) -> str:
     needle = _clean(str(args.get("query", "")), 100).lower()
     async with env.services.db() as session:
-        rows = await env.reader.people(session, env.user_id, space_id=env.space_id)
+        rows = await env.reader.people(
+            session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
+        )
     if needle:
         rows = [p for p in rows if needle in p.name.lower() or needle in p.role.lower()]
     if not rows:
@@ -342,7 +357,9 @@ async def get_news(env: ChatEnv, args: dict[str, Any]) -> str:
     limit = max(1, min(int(args.get("limit", 5) or 5), 10))
     tz = await env.tz_for(None)
     async with env.services.db() as session:
-        rows = await env.reader.news(session, env.user_id, space_id=env.space_id)
+        rows = await env.reader.news(
+            session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
+        )
     if not rows:
         return await _empty_note(env, "Новости")
     lines = [f"Новости (показано {min(limit, len(rows))} из {len(rows)})."]

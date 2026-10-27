@@ -207,29 +207,44 @@ class FakeReader:
         self.calls: list[str] = []
 
     async def events(
-        self, session: Any, user_id: str, *, start: datetime, end: datetime, space_id: str | None
+        self,
+        session: Any,
+        user_id: str,
+        *,
+        start: datetime,
+        end: datetime,
+        space_id: str | None,
+        now: datetime,
     ) -> list[ScheduleEventOut]:
         self.calls.append("events")
         return [e for e in self._events if start <= e.starts_at < end]
 
     async def deadlines(
-        self, session: Any, user_id: str, *, space_id: str | None, include_done: bool
+        self, session: Any, user_id: str, *, space_id: str | None, include_done: bool, now: datetime
     ) -> list[DeadlineOut]:
         self.calls.append("deadlines")
         return [d for d in self._deadlines if include_done or d.state == "open"]
 
-    async def courses(self, session: Any, user_id: str, *, space_id: str | None) -> list[Any]:
+    async def courses(
+        self, session: Any, user_id: str, *, space_id: str | None, now: datetime
+    ) -> list[Any]:
         self.calls.append("courses")
         return []
 
-    async def grades(self, session: Any, user_id: str, *, space_id: str | None) -> list[GradeOut]:
+    async def grades(
+        self, session: Any, user_id: str, *, space_id: str | None, now: datetime
+    ) -> list[GradeOut]:
         self.calls.append("grades")
         return self._grades
 
-    async def people(self, session: Any, user_id: str, *, space_id: str | None) -> list[PersonOut]:
+    async def people(
+        self, session: Any, user_id: str, *, space_id: str | None, now: datetime
+    ) -> list[PersonOut]:
         self.calls.append("people")
         return self._people
 
-    async def news(self, session: Any, user_id: str, *, space_id: str | None) -> list[NewsOut]:
+    async def news(
+        self, session: Any, user_id: str, *, space_id: str | None, now: datetime
+    ) -> list[NewsOut]:
         self.calls.append("news")
         return self._news
