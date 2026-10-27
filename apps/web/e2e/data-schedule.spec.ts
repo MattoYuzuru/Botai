@@ -1,9 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
-import { expectFitsWidth, findSmallTapTargets, findTinyText, open } from "./data-support";
+import { expectFitsWidth, findSmallTapTargets, findTinyText, freezeClock, open } from "./data-support";
 
 const isLaptop = (page: Page) => (page.viewportSize()?.width ?? 0) >= 1024;
 
 test.describe("«Расписание»", () => {
+  test.beforeEach(async ({ page }) => freezeClock(page));
+
   test("на телефоне — лента дней и список дня, на ноутбуке — неделя сеткой в семь колонок", async ({
     page,
   }) => {
