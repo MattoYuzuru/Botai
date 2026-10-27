@@ -1,0 +1,39 @@
+{
+  "about": "Эталоны B1-B3 (docs/plan/benchmark.md): что должно лежать в базе после обучения и починки на синтетическом вузе fakeuni (backend/tests/fakeuni). Совпадение с данными fakeuni проверяет tests/agent/test_bench_learn.py.",
+  "reference": {
+    "scheduleEvents": [
+      {"title": "Математический анализ", "at": "2026-10-26T06:30:00Z"},
+      {"title": "Алгоритмы и структуры данных", "at": "2026-10-26T08:10:00Z"},
+      {"title": "Базы данных", "at": "2026-10-28T10:00:00Z"},
+      {"title": "Английский язык", "at": "2026-10-30T12:10:00Z"}
+    ],
+    "deadlines": [
+      {"title": "ДЗ 3: деревья отрезков", "at": "2026-10-28T20:00:00Z"},
+      {"title": "Лабораторная 2: индексы", "at": "2026-10-31T20:00:00Z"}
+    ],
+    "news": [
+      {"title": "Перенос занятий 4 ноября"},
+      {"title": "Запись на пересдачу открыта"}
+    ]
+  },
+  "scenarios": {
+    "B1": {
+      "title": "Обучение вуза по JSON: расписание и сроки",
+      "job": "connect",
+      "kinds": ["scheduleEvents", "deadlines"],
+      "maxQuestions": 1
+    },
+    "B2": {
+      "title": "Обучение вуза по HTML-странице: новости",
+      "job": "connect",
+      "kinds": ["news"],
+      "maxQuestions": 1
+    },
+    "B3": {
+      "title": "Починка: адрес расписания переехал",
+      "job": "repair",
+      "kinds": ["scheduleEvents", "deadlines"],
+      "maxQuestions": null
+    }
+  }
+}

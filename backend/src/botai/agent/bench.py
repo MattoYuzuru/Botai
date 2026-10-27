@@ -1,9 +1,12 @@
 """Agent benchmark (docs/plan/benchmark.md): `make bench` / `python -m botai.agent.bench`.
 
-Picks models and reasoning profiles by measurement. Implemented now: **B4** (chat over a synthetic
-university: data, procedures, "I don't know", injections, repair), with the *real* chat pipeline
-(`handle_chat`, tools, FTS, harness) over a throw-away Postgres database. B1-B3 (learning and
-repair of recipes) plug in through `SCENARIOS` when W3 merges the Explorer.
+Picks models and reasoning profiles by measurement. Scenarios, all over the synthetic university
+and a throw-away Postgres database, all through the *real* product code:
+
+* **B1-B3** (`bench_learn.py`): learning a university from JSON (B1) and from an HTML page (B2),
+  and repairing a recipe after the university moved an endpoint (B3) - the Explorer and the repair
+  job of `botai.learn` with the cell's profile on the `learn` / `repair` purposes;
+* **B4**: chat (`handle_chat`, tools, FTS, harness): data, procedures, "I don't know", injections.
 
 Money is guarded in two places (benchmark.md): **$3 per launch** and **$12 in total**, the total
 kept in `bench/results/ledger.json` (committed, so every machine sees it). When a fuse blows, the
@@ -308,6 +311,7 @@ class RunRecord:
     sources: int
     answer: str
     error: str | None = None
+    questions: int = 0  # blocks the job asked the (scripted) student; B1-B3
 
 
 def _median(values: Sequence[float]) -> float:
@@ -338,6 +342,7 @@ def summarize(records: Sequence[RunRecord]) -> list[dict[str, Any]]:
                 "minCostUsd": round(min(costs), 6),
                 "maxCostUsd": round(max(costs), 6),
                 "medianSteps": _median([r.steps for r in runs]),
+                "medianQuestions": _median([r.questions for r in runs]),
                 "cacheShare": round(hit / (hit + miss), 3) if hit + miss else 0.0,
                 "tokens": {
                     "miss": miss,
@@ -369,30 +374,42 @@ def det_id(*parts: str) -> str:
     return "".join(alphabet[(n >> (5 * i)) & 31] for i in range(25, -1, -1))
 
 
+def database_url(settings: Settings, name: str) -> str:
+    base, _, _ = settings.database_url.rpartition("/")
+    return f"{base}/{name}"
+
+
 @asynccontextmanager
-async def temp_database(settings: Settings) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
-    """A throw-away database migrated to head (like the test suite does), dropped afterwards."""
+async def migrated_database(settings: Settings) -> AsyncGenerator[str]:
+    """Name of a throw-away database migrated to head (like the test suite does), dropped after."""
     from alembic import command
     from alembic.config import Config
 
-    base, _, _ = settings.database_url.rpartition("/")
     name = f"botai_bench_{os.urandom(5).hex()}"
     admin: AsyncEngine = create_async_engine(settings.database_url, isolation_level="AUTOCOMMIT")
     async with admin.connect() as conn:
         await conn.execute(text(f'CREATE DATABASE "{name}"'))
-    url = f"{base}/{name}"
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "src/botai/db/migrations"))
-    cfg.set_main_option("sqlalchemy.url", url)
-    engine = create_async_engine(url)
+    cfg.set_main_option("sqlalchemy.url", database_url(settings, name))
     try:
         await asyncio.to_thread(command.upgrade, cfg, "head")
-        yield async_sessionmaker(engine, expire_on_commit=False)
+        yield name
     finally:
-        await engine.dispose()
         async with admin.connect() as conn:
             await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
         await admin.dispose()
+
+
+@asynccontextmanager
+async def temp_database(settings: Settings) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
+    """A throw-away migrated database and sessions on it."""
+    async with migrated_database(settings) as name:
+        engine = create_async_engine(database_url(settings, name))
+        try:
+            yield async_sessionmaker(engine, expire_on_commit=False)
+        finally:
+            await engine.dispose()
 
 
 @dataclass(slots=True)
@@ -410,6 +427,11 @@ class Launch:
 
 class Scenario(Protocol):
     id: str
+    rough_usd: dict[str, float]  # per run and model alias, for --dry-run only
+
+    def case_count(self, only: set[str]) -> int:
+        """Runs per cell and repeat, after the `--cases` filter."""
+        ...
 
     async def run(
         self, launch: Launch, cells: Sequence[Cell]
@@ -422,7 +444,14 @@ def provider_for(launch: Launch, cell: Cell) -> LlmProvider:
     if launch.replay is not None:
         return ScriptedLlm.from_dir(launch.replay / cell.label.replace("/", "-"))
     settings = launch.settings.model_copy(
-        update={"llm_provider": "deepseek", "llm_profile_chat": cell.profile_setting}
+        update={
+            "llm_provider": "deepseek",
+            # the cell decides every purpose a scenario exercises: chat (B4), learn (B1, B2) and
+            # repair (B3); `extract` and `classify` keep their configured profiles
+            "llm_profile_chat": cell.profile_setting,
+            "llm_profile_learn": cell.profile_setting,
+            "llm_profile_repair": cell.profile_setting,
+        }
     )
     inner: LlmProvider = DeepSeekProvider(settings, gate=NullGate())
     if launch.record is not None:
@@ -434,11 +463,15 @@ class B4Chat:
     """Ten questions with reference answers over a synthetic university (benchmark.md B4)."""
 
     id = "B4"
+    rough_usd = ROUGH_USD_PER_RUN
 
     def __init__(self, path: Path | None = None) -> None:
         self.data: dict[str, Any] = json.loads(
             (path or BENCH_DIR / "scenarios" / "b4.json").read_text("utf-8")
         )
+
+    def case_count(self, only: set[str]) -> int:
+        return sum(1 for c in self.data["cases"] if not only or c["id"] in only)
 
     async def run(
         self, launch: Launch, cells: Sequence[Cell]
@@ -586,24 +619,12 @@ class B4Chat:
         )
 
 
-class _Unavailable:
-    def __init__(self, scenario_id: str, reason: str) -> None:
-        self.id, self.reason = scenario_id, reason
+def scenarios() -> dict[str, Scenario]:
+    """All scenarios by id. B1-B3 live in `bench_learn`, which builds on this module (and needs
+    the synthetic university from `backend/tests`), hence the late import."""
+    from botai.agent.bench_learn import LEARNING_SCENARIOS
 
-    async def run(
-        self, launch: Launch, cells: Sequence[Cell]
-    ) -> tuple[list[RunRecord], str | None]:
-        raise ScenarioUnavailable(f"{self.id}: {self.reason}")
-
-
-# Extension point: when W3 merges the Explorer, register B1-B3 here with a class that implements
-# `Scenario` (build fakeuni, run learn/repair through the harness, judge by the canary).
-SCENARIOS: dict[str, Scenario] = {
-    "B4": B4Chat(),
-    "B1": _Unavailable("B1", "подключится после мержа Explorer (W3)"),
-    "B2": _Unavailable("B2", "подключится после мержа Explorer (W3)"),
-    "B3": _Unavailable("B3", "подключится после мержа Explorer (W3)"),
-}
+    return {**LEARNING_SCENARIOS, "B4": B4Chat()}
 
 
 # --- report -------------------------------------------------------------------------------------
@@ -641,18 +662,49 @@ def render_readme(results: Path) -> str:
             "",
             f"Файл: `{path.name}`. Повторов: {rep['repeats']}, потрачено: ${rep['spentUsd']:.4f}.",
             "",
-            "| Ячейка | Прогонов | Успех | «Не знаю» верно | Инъекций сработало | Время, с | Стоимость, $ (медиана; мин–макс) | Шагов | Кэш |",
-            "|---|---|---|---|---|---|---|---|---|",
         ]
-        for c in rep["cells"]:
-            honest = "—" if c["honestUnknown"] is None else f"{c['honestUnknown']:.0%}"
-            lines.append(
-                f"| {c['cell']} | {c['runs']} | {c['success']:.0%} | {honest} | {c['injectionsExecuted']} | "
-                f"{c['medianSeconds']} | {c['medianCostUsd']:.5f}; {c['minCostUsd']:.5f}–{c['maxCostUsd']:.5f} | "
-                f"{c['medianSteps']:g} | {c['cacheShare']:.0%} |"
-            )
+        lines += _chat_table(rep) if rep["scenario"] == "B4" else _learning_table(rep)
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _chat_table(rep: dict[str, Any]) -> list[str]:
+    lines = [
+        "| Ячейка | Прогонов | Успех | «Не знаю» верно | Инъекций сработало | Время, с | Стоимость, $ (медиана; мин–макс) | Шагов | Кэш |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for c in rep["cells"]:
+        honest = "—" if c["honestUnknown"] is None else f"{c['honestUnknown']:.0%}"
+        lines.append(
+            f"| {c['cell']} | {c['runs']} | {c['success']:.0%} | {honest} | {c['injectionsExecuted']} | "
+            f"{c['medianSeconds']} | {c['medianCostUsd']:.5f}; {c['minCostUsd']:.5f}–{c['maxCostUsd']:.5f} | "
+            f"{c['medianSteps']:g} | {c['cacheShare']:.0%} |"
+        )
+    return lines
+
+
+def _learning_table(rep: dict[str, Any]) -> list[str]:
+    """B1-B3: success, time, cost and its spread, model rounds, questions, tokens, then why not."""
+    lines = [
+        "| Ячейка | Прогонов | Успех | Время, с | Стоимость, $ (медиана; мин–макс) | Шагов | Вопросов | Токены: miss / hit / out (из них рассуждение) | Кэш |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for c in rep["cells"]:
+        t = c["tokens"]
+        lines.append(
+            f"| {c['cell']} | {c['runs']} | {c['success']:.0%} | {c['medianSeconds']} | "
+            f"{c['medianCostUsd']:.5f}; {c['minCostUsd']:.5f}–{c['maxCostUsd']:.5f} | "
+            f"{c['medianSteps']:g} | {c.get('medianQuestions', 0):g} | "
+            f"{t['miss']} / {t['hit']} / {t['out']} ({t['reasoning']}) | {c['cacheShare']:.0%} |"
+        )
+    failed = [r for r in rep["runs"] if not r["success"]]
+    if failed:
+        lines += ["", "Не удались:", ""]
+        for r in failed[:12]:
+            lines.append(f"- {r['cell']} #{r['repeat'] + 1}: " + "; ".join(r["reasons"])[:300])
+        if len(failed) > 12:
+            lines.append(f"- … и ещё {len(failed) - 12} (см. файл отчёта)")
+    return lines
 
 
 def write_report(
@@ -711,12 +763,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="botai.agent.bench", description=(__doc__ or "").split("\n\n")[0]
     )
-    p.add_argument("--scenario", default="B4", help="B4 (B1-B3 после Explorer)")
+    p.add_argument("--scenario", default="B4", help="B1 (JSON), B2 (HTML), B3 (починка), B4 (чат)")
     p.add_argument("--models", default="flash", help="flash,pro")
     p.add_argument("--profiles", default="disabled,low,high", help="disabled,low,high,max")
     p.add_argument("--repeats", type=int, default=3)
-    p.add_argument("--cases", default="", help="через запятую; по умолчанию все")
-    p.add_argument("--concurrency", type=int, default=4)
+    p.add_argument("--cases", default="", help="B4: id вопросов через запятую; по умолчанию все")
+    p.add_argument(
+        "--concurrency", type=int, default=4, help="B3 всегда по одному: уход вуза общий на процесс"
+    )
     p.add_argument("--max-usd", type=float, default=RUN_CAP_USD, help=f"не больше {RUN_CAP_USD}")
     p.add_argument("--results-dir", type=Path, default=BENCH_DIR / "results")
     p.add_argument(
@@ -732,14 +786,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run_launch(args: argparse.Namespace) -> int:
     results: Path = args.results_dir
-    scenario = SCENARIOS.get(args.scenario)
+    table = scenarios()
+    scenario = table.get(args.scenario)
     if scenario is None:
-        print(f"нет сценария {args.scenario}; есть: {', '.join(SCENARIOS)}", file=sys.stderr)
+        print(f"нет сценария {args.scenario}; есть: {', '.join(table)}", file=sys.stderr)
         return 2
     cells = parse_cells(args.models, args.profiles)
     ledger = Ledger.load(results / "ledger.json")
-    runs_total = len(cells) * (len(args.cases.split(",")) if args.cases else 10) * args.repeats
-    estimate = sum(ROUGH_USD_PER_RUN[c.model] for c in cells) * (runs_total // max(len(cells), 1))
+    only = {c for c in args.cases.split(",") if c}
+    estimate = (
+        sum(scenario.rough_usd[c.model] for c in cells) * scenario.case_count(only) * args.repeats
+    )
     print(
         f"{scenario.id}: {len(cells)} ячеек ({', '.join(c.label for c in cells)}) x повторов {args.repeats}; "
         f"грубо ${estimate:.2f}; в ledger уже ${ledger.total_usd:.4f} из ${TOTAL_CAP_USD:.0f}"
@@ -770,7 +827,7 @@ async def run_launch(args: argparse.Namespace) -> int:
         record=args.record,
         repeats=args.repeats,
         concurrency=max(1, args.concurrency),
-        only={c for c in args.cases.split(",") if c},
+        only=only,
     )
     started = datetime.now(UTC)
     try:
@@ -797,10 +854,14 @@ async def run_launch(args: argparse.Namespace) -> int:
         partial=stop is not None,
     )
     for row in summarize(records):
+        extra = (
+            f"инъекций сработало {row['injectionsExecuted']}"
+            if scenario.id == "B4"
+            else f"вопросов {row['medianQuestions']:g}, шагов {row['medianSteps']:g}"
+        )
         print(
             f"{row['cell']:>14}: успех {row['success']:.0%}, медиана {row['medianSeconds']} с, "
-            f"${row['medianCostUsd']:.5f}/прогон, кэш {row['cacheShare']:.0%}, "
-            f"инъекций сработало {row['injectionsExecuted']}"
+            f"${row['medianCostUsd']:.5f}/прогон, кэш {row['cacheShare']:.0%}, {extra}"
         )
     print(
         f"потрачено ${fuse.spent_usd:.4f}; отчёт {path}" + (f"; ОСТАНОВЛЕН: {stop}" if stop else "")
@@ -825,4 +886,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # `bench_learn` imports this module by its package name; run the canonical copy so that its
+    # classes and exceptions are the ones used here, not the twins of `__main__`.
+    from botai.agent.bench import main as canonical_main
+
+    sys.exit(canonical_main())

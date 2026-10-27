@@ -1,5 +1,5 @@
 {
-  "totalUsd": 0.095412,
+  "totalUsd": 0.102126,
   "capUsd": 12.0,
   "runs": [
     {
@@ -63,6 +63,39 @@
         "flash/high"
       ],
       "runs": 90,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T16:41:51.736279+00:00",
+      "scenario": "B1",
+      "usd": 0.004366,
+      "cells": [
+        "flash/disabled",
+        "flash/high"
+      ],
+      "runs": 2,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T16:42:22.652139+00:00",
+      "scenario": "B2",
+      "usd": 0.001482,
+      "cells": [
+        "flash/disabled",
+        "flash/high"
+      ],
+      "runs": 2,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T16:42:32.460886+00:00",
+      "scenario": "B3",
+      "usd": 0.000864,
+      "cells": [
+        "flash/disabled",
+        "flash/high"
+      ],
+      "runs": 2,
       "partial": false
     }
   ]
