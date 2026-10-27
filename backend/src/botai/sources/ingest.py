@@ -145,7 +145,7 @@ class Ingestor:
         await self._set(connection_id, status="learning", clear_error=True)
         try:
             return await self._ingest(info, payload)
-        except JobCancelled:
+        except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
             await self._set(connection_id, status="draft")
             raise
         except BotaiError as err:

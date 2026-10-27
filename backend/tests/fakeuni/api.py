@@ -65,12 +65,14 @@ def _down() -> JSONResponse | None:
 async def app_shell(request: Request) -> HTMLResponse:
     if not is_logged_in(request):
         return HTMLResponse(status_code=302, headers={"location": "/auth/login"})
+    # the cabinet's own front-end follows its API when the endpoint moves (STATE.timetable_version)
+    timetable_path = "/api/v3/schedule" if STATE.timetable_version == "v3" else "/api/v2/timetable"
     return HTMLResponse(
         "<!doctype html><title>Личный кабинет</title><div id='root'></div>"
         "<nav><a href='/app'>Главная</a> <a href='/portal/deadlines'>Задания</a> "
         "<a href='/news'>Новости</a> <a href='/api/docs'>API</a> "
         "<a href='/auth/logout'>Выйти</a></nav>"
-        "<script>fetch('/api/v2/me');fetch('/api/v2/timetable?from=2026-10-26&to=2026-11-01');"
+        f"<script>fetch('/api/v2/me');fetch('{timetable_path}?from=2026-10-26&to=2026-11-01');"
         "fetch('/api/v2/tasks/deadlines')</script>"
     )
 

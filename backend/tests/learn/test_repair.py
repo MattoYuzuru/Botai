@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from datetime import timedelta
@@ -68,6 +69,20 @@ async def break_and_detect(env: Env) -> dict[str, Any]:
     (job,) = env.repair_jobs()
     await env.rebrowse()
     return job["payload"]
+
+
+async def test_a_repair_the_student_stops_leaves_the_connection_stale(
+    make_env: EnvFactory,
+) -> None:
+    """Stopping a job cancels its task (CancelledError, not JobCancelled). The connection used to
+    stay `repairing` for good, with no job working on it (found by the full-stack test, W7)."""
+    env = await healthy(make_env, [])
+    ctx = ls.StoppedByStudent(user_id=env.seeded.user_id, connection_id=env.seeded.connection_id)
+    with pytest.raises(asyncio.CancelledError):
+        await env.handlers[JobKind.REPAIR](ctx, env.services, {"reason": "drift"})
+    conn = await env.conn()
+    assert conn.status == "stale"
+    assert conn.next_sync_at is not None  # the scheduler will look at it again
 
 
 # --- the main story -------------------------------------------------------------------------
