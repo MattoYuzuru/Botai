@@ -144,14 +144,14 @@ describe("подогрев снимков", () => {
     Reflect.deleteProperty(navigator, "serviceWorker");
   });
 
-  it("без service worker (dev, тесты) лишних запросов нет", async () => {
+  it("без service worker (dev, тесты) прогрева нет: расписание не запрашивается", async () => {
     const urls = requested();
     renderApp("/");
     await screen.findByRole("heading", { level: 1, name: "Сегодня" });
     await waitFor(() => expect(urls).toContain("/api/v1/today"));
     await new Promise((resolve) => setTimeout(resolve, 100));
+    // Дедлайны на «Сегодня» читает Варя (тот же запрос, что греет PWA), поэтому признак прогрева — расписание.
     expect(urls).not.toContain("/api/v1/schedule");
-    expect(urls).not.toContain("/api/v1/deadlines");
   });
 
   it("выбран один вуз — греется и его область: у запросов с `space_id` другие адреса", async () => {

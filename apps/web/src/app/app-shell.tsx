@@ -1,7 +1,8 @@
-import { AccentScope, Banner, SyncIndicator, TabBar, useOnline, Wordmark } from "@botai/design";
+import { AccentScope, Banner, TabBar, useOnline, Wordmark } from "@botai/design";
 import { useIsFetching, useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { meQuery, spacesQuery } from "@/api/queries";
+import { MascotSyncIndicator } from "@/features/mascot/mascot-sync-indicator";
 import { ActiveJobBar } from "./active-job-bar";
 import { useActiveSpaceId } from "./active-space";
 import { useComposerKeyboard } from "./keyboard";
@@ -33,7 +34,7 @@ export function AppShell() {
         footer={
           <div className="flex items-center justify-between gap-2 px-3 type-caption text-fg-muted">
             <span className="min-w-0 truncate">{me.data?.user.displayName ?? ""}</span>
-            <SyncIndicator state={refreshing > 0 ? "syncing" : "idle"} />
+            <MascotSyncIndicator state={refreshing > 0 ? "syncing" : "idle"} />
           </div>
         }
         renderLink={(item, props) => (

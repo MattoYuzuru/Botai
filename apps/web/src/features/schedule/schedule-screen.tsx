@@ -20,6 +20,7 @@ import { addDays, isSameDay, startOfDay } from "@/features/data/dates";
 import { scheduleQuery } from "@/features/data/queries";
 import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
+import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { EventSheet } from "./event-sheet";
 import { sortEvents, toScheduleItem } from "./events";
@@ -125,6 +126,7 @@ export function ScheduleScreen() {
     >
       <div data-screen="schedule" data-state={state} className="flex flex-col gap-4">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
+        <MascotPresence screen="schedule" />
 
         <div className="flex items-center gap-2">
           <IconButton
