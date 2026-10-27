@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent import actions
 from botai.agent.chat import DEFAULT_TITLE
 from botai.agent.context_meter import build_context
 from botai.agent.schemas import (
@@ -20,7 +21,7 @@ from botai.agent.schemas import (
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
 from botai.contracts.agent_ui import TextBlock
-from botai.core.errors import BotaiError, ErrorCode, not_implemented
+from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
 from botai.db.models import ChatMessage, ChatThread, Job, Space
@@ -169,10 +170,12 @@ async def thread_context(
 
 
 @router.post("/actions/{proposal_id}/approve", status_code=202)
-async def approve_action(proposal_id: str, body: ApproveIn) -> None:
-    raise not_implemented("approve_action")
+async def approve_action(
+    proposal_id: str, body: ApproveIn, user: AuthUser, session: DbSession, services: ServicesDep
+) -> None:
+    await actions.approve(session, services, user.id, proposal_id, body)
 
 
 @router.post("/actions/{proposal_id}/reject", status_code=204)
-async def reject_action(proposal_id: str) -> None:
-    raise not_implemented("reject_action")
+async def reject_action(proposal_id: str, user: AuthUser, session: DbSession) -> None:
+    await actions.reject(session, user.id, proposal_id)

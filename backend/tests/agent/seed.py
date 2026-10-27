@@ -49,6 +49,7 @@ async def add_connection(
     status: str = "active",
     last_sync_at: datetime | None = NOW,
     error_code: str | None = None,
+    allow_hosts: list[str] | None = None,
 ) -> str:
     conn_id = new_id()
     async with sm() as session:
@@ -63,6 +64,7 @@ async def add_connection(
                 status=status,
                 last_sync_at=last_sync_at,
                 error_code=error_code,
+                allow_hosts=allow_hosts if allow_hosts is not None else ["fakeuni.test"],
             )
         )
         await session.commit()
