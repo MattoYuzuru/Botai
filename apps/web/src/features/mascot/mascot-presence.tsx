@@ -10,12 +10,17 @@ import { useMascot } from "./use-mascot";
  *
  * Подключение: `<MascotPresence screen="today" />` под шапкой экрана.
  */
+const NOTICED: ReadonlySet<string> = new Set(["reauth", "offline", "sync"]);
+
 export function MascotPresence({ screen, className }: { screen: MascotScreen; className?: string }) {
   const { presentation, acknowledge } = useMascot({ screen });
   const onIntent = useMascotIntent();
   const hasText = Boolean(presentation.line || presentation.badge || presentation.intent);
   // Покой без дела — тишина: ни картинки, ни подписи.
   if (presentation.situation === "idle" || !hasText) return null;
+  // Нет сети, нужен вход, идёт починка — об этом уже говорит плашка источников экрана со своим действием;
+  // второй «Войти снова» рядом — шум (styleguide §9: одно действие на смысл).
+  if (NOTICED.has(presentation.situation)) return null;
   return (
     <MascotStage
       presentation={presentation}

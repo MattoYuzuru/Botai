@@ -1,7 +1,8 @@
-import { Badge, Banner, Button, SourceStatus, SyncIndicator } from "@botai/design";
+import { Badge, Banner, Button, SourceStatus } from "@botai/design";
 import { useIsFetching } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { Connection } from "@/api/types";
+import { MascotSyncIndicator } from "@/features/mascot/mascot-sync-indicator";
 import { describeConnection } from "./connection-status";
 import { useReconnect } from "./use-reconnect";
 import type { SpaceInfo } from "./use-space-directory";
@@ -167,5 +168,5 @@ export function ScreenSyncIndicator() {
       query.state.dataUpdateCount > 0 &&
       DATA_ROOTS.has(query.queryKey[0]),
   });
-  return <SyncIndicator state={fetching > 0 ? "syncing" : "idle"} />;
+  return <MascotSyncIndicator state={fetching > 0 ? "syncing" : "idle"} />;
 }

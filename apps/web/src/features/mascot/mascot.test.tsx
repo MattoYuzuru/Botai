@@ -217,20 +217,11 @@ describe("MascotPresence: тихое присутствие и действия"
     await waitFor(() => expect(router.state.location.pathname).toBe("/tasks"));
   });
 
-  it("нужен вход: «Войти снова» запускает вход по подключению, а не «повторяет запрос»", async () => {
-    const user = userEvent.setup();
-    const requests: string[] = [];
+  it("нужен вход: Варя молчит — «Войти снова» уже даёт плашка источников экрана", async () => {
     const { container } = mount("today", "reauth");
-    current.server.events.on("request:start", ({ request }) => {
-      if (request.method === "POST") requests.push(new URL(request.url).pathname);
-    });
-    const button = await screen.findByRole("button", { name: "Войти снова" }, wait);
-    expect(container.querySelector("svg.varya")?.getAttribute("data-sit")).toBe("reauth");
-    await user.click(button);
-    await waitFor(
-      () => expect(requests.some((path) => /\/connections\/[^/]+\/sync$/.test(path))).toBe(true),
-      wait,
-    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(container.querySelector("[data-mascot-stage]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Войти снова" })).toBeNull();
   });
 
   it("нет данных: приглашение «Подключить вуз» ведёт на подключение", async () => {
