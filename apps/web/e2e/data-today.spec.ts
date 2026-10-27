@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
+import { expectFitsWidth, findSmallTapTargets, findTinyText, open } from "./data-support";
 
 test.describe("«Сегодня»", () => {
   test("пары из обоих вузов одной лентой с метками вуза, пересечение и «Изменено» видны", async ({
@@ -126,7 +126,7 @@ test.describe("«Сегодня»", () => {
       await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
         4,
       );
-      await expectNoHorizontalOverflow(page, `«Сегодня» ${width}`);
+      await expectFitsWidth(page, width, `«Сегодня» ${width}`);
     }
   });
 });
