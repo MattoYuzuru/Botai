@@ -2155,6 +2155,13 @@ export interface operations {
                     "text/event-stream": unknown;
                 };
             };
+            /** @description The job has ended and nothing is newer than Last-Event-ID */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {

@@ -123,6 +123,13 @@ async def events_after(
     return list(rows)
 
 
+async def has_events_after(session: AsyncSession, job_id: str, after_seq: int) -> bool:
+    found = await session.scalar(
+        select(JobEvent.id).where(JobEvent.job_id == job_id, JobEvent.seq > after_seq).limit(1)
+    )
+    return found is not None
+
+
 async def has_events(session: AsyncSession, job_id: str) -> bool:
     found = await session.scalar(select(JobEvent.id).where(JobEvent.job_id == job_id).limit(1))
     return found is not None

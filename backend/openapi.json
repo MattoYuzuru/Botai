@@ -2929,6 +2929,9 @@
             },
             "description": "Successful Response"
           },
+          "204": {
+            "description": "The job has ended and nothing is newer than Last-Event-ID"
+          },
           "422": {
             "content": {
               "application/json": {
