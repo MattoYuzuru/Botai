@@ -123,12 +123,17 @@ class ScreenClient:
 
 @dataclass
 class ScreenRig:
+    """`registry` is what the API process holds, `session` the screen next to the browser. In the
+    `local` topology they are one process; in `relay` the API has no screens of its own and
+    reaches the worker's through the internal link."""
+
     registry: ScreenRegistry
     port: int
     handle: PlaywrightHandle
     session: ScreenSession
     user: str
     conn: str
+    worker: ScreenRegistry | None = None
     clients: list[ScreenClient] = field(default_factory=lambda: list[ScreenClient]())
 
     def url(self, ticket: str | None = None, session_id: str | None = None) -> str:
@@ -198,9 +203,8 @@ async def decoder() -> AsyncIterator[Callable[[list[str]], Awaitable[list[float]
     await playwright.stop()
 
 
-@pytest.fixture
-async def make_screen(
-    gateway: PlaywrightGateway,
+async def _rigs(
+    gateway: PlaywrightGateway, relay: bool
 ) -> AsyncIterator[Callable[..., Awaitable[ScreenRig]]]:
     rigs: list[ScreenRig] = []
     stack = contextlib.AsyncExitStack()
@@ -210,18 +214,30 @@ async def make_screen(
     ) -> ScreenRig:
         user = user or new_id()
         conn = new_id()
-        registry = ScreenRegistry(
-            secret=SECRET, public_base_url=PUBLIC, config=config or ScreenConfig()
-        )
+        cfg = config or ScreenConfig()
         store = InMemoryLoginStore()
         store.add_connection(user, conn, ORIGIN)
-        port = await stack.enter_async_context(serve(build_app(registry, store, user)))
         handle = await gateway.open(
             user_id=user, connection_id=conn, allow_hosts=["fakeuni.test"], origin=ORIGIN
         )
         await handle.goto(f"{ORIGIN}{path}")
-        session = await registry.open(handle, user_id=user, connection_id=conn)
-        rig = ScreenRig(registry, port, handle, session, user, conn)
+        if relay:
+            worker = ScreenRegistry(
+                secret=SECRET, public_base_url=PUBLIC, config=cfg, internal_bind=("127.0.0.1", 0)
+            )
+            session = await worker.open(handle, user_id=user, connection_id=conn)
+            registry = ScreenRegistry(
+                secret=SECRET,
+                public_base_url=PUBLIC,
+                config=cfg,
+                remote_urls=[f"http://127.0.0.1:{worker.internal_port}"],
+            )
+        else:
+            worker = None
+            registry = ScreenRegistry(secret=SECRET, public_base_url=PUBLIC, config=cfg)
+            session = await registry.open(handle, user_id=user, connection_id=conn)
+        port = await stack.enter_async_context(serve(build_app(registry, store, user)))
+        rig = ScreenRig(registry, port, handle, session, user, conn, worker)
         rigs.append(rig)
         return rig
 
@@ -230,8 +246,29 @@ async def make_screen(
         for client in rig.clients:
             await client.close()
         await rig.session.close("test over")
+        if rig.worker is not None:
+            await rig.worker.close_all()
         await rig.handle.close()
     await stack.aclose()
+
+
+@pytest.fixture(params=["local", "relay"])
+async def make_screen(
+    request: pytest.FixtureRequest, gateway: PlaywrightGateway
+) -> AsyncIterator[Callable[..., Awaitable[ScreenRig]]]:
+    """Every test using it runs twice: API and browser in one process, and as in production,
+    where the API relays the viewer's socket to the worker that holds the browser."""
+    async for build in _rigs(gateway, request.param == "relay"):
+        yield build
+
+
+@pytest.fixture
+async def make_relayed_screen(
+    gateway: PlaywrightGateway,
+) -> AsyncIterator[Callable[..., Awaitable[ScreenRig]]]:
+    """Only the production topology, for tests about the link itself."""
+    async for build in _rigs(gateway, True):
+        yield build
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -610,7 +647,7 @@ async def test_the_session_expires_and_its_browser_is_destroyed(
     assert client.close_code == 4000
     assert client.of("expired")[0]["reason"] == "ttl"
     await _until(_handle_closed(rig.handle))
-    assert rig.registry.find(rig.user, rig.conn) is None
+    assert (rig.worker or rig.registry).find(rig.user, rig.conn) is None
 
 
 async def test_activity_extends_the_session_up_to_the_cap(
@@ -639,7 +676,7 @@ async def test_detaching_keeps_the_page_and_stops_the_stream(
     await asyncio.sleep(0.3)
     assert not rig.session.has_viewer
     assert rig.handle.closed is False
-    assert rig.registry.find(rig.user, rig.conn) is rig.session
+    assert (rig.worker or rig.registry).find(rig.user, rig.conn) is rig.session
     sent = rig.session.stats.frames_sent
     await rig.handle.page.evaluate("document.body.style.background = 'red'")
     await asyncio.sleep(0.4)

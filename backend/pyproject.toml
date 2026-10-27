@@ -26,6 +26,7 @@ dependencies = [
   "icalendar>=6.1",
   "playwright==1.63.0",  # matches Chromium 1243; bump together with the browser build
   "python-multipart>=0.0.18",
+  "websockets>=13",  # worker <-> API screen link (browser/screen_remote.py); also uvicorn[standard]
   "email-validator>=2.2",
 ]
 

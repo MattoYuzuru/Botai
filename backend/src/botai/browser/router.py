@@ -3,22 +3,31 @@
 `POST /connections/{id}/login-session` hands a signed one-time ticket (60 s) to the owner of a
 connection whose login is waiting for a human. The WebSocket checks the ticket and the Origin
 before the upgrade, and lets exactly one viewer watch.
+
+The screen lives next to the browser, in the worker process. When this API process does not hold
+it, the socket is relayed to the worker (`screen_remote.py`): the checks stay here.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect
+from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import ConnectionClosed
 
 from botai.auth.deps import AuthUser
 from botai.browser.presets import LoginStore, PgLoginStore
 from botai.browser.schemas import LoginSessionOut
 from botai.browser.screen import (
     CLOSE_BAD_ORIGIN,
+    CLOSE_NO_SESSION,
     ScreenError,
     ScreenRegistry,
+    ScreenSession,
     get_screens,
 )
 from botai.core.errors import BotaiError, ErrorCode
@@ -52,12 +61,12 @@ async def open_login_session(
     Call it right before connecting and again on every reconnect: the ticket in the `login`
     block is only a fast path, it expires after a minute."""
     await store.connection(user.id, connection_id)  # 404 for somebody else's connection
-    session = screens.find(user.id, connection_id)
-    if session is None:
+    session_id = await screens.lookup(user.id, connection_id)
+    if session_id is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Сейчас вход не ждёт вас на экране")
-    offer = screens.mint_ticket(session)
+    offer = screens.mint_ticket_for(session_id, user.id)
     return LoginSessionOut(
-        session_id=session.id, ws_url=offer.ws_url, ticket=offer.ticket, expires_at=offer.expires_at
+        session_id=session_id, ws_url=offer.ws_url, ticket=offer.ticket, expires_at=offer.expires_at
     )
 
 
@@ -79,11 +88,23 @@ async def login_session_ws(websocket: WebSocket, session_id: str, screens: Scree
         await websocket.close(code=CLOSE_BAD_ORIGIN)
         return
     try:
-        session = screens.redeem(websocket.query_params.get("ticket"), session_id)
+        claims = screens.spend(websocket.query_params.get("ticket"), session_id)
+        local = screens.get(session_id)
+        if local is not None:
+            if local.user_id != claims.user_id:
+                raise ScreenError(CLOSE_NO_SESSION, "no such session")
+            await websocket.accept()
+            await _serve_here(websocket, local)
+            return
+        upstream = await screens.connect_remote(session_id, claims.user_id)
     except ScreenError as exc:
         await websocket.close(code=exc.code, reason=exc.reason)
         return
     await websocket.accept()
+    await _relay(websocket, upstream)
+
+
+async def _serve_here(websocket: WebSocket, session: ScreenSession) -> None:
     viewer = _SocketViewer(websocket)
     try:
         await session.attach(viewer)
@@ -99,3 +120,41 @@ async def login_session_ws(websocket: WebSocket, session_id: str, screens: Scree
         pass
     finally:
         await session.detach(viewer)
+
+
+def _sendable(code: int) -> int:
+    """A close code that may go on the wire (1005/1006 are only ever local)."""
+    return code if code in (1000, 1001, 1008, 1011) or 3000 <= code <= 4999 else 1011
+
+
+async def _relay(public: WebSocket, upstream: ClientConnection) -> None:
+    """Pipe the viewer's socket to the worker's, both ways, until either side is done. The
+    worker's close code (replaced, expired, success) reaches the viewer as it is."""
+
+    async def to_worker() -> None:
+        while True:
+            event = await public.receive()
+            if event["type"] == "websocket.disconnect":
+                return
+            data = event.get("text")
+            await upstream.send(data if data is not None else event.get("bytes", b""))
+
+    async def to_viewer() -> None:
+        async for message in upstream:
+            if isinstance(message, str):
+                await public.send_text(message)
+            else:
+                await public.send_bytes(message)
+
+    tasks = [asyncio.create_task(to_worker()), asyncio.create_task(to_viewer())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if upstream.close_code is not None:  # the worker ended it: tell the viewer why
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+            await public.close(code=_sendable(upstream.close_code), reason=upstream.close_reason)
+    with contextlib.suppress(ConnectionClosed, RuntimeError):
+        await upstream.close()

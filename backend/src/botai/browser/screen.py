@@ -26,7 +26,7 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal, Protocol
@@ -35,9 +35,11 @@ from urllib.parse import urlsplit
 from playwright.async_api import CDPSession
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from websockets.asyncio.client import ClientConnection
 
-from botai.browser.gateway import PlaywrightHandle
+from botai.browser.gateway import PlaywrightHandle, in_container
 from botai.browser.proxy import derive_key
+from botai.browser.screen_remote import RemoteScreens, ScreenInternalServer
 from botai.core.clock import Clock, SystemClock
 from botai.core.ids import new_id
 from botai.settings import Settings
@@ -948,6 +950,8 @@ class ScreenRegistry:
         public_base_url: str,
         config: ScreenConfig | None = None,
         clock: Clock | None = None,
+        internal_bind: tuple[str, int] | None = None,
+        remote_urls: Sequence[str] = (),
     ) -> None:
         self.secret = secret
         self.public_base_url = public_base_url
@@ -955,6 +959,13 @@ class ScreenRegistry:
         self.clock = clock or SystemClock()
         self._sessions: dict[str, ScreenSession] = {}
         self._used: dict[str, float] = {}
+        # api <-> worker link (screen_remote.py): this process serves its screens on
+        # `internal_bind`, and looks for screens held by other processes at `remote_urls`
+        link_key = derive_key(secret, "internal-link")
+        self._internal_bind = internal_bind
+        self._internal: ScreenInternalServer | None = None
+        self.remote = RemoteScreens(remote_urls, link_key) if remote_urls else None
+        self._link_key = link_key
 
     # -- sessions ----------------------------------------------------------------------------
 
@@ -962,6 +973,7 @@ class ScreenRegistry:
         self, handle: PlaywrightHandle, *, user_id: str, connection_id: str
     ) -> ScreenSession:
         """Start a screen on this browser handle (the login flow's LoginScreens.open)."""
+        await self._serve_internal()
         existing = self.find(user_id, connection_id)
         if existing is not None:
             await existing.close("replaced by a newer screen")
@@ -990,6 +1002,36 @@ class ScreenRegistry:
     def _forget(self, session: ScreenSession) -> None:
         self._sessions.pop(session.id, None)
 
+    async def _serve_internal(self) -> None:
+        if self._internal is not None or self._internal_bind is None:
+            return
+        server = ScreenInternalServer(self, self._link_key, *self._internal_bind)
+        try:
+            await server.start()
+        except OSError:
+            log.warning("internal screen server could not bind %s:%d", *self._internal_bind)
+            self._internal_bind = None
+            return
+        self._internal = server
+
+    @property
+    def internal_port(self) -> int | None:
+        return self._internal.port if self._internal is not None else None
+
+    async def lookup(self, user_id: str, connection_id: str) -> str | None:
+        """The id of the screen this connection's login waits on: here, or in another process."""
+        session = self.find(user_id, connection_id)
+        if session is not None:
+            return session.id
+        return await self.remote.find(user_id, connection_id) if self.remote else None
+
+    async def connect_remote(self, session_id: str, user_id: str) -> ClientConnection:
+        """A socket to the process that holds `session_id`, or ScreenError(no such session)."""
+        upstream = await self.remote.connect(session_id, user_id) if self.remote else None
+        if upstream is None:
+            raise ScreenError(CLOSE_NO_SESSION, "no such session")
+        return upstream
+
     def find(self, user_id: str, connection_id: str) -> ScreenSession | None:
         for session in self._sessions.values():
             if (
@@ -1012,18 +1054,17 @@ class ScreenRegistry:
         return f"{scheme}://{parts.netloc}"
 
     def mint_ticket(self, session: ScreenSession) -> Ticket:
+        return self.mint_ticket_for(session.id, session.user_id)
+
+    def mint_ticket_for(self, session_id: str, user_id: str) -> Ticket:
         now = self.clock.now()
         raw = mint_ticket(
-            self.secret,
-            session.id,
-            session.user_id,
-            ttl_s=self.config.ticket_ttl_s,
-            now=now.timestamp(),
+            self.secret, session_id, user_id, ttl_s=self.config.ticket_ttl_s, now=now.timestamp()
         )
-        url = f"{self.ws_base()}/api/v1/login-sessions/{session.id}/ws?ticket={raw}"
+        url = f"{self.ws_base()}/api/v1/login-sessions/{session_id}/ws?ticket={raw}"
         return Ticket(raw, url, now + timedelta(seconds=self.config.ticket_ttl_s))
 
-    def redeem(self, ticket: str | None, session_id: str) -> ScreenSession:
+    def spend(self, ticket: str | None, session_id: str) -> TicketClaims:
         """Spend a ticket. Raises ScreenError for anything but a fresh, unused ticket that was
         issued for this very session."""
         now = self.clock.now().timestamp()
@@ -1034,6 +1075,11 @@ class ScreenRegistry:
         if claims is None or claims.session_id != session_id or claims.nonce in self._used:
             raise ScreenError(CLOSE_BAD_TICKET, "invalid ticket")
         self._used[claims.nonce] = claims.expires_at
+        return claims
+
+    def redeem(self, ticket: str | None, session_id: str) -> ScreenSession:
+        """`spend` for a screen held by this process."""
+        claims = self.spend(ticket, session_id)
         session = self.get(session_id)
         if session is None or session.user_id != claims.user_id:
             raise ScreenError(CLOSE_NO_SESSION, "no such session")
@@ -1049,6 +1095,9 @@ class ScreenRegistry:
     async def close_all(self) -> None:
         for session in list(self._sessions.values()):
             await session.close("shutdown")
+        if self._internal is not None:
+            await self._internal.close()
+            self._internal = None
 
 
 # --------------------------------------------------------------------------------------------
@@ -1072,11 +1121,38 @@ def screen_secret(settings: Settings) -> bytes:
     return derive_key(b"botai-insecure-dev-screen-secret", "screen-ticket")
 
 
+def _internal_bind() -> tuple[str, int] | None:
+    """Where the worker serves its screens to the API: `BOTAI_SCREEN_BIND=host:port` or `off`.
+    Inside a container the API reaches the worker over the Docker network, so all interfaces;
+    elsewhere loopback."""
+    raw = os.environ.get("BOTAI_SCREEN_BIND", "")
+    if raw.lower() == "off":
+        return None
+    if raw:
+        host, _, port = raw.rpartition(":")
+        return host or "127.0.0.1", int(port)
+    return ("0.0.0.0" if in_container() else "127.0.0.1"), 8765  # noqa: S104 - private network
+
+
+def _remote_urls() -> list[str]:
+    """Where the API looks for screens held by the worker: `BOTAI_SCREEN_INTERNAL_URL=url[,url]`
+    or `off`. By default the same host (development) and the compose service `worker`."""
+    raw = os.environ.get("BOTAI_SCREEN_INTERNAL_URL", "")
+    if raw.lower() == "off":
+        return []
+    if raw:
+        return [u.strip() for u in raw.split(",") if u.strip()]
+    return ["http://127.0.0.1:8765", "http://worker:8765"]
+
+
 def get_screens(settings: Settings) -> ScreenRegistry:
     global _registry
     if _registry is None:
         _registry = ScreenRegistry(
-            secret=screen_secret(settings), public_base_url=settings.public_base_url
+            secret=screen_secret(settings),
+            public_base_url=settings.public_base_url,
+            internal_bind=_internal_bind(),
+            remote_urls=_remote_urls(),
         )
     return _registry
 
