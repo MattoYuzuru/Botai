@@ -16,9 +16,10 @@ from botai.core.ids import new_id
 from botai.core.llm import ScriptedLlm
 from botai.core.queue import InMemoryJobQueue
 from botai.core.services import Services
-from botai.core.vault import InMemoryVault, Vault
+from botai.core.vault import InMemoryVault, SecretKind, Vault
 from botai.db import models as m
 from botai.settings import Settings
+from botai.sources.session import dump_session
 from tests.fakeuni import data
 from tests.sources import recipes
 from tests.sources.helpers import NOW, new_session_token, session_state
@@ -31,13 +32,17 @@ class FakeSessions:
         self.works = works
         self.fail = fail
         self.calls = 0
+        self.vault: Vault | None = None  # set by make_services: like W2, ensure() saves the session
 
     async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> SessionState:
         self.calls += 1
         if self.fail is not None:
             raise self.fail
         token = new_session_token(f"relogin-{self.calls}") if self.works else "not-a-session"
-        return session_state(token)
+        state = session_state(token)
+        if self.vault is not None:
+            await self.vault.put(user_id, connection_id, SecretKind.SESSION, dump_session(state))
+        return state
 
 
 def make_services(
@@ -50,14 +55,17 @@ def make_services(
     browser: FakeBrowserGateway | None = None,
     clock: FrozenClock | None = None,
 ) -> Services:
+    vault = vault or InMemoryVault()
+    sessions = sessions or FakeSessions()
+    sessions.vault = vault
     return Services(
         settings=Settings(_env_file=None),  # pyright: ignore[reportCallIssue]
         db=sm,
         clock=clock or FrozenClock(NOW),
-        vault=vault or InMemoryVault(),
+        vault=vault,
         llm=llm or ScriptedLlm(),
         browser=browser or FakeBrowserGateway({}, NOW, data.ORIGIN),
-        sessions=sessions or FakeSessions(),
+        sessions=sessions,
         queue=queue or InMemoryJobQueue(),
         embedder=NoopEmbedder(),
     )
@@ -95,39 +103,56 @@ async def seed_connection(
     attach_spec: bool = True,
     spec_state: str = "active",
     kind: str = "portal",
+    with_spec: bool = True,
+    university: bool = False,
 ) -> Seeded:
     uid = user_id or await seed_user(db)
     spec = spec or recipes.recipe_spec()
     kind_of_spec = adapter or str(spec["adapter"])
     revision = int(spec["recipe"]["revision"]) if kind_of_spec == "recipe" else 1
+    uni_id: str | None = None
+    if university:
+        uni = (
+            await db.execute(select(m.University).where(m.University.id == "fakeuni"))
+        ).scalar_one_or_none()
+        if uni is None:
+            uni = m.University(
+                id="fakeuni", title="Фейкуни", short_title="Фейкуни", origins=[], accent_hue=250.0
+            )
+            db.add(uni)
+            await db.flush()
+        uni_id = uni.id
     space = m.Space(
         id=new_id(),
         user_id=uid,
+        university_id=uni_id,
         title="Фейкуни",
         time_zone=time_zone,
         profile=profile or {"name": "Иванова Анна Сергеевна"},
     )
     db.add(space)
     await db.flush()
-    spec_row = (
-        await db.execute(
-            select(m.AdapterSpecRow).where(
-                m.AdapterSpecRow.origin == origin,
-                m.AdapterSpecRow.adapter == kind_of_spec,
-                m.AdapterSpecRow.revision == revision,
+    spec_row = None
+    if with_spec:
+        spec_row = (
+            await db.execute(
+                select(m.AdapterSpecRow).where(
+                    m.AdapterSpecRow.origin == origin,
+                    m.AdapterSpecRow.adapter == kind_of_spec,
+                    m.AdapterSpecRow.revision == revision,
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if spec_row is None:  # a university's students share one learned spec
-        spec_row = m.AdapterSpecRow(
-            id=new_id(),
-            origin=origin,
-            adapter=kind_of_spec,
-            revision=revision,
-            state=spec_state,
-            spec=spec,
-        )
-        db.add(spec_row)
+        ).scalar_one_or_none()
+        if spec_row is None:  # a university's students share one learned spec
+            spec_row = m.AdapterSpecRow(
+                id=new_id(),
+                origin=origin,
+                adapter=kind_of_spec,
+                revision=revision,
+                state=spec_state,
+                spec=spec,
+            )
+            db.add(spec_row)
     preset_id: str | None = None
     if preset is not None:
         row = (
@@ -150,14 +175,14 @@ async def seed_connection(
         space_id=space.id,
         origin=origin,
         kind=kind,
-        adapter=kind_of_spec,
+        adapter=kind_of_spec if with_spec else None,
         title="Кабинет",
         status=status,
-        spec_id=spec_row.id if attach_spec else None,
-        spec_revision=revision if attach_spec else None,
+        spec_id=spec_row.id if spec_row is not None and attach_spec else None,
+        spec_revision=revision if spec_row is not None and attach_spec else None,
         login_preset_id=preset_id,
         allow_hosts=allow_hosts if allow_hosts is not None else ["fakeuni.test"],
     )
     db.add(conn)
     await db.flush()
-    return Seeded(uid, space.id, conn.id, spec_row.id)
+    return Seeded(uid, space.id, conn.id, spec_row.id if spec_row is not None else "")

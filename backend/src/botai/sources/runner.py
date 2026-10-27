@@ -56,24 +56,33 @@ PROFILE_PARAMS = ("fullName", "email", "group", "studentId")
 
 
 @dataclass(slots=True)
-class Snapshot:
-    """What a sync needs to know about a connection, read once so no transaction stays open
-    while the network is slow."""
+class ConnInfo:
+    """What the sync and the learning jobs need to know about a connection, read once so that no
+    transaction stays open while the network is slow."""
 
     connection_id: str
     user_id: str
     space_id: str
     origin: str
-    adapter: str
+    kind: str
+    title: str
     status: str
-    spec_id: str
-    spec_revision: int
-    spec: dict[str, Any]
+    adapter: str | None
     allow_hosts: tuple[str, ...]
     tz: ZoneInfo
     profile: dict[str, str]
     expired: ExpiredRules
     last_sync_at: datetime | None
+    university_id: str | None
+
+
+@dataclass(slots=True)
+class Snapshot(ConnInfo):
+    """A connection together with the spec it is synced by."""
+
+    spec_id: str
+    spec_revision: int
+    spec: dict[str, Any]
     freshness: schedule.Freshness = field(init=False)
 
     def __post_init__(self) -> None:
@@ -123,7 +132,14 @@ def _expired_rules(preset: dict[str, Any] | None) -> ExpiredRules:
     )
 
 
-async def load_snapshot(session: AsyncSession, user_id: str, connection_id: str) -> Snapshot:
+async def load_conn_info(session: AsyncSession, user_id: str, connection_id: str) -> ConnInfo:
+    info, _ = await _load_conn(session, user_id, connection_id)
+    return info
+
+
+async def _load_conn(
+    session: AsyncSession, user_id: str, connection_id: str
+) -> tuple[ConnInfo, m.Connection]:
     conn = (
         await session.execute(
             select(m.Connection).where(
@@ -133,9 +149,6 @@ async def load_snapshot(session: AsyncSession, user_id: str, connection_id: str)
     ).scalar_one_or_none()
     if conn is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
-    spec_row = await _spec_row(session, conn)
-    if spec_row is None:
-        raise BotaiError(ErrorCode.NOT_FOUND, "У подключения ещё нет спецификации")
     space = (await session.execute(select(m.Space).where(m.Space.id == conn.space_id))).scalar_one()
     preset: dict[str, Any] | None = None
     if conn.login_preset_id:
@@ -145,24 +158,55 @@ async def load_snapshot(session: AsyncSession, user_id: str, connection_id: str)
             )
         ).scalar_one_or_none()
         preset = row.preset if row else None
-    host = _host(conn.origin)
     declared: list[str] = list(conn.allow_hosts or [])
-    hosts: tuple[str, ...] = tuple(sorted({*declared, host}))
-    return Snapshot(
+    host = _host(conn.origin)
+    hosts: tuple[str, ...] = tuple(sorted({*declared, *([host] if host else [])}))
+    info = ConnInfo(
         connection_id=conn.id,
         user_id=conn.user_id,
         space_id=conn.space_id,
         origin=conn.origin,
-        adapter=spec_row.adapter,
+        kind=conn.kind,
+        title=conn.title,
         status=conn.status,
-        spec_id=spec_row.id,
-        spec_revision=spec_row.revision,
-        spec=spec_row.spec,
+        adapter=conn.adapter,
         allow_hosts=hosts,
         tz=_zone(space.time_zone),
         profile=_profile(space.profile or {}),
         expired=_expired_rules(preset),
         last_sync_at=conn.last_sync_at,
+        university_id=space.university_id,
+    )
+    return info, conn
+
+
+async def load_snapshot(session: AsyncSession, user_id: str, connection_id: str) -> Snapshot:
+    info, conn = await _load_conn(session, user_id, connection_id)
+    spec_row = await _spec_row(session, conn)
+    if spec_row is None:
+        raise BotaiError(ErrorCode.NOT_FOUND, "У подключения ещё нет спецификации")
+    return _snapshot(info, spec_row)
+
+
+def _snapshot(info: ConnInfo, spec_row: m.AdapterSpecRow) -> Snapshot:
+    return Snapshot(
+        connection_id=info.connection_id,
+        user_id=info.user_id,
+        space_id=info.space_id,
+        origin=info.origin,
+        kind=info.kind,
+        title=info.title,
+        status=info.status,
+        adapter=spec_row.adapter,
+        allow_hosts=info.allow_hosts,
+        tz=info.tz,
+        profile=info.profile,
+        expired=info.expired,
+        last_sync_at=info.last_sync_at,
+        university_id=info.university_id,
+        spec_id=spec_row.id,
+        spec_revision=spec_row.revision,
+        spec=spec_row.spec,
     )
 
 
@@ -179,7 +223,7 @@ async def _spec_row(session: AsyncSession, conn: m.Connection) -> m.AdapterSpecR
                 select(m.AdapterSpecRow).where(m.AdapterSpecRow.id == conn.spec_id)
             )
         ).scalar_one_or_none()
-        if row is not None and row.state in {"active", "canary"}:
+        if row is not None and row.state == "active":
             return row
     if conn.adapter:
         return (
@@ -194,6 +238,34 @@ async def _spec_row(session: AsyncSession, conn: m.Connection) -> m.AdapterSpecR
     return None
 
 
+def context_for(
+    services: Services,
+    info: ConnInfo,
+    session: SessionState | None,
+    *,
+    spec_revision: int | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+    retry: RetryPolicy | None = None,
+    now: datetime | None = None,
+) -> SyncContext:
+    return SyncContext(
+        user_id=info.user_id,
+        connection_id=info.connection_id,
+        origin=info.origin,
+        allow_hosts=info.allow_hosts,
+        now=now or services.clock.now(),
+        vault=services.vault,
+        tz=info.tz,
+        session=session,
+        profile=info.profile,
+        proxy_url=services.settings.egress_proxy_url,
+        transport=transport,
+        retry=retry or RetryPolicy(),
+        expired=info.expired,
+        spec_revision=spec_revision,
+    )
+
+
 def build_context(
     services: Services,
     snap: Snapshot,
@@ -203,21 +275,14 @@ def build_context(
     retry: RetryPolicy | None = None,
     now: datetime | None = None,
 ) -> SyncContext:
-    return SyncContext(
-        user_id=snap.user_id,
-        connection_id=snap.connection_id,
-        origin=snap.origin,
-        allow_hosts=snap.allow_hosts,
-        now=now or services.clock.now(),
-        vault=services.vault,
-        tz=snap.tz,
-        session=session,
-        profile=snap.profile,
-        proxy_url=services.settings.egress_proxy_url,
-        transport=transport,
-        retry=retry or RetryPolicy(),
-        expired=snap.expired,
+    return context_for(
+        services,
+        snap,
+        session,
         spec_revision=snap.spec_revision,
+        transport=transport,
+        retry=retry,
+        now=now,
     )
 
 
