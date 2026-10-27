@@ -64,6 +64,26 @@ jobs:
       - run: pnpm -r test
       - run: pnpm --filter @botai/web build
 
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.63.0-${{ runner.os }}
+      - run: pnpm --filter @botai/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @botai/web e2e
+        env:
+          CI: "true"
+
   generated:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -97,7 +117,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [backend, web, generated, guards]
+    needs: [backend, web, web-e2e, generated, guards]
     runs-on: ubuntu-latest
     steps:
       - run: |
