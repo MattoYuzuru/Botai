@@ -69,8 +69,8 @@ export function ConnectPage() {
   };
 
   return (
-    <Screen title="Подключение вуза" leading="back" onBack={() => router.history.back()}>
-      <form onSubmit={submit} className="flex max-w-prose flex-col gap-6" noValidate>
+    <Screen title="Подключение вуза" leading="back" onBack={() => router.history.back()} narrow>
+      <form onSubmit={submit} className="flex max-w-reading flex-col gap-6" noValidate>
         <p className="type-body text-fg-muted">
           Назовите вуз. Агент сам найдёт личный кабинет и будет показывать каждый шаг. Логин и пароль вы
           введёте в полях BotAI; пароль хранится зашифрованным, и его можно удалить в любой момент.

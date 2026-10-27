@@ -64,6 +64,11 @@ describe("манифест PWA", () => {
       const file = join(WEB, "public", icon.src);
       expect(existsSync(file), icon.src).toBe(true);
       expect(statSync(file).size, icon.src).toBeGreaterThan(500);
+      if (icon.type === "image/png") {
+        const bytes = readFileSync(file);
+        expect(bytes.subarray(0, 8).toString("hex"), icon.src).toBe("89504e470d0a1a0a");
+        expect(`${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`, icon.src).toBe(icon.sizes);
+      }
     }
   });
 
@@ -73,11 +78,31 @@ describe("манифест PWA", () => {
 
   it("index.html ссылается на манифест и иконки, в том числе для iOS", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest"');
-    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/varya-v2-apple-touch-180.png"');
     expect(html).toContain('<meta name="apple-mobile-web-app-capable" content="yes"');
-    expect(existsSync(join(WEB, "public/icons/apple-touch-icon.png"))).toBe(true);
+    const apple = readFileSync(join(WEB, "public/icons/varya-v2-apple-touch-180.png"));
+    expect([apple.readUInt32BE(16), apple.readUInt32BE(20)]).toEqual([180, 180]);
     // Увеличение страницы не запрещено (styleguide §7).
     expect(html).not.toMatch(/user-scalable|maximum-scale/);
+  });
+
+  it("favicon имеет SVG и PNG, а настоящий корневой ICO содержит 16/32/48 px для браузеров без SVG", () => {
+    expect(html).toContain('href="/favicon-varya-v2.svg" type="image/svg+xml" sizes="any"');
+    expect(html).toContain('href="/favicon-varya-v2-32.png" type="image/png" sizes="32x32"');
+    expect(html).toContain('href="/favicon.ico?v=2" type="image/x-icon"');
+    const png = readFileSync(join(WEB, "public/favicon-varya-v2-32.png"));
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([32, 32]);
+    const bytes = readFileSync(join(WEB, "public/favicon.ico"));
+    expect([bytes.readUInt16LE(0), bytes.readUInt16LE(2), bytes.readUInt16LE(4)]).toEqual([0, 1, 3]);
+    for (const [index, size] of [16, 32, 48].entries()) {
+      const entry = 6 + index * 16;
+      expect([bytes[entry], bytes[entry + 1], bytes.readUInt16LE(entry + 6)]).toEqual([size, size, 32]);
+      const offset = bytes.readUInt32LE(entry + 12);
+      const length = bytes.readUInt32LE(entry + 8);
+      expect(offset + length).toBeLessThanOrEqual(bytes.length);
+      // ICO stores each bitmap bottom-up with doubled height (colour + AND mask).
+      expect([bytes.readInt32LE(offset + 4), bytes.readInt32LE(offset + 8)]).toEqual([size, size * 2]);
+    }
   });
 });
 

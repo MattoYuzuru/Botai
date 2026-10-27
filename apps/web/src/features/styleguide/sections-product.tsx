@@ -268,7 +268,7 @@ export function NavigationSection() {
       note="Ровно пять вкладок. До 1024 px — нижняя панель, от 1024 px — боковая 240 px (см. каркас приложения)."
     >
       <Demo label="TabBar — нижняя панель (предпросмотр в потоке страницы)" wide>
-        <div className="max-w-md overflow-hidden rounded-xl border border-border">
+        <div className="max-w-panel overflow-hidden rounded-xl border border-border">
           <TabBar
             inline
             items={MAIN_TABS}

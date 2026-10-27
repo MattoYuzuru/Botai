@@ -42,7 +42,7 @@ export function ScreenHeader({
     <header
       data-scrolled={scrolled || undefined}
       className={cn(
-        "z-sticky border-b border-transparent bg-bg px-safe-4 pt-safe transition-[border-color] duration-base ease-soft xs:px-safe-5",
+        "z-sticky border-b border-transparent bg-bg pt-safe transition-[border-color] duration-base ease-soft",
         sticky && "sticky top-0",
         "data-[scrolled]:border-border",
         className,
@@ -50,7 +50,7 @@ export function ScreenHeader({
     >
       <div
         className={cn(
-          "mx-auto flex min-h-14 w-full max-w-col items-center gap-2",
+          "mx-auto flex min-h-14 w-full max-w-col items-center gap-2 px-safe-4 xs:px-safe-5",
           !narrow && "lg:max-w-page",
         )}
       >

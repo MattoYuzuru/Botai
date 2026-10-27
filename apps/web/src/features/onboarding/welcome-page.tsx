@@ -34,7 +34,7 @@ export function WelcomePage() {
       <header className="flex flex-col gap-3">
         <Wordmark size="lg" />
         <h1 className="type-display text-fg">Расписание и сроки из всех ваших вузов</h1>
-        <p className="max-w-prose type-body text-fg-muted">
+        <p className="max-w-reading type-body text-fg-muted">
           Три минуты на то, чтобы понять, как это работает, и подключить первый вуз.
         </p>
       </header>

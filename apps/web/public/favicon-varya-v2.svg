@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="16" height="16" shape-rendering="crispEdges">
+  <title>Варя — BotAI</title>
+  <!-- Пиксельный портрет BotAI: хохолок, взгляд и клюв Вари из doodle_vibe/mascot,
+       снимок d84008e (docs/design/vendor.md). Новая композиция для иконок, не кадр анимации.
+       Палитра renderer: контур #0a1838, перья #234b9b/#0f2d69/#3a64b8/#4e78cf,
+       блик #9cc3ff, клюв #f6bc32/#e8a51c/#ffe39a, румянец #f59ab8, белый #ffffff.
+       Фон #f9fafc — токен palette-paper-50 из packages/design/src/styles/tokens.css.
+       Целые координаты без фильтров: один шаг сетки остаётся одним чётким пикселем.
+       Для вкладки 16 px предусмотрен отдельный рисунок, а не размытое уменьшение. -->
+  <style>.tiny{display:none}@media(max-width:20px){.portrait{display:none}.tiny{display:inline}}</style>
+  <path fill="#f9fafc" d="M0 0h32v32H0z"/>
+  <g class="portrait">
+    <path fill="#0a1838" d="M16 2h2v3h2V1h2v3h3v3h2v2h2v3h1v4h1v10h-2v3h-3v2H12v-2H8v-3H6V15h1v-4h2V8h3V6h4z"/>
+    <path fill="#234b9b" d="M16 7h8v1h3v3h1v4h1v11h-2v2h-3v1H12v-2H9v-3H8v-9h1v-4h2V9h5z"/>
+    <path fill="#0f2d69" d="M25 9h2v3h1v3h1v11h-2v2h-3v1H13v-1h10v-2h2z"/>
+    <path fill="#3a64b8" d="M12 20h10v1h2v4h-2v2H12v-2h-2v-3h2z"/>
+    <path fill="#4e78cf" d="M13 8h8v1h-8zM10 10h2v2h-2z"/>
+    <path fill="#0a1838" d="M11 10h5v1h2v8h-2v2h-5v-2H9v-6h1v-2h1zM21 10h5v1h2v8h-2v2h-5v-2h-2v-6h1v-2h1z"/>
+    <path fill="#ffffff" d="M12 11h3v1h2v6h-2v2h-3v-1h-2v-5h1v-2h1zM22 11h3v1h2v6h-2v2h-3v-1h-2v-5h1v-2h1z"/>
+    <path fill="#0a1838" d="M11 14h4v5h-3v-1h-1zM21 14h4v5h-3v-1h-1z"/>
+    <path fill="#9cc3ff" d="M14 18h1v1h-1zM24 18h1v1h-1z"/>
+    <path fill="#ffffff" d="M11 14h1v1h-1zM21 14h1v1h-1z"/>
+    <path fill="#f59ab8" d="M10 21h3v1h-3zM24 21h3v1h-3z"/>
+    <path fill="#0a1838" d="M8 21h9v5h-3v1H9v-1H5v-1H2v-1H1v-2h7z"/>
+    <path fill="#f6bc32" d="M9 22h7v3H8v-1H3v-1h6z"/>
+    <path fill="#ffe39a" d="M10 22h5v1h-5z"/>
+    <path fill="#e8a51c" d="M8 24h8v1H8zM10 25h4v1h-4z"/>
+  </g>
+  <g class="tiny" transform="scale(2)">
+    <path fill="#0a1838" d="M8 1h1v2h1V0h1v3h2v2h1v2h1v6h-2v2H6v-1H4v-2H3V7h1V5h2V3h2z"/>
+    <path fill="#234b9b" d="M7 4h5v1h1v2h1v6h-2v1H6v-1H5v-2H4V7h1V6h1V5h1z"/>
+    <path fill="#3a64b8" d="M7 10h4v1h1v2H7z"/>
+    <path fill="#ffffff" d="M6 5h2v4H5V6h1zM11 5h2v4h-3V6h1z"/>
+    <path fill="#0a1838" d="M5 7h2v2H5zM10 7h2v2h-2z"/>
+    <path fill="#ffffff" d="M5 7h1v1H5zM10 7h1v1h-1z"/>
+    <path fill="#f59ab8" d="M5 9h2v1H5zM11 9h2v1h-2z"/>
+    <path fill="#0a1838" d="M3 10h5v3H3v-1H0v-2z"/>
+    <path fill="#f6bc32" d="M4 10h3v2H3v-1H1v-1z"/>
+    <path fill="#ffe39a" d="M4 10h2v1H4z"/>
+    <path fill="#e8a51c" d="M3 11h4v1H3z"/>
+  </g>
+</svg>
