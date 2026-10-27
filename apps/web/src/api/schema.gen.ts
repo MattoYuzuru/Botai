@@ -206,7 +206,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Open Login Session */
+        /**
+         * Open Login Session
+         * @description A fresh ticket for the screen this connection's login is waiting on.
+         *
+         *     Call it right before connecting and again on every reconnect: the ticket in the `login`
+         *     block is only a fast path, it expires after a minute.
+         */
         post: operations["open_login_session_api_v1_connections__connection_id__login_session_post"];
         delete?: never;
         options?: never;

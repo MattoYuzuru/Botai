@@ -648,6 +648,7 @@ class LoginFlow:
                 and found.signature != step_then
                 and link.idle_s() >= t.resume_idle_s
             ):
+                await link.needs("input", "Дальше вход продолжится в обычных полях BotAI")
                 await link.close("mirrored")  # a normal form again: back to native fields
                 return now
         raise JobCancelled("the login screen timed out")
