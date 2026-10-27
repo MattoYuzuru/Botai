@@ -118,7 +118,7 @@ export function createHandlers(
     };
 
   return [
-    ...createDataHandlers(db, { latency, persist }),
+    ...createDataHandlers(db, { latency, persist, jobPace }),
     http.post("*/api/v1/auth/login", async ({ request }) => {
       await wait();
       const body = (await request.json()) as S["LoginRequest"];

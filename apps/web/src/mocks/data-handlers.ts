@@ -9,6 +9,7 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
 import { addDays, startOfDay } from "@/features/data/dates";
+import { runConnect } from "./connect-script";
 import {
   dueOf,
   MOCK_ZONE,
@@ -22,12 +23,15 @@ import {
   seedSourceOf,
 } from "./data-seed";
 import { findUser, type MockDb, persistDb, ulid } from "./db";
+import { JobSim } from "./job-sim";
 
 type S = components["schemas"];
 
 export interface DataHandlerOptions {
   latency?: number;
   persist?: boolean;
+  /** Множитель пауз сценария входа (как у подключения вуза): 0 — мгновенно. */
+  jobPace?: number;
   /** Подмена варианта данных (тесты); в браузере берётся из адреса. */
   variant?: DataVariant | null;
 }
@@ -71,7 +75,7 @@ export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 interface MockJob {
   id: string;
   connectionId: string;
-  kind: "ingest" | "sync";
+  kind: "ingest";
   title: string;
   polls: number;
   createdAt: string;
@@ -94,7 +98,7 @@ function applyVariant(db: MockDb, variant: DataVariant | null) {
 }
 
 export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {}) {
-  const { latency = 0, persist = false } = options;
+  const { latency = 0, persist = false, jobPace = 0 } = options;
   const variant = options.variant === undefined ? readVariant() : options.variant;
   applyVariant(db, variant);
   const quiet = variant === "quiet";
@@ -385,7 +389,11 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         connection.status === "disabled"
       )
         return problem(409, "conflict", "Подключение ещё настраивается или отключено");
-      const jobId = startJob({ connectionId: connection.id, kind: "sync", title: connection.title });
+      // Вход снова — тот же сценарий, что при подключении: вопросы агента приходят блоками потока задания.
+      const jobId = ulid();
+      const sim = new JobSim(jobId, db.now, jobPace);
+      db.sims.set(jobId, sim);
+      void runConnect(sim, db, connection.id, db.jobVariant).then(save);
       return HttpResponse.json({ jobId } satisfies S["JobRef"], { status: 202 });
     }),
 

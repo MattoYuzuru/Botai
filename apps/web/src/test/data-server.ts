@@ -12,9 +12,6 @@ export const NOW = Date.UTC(2026, 9, 27, 14, 40);
  */
 export function createDataServer(scenario: Scenario = "connected", variant: DataVariant | null = null) {
   const db: MockDb = createDb(scenario, () => NOW);
-  const server = setupServer(
-    ...createDataHandlers(db, { variant }),
-    ...createHandlers(db),
-  );
+  const server = setupServer(...createDataHandlers(db, { variant }), ...createHandlers(db));
   return { db, server };
 }

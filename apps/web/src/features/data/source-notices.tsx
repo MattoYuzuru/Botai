@@ -72,8 +72,14 @@ export function SourceNotices({
               variant="secondary"
               size="sm"
               data-touch-expanded=""
-              loading={reconnect.isPending && reconnect.variables === connection.id}
-              onClick={() => reconnect.mutate(connection.id)}
+              loading={reconnect.isPending && reconnect.variables?.connectionId === connection.id}
+              onClick={() =>
+                reconnect.mutate({
+                  connectionId: connection.id,
+                  spaceId: space.id,
+                  spaceTitle: space.shortTitle,
+                })
+              }
             >
               Войти снова
             </Button>

@@ -4,8 +4,8 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataVariant } from "@/mocks/data-handlers";
 import type { Scenario } from "@/mocks/db";
-import { renderApp } from "@/test/render-app";
 import { createDataServer, NOW } from "@/test/data-server";
+import { renderApp } from "@/test/render-app";
 
 let current = createDataServer();
 
@@ -87,7 +87,9 @@ describe("«Сегодня»: пары и сроки", () => {
   it("карточка пары: аудитория, преподаватель, пересекающаяся пара другого вуза и источник со временем", async () => {
     renderApp("/");
     const classes = await screen.findByRole("region", { name: "Пары" });
-    await userEvent.click(await within(classes).findByRole("button", { name: /Алгоритмы и структуры данных/ }));
+    await userEvent.click(
+      await within(classes).findByRole("button", { name: /Алгоритмы и структуры данных/ }),
+    );
     const sheet = await screen.findByRole("dialog", { name: "Алгоритмы и структуры данных" });
     expect(within(sheet).getByText("ауд. 412")).toBeInTheDocument();
     expect(within(sheet).getByText("Сидорова Е. Н.")).toBeInTheDocument();
@@ -143,6 +145,13 @@ describe("«Сегодня»: состояния данных", () => {
     await waitFor(() => expect(screenState()).toBe("reauth"));
     // Пары ЦУ остаются на экране, но отмечены устаревшими в подписи свежести.
     expect(await screen.findByText("Основы продуктового менеджмента")).toBeInTheDocument();
+  });
+
+  it("«Войти снова» ставит вход в очередь и открывает ход задания, где агент спросит пароль", async () => {
+    useScenario("reauth");
+    const { router } = renderApp("/");
+    await userEvent.click(await screen.findByRole("button", { name: "Войти снова" }));
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/connect\/[0-9A-Z]{26}$/));
   });
 
   it("stale: подключение устарело — полоса объясняет, что показан снимок, обновление идёт само", async () => {

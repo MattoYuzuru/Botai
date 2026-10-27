@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
 
 test.describe("«Сегодня»", () => {
-  test("пары из обоих вузов одной лентой с метками вуза, пересечение и «Изменено» видны", async ({ page }) => {
+  test("пары из обоих вузов одной лентой с метками вуза, пересечение и «Изменено» видны", async ({
+    page,
+  }) => {
     await open(page, "/", "connected");
     const classes = page.getByRole("region", { name: "Пары", exact: true });
     await expect(classes.getByRole("listitem")).toHaveCount(4);
@@ -47,20 +49,26 @@ test.describe("«Сегодня»", () => {
     await expect(page.getByText(/сдано/i)).toHaveCount(0);
   });
 
-  test("вузы подключены, данных нет: «Пар нет» и «Ближайших сроков нет», состояние empty", async ({ page }) => {
+  test("вузы подключены, данных нет: «Пар нет» и «Ближайших сроков нет», состояние empty", async ({
+    page,
+  }) => {
     await open(page, "/?data=quiet", "connected");
     await expect(page.getByText("Пар нет")).toBeVisible();
     await expect(page.getByText("Ближайших сроков нет")).toBeVisible();
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "empty");
   });
 
-  test("нужен повторный вход: полоса с «Войти снова», данные на месте и помечены устаревшими", async ({ page }) => {
+  test("нужен повторный вход: полоса с «Войти снова», данные на месте и помечены устаревшими", async ({
+    page,
+  }) => {
     await open(page, "/", "reauth");
     const notices = page.getByRole("list", { name: "Состояние источников" });
     await expect(notices.getByText(/Нужно снова войти в личный кабинет ЦУ/)).toBeVisible();
     await expect(notices.getByRole("button", { name: "Войти снова" })).toBeVisible();
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "reauth");
-    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
+      4,
+    );
   });
 
   test("вуз что-то поменял: «Варя чинит», кнопок повтора нет нигде", async ({ page }) => {
@@ -75,11 +83,15 @@ test.describe("«Сегодня»", () => {
     context,
   }) => {
     await open(page, "/", "connected");
-    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
+      4,
+    );
     await context.setOffline(true);
     await expect(page.getByText(/Нет сети\. Показан снимок от/).first()).toBeVisible();
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "offline");
-    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
+      4,
+    );
     await context.setOffline(false);
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "ok");
   });
@@ -100,7 +112,9 @@ test.describe("«Сегодня»", () => {
 
   test("зоны нажатия не меньше 44 px, текст не мельче 13 px", async ({ page }) => {
     await open(page, "/", "connected");
-    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
+      4,
+    );
     expect(await findSmallTapTargets(page)).toEqual([]);
     expect(await findTinyText(page)).toEqual([]);
   });
@@ -109,7 +123,9 @@ test.describe("«Сегодня»", () => {
     for (const width of [320, 390, 430]) {
       await page.setViewportSize({ width, height: 800 });
       await open(page, "/", "connected");
-      await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(4);
+      await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
+        4,
+      );
       await expectNoHorizontalOverflow(page, `«Сегодня» ${width}`);
     }
   });
