@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { expectFitsWidth, findSmallTapTargets, findTinyText, open } from "./data-support";
+import { expectFitsWidth, findSmallTapTargets, findTinyText, freezeClock, open } from "./data-support";
 
 test.describe("«Сегодня»", () => {
+  test.beforeEach(async ({ page }) => freezeClock(page));
+
   test("пары из обоих вузов одной лентой с метками вуза, пересечение и «Изменено» видны", async ({
     page,
   }) => {
