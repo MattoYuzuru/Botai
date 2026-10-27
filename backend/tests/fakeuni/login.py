@@ -30,6 +30,7 @@ SESSIONS: set[str] = set()
 _PENDING_OTP: set[str] = set()
 COOKIE = "FAKEUNI_SESSION"
 ROOT_TARGET = "/app"  # where `/` sends a visitor; tests point it at other entrances
+OTP_REQUIRED = True  # False: the default path logs in on the password alone (code asked once)
 
 PUSH_PENDING: set[str] = set()
 PUSH_APPROVED: set[str] = set()
@@ -113,6 +114,8 @@ async def login_submit(
     if not _credentials_ok(username, password):
         ATTEMPTS.append(("auth", "user"))
         return HTMLResponse(_login_form(_error("Неверный логин или пароль")), status_code=401)
+    if not OTP_REQUIRED:
+        return _start_session()
     pending = secrets.token_hex(8)
     _PENDING_OTP.add(pending)
     resp = RedirectResponse("/auth/otp", status_code=303)
