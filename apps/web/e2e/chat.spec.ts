@@ -231,9 +231,15 @@ test.describe("Варя в чате", () => {
       return samples;
     });
     expect(series[0]?.w).toBeGreaterThan(90);
-    const settled = series.find((sample) => Math.abs(sample.w - (series.at(-1)?.w ?? 0)) < 0.5);
-    expect(settled?.t).toBeGreaterThan(40);
-    expect(settled?.t).toBeLessThanOrEqual(280 + 140);
+    // Длительность перелёта — от первого кадра, где размер пошёл меняться, до кадра, где он перестал: задержка
+    // между нажатием и началом движения (нагрузка на runner) в 280 мс не входит.
+    const started = series.find((sample) => Math.abs(sample.w - (series[0]?.w ?? 0)) > 0.5);
+    const settled = series.find(
+      (sample) => sample.t >= (started?.t ?? 0) && Math.abs(sample.w - (series.at(-1)?.w ?? 0)) < 0.5,
+    );
+    const duration = (settled?.t ?? Number.POSITIVE_INFINITY) - (started?.t ?? 0);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThanOrEqual(280 + 120);
     // Тот же экземпляр на насесте.
     expect(
       await page.evaluate((previous) => previous === document.querySelector("[data-dock] svg.varya"), handle),

@@ -112,9 +112,11 @@ test.describe("Варя на насесте и на сцене", () => {
     expect(first?.w).toBeGreaterThan(90); // стартует на сцене (96 или 120 px)
     expect(Math.round(last?.w ?? 0)).toBe(36); // приземляется на насест
     // Момент, когда размер перестал меняться: после начала перелёта и не позже 280 мс (плюс кадр и запас на нагрузку).
-    const settled = samples.find((sample) => Math.abs(sample.w - 36) < 0.5);
-    expect(settled?.t).toBeGreaterThan(60);
-    expect(settled?.t).toBeLessThanOrEqual(280 + 120);
+    const started = samples.find((sample) => Math.abs(sample.w - (samples[0]?.w ?? 0)) > 0.5);
+    const settled = samples.find((sample) => sample.t >= (started?.t ?? 0) && Math.abs(sample.w - 36) < 0.5);
+    const duration = (settled?.t ?? Number.POSITIVE_INFINITY) - (started?.t ?? 0);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThanOrEqual(280 + 120);
     const same = await scope.locator("svg.varya").elementHandle();
     expect(await page.evaluate(([a, b]) => a === b, [before, same])).toBe(true);
   });
