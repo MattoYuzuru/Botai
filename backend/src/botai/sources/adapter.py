@@ -84,7 +84,7 @@ class SyncContext:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     expired: ExpiredRules = field(default_factory=ExpiredRules)
     spec_revision: int | None = None
-    content: bytes | None = None  # uploaded document bytes
+    content: bytes | None = field(default=None, repr=False)  # uploaded document bytes
     filename: str | None = None
     known_hash: str | None = None  # hash of the previously ingested document
 

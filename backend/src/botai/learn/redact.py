@@ -74,10 +74,10 @@ def looks_like_injection(text: str) -> bool:
 class Redactor:
     """Per-observation state: known personal values, stable pseudonyms, what was dropped."""
 
-    known: set[str] = field(default_factory=set)  # exact personal strings (name, login, ...)
-    pseudonyms: dict[str, str] = field(default_factory=dict)
+    known: set[str] = field(default_factory=set, repr=False)  # exact personal strings
+    pseudonyms: dict[str, str] = field(default_factory=dict, repr=False)
     injections: int = 0
-    observed: set[str] = field(default_factory=set)  # raw values, for the lint; never printed
+    observed: set[str] = field(default_factory=set, repr=False)  # raw values, for the lint
 
     # --- setup -------------------------------------------------------------------------------
 

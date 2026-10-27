@@ -20,6 +20,7 @@ from botai.sources.adapter import ExpiredRules, SessionExpired, SyncContext
 from botai.sources.session import auth_headers, cookie_jar, known_expired
 
 MAX_BODY = 10 * 1024 * 1024
+MAX_REQUESTS = 120  # per fetch: a spec cannot turn a sync into a flood (pagination, bootstrap)
 
 
 def origin_host(origin: str) -> str:
@@ -56,6 +57,7 @@ class SourceClient:
         headers: Mapping[str, str] | None = None,
     ) -> None:
         self._ctx = ctx
+        self._requests = 0
         session = ctx.session if use_session else None
         if auth_type != "none" and session is not None and known_expired(session, ctx.now):
             raise SessionExpired("session is past its expiry hint")
@@ -97,6 +99,11 @@ class SourceClient:
                 ErrorCode.EGRESS_BLOCKED,
                 "Адрес не входит в разрешённые для этого подключения",
                 extra={"host": urlsplit(url).hostname or ""},
+            )
+        self._requests += 1
+        if self._requests > MAX_REQUESTS:
+            raise BotaiError(
+                ErrorCode.SOURCE_RATE_LIMITED, "Слишком много запросов за одну синхронизацию"
             )
         kwargs: dict[str, Any] = {"policy": self._ctx.retry}
         if params:

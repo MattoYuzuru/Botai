@@ -8,6 +8,7 @@ parameter (`rowFilter.equalsParam`), never by a value stored in the spec. An unc
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -129,7 +130,8 @@ class DocumentAdapter:
         data, content_type = raw
         if ctx.known_hash == hashlib.sha256(data).hexdigest():
             return AdapterResult([], ctx.now, [], spec_revision=ctx.spec_revision, unchanged=True)
-        return self.result_for(self.process(data, content_type, ctx), ctx)
+        loaded = await asyncio.to_thread(self.process, data, content_type, ctx)
+        return self.result_for(loaded, ctx)
 
     # --- table -> records --------------------------------------------------------------------
 
