@@ -9,6 +9,7 @@ export {
 } from "./events";
 export {
   availableLines,
+  cycleLines,
   FLAG_FIELDS,
   formatSnapshotTime,
   LINES,
@@ -37,6 +38,12 @@ export {
   RECENT_EVENT_MS,
   resolveMascot,
 } from "./resolve";
+export {
+  claimAnimation,
+  holdsAnimation,
+  resetAnimationClaims,
+  subscribeAnimationClaims,
+} from "./slots";
 export {
   STAGE_ACTION_MS,
   STAGE_ACTIONS,

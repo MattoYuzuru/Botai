@@ -48,8 +48,9 @@ MAX_HOSTS_PER_TOKEN = 12
 MAX_HEAD_BYTES = 16 * 1024
 PROXY_USER = "botai"
 
-_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-_NUMERIC_LABEL = re.compile(r"^(\d+|0x[0-9a-f]*)$")
+_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+_LOG_UNSAFE = re.compile(r"[^A-Za-z0-9.\-:\[\]]")
+_NUMERIC_LABEL = re.compile(r"(\d+|0x[0-9a-f]*)")
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 Connector = Callable[
@@ -68,7 +69,7 @@ def normalize_host(raw: str) -> str | None:
     if not host or len(host) > 253 or not host.isascii():
         return None
     labels = host.split(".")
-    if not all(_LABEL.match(label) for label in labels):
+    if not all(_LABEL.fullmatch(label) for label in labels):
         return None
     return host
 
@@ -89,12 +90,13 @@ def is_ip_literal(host: str) -> bool:
         return True
     if ":" in host or "[" in host:
         return True
-    return bool(_NUMERIC_LABEL.match(host.rsplit(".", 1)[-1]))
+    return bool(_NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1]))
 
 
 _BLOCKED_V6 = tuple(
     ipaddress.ip_network(n)
     for n in (
+        "::/8",  # unspecified, loopback, IPv4-compatible (::127.0.0.1) and SIIT forms
         "64:ff9b::/96",  # NAT64 well-known prefix: embeds an IPv4 address
         "64:ff9b:1::/48",  # NAT64 local-use
         "2002::/16",  # 6to4
@@ -102,6 +104,11 @@ _BLOCKED_V6 = tuple(
         "100::/64",  # discard-only
         "fc00::/7",
         "fe80::/10",
+        "fec0::/10",  # site-local, deprecated
+        "ff00::/8",  # multicast
+        "2001:10::/28",  # ORCHID
+        "2001:20::/28",  # ORCHIDv2
+        "5f00::/16",  # SRv6 segment identifiers
     )
 )
 _BLOCKED_V4 = tuple(
@@ -217,6 +224,12 @@ def mint_token(
         domains.append(domain)
     if not clean and not domains:
         raise ValueError("a token needs at least one allowed host")
+    if (
+        not 0 < ttl_s <= 24 * 3600
+        or not 1 <= max_connects <= 10_000
+        or not 0 <= max_dynamic_hosts <= 50
+    ):
+        raise ValueError("token lifetime or budget out of range")
     if len(set(clean)) > MAX_HOSTS_PER_TOKEN:
         raise ValueError(f"at most {MAX_HOSTS_PER_TOKEN} hosts per token")
     issued = time.time() if now is None else now
@@ -235,6 +248,8 @@ def mint_token(
 
 def verify_token(secret: bytes, token: str, *, now: float | None = None) -> Grant | None:
     """The grant carried by a genuine, unexpired token; None for anything else."""
+    if not token.isascii():
+        return None
     body, dot, signature = token.partition(".")
     if not dot or not body or not signature or "." in signature:
         return None
@@ -291,6 +306,7 @@ _STATUS_TEXT = {
     405: "Method Not Allowed",
     407: "Proxy Authentication Required",
     429: "Too Many Requests",
+    500: "Internal Server Error",
     502: "Bad Gateway",
     504: "Gateway Timeout",
 }
@@ -340,6 +356,8 @@ class EgressProxy:
         self._max_tunnels = max_tunnels
         self._max_per_token = max_tunnels_per_token
         self._usage: dict[str, _Usage] = {}
+        self._revoked: dict[str, float] = {}
+        self._reserved = 0  # tunnels reserved or open, all tokens together
         self._tunnels: set[asyncio.StreamWriter] = set()
         self._handlers: set[asyncio.Task[None]] = set()
         self._server: asyncio.Server | None = None
@@ -388,17 +406,16 @@ class EgressProxy:
         return proxy_url_with_token(self.url, token)
 
     def revoke(self, token: str) -> None:
-        """Forget a token's usage so a fresh budget is not carried over; the token itself stays
-        valid until its expiry (tokens are stateless, keep their lifetime short)."""
+        """Refuse this token from now on (until it would have expired anyway). For an in-process
+        proxy: a context that is closed has no further use for its token."""
         grant = verify_token(self._secret, token)
         if grant is not None:
-            self._usage.pop(grant.jti, None)
+            self._revoked[grant.jti] = grant.expires_at
 
     async def close(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()  # no new connections
         for writer in list(self._tunnels):
             writer.close()
         handlers = list(self._handlers)
@@ -406,6 +423,8 @@ class EgressProxy:
             task.cancel()
         if handlers:
             await asyncio.gather(*handlers, return_exceptions=True)
+        if server is not None:
+            await server.wait_closed()
 
     # -- policy ------------------------------------------------------------------------------
 
@@ -419,21 +438,34 @@ class EgressProxy:
             usage = self._usage[grant.jti] = _Usage(expires_at=grant.expires_at)
         return usage
 
-    @staticmethod
-    def _host_allowed(grant: Grant, usage: _Usage, host: str) -> Denial | None:
-        """Exact names always; subdomains of a suffix domain up to the per-token host cap."""
-        if host in grant.hosts or host in usage.dynamic_hosts:
-            return None
-        if any(host.endswith("." + suffix) for suffix in grant.suffixes):
+    def _reserve(self, grant: Grant, usage: _Usage, host: str) -> Denial | None:
+        """Check the allowlist and the budgets and, in the same synchronous step, take the slot:
+        parallel CONNECTs must not all pass the same check before any of them is counted."""
+        dynamic = host not in grant.hosts and host not in usage.dynamic_hosts
+        if dynamic:
+            if not any(host.endswith("." + suffix) for suffix in grant.suffixes):
+                return Denial(403, "not_allowlisted")
             if len(usage.dynamic_hosts) >= grant.max_dynamic_hosts:
                 return Denial(403, "too_many_hosts")
-            return None
-        return Denial(403, "not_allowlisted")
+        if (
+            usage.connects >= grant.max_connects
+            or usage.active >= self._max_per_token
+            or self._reserved >= self._max_tunnels
+        ):
+            return Denial(429, "budget_exceeded")
+        if dynamic:
+            usage.dynamic_hosts.add(host)  # counted even if the name later fails to resolve
+        usage.connects += 1
+        usage.active += 1
+        self._reserved += 1
+        return None
 
     def check_target(self, grant: Grant, authority: str) -> tuple[str, Denial | None]:
         """Pure part of the decision: returns the normalised host and a denial, if any."""
         host_part, _, port_part = authority.rpartition(":")
-        if not host_part or not port_part.isdigit():
+        if not host_part or not (
+            port_part.isascii() and port_part.isdecimal() and len(port_part) <= 5
+        ):
             return authority, Denial(400, "bad_request")
         lowered = host_part.lower().rstrip(".")
         if is_ip_literal(lowered):
@@ -478,12 +510,18 @@ class EgressProxy:
             return None
         try:
             decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
+        except (binascii.Error, UnicodeDecodeError, ValueError):
             return None
         _user, sep, token = decoded.partition(":")
         if not sep:
             return None
-        return verify_token(self._secret, token)
+        grant = verify_token(self._secret, token)
+        if grant is None:
+            return None
+        now = time.time()
+        for jti in [j for j, expires in self._revoked.items() if expires < now]:
+            del self._revoked[jti]
+        return None if grant.jti in self._revoked else grant
 
     async def _read_head(self, reader: asyncio.StreamReader) -> tuple[str, dict[str, list[str]]]:
         async with asyncio.timeout(self._head_timeout):
@@ -539,52 +577,59 @@ class EgressProxy:
                 await self._reply(writer, status, [("Allow", "CONNECT")])
                 return
             host, denial = self.check_target(grant, authority)
-            host_for_log = host
+            host_for_log = _LOG_UNSAFE.sub("?", host)[:100]
             usage = self._usage_for(grant)
             if denial is None:
-                denial = self._host_allowed(grant, usage, host)
-            if denial is None and (
-                usage.connects >= grant.max_connects
-                or usage.active >= self._max_per_token
-                or len(self._tunnels) >= self._max_tunnels
-            ):
-                denial = Denial(429, "budget_exceeded")
-            target: tuple[str, int] | None = None
-            if denial is None:
-                target, denial = await self._pin_address(host)
-            if denial is not None or target is None:
-                reason, status = (denial.reason, denial.status) if denial else ("internal", 500)
+                denial = self._reserve(grant, usage, host)
+            if denial is not None:
+                reason, status = denial.reason, denial.status
                 await self._reply(writer, status, [("X-Botai-Egress", f"denied; reason={reason}")])
                 return
-            usage.connects += 1
-            if host not in grant.hosts:
-                usage.dynamic_hosts.add(host)
-            try:
-                async with asyncio.timeout(self._connect_timeout):
-                    up_reader, up_writer = await self._connector(*target)
-            except TimeoutError:
-                reason, status = "connect_timeout", 504
-                await self._reply(writer, status)
-                return
-            except OSError:
-                reason, status = "connect_failed", 502
-                await self._reply(writer, status)
-                return
-            decision, reason, status = "allow", "ok", 200
-            writer.write(_response(200))
-            await writer.drain()
-            usage.active += 1
-            self._tunnels.update((writer, up_writer))
-            try:
-                up, down = await self._pump(reader, writer, up_reader, up_writer)
+            tunnelled = False
+            try:  # from here the slot is ours and goes back whatever happens
+                target, denial = await self._pin_address(host)
+                if denial is not None or target is None:
+                    reason, status = (denial.reason, denial.status) if denial else ("internal", 500)
+                    await self._reply(
+                        writer, status, [("X-Botai-Egress", f"denied; reason={reason}")]
+                    )
+                    return
+                try:
+                    async with asyncio.timeout(self._connect_timeout):
+                        up_reader, up_writer = await self._connector(*target)
+                except TimeoutError:
+                    reason, status = "connect_timeout", 504
+                    await self._reply(writer, status)
+                    return
+                except OSError:
+                    reason, status = "connect_failed", 502
+                    await self._reply(writer, status)
+                    return
+                self._tunnels.update((writer, up_writer))
+                try:
+                    writer.write(_response(200))
+                    await writer.drain()
+                    decision, reason, status = "allow", "ok", 200
+                    tunnelled = True
+                    up, down = await self._pump(reader, writer, up_reader, up_writer)
+                finally:
+                    self._tunnels.discard(writer)
+                    self._tunnels.discard(up_writer)
+                    _close(up_writer)
             finally:
                 usage.active -= 1
-                self._tunnels.discard(writer)
-                self._tunnels.discard(up_writer)
-                _close(up_writer)
+                self._reserved -= 1
+                if not tunnelled:
+                    usage.connects -= 1  # nothing was tunnelled: the connect budget is not spent
         except ConnectionError:
             if decision != "allow":
                 reason = "connection_lost"
+        except Exception:
+            # a hostile or broken request must cost one connection, never a traceback per request
+            log.exception("egress proxy: unexpected error while serving a request")
+            if decision != "allow":
+                reason, status = "internal", 500
+                await self._reply(writer, status)
         finally:
             self.stats[f"{decision}:{reason}"] += 1
             log.info(
@@ -613,17 +658,25 @@ class EgressProxy:
         up_writer: asyncio.StreamWriter,
     ) -> tuple[int, int]:
         counters = [0, 0]
+        activity = [time.monotonic()]  # one clock per tunnel: either direction keeps it alive
 
         async def copy(src: asyncio.StreamReader, dst: asyncio.StreamWriter, index: int) -> None:
             try:
                 while True:
-                    async with asyncio.timeout(self._idle_timeout):
-                        chunk = await src.read(65536)
+                    try:
+                        async with asyncio.timeout(self._idle_timeout):
+                            chunk = await src.read(65536)
+                    except TimeoutError:
+                        if time.monotonic() - activity[0] < self._idle_timeout:
+                            continue
+                        raise
                     if not chunk:
                         break
+                    activity[0] = time.monotonic()
                     counters[index] += len(chunk)
                     dst.write(chunk)
-                    await dst.drain()
+                    async with asyncio.timeout(self._idle_timeout):  # a peer that never reads
+                        await dst.drain()
             except (ConnectionError, TimeoutError, OSError):
                 _close(dst)
                 return
@@ -672,8 +725,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(master) < 32:
         print("BOTAI_PROXY_SECRET must be set to at least 32 characters", file=sys.stderr)
         return 2
-    if args.test_host and os.environ.get("BOTAI_ENV", "dev") == "prod":
-        print("--test-host is refused when BOTAI_ENV=prod", file=sys.stderr)
+    if args.test_host and os.environ.get("BOTAI_ENV", "") not in ("dev", "test"):
+        print("--test-host needs BOTAI_ENV=dev or BOTAI_ENV=test", file=sys.stderr)
         return 2
     host, _, port = args.listen.rpartition(":")
     proxy = EgressProxy(

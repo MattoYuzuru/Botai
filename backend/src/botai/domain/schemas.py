@@ -37,6 +37,7 @@ class DeadlineOut(ApiModel):
     effective_due_at: datetime | None
     state: Literal["open", "submitted", "graded", "missed", "unknown"]
     course_title: str | None
+    description: str | None = None  # task text from the linked assignment, if the source has it
     url: str | None
     provenance: Provenance
 

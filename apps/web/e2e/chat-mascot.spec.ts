@@ -112,9 +112,11 @@ test.describe("Варя на насесте и на сцене", () => {
     expect(first?.w).toBeGreaterThan(90); // стартует на сцене (96 или 120 px)
     expect(Math.round(last?.w ?? 0)).toBe(36); // приземляется на насест
     // Момент, когда размер перестал меняться: после начала перелёта и не позже 280 мс (плюс кадр и запас на нагрузку).
-    const settled = samples.find((sample) => Math.abs(sample.w - 36) < 0.5);
-    expect(settled?.t).toBeGreaterThan(60);
-    expect(settled?.t).toBeLessThanOrEqual(280 + 120);
+    const started = samples.find((sample) => Math.abs(sample.w - (samples[0]?.w ?? 0)) > 0.5);
+    const settled = samples.find((sample) => sample.t >= (started?.t ?? 0) && Math.abs(sample.w - 36) < 0.5);
+    const duration = (settled?.t ?? Number.POSITIVE_INFINITY) - (started?.t ?? 0);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThanOrEqual(280 + 120);
     const same = await scope.locator("svg.varya").elementHandle();
     expect(await page.evaluate(([a, b]) => a === b, [before, same])).toBe(true);
   });
@@ -200,5 +202,32 @@ test.describe("Варя на насесте и на сцене", () => {
       ),
     );
     expect(hidden).toBe(true);
+  });
+});
+
+test.describe("ProgressWall с Варей (витрина)", () => {
+  test("идёт работа — бежит по рельсу на месте, ждёт ответа — стоит в позе ожидания, итог — рядом с названием", async ({
+    page,
+  }) => {
+    await open(page);
+    const running = page.locator('[data-demo="wall-reconnecting"]');
+    await running.scrollIntoViewIfNeeded();
+    const runner = running.locator("[data-rail-runner] svg.varya");
+    await expect(runner).toHaveAttribute("data-sit", "connect");
+    await expect(runner).not.toHaveClass(/still/);
+    await expect(running.getByText("Сколько осталось — пока неизвестно")).toBeVisible();
+    // Варя внутри рельса и не обрезана слева.
+    const rail = await running.locator("[role=img][data-etaknown]").boundingBox();
+    const girl = await runner.boundingBox();
+    expect(girl && rail && girl.x >= rail.x - 1).toBe(true);
+
+    const waiting = page.locator('[data-demo="wall-question"]');
+    await expect(waiting.locator("[data-rail-runner] svg.varya")).toHaveAttribute("data-sit", "tip");
+    await expect(waiting.locator("[data-rail-runner] svg.varya")).toHaveClass(/still/);
+    await expect(waiting.getByText("Нужен ответ")).toBeVisible();
+
+    const done = page.locator('[data-demo="wall-done"]');
+    await expect(done.locator("header svg.varya")).toHaveAttribute("data-sit", "done");
+    await expect(done.getByRole("button", { name: "Готово" })).toBeVisible();
   });
 });

@@ -404,3 +404,25 @@ async def test_reading_a_stored_week_is_fast(world: World, tx_sessionmaker: Sm) 
     samples.sort()
     p95 = samples[int(len(samples) * 0.95) - 1]
     assert p95 <= 1.5, f"p95={p95:.3f}s median={statistics.median(samples):.3f}s"
+
+
+async def test_deadline_carries_the_assignment_text(world: World, tx_sessionmaker: Sm) -> None:
+    from botai.db.models import Assignment
+    from tests.domain.helpers import _common  # pyright: ignore[reportPrivateUsage]
+
+    w = world
+    await add(
+        tx_sessionmaker,
+        Assignment(
+            title="ДЗ 3",
+            description="Реализовать дерево отрезков",
+            **_common(w.user_id, w.conn_a, "as-3"),
+        ),
+        deadline(w.user_id, w.conn_a, at(12, day=29), title="ДЗ 3", assignment_external_id="as-3"),
+        deadline(w.user_id, w.conn_a, at(13, day=29), title="Без текста"),
+    )
+    got = await _get(w.client, "/api/v1/deadlines", space_id=w.space_a)
+    assert [(d["title"], d["description"]) for d in got] == [
+        ("ДЗ 3", "Реализовать дерево отрезков"),
+        ("Без текста", None),
+    ]

@@ -17,10 +17,11 @@ import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppScheduleRouteImport } from './routes/_app/schedule'
-import { Route as AppStudyRouteImport } from './routes/_app/study'
 import { Route as AppTasksRouteImport } from './routes/_app/tasks'
 import { Route as ConnectIndexRouteImport } from './routes/connect/index'
 import { Route as ConnectJobIdRouteImport } from './routes/connect/$jobId'
+import { Route as AppStudyIndexRouteImport } from './routes/_app/study/index'
+import { Route as AppStudyKindRouteImport } from './routes/_app/study/$kind'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -61,11 +62,6 @@ const AppScheduleRoute = AppScheduleRouteImport.update({
   path: '/schedule',
   getParentRoute: () => AppRoute,
 } as any)
-const AppStudyRoute = AppStudyRouteImport.update({
-  id: '/study',
-  path: '/study',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppTasksRoute = AppTasksRouteImport.update({
   id: '/tasks',
   path: '/tasks',
@@ -81,6 +77,16 @@ const ConnectJobIdRoute = ConnectJobIdRouteImport.update({
   path: '/connect/$jobId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppStudyIndexRoute = AppStudyIndexRouteImport.update({
+  id: '/study/',
+  path: '/study/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppStudyKindRoute = AppStudyKindRouteImport.update({
+  id: '/study/$kind',
+  path: '/study/$kind',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -90,10 +96,11 @@ export interface FileRoutesByFullPath {
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
-  '/study': typeof AppStudyRoute
   '/tasks': typeof AppTasksRoute
   '/connect/$jobId': typeof ConnectJobIdRoute
   '/connect/': typeof ConnectIndexRoute
+  '/study/$kind': typeof AppStudyKindRoute
+  '/study/': typeof AppStudyIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -102,11 +109,12 @@ export interface FileRoutesByTo {
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
-  '/study': typeof AppStudyRoute
   '/tasks': typeof AppTasksRoute
   '/connect/$jobId': typeof ConnectJobIdRoute
   '/': typeof AppIndexRoute
   '/connect': typeof ConnectIndexRoute
+  '/study/$kind': typeof AppStudyKindRoute
+  '/study': typeof AppStudyIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -117,11 +125,12 @@ export interface FileRoutesById {
   '/welcome': typeof WelcomeRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/schedule': typeof AppScheduleRoute
-  '/_app/study': typeof AppStudyRoute
   '/_app/tasks': typeof AppTasksRoute
   '/connect/$jobId': typeof ConnectJobIdRoute
   '/_app/': typeof AppIndexRoute
   '/connect/': typeof ConnectIndexRoute
+  '/_app/study/$kind': typeof AppStudyKindRoute
+  '/_app/study/': typeof AppStudyIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -133,10 +142,11 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/chat'
     | '/schedule'
-    | '/study'
     | '/tasks'
     | '/connect/$jobId'
     | '/connect/'
+    | '/study/$kind'
+    | '/study/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -145,11 +155,12 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/chat'
     | '/schedule'
-    | '/study'
     | '/tasks'
     | '/connect/$jobId'
     | '/'
     | '/connect'
+    | '/study/$kind'
+    | '/study'
   id:
     | '__root__'
     | '/_app'
@@ -159,11 +170,12 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/_app/chat'
     | '/_app/schedule'
-    | '/_app/study'
     | '/_app/tasks'
     | '/connect/$jobId'
     | '/_app/'
     | '/connect/'
+    | '/_app/study/$kind'
+    | '/_app/study/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -234,13 +246,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppScheduleRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/study': {
-      id: '/_app/study'
-      path: '/study'
-      fullPath: '/study'
-      preLoaderRoute: typeof AppStudyRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/tasks': {
       id: '/_app/tasks'
       path: '/tasks'
@@ -262,23 +267,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConnectJobIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/study/': {
+      id: '/_app/study/'
+      path: '/study'
+      fullPath: '/study/'
+      preLoaderRoute: typeof AppStudyIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/study/$kind': {
+      id: '/_app/study/$kind'
+      path: '/study/$kind'
+      fullPath: '/study/$kind'
+      preLoaderRoute: typeof AppStudyKindRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppChatRoute: typeof AppChatRoute
   AppScheduleRoute: typeof AppScheduleRoute
-  AppStudyRoute: typeof AppStudyRoute
   AppTasksRoute: typeof AppTasksRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppStudyKindRoute: typeof AppStudyKindRoute
+  AppStudyIndexRoute: typeof AppStudyIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppChatRoute: AppChatRoute,
   AppScheduleRoute: AppScheduleRoute,
-  AppStudyRoute: AppStudyRoute,
   AppTasksRoute: AppTasksRoute,
   AppIndexRoute: AppIndexRoute,
+  AppStudyKindRoute: AppStudyKindRoute,
+  AppStudyIndexRoute: AppStudyIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

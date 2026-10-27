@@ -409,6 +409,8 @@ export function resolveMascot(ctx: MascotContext): MascotPresentation {
     visible: ctx.visible && (ctx.screen === "chat" || situation !== "idle"),
     reactionEventId: decision.reactionEventId,
     seasonalEventId,
+    lineKey: decision.lineKey,
+    lineFields: decision.fields,
   };
 }
 

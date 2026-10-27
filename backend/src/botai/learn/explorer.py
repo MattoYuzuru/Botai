@@ -18,6 +18,7 @@ skips the exploration (FR-009).
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from collections import Counter
@@ -161,7 +162,9 @@ class Explorer:
             if reused is not None:
                 return reused
             return await self._explore(info, wanted_kinds(payload), base_spec=None)
-        except JobCancelled:
+        except (JobCancelled, asyncio.CancelledError):
+            # nobody answered in time (JobCancelled), or the student stopped the job and the
+            # runner cancelled its task (CancelledError): either way the setup is not running
             await self._set(connection_id, status="draft")
             raise
         except BotaiError as err:

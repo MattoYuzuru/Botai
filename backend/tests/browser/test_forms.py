@@ -22,6 +22,7 @@ from botai.browser.forms import (
     role_of,
     safe_label,
     safe_path,
+    secretish,
 )
 from botai.browser.pagescan import RichField
 from botai.contracts.specs import LoginField, LoginStep
@@ -190,6 +191,56 @@ def test_paths_are_cut_before_id_like_segments() -> None:
     assert safe_path("/login/9f8e7d6c5b4a39281706") == "/login"
     assert safe_path("/session/12345678/form") == "/session"
     assert safe_path("/") == "/"
+
+
+def test_matrix_parameters_and_typed_names_never_stay_in_a_path() -> None:
+    assert safe_path("/cas/login;jsessionid=A1B2C3D4") == "/cas/login"
+    assert safe_path("/students/ivanov-ivan/dashboard", ["ivanov"]) == "/students"
+    assert safe_path("/students/ivanov-ivan/dashboard") == "/students/ivanov-ivan/dashboard"
+    assert login_area("/u/ivanov/login", ["ivanov"]) == "/u"
+
+
+def test_masked_contact_details_are_personal() -> None:
+    assert looks_personal("Код на +7 9** *** ** 12")
+    assert looks_personal("Код на i***@mail.ru")
+    assert safe_label("Код на +7 9** *** ** 12", "otp") == "Код подтверждения"
+
+
+def test_security_questions_are_secrets() -> None:
+    for label in ("Ответ на секретный вопрос", "PIN", "Секретное слово", "Security answer"):
+        assert secretish(label), label
+    for label in ("Группа", "Номер студенческого", None):
+        assert not secretish(label), label
+
+
+def test_a_step_never_stores_what_the_student_typed() -> None:
+    step = FormStep(
+        id="username",
+        form_selector="#f",
+        fields=(
+            StepField(
+                role="username",
+                selector="#ivanov-login",
+                label="Логин ivanov",
+                autocomplete="username",
+            ),
+        ),
+        submit="#go",
+        url="https://uni.test/u/ivanov/login",
+    )
+    learned = as_preset_step(step, ["ivanov"])
+    assert learned is not None
+    assert "ivanov" not in learned.model_dump_json()
+    assert learned.fields[0].selector == 'input[autocomplete="username"]'
+    assert learned.fields[0].label == "Логин"
+    assert learned.match["urlPathPrefix"] == "/u"
+
+
+def test_a_form_signature_ignores_the_address() -> None:
+    fields = (StepField(role="password", selector="#p", label="Пароль"),)
+    a = FormStep(id="p", form_selector="#f", fields=fields, submit=None, url="https://u.test/a")
+    b = FormStep(id="p", form_selector="#f", fields=fields, submit=None, url="https://u.test/b/c")
+    assert a.signature == b.signature
 
 
 def test_login_area() -> None:

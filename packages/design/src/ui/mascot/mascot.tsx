@@ -1,6 +1,17 @@
-import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
+import {
+  createContext,
+  type ReactNode,
+  type Ref,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { cn } from "../../lib/cn";
 import { useLatest } from "../../lib/hooks";
+import { claimAnimation, holdsAnimation, subscribeAnimationClaims } from "../../mascot/slots";
 import type {
   MascotAct,
   MascotLoop,
@@ -18,6 +29,32 @@ export interface MascotHandle {
   setLoop: (name: MascotLoop | null) => void;
   /** Вернуться к «держащему» виду ситуации после действия или бега. */
   settle: () => void;
+}
+
+const AnimationPolicy = createContext(true);
+
+/**
+ * Правило «один анимированный маскот на экран» действует по умолчанию. Витрина показывает много Варь сразу,
+ * поэтому снимает его: `<MascotAnimationPolicy exclusive={false}>`.
+ */
+export function MascotAnimationPolicy({ exclusive, children }: { exclusive: boolean; children: ReactNode }) {
+  return <AnimationPolicy.Provider value={exclusive}>{children}</AnimationPolicy.Provider>;
+}
+
+/** Первая анимированная Варя на экране получает анимацию, остальные стоят статичной позой, пока она не уйдёт. */
+function useAnimationSlot(wants: boolean): boolean {
+  const exclusive = useContext(AnimationPolicy);
+  const [id] = useState(() => Symbol("mascot"));
+  useEffect(() => {
+    if (!wants || !exclusive) return;
+    return claimAnimation(id);
+  }, [wants, exclusive, id]);
+  const holds = useSyncExternalStore(
+    subscribeAnimationClaims,
+    () => holdsAnimation(id),
+    () => true,
+  );
+  return !wants || !exclusive || holds;
 }
 
 export interface MascotProps {
@@ -52,7 +89,7 @@ export function Mascot({
   situation,
   theme = "orig",
   skin = null,
-  motion = "animated",
+  motion: requestedMotion = "animated",
   size = 48,
   flip = false,
   seed = 1,
@@ -61,6 +98,8 @@ export function Mascot({
   className,
   ref,
 }: MascotProps) {
+  const slot = useAnimationSlot(requestedMotion === "animated");
+  const motion: MascotMotion = slot ? requestedMotion : "static";
   const host = useRef<HTMLSpanElement>(null);
   const handle = useRef<VaryaHandle | null>(null);
   const latest = useLatest({ situation, theme, skin, motion });

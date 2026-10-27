@@ -8,6 +8,7 @@ labels. A step replayed from a learned preset takes precedence over these guesse
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
@@ -42,7 +43,12 @@ _BLOCK = re.compile(
     re.IGNORECASE,
 )
 _PERSONAL = re.compile(
-    r"@|\d{4,}|\+?\d(?:[\s().-]?\d){6,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}|\beyJ[\w-]{6,}"
+    r"@|\*{2,}|\d{4,}|\+?\d(?:[\s().-]?\d){6,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}|\beyJ[\w-]{6,}"
+)
+_SECRETISH = re.compile(
+    r"секрет|secret|парол|password|\bpin\b|пин[- ]?код|passcode|кодов\w+ слов|security answer|"
+    r"ответ на (?:секретный )?вопрос",
+    re.IGNORECASE,
 )
 _IDLIKE_SEGMENT = re.compile(r"^(?=.*\d)[\w-]{16,}$|^\d{5,}$|^[0-9a-fA-F]{8}-")
 
@@ -77,10 +83,10 @@ class FormStep:
     url: str
 
     @property
-    def signature(self) -> tuple[str, tuple[tuple[str, str], ...]]:
-        """Same signature twice in a row means the page refused what was submitted."""
-        path = urlsplit(self.url).path
-        return path, tuple(sorted((f.role, f.selector) for f in self.fields))
+    def signature(self) -> tuple[tuple[str, str], ...]:
+        """The same fields twice in a row mean the page refused what was submitted. The path is
+        left out on purpose: sites re-render a refusal at another address than the form's."""
+        return tuple(sorted((f.role, f.selector) for f in self.fields))
 
     @property
     def roles(self) -> set[str]:
@@ -159,19 +165,28 @@ def safe_label(label: str | None, role: str) -> str:
     return DEFAULT_LABEL.get(role, "Значение")
 
 
-def safe_path(path: str) -> str:
-    """The path up to the first segment that looks like an id or a session handle."""
+def secretish(label: str | None) -> bool:
+    """A field of an unknown kind whose label says its answer is a secret (a security question,
+    a PIN): it is asked like a password, never kept as plain text in the job."""
+    return bool(label and _SECRETISH.search(label))
+
+
+def safe_path(path: str, avoid: Sequence[str] = ()) -> str:
+    """The path up to the first segment that looks like an id or a session handle, or that holds
+    something the student typed (`avoid`). Matrix parameters (`;jsessionid=...`) are dropped."""
     kept: list[str] = []
-    for segment in path.split("/"):
-        if segment and _IDLIKE_SEGMENT.match(segment):
+    for raw in path.split("/"):
+        segment = raw.split(";", 1)[0]
+        lowered = segment.lower()
+        if segment and (_IDLIKE_SEGMENT.match(segment) or any(t in lowered for t in avoid)):
             break
         kept.append(segment)
     return "/".join(kept) or "/"
 
 
-def login_area(path: str) -> str:
+def login_area(path: str, avoid: Sequence[str] = ()) -> str:
     """`/auth/login` → `/auth/`; a one-segment path stays itself. Used for expiry detection."""
-    clean = safe_path(path)
+    clean = safe_path(path, avoid)
     segments = [s for s in clean.split("/") if s]
     if len(segments) >= 2:
         return "/" + "/".join(segments[:-1]) + "/"
@@ -344,23 +359,31 @@ def generic_selector(field: StepField) -> str | None:
     return None
 
 
-def as_preset_step(step: FormStep) -> LoginStep | None:
-    """A step safe to store: no personal values anywhere. None when it cannot be made safe."""
+def as_preset_step(step: FormStep, avoid: Sequence[str] = ()) -> LoginStep | None:
+    """A step safe to store: no personal values anywhere. None when it cannot be made safe.
+    `avoid` are lower-case fragments of what the student typed (login, local part of an e-mail)."""
+
+    def known(text: str) -> bool:
+        return looks_personal(text) or any(t in text.lower() for t in avoid)
+
     fields: list[LoginField] = []
     for f in step.fields:
         selector = f.selector
-        if looks_personal(selector) or len(selector) > 300:
+        if known(selector) or len(selector) > 300:
             alternative = generic_selector(f)
             if alternative is None:
                 return None
             selector = alternative
-        fields.append(LoginField(role=f.role, selector=selector, label=safe_label(f.label, f.role)))
+        label = safe_label(f.label, f.role)
+        if known(label):
+            label = DEFAULT_LABEL.get(f.role, "Значение")
+        fields.append(LoginField(role=f.role, selector=selector, label=label))
     parts = urlsplit(step.url)
     match: dict[str, str] = {
         "urlHost": (parts.hostname or "").lower(),
-        "urlPathPrefix": safe_path(parts.path),
+        "urlPathPrefix": safe_path(parts.path, avoid),
     }
     if len(fields[0].selector) <= 300:
         match["selectorPresent"] = fields[0].selector
-    submit = step.submit if step.submit and not looks_personal(step.submit) else None
+    submit = step.submit if step.submit and not known(step.submit) else None
     return LoginStep(id=step.id, match=match, fields=fields, submit=submit, kind="form")

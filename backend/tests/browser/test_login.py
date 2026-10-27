@@ -331,6 +331,43 @@ async def test_expired_session_logs_in_again_with_the_stored_password(
     assert len(rig.store.presets[ORIGIN]) == 1
 
 
+async def test_a_login_that_meets_no_code_page_does_not_make_the_preset_forget_it(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preset is shared by every student of the origin. A site that trusts this device and
+    asks for no SMS code once must not teach everybody else that it never asks (found by the
+    full-stack test, W7)."""
+    rig = make_rig()
+    await rig.ensure(Student())
+    (before,) = rig.store.presets[ORIGIN]
+    assert [s["id"] for s in before["steps"]] == ["username-password", "otp"]
+
+    login.expire_all_sessions()
+    monkeypatch.setattr(login, "OTP_REQUIRED", False)
+    student = Student(password="never used", username="never used")
+    second, _ = await rig.ensure(student)
+
+    assert await works(second)
+    assert student.asked == []  # nothing to ask: the Vault had the login and the password
+    (after,) = rig.store.presets[ORIGIN]  # no new revision, the old one was replayed
+    assert [s["id"] for s in after["steps"]] == ["username-password", "otp"]
+    assert after["mfa"] == before["mfa"] == {"possible": "yes", "automate": False, "kinds": ["sms"]}
+
+
+async def test_a_page_a_login_does_meet_is_learned_next_to_the_known_ones(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """Keeping what an earlier login saw does not stop the preset from learning something new."""
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/"))  # a preset that knows no step yet
+    await rig.ensure(Student())
+
+    known, learned = rig.store.presets[ORIGIN]
+    assert known.get("steps", []) == []
+    assert [s["id"] for s in learned["steps"]] == ["username-password", "otp"]
+    assert learned["revision"] == 2
+
+
 async def test_login_without_otp_step_and_a_two_page_flow(make_rig: Callable[..., Rig]) -> None:
     for start, expected in (
         ("/plain/login", ["login", "password"]),
@@ -414,6 +451,83 @@ async def test_nobody_answering_cancels_the_job(make_rig: Callable[..., Rig]) ->
 
 
 # --------------------------------------------------------------------------------- push wait
+
+
+async def test_a_push_page_is_not_a_finished_login_even_without_a_probe(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """No learned probe must not turn "confirm on your phone" into a successful login."""
+    rig = make_rig(timing=replace(FAST, push_wait_s=1.5))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login", probe=False))
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(Student())
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert "не подтвердили" in exc.value.detail
+    for kind in (SecretKind.SESSION, SecretKind.PASSWORD, SecretKind.LOGIN):
+        assert not await rig.vault.has(rig.user, rig.conn, kind)  # nothing kept from a half login
+
+
+async def test_the_same_push_login_succeeds_once_approved_and_learns_its_probe(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login", probe=False))
+    ctx = rig.ctx(Student())
+
+    async def approve_when_asked() -> None:
+        while not any(isinstance(b, WaitBlock) for b in ctx.blocks):  # noqa: ASYNC110
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        login.approve_push()
+
+    approver = asyncio.create_task(approve_when_asked())
+    session = await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    await approver
+    assert await works(session)
+    assert rig.store.presets[ORIGIN][-1]["success"]["probe"]["url"] == f"{ORIGIN}/api/v2/me"
+
+
+async def test_a_refusal_shown_at_another_address_is_still_a_refusal(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """Keycloak-like: the form is served at /kc/auth, the refusal comes back at
+    /kc/auth/authenticate. Three tries, not four; the stored password is tried once."""
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/kc/auth"))
+    before = len(login.ATTEMPTS)
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(Student(wrong_passwords=99))
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert len(login.ATTEMPTS) - before == 3
+
+    stale = make_rig()
+    stale.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/kc/auth"))
+    await stale.vault.put(stale.user, stale.conn, SecretKind.LOGIN, data.USERNAME)
+    await stale.vault.put(stale.user, stale.conn, SecretKind.PASSWORD, "an-old-password")
+    before = len(login.ATTEMPTS)
+    student = Student()
+    session, _ = await stale.ensure(student)
+    assert await works(session)
+    assert len(login.ATTEMPTS) - before == 1  # the stale password is not sent a second time
+    assert student.count("password") == 1
+
+
+async def test_the_preset_keeps_what_the_student_typed_out_of_paths_and_probes(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    await rig.ensure(Student())
+    text = json.dumps(rig.store.presets[ORIGIN][-1], ensure_ascii=False).lower()
+    assert "student" not in text  # the local part of the login, anywhere
+
+
+async def test_push_wait_is_a_wait_block_only_once_per_wait(make_rig: Callable[..., Rig]) -> None:
+    rig = make_rig(timing=replace(FAST, push_wait_s=2.0))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/push/login"))
+    ctx = rig.ctx(Student())
+    with pytest.raises(BotaiError):
+        await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    assert len([b for b in ctx.blocks if isinstance(b, WaitBlock)]) == 1
 
 
 async def test_push_approval_is_a_wait_block_and_needs_no_field(

@@ -40,6 +40,7 @@ from botai.browser.forms import (
     has_credential_fields,
     replay,
     safe_label,
+    secretish,
 )
 from botai.browser.gateway import CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.presets import (
@@ -48,6 +49,7 @@ from botai.browser.presets import (
     Recorder,
     build_preset,
     comparable,
+    keep_known,
 )
 from botai.browser.probe import check_session, learn_probe, probe_ok
 from botai.browser.session import decode_session, encode_session
@@ -142,6 +144,21 @@ class _Run:
     verified_page: tuple[str, str, int] | None = None
     final_url: str = ""
     steps_recorded: set[Any] = field(default_factory=lambda: set[Any]())
+
+
+def _avoid_tokens(creds: _Creds) -> list[str]:
+    """Lower-case fragments of what the student typed that must not end up in a shared preset."""
+    if not creds.username:
+        return []
+    typed = creds.username.lower().strip()
+    return [t for t in dict.fromkeys([typed, typed.split("@")[0]]) if len(t) >= 3]
+
+
+def _ordinary_page(run: _Run, snap: PageSnapshot) -> bool:
+    """Not a push wait, a captcha, a refusal or one of the login pages seen on the way."""
+    return isinstance(detect(snap), UnknownPage) and (
+        urlsplit(snap.url).path not in set(run.recorder.login_paths)
+    )
 
 
 def page_signature(snap: PageSnapshot) -> tuple[str, str, int]:
@@ -364,14 +381,19 @@ class LoginFlow:
             run.verified_page = signature
             return None
         learned = await learn_probe(
-            await run.handle.network_log(), state, run.hosts, snap.url, egress=self._egress
+            await run.handle.network_log(),
+            state,
+            run.hosts,
+            snap.url,
+            egress=self._egress,
+            avoid=_avoid_tokens(run.creds),
         )
         if learned is not None:
             run.probe = run.learned_probe = learned
             run.final_url = snap.url
             return state
-        if run.submitted > 0:
-            # a form was submitted and the site now shows no login: accept, with nothing to probe
+        if run.submitted > 0 and _ordinary_page(run, snap):
+            # no probe could be learned, but a form went in and an ordinary page came back
             run.final_url = snap.url
             return state
         run.verified_page = signature
@@ -403,13 +425,13 @@ class LoginFlow:
                 probe=run.probe,
                 final_url=run.final_url or run.start_url,
                 now=self._clock.now(),
+                avoid=_avoid_tokens(run.creds),
             )
             known = run.preset
-            if run.preset is not None and not run.recorder.steps:
-                # nothing new was observed (for instance a human did every step): keep the old steps
-                preset["steps"] = [
-                    s.model_dump(by_alias=True, exclude_none=True) for s in run.preset.steps
-                ]
+            if known is not None:
+                # this run met only some of the pages (a human did every step, or the site trusted
+                # the device and asked for no code): the others stay in the shared preset
+                preset = keep_known(preset, known)
             if known is None or comparable(known) != comparable(preset):
                 revision = await self._store.save_preset(
                     run.info.origin, preset, connection_id=run.connection_id
@@ -478,6 +500,10 @@ class LoginFlow:
                 creds.password_from_vault = False
                 creds.typed_password = True
             return secret.get_secret_value()
+        if f.role == "text" and secretish(f.label):  # a security question: not plain text
+            return (
+                await run.job.ask_secret(self._block(f, question, secret=True))
+            ).get_secret_value()
         answer = await run.job.ask(self._block(f, question, secret=False))
         if not isinstance(answer.values, str) or not answer.values:
             raise JobCancelled("the user left a login field empty")
@@ -510,7 +536,7 @@ class LoginFlow:
             kind = "email" if f.input_type == "email" else "text"
             autocomplete = "username"
         else:
-            kind = "number" if f.input_type == "number" else "text"
+            kind = "password" if secret else ("number" if f.input_type == "number" else "text")
             autocomplete = "off"
         return InputBlock(
             id=new_id(),
@@ -622,6 +648,7 @@ class LoginFlow:
         )
         await run.job.status("Жду, пока вы пройдёте шаг на экране", state=JobState.WAITING_USER)
         handed_over = page_signature(snap)
+        handed_path = urlsplit(snap.url).path
         step_then = pending.signature if pending else None
         loop = asyncio.get_running_loop()
         deadline = loop.time() + t.human_wait_s
@@ -642,6 +669,7 @@ class LoginFlow:
                 and pending is not None
                 and isinstance(same_form, FormStep)
                 and same_form.signature == step_then
+                and urlsplit(now.url).path == handed_path
             ):
                 now = await self._submit(run, pending)  # the human did the check, we send the form
                 continue
@@ -650,11 +678,12 @@ class LoginFlow:
             if (
                 isinstance(found, FormStep)
                 and page_signature(now) != handed_over
-                and found.signature != step_then
+                and (found.signature != step_then or urlsplit(now.url).path != handed_path)
                 and link.idle_s() >= t.resume_idle_s
             ):
                 await link.needs("input", "Дальше вход продолжится в обычных полях BotAI")
                 await link.close("mirrored")  # a normal form again: back to native fields
+                run.last_signature = None  # the human acted in between: not a refusal of ours
                 return now
         raise JobCancelled("the login screen timed out")
 

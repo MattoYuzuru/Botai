@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -9,6 +10,7 @@ from datetime import timedelta
 from typing import Any
 
 import httpx
+import pytest
 from openpyxl import Workbook
 from sqlalchemy import func, select
 
@@ -223,6 +225,16 @@ async def test_the_uploaded_bytes_do_not_stay_in_the_job_payload(make_env: EnvFa
     stored = (await env.db.execute(select(m.Job.payload))).scalar_one()
     assert "content_b64" not in stored
     assert stored["filename"] == "rules.docx"
+
+
+async def test_an_ingest_the_student_stops_leaves_a_draft(make_env: EnvFactory) -> None:
+    """Stopping a job cancels its task (CancelledError, not JobCancelled). The connection used to
+    stay `learning` for good (found by the full-stack test, W7)."""
+    env = await document_env(make_env, [])
+    ctx = ls.StoppedByStudent(user_id=env.seeded.user_id, connection_id=env.seeded.connection_id)
+    with pytest.raises(asyncio.CancelledError):
+        await env.handlers[JobKind.INGEST](ctx, env.services, upload(pages.rules_docx(), "r.docx"))
+    assert (await env.conn()).status == "draft"
 
 
 async def test_a_broken_file_ends_in_an_honest_error(make_env: EnvFactory) -> None:

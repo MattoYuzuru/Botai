@@ -237,6 +237,18 @@
             "title": "Status",
             "type": "string"
           },
+          "storedSecrets": {
+            "items": {
+              "enum": [
+                "token",
+                "ical_url",
+                "api_key"
+              ],
+              "type": "string"
+            },
+            "title": "Storedsecrets",
+            "type": "array"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -441,6 +453,17 @@
               }
             ],
             "title": "Coursetitle"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           },
           "dueAt": {
             "anyOf": [

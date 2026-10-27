@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 from pydantic import SecretStr
 
-from botai.browser.gateway import CaptureConfig, PlaywrightGateway, PlaywrightHandle
+from botai.browser.gateway import SAMPLE_CHARS, CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.proxy import EgressProxy
 from botai.browser.session import decode_session, encode_session
-from botai.core.browser import SessionState
+from botai.core.browser import SessionCookie, SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from tests.fakeuni import data
@@ -151,7 +154,7 @@ async def test_network_log_records_xhr_with_bounded_samples(open_browser: Opener
     assert me.response_sample is not None
     assert "Иванова Анна" in me.response_sample
     assert any(r.resource_type == "document" for r in log)
-    assert all(len(r.response_sample or "") <= 4000 for r in log)
+    assert all(len(r.response_sample or "") <= SAMPLE_CHARS for r in log)
 
 
 async def test_restoring_a_session_skips_the_login(open_browser: Opener) -> None:
@@ -177,6 +180,37 @@ async def test_bearer_is_taken_from_the_header_the_browser_sent(open_browser: Op
     assert state.bearer is not None
     assert state.bearer.get_secret_value() == SPA_JWT
     assert state.expires_hint == datetime.fromtimestamp(SPA_JWT_EXPIRES, UTC)
+
+
+async def test_a_whole_json_answer_is_sampled_so_the_learner_can_parse_it(
+    open_browser: Opener,
+) -> None:
+    handle = await open_browser()
+    await handle.goto("https://fakeuni.test/spa/big?n=400")
+    await handle.page.wait_for_function("document.title.startsWith('done')")
+    big = next(r for r in await handle.network_log() if "/spa/api/big" in r.url)
+    assert (big.resource_type, big.status) == ("fetch", 200)
+    assert big.response_sample is not None
+    assert len(big.response_sample) > 20_000  # far more than a one-line preview
+    items = json.loads(big.response_sample)  # complete: parseable, not cut mid-item
+    assert len(items) == 400
+    assert items[7]["title"] == "Занятие 7"
+
+
+async def test_samples_are_capped_and_html_answers_are_sampled_too(open_browser: Opener) -> None:
+    handle = await open_browser()
+    await handle.goto("https://fakeuni.test/spa/big?n=6000")  # about 600 KB of JSON
+    await handle.page.wait_for_function("document.title.startsWith('done')")
+    await handle.page.evaluate("fetch('/screen/lab2').then((r) => r.text())")
+    log = await handle.network_log()
+    huge = next(r for r in log if "/spa/api/big" in r.url)
+    assert huge.response_sample is not None
+    assert len(huge.response_sample) == SAMPLE_CHARS  # cut at the cap, never more
+    html = next(r for r in log if r.url.endswith("/screen/lab2") and r.resource_type == "fetch")
+    assert html.response_content_type is not None
+    assert html.response_content_type.startswith("text/html")
+    assert html.response_sample is not None
+    assert "Second page" in html.response_sample
 
 
 async def test_token_endpoints_are_not_sampled(open_browser: Opener) -> None:
@@ -271,6 +305,47 @@ async def test_page_scripts_cannot_bypass_the_proxy(
     )
     assert result == "blocked"
     assert egress.stats["deny:ip_literal"] > before
+
+
+async def test_a_typed_value_never_rides_along_in_an_error(open_browser: Opener) -> None:
+    handle = await open_browser(hosts=("fakeuni.test",))
+    await handle.page.set_content('<input id="r" readonly>')
+    secret = "".join(
+        ["SECRET", "-VALUE-7"]
+    )  # (not a literal: it would show in the test's own frame)
+    with pytest.raises(BotaiError) as exc:
+        await handle.fill("#r", secret)  # the field exists but cannot be edited
+    shown = "".join(traceback.format_exception(exc.value)) + repr(exc.value) + exc.value.detail
+    assert secret not in shown
+
+
+async def test_a_context_is_not_left_behind_when_opening_fails(
+    gateway: PlaywrightGateway,
+) -> None:
+    await gateway.open(user_id=new_id(), connection_id=new_id(), allow_hosts=["fakeuni.test"])
+    browser = gateway._browser
+    assert browser is not None
+    before = len(browser.contexts)
+    broken = SessionState(
+        origin="https://fakeuni.test",
+        cookies=[SessionCookie(name="a", value=SecretStr("b"), domain="")],
+        captured_at=datetime.now(UTC),
+    )
+    with pytest.raises(PlaywrightError):
+        await gateway.open(
+            user_id=new_id(), connection_id=new_id(), allow_hosts=["fakeuni.test"], session=broken
+        )
+    assert len(browser.contexts) == before
+
+
+async def test_bearer_comes_from_the_origin_or_the_only_token_sent(open_browser: Opener) -> None:
+    handle = await open_browser(origin="https://fakeuni.test")
+    handle._bearer = {"api.fakeuni.test": "T1"}
+    assert (await handle.export_session()).bearer == SecretStr("T1")  # one token, an API host
+    handle._bearer = {"api.fakeuni.test": "T1", "id.fakeuni.test": "T2"}
+    assert (await handle.export_session()).bearer is None  # two candidates: no guess
+    handle._bearer = {"api.fakeuni.test": "T1", "fakeuni.test": "T0"}
+    assert (await handle.export_session()).bearer == SecretStr("T0")  # the origin's own wins
 
 
 async def test_downloads_are_cancelled(open_browser: Opener) -> None:

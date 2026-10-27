@@ -18,6 +18,7 @@ While it runs the old data stay on screen with the connection marked `repairing`
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from collections.abc import Sequence
@@ -104,8 +105,8 @@ class Repairer(Explorer):
             return {"status": "skipped", "detail": snap.status}
         try:
             return await self._repair(snap, mode, reason)
-        except JobCancelled:
-            await self._leave_stale(snap, "Починка не завершена: нет ответа на вопрос")
+        except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
+            await self._leave_stale(snap, "Починка не завершена: задание остановлено")
             raise
         except BotaiError as err:
             if err.code in {ErrorCode.SOURCE_UNAVAILABLE, ErrorCode.SOURCE_RATE_LIMITED}:

@@ -8,6 +8,7 @@ import {
   MASCOT_SITUATIONS,
   MASCOT_SKINS,
   Mascot,
+  MascotAnimationPolicy,
   type MascotContext,
   MascotDock,
   type MascotIntent,
@@ -22,6 +23,7 @@ import {
   useMascotQuiet,
 } from "@botai/design";
 import { useCallback, useMemo, useState } from "react";
+import { WallMascot } from "@/features/connect/wall-mascot";
 import {
   BASE,
   CHECK_FIXTURES,
@@ -34,6 +36,8 @@ import {
   snapshot,
   URGENT,
 } from "@/features/mascot/fixtures";
+import { ProgressWall } from "@/widgets/progress-wall/progress-wall";
+import { DemoJobManager, SHOWCASE_JOBS } from "./fixtures-agent";
 import { Demo, Grid, Section } from "./layout";
 
 const onIntent = (intent: MascotIntent) => toast(`Действие: ${intent.label}`, { description: intent.kind });
@@ -388,54 +392,96 @@ function RunnerDemo() {
   );
 }
 
+const WALL_STATES = [
+  ["reconnecting", "Идёт работа: бежит по рельсу на месте, стадия и время — текстом"],
+  ["question", "Агент ждёт ответа: поза ожидания, «Жду ответа», вопрос на экране"],
+  ["done", "Итог: Варя рядом с названием, «Готово» закрывает экран"],
+] as const;
+
+/** `ProgressWall` с Варей в трёх состояниях на готовых снимках заданий. */
+function WallDemos() {
+  const manager = useMemo(() => {
+    const demo = new DemoJobManager();
+    for (const [key] of WALL_STATES) demo.seed(SHOWCASE_JOBS[key]);
+    return demo;
+  }, []);
+  return (
+    <>
+      {WALL_STATES.map(([key, label]) => (
+        <Demo key={key} label={`ProgressWall — ${label}`} wide>
+          <Card className="mx-auto max-w-col" data-demo={`wall-${key}`}>
+            <ProgressWall
+              jobId={SHOWCASE_JOBS[key].jobId}
+              title="Подключаю ВШЭ"
+              spaceTitle="Высшая школа экономики"
+              timeZone={MSK}
+              manager={manager}
+              onMinimize={() => {}}
+              onFinish={() => {}}
+              headingLevel={3}
+              renderMascot={(state, slot) => <WallMascot state={state} slot={slot} />}
+            />
+          </Card>
+        </Demo>
+      ))}
+    </>
+  );
+}
+
 /**
  * Варя (docs/design/mascot.md): состояния §2, фикстуры §8, календарь образов §7, сцена и насест чата §4.
  * Данные синтетические, время зафиксировано; это не доказательство живого входа в вуз.
  */
 export function MascotSection() {
   return (
-    <Section
-      id="mascot"
-      title="Варя"
-      note="Состояние считает чистая функция resolveMascot: одинаковый вход — одинаковая Варя. Картинка декоративна (aria-hidden), каждый смысл есть текстом: бейдж, реплика, действие."
-    >
-      <div className="flex flex-col gap-6" data-part="poses">
-        <PosesDemo />
-        <RunnerDemo />
-      </div>
-      <div data-part="priority">
-        <Demo label="Таблица приоритета §2 — по фикстуре на строку" wide>
-          <Grid cols={3}>
-            {PRIORITY_FIXTURES.map((fixture) => (
-              <FixtureCard key={fixture.id} fixture={fixture} />
-            ))}
-          </Grid>
-        </Demo>
-      </div>
-      <div data-part="checks">
-        <Demo label="Фикстуры проверок §8" wide>
-          <Grid cols={3}>
-            {CHECK_FIXTURES.map((fixture) => (
-              <FixtureCard key={fixture.id} fixture={fixture} />
-            ))}
-            <DoneOnceDemo />
-            <SpaceSwitchDemo />
-            <CalendarDemo />
-          </Grid>
-        </Demo>
-      </div>
-      <div data-part="dock">
-        <Demo
-          label="Чат: сцена пустого чата и прыжок на насест, открытая клавиатура, насест на 320 / 390 / 430 px"
-          wide
-        >
-          <div className="flex flex-wrap items-start gap-6">
-            <DockFrame width="max-w-[20rem]" label="320" pad="px-4" />
-            <DockFrame width="max-w-[24.375rem]" label="390" pad="px-4" />
-            <DockFrame width="max-w-[26.875rem]" label="430" pad="px-5" />
-          </div>
-        </Demo>
-      </div>
-    </Section>
+    // Витрина показывает много Варь сразу: правило «одна анимированная на экран» здесь снято.
+    <MascotAnimationPolicy exclusive={false}>
+      <Section
+        id="mascot"
+        title="Варя"
+        note="Состояние считает чистая функция resolveMascot: одинаковый вход — одинаковая Варя. Картинка декоративна (aria-hidden), каждый смысл есть текстом: бейдж, реплика, действие."
+      >
+        <div className="flex flex-col gap-6" data-part="poses">
+          <PosesDemo />
+          <RunnerDemo />
+        </div>
+        <div className="flex flex-col gap-6" data-part="wall">
+          <WallDemos />
+        </div>
+        <div data-part="priority">
+          <Demo label="Таблица приоритета §2 — по фикстуре на строку" wide>
+            <Grid cols={3}>
+              {PRIORITY_FIXTURES.map((fixture) => (
+                <FixtureCard key={fixture.id} fixture={fixture} />
+              ))}
+            </Grid>
+          </Demo>
+        </div>
+        <div data-part="checks">
+          <Demo label="Фикстуры проверок §8" wide>
+            <Grid cols={3}>
+              {CHECK_FIXTURES.map((fixture) => (
+                <FixtureCard key={fixture.id} fixture={fixture} />
+              ))}
+              <DoneOnceDemo />
+              <SpaceSwitchDemo />
+              <CalendarDemo />
+            </Grid>
+          </Demo>
+        </div>
+        <div data-part="dock">
+          <Demo
+            label="Чат: сцена пустого чата и прыжок на насест, открытая клавиатура, насест на 320 / 390 / 430 px"
+            wide
+          >
+            <div className="flex flex-wrap items-start gap-6">
+              <DockFrame width="max-w-[20rem]" label="320" pad="px-4" />
+              <DockFrame width="max-w-[24.375rem]" label="390" pad="px-4" />
+              <DockFrame width="max-w-[26.875rem]" label="430" pad="px-5" />
+            </div>
+          </Demo>
+        </div>
+      </Section>
+    </MascotAnimationPolicy>
   );
 }

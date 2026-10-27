@@ -17,6 +17,7 @@ export {
 } from "./button/button";
 export { Card, type CardProps } from "./card/card";
 export { ChatComposer, type ChatComposerProps } from "./chat-composer/chat-composer";
+export { ChatLayout, type ChatLayoutProps } from "./chat-layout/chat-layout";
 export {
   type ChatCitation,
   ChatMessage,
@@ -24,17 +25,41 @@ export {
   type MessageStatus,
 } from "./chat-message/chat-message";
 export { Checkbox, type CheckboxProps } from "./checkbox/checkbox";
+export {
+  ContextMeter,
+  ContextMeterBar,
+  type ContextMeterBarProps,
+  type ContextMeterProps,
+  type ContextSegment,
+  type ContextSourceItem,
+  formatTokens,
+} from "./context-meter/context-meter";
 export { DeadlineItem, type DeadlineItemProps } from "./deadline-item/deadline-item";
 export { Dialog, type DialogProps } from "./dialog/dialog";
 export { EmptyState, type EmptyStateProps } from "./empty-state/empty-state";
 export { Field, type FieldProps, useFieldControl } from "./field/field";
+export { FilePicker, type FilePickerProps, formatBytes } from "./file-picker/file-picker";
+export { GradeTile, type GradeTileProps } from "./grade-tile/grade-tile";
 export { HandoffCard, type HandoffCardProps } from "./handoff-card/handoff-card";
 export { Icon, type IconName, type IconProps, type IconSize, iconRegistry } from "./icon";
 export { IconButton, type IconButtonProps } from "./icon-button/icon-button";
 export { Input, type InputProps } from "./input/input";
+export {
+  ListRow,
+  ListRowBody,
+  type ListRowBodyProps,
+  type ListRowProps,
+  listRowClass,
+} from "./list-row/list-row";
 export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
 export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
-export { Mascot, type MascotHandle, type MascotProps } from "./mascot/mascot";
+export { Mascot, MascotAnimationPolicy, type MascotHandle, type MascotProps } from "./mascot/mascot";
+export {
+  BUBBLE_MAX_CHARS,
+  BUBBLE_MS,
+  MascotBubble,
+  type MascotBubbleProps,
+} from "./mascot-bubble/mascot-bubble";
 export { HOP_MS, MascotDock, type MascotDockProps } from "./mascot-dock/mascot-dock";
 export { MascotStage, type MascotStageProps, REACTION_MS } from "./mascot-stage/mascot-stage";
 export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";

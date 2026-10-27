@@ -363,7 +363,9 @@ class ScenarioUnavailable(Exception):
 
 
 class _NoSessions:
-    async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> Any:
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> Any:
         raise AssertionError("the benchmark never logs in to a university")
 
 

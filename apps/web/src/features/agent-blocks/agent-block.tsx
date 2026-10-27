@@ -23,6 +23,7 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
           at={Date.parse(block.at)}
           nowMs={ctx.nowMs}
           timeZone={ctx.timeZone}
+          confidence={ctx.confidence?.(block.markdown)}
           citations={block.sources?.map((source, index) => ({
             id: `${block.id}-${index}`,
             title: source.title,
@@ -30,6 +31,7 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
             fetchedAt: Date.parse(source.fetchedAt),
             stale: source.stale,
             spaceTitle: ctx.spaceTitle,
+            internal: ctx.internalLink?.(source.url) ?? undefined,
           }))}
         />
       );

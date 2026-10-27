@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 
@@ -223,6 +224,19 @@ async def test_an_unanswered_question_cancels_and_leaves_a_draft(make_env: EnvFa
         user_id=env.seeded.user_id, connection_id=env.seeded.connection_id
     )  # nobody answers
     with pytest.raises(JobCancelled):
+        await env.handlers[JobKind.CONNECT](env.ctx, env.services, {})
+    assert (await env.conn()).status == "draft"
+    assert await env.specs() == []
+
+
+async def test_a_job_the_student_stops_leaves_a_draft_too(make_env: EnvFactory) -> None:
+    """Stopping a job cancels its task: the handler gets CancelledError, not JobCancelled. The
+    connection used to stay `learning` for good (found by the full-stack test, W7)."""
+    env = await make_env([ls.timetable_answer(), ls.deadlines_answer()])
+    env.ctx = ls.StoppedByStudent(
+        user_id=env.seeded.user_id, connection_id=env.seeded.connection_id
+    )
+    with pytest.raises(asyncio.CancelledError):
         await env.handlers[JobKind.CONNECT](env.ctx, env.services, {})
     assert (await env.conn()).status == "draft"
     assert await env.specs() == []

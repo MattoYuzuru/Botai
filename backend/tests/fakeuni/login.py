@@ -30,6 +30,7 @@ SESSIONS: set[str] = set()
 _PENDING_OTP: set[str] = set()
 COOKIE = "FAKEUNI_SESSION"
 ROOT_TARGET = "/app"  # where `/` sends a visitor; tests point it at other entrances
+OTP_REQUIRED = True  # False: the default path logs in on the password alone (code asked once)
 
 PUSH_PENDING: set[str] = set()
 PUSH_APPROVED: set[str] = set()
@@ -113,6 +114,8 @@ async def login_submit(
     if not _credentials_ok(username, password):
         ATTEMPTS.append(("auth", "user"))
         return HTMLResponse(_login_form(_error("Неверный логин или пароль")), status_code=401)
+    if not OTP_REQUIRED:
+        return _start_session()
     pending = secrets.token_hex(8)
     _PENDING_OTP.add(pending)
     resp = RedirectResponse("/auth/otp", status_code=303)
@@ -213,6 +216,36 @@ async def two_password_submit(
     if request.cookies.get("FAKEUNI_TWO") != "1" or password != data.PASSWORD:
         ATTEMPTS.append(("two", "user"))
         return HTMLResponse(_two_pass_form(_error("Неверный пароль")), status_code=401)
+    return _start_session()
+
+
+# --- a form that is refused at another address than it was served from (Keycloak-like) -------
+
+
+def _kc_form(error: str = "") -> str:
+    return _page(
+        "Вход (kc)",
+        f"""{error}<form id="kc" method="post" action="/kc/auth/authenticate">
+  <input id="u" name="username" type="text" autocomplete="username">
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Войти</button>
+</form>""",
+    )
+
+
+@router.get("/kc/auth", response_class=HTMLResponse)
+async def kc_page() -> str:
+    return _kc_form()
+
+
+@router.post("/kc/auth/authenticate", response_model=None)
+async def kc_submit(
+    username: str = Form(...), password: str = Form(...)
+) -> HTMLResponse | RedirectResponse:
+    if not _credentials_ok(username, password):
+        ATTEMPTS.append(("kc", "user"))
+        # the refusal is shown at /kc/auth/authenticate, not at /kc/auth
+        return HTMLResponse(_kc_form(_error("Неверный логин или пароль")), status_code=401)
     return _start_session()
 
 
@@ -469,6 +502,22 @@ async def spa_ping(request: Request) -> JSONResponse | dict[str, object]:
 @router.get("/spa/api/token")
 async def spa_token() -> dict[str, object]:
     return {"access_token": SPA_JWT, "expires_in": 300}
+
+
+@router.get("/spa/api/big")
+async def spa_big(n: int = 10) -> list[dict[str, object]]:
+    """n timetable-like items: a real portal answers with tens of kilobytes of JSON."""
+    return [
+        {"id": i, "title": f"Занятие {i}", "room": f"А-{100 + i % 50}", "teacher": "Иванов И. И."}
+        for i in range(n)
+    ]
+
+
+@router.get("/spa/big", response_class=HTMLResponse)
+async def spa_big_page(n: int = 10) -> str:
+    return f"""<!doctype html><html><head><title>Большой ответ</title></head><body><script>
+fetch('/spa/api/big?n={n}').then((r) => r.json()).then((j) => {{ document.title = 'done ' + j.length; }});
+</script></body></html>"""
 
 
 @router.get("/download")

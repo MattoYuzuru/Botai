@@ -7,6 +7,12 @@ import { queryKeys } from "@/api/queries";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
 
+/** Берёт задание под наблюдение: поток открывается в фоне, а свёрнутый ход виден в шапке экранов. */
+export function trackJob(job: { jobId: string; title: string; spaceTitle?: string; connectionId?: string }) {
+  useActiveJob.getState().set(job);
+  jobManager.start(job.jobId);
+}
+
 export interface ReconnectTarget {
   connectionId: string;
   spaceId: string;
@@ -32,13 +38,12 @@ export function useReconnect() {
       return { jobId, target };
     },
     onSuccess: async ({ jobId, target }) => {
-      useActiveJob.getState().set({
+      trackJob({
         jobId,
         title: `Вхожу в ${target.spaceTitle}`,
         spaceTitle: target.spaceTitle,
         connectionId: target.connectionId,
       });
-      jobManager.start(jobId);
       await queryClient.invalidateQueries({ queryKey: queryKeys.connections(target.spaceId) });
       await navigate({ to: "/connect/$jobId", params: { jobId } });
     },

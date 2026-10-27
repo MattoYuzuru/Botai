@@ -1,6 +1,7 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
 import { fieldsHash } from "@/lib/hash";
+import { createChatHandlers } from "./chat-handlers";
 import { runConnect } from "./connect-script";
 import { createDataHandlers } from "./data-handlers";
 import { findUser, type MockDb, type MockUser, persistDb, ulid } from "./db";
@@ -119,6 +120,7 @@ export function createHandlers(
 
   return [
     ...createDataHandlers(db, { latency, persist, jobPace }),
+    ...createChatHandlers(db, { latency, persist, jobPace }),
     http.post("*/api/v1/auth/login", async ({ request }) => {
       await wait();
       const body = (await request.json()) as S["LoginRequest"];

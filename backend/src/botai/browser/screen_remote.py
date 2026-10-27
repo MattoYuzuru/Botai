@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from botai.browser.screen import ScreenRegistry
 
 log = logging.getLogger(__name__)
+# The websockets library logs every frame at DEBUG, and here the frames are a student's keystrokes
+# (their password, their one-time code). Never below WARNING, whatever the root level is.
+logging.getLogger("websockets").setLevel(logging.WARNING)
 
 AUTH_HEADER = "X-Botai-Auth"
 MAX_SKEW_S = 30
@@ -54,10 +57,10 @@ def sign(key: bytes, target: str, *, now: float | None = None) -> str:
 
 
 def authorised(key: bytes, header: str | None, target: str, *, now: float | None = None) -> bool:
-    if not header:
+    if not header or not header.isascii():
         return False
     stamp_text, _, mac = header.partition(".")
-    if not stamp_text.isdigit() or not mac:
+    if not (stamp_text.isdecimal() and len(stamp_text) <= 12) or not mac:
         return False
     stamp = int(stamp_text)
     if abs((time.time() if now is None else now) - stamp) > MAX_SKEW_S:

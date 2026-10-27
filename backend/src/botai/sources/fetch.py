@@ -61,18 +61,29 @@ class SourceClient:
         session = ctx.session if use_session else None
         if auth_type != "none" and session is not None and known_expired(session, ctx.now):
             raise SessionExpired("session is past its expiry hint")
-        self._client = build_client(
-            allow_hosts=ctx.allow_hosts,
-            proxy_url=ctx.proxy_url,
-            cookies=cookie_jar(session, ctx.now) if auth_type == "cookie" else None,
-            headers={
-                **auth_headers(session, auth_type=auth_type, header_name=header_name),
-                **(headers or {}),
-            },
-            transport=ctx.transport,
-        )
+        self._cookies = cookie_jar(session, ctx.now) if auth_type == "cookie" else None
+        self._headers = {
+            **auth_headers(session, auth_type=auth_type, header_name=header_name),
+            **(headers or {}),
+        }
+        self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> Self:
+        # The production EgressProxy only accepts a token bound to this connection's allowlist
+        # (security.md §4); a bare proxy URL is refused with 407. Tests pass a mock transport.
+        proxy = self._ctx.proxy_url
+        if proxy and self._ctx.transport is None:
+            from botai.browser.egress import proxy_url_for
+            from botai.settings import get_settings
+
+            proxy = await proxy_url_for(get_settings(), list(self._ctx.allow_hosts))
+        self._client = build_client(
+            allow_hosts=self._ctx.allow_hosts,
+            proxy_url=proxy,
+            cookies=self._cookies,
+            headers=self._headers,
+            transport=self._ctx.transport,
+        )
         await self._client.__aenter__()
         return self
 
@@ -82,7 +93,8 @@ class SourceClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        await self._client.__aexit__(exc_type, exc, tb)
+        if self._client is not None:
+            await self._client.__aexit__(exc_type, exc, tb)
 
     async def request(
         self,
@@ -112,6 +124,8 @@ class SourceClient:
             kwargs["data"] = dict(data)
         if json is not None:
             kwargs["json"] = json
+        if self._client is None:
+            raise RuntimeError("SourceClient must be used as `async with`")
         response = await request_with_retries(self._client, method, url, **kwargs)
         if check_session:
             check_expired(response, self._ctx.expired)

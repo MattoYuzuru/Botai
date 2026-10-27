@@ -134,6 +134,7 @@ class ScreenRig:
     user: str
     conn: str
     worker: ScreenRegistry | None = None
+    store: InMemoryLoginStore | None = None
     clients: list[ScreenClient] = field(default_factory=lambda: list[ScreenClient]())
 
     def url(self, ticket: str | None = None, session_id: str | None = None) -> str:
@@ -237,7 +238,7 @@ async def _rigs(
             registry = ScreenRegistry(secret=SECRET, public_base_url=PUBLIC, config=cfg)
             session = await registry.open(handle, user_id=user, connection_id=conn)
         port = await stack.enter_async_context(serve(build_app(registry, store, user)))
-        rig = ScreenRig(registry, port, handle, session, user, conn, worker)
+        rig = ScreenRig(registry, port, handle, session, user, conn, worker, store)
         rigs.append(rig)
         return rig
 
@@ -576,6 +577,13 @@ async def test_ticket_is_single_use_and_bound_to_its_session(
         await refused(rig, ticket=rig.registry.mint_ticket(rig.session).ticket, session_id="X" * 26)
         == 403
     )
+    # a genuine ticket of another user for this very session
+    assert (
+        await refused(rig, ticket=rig.registry.mint_ticket_for(rig.session.id, new_id()).ticket)
+        == 403
+    )
+    # text that is not ASCII is a refusal, not a server error
+    assert await refused(rig, ticket="abc.%C3%A9") == 403
 
 
 async def test_expired_ticket_is_refused(make_screen: Callable[..., Awaitable[ScreenRig]]) -> None:
@@ -628,6 +636,12 @@ async def test_login_session_endpoint_issues_tickets_to_the_owner_only(
         client = await rig.connect(ticket=body["ticket"])
         await client.first_frame()
         # a connection nobody has opened a screen for, and one that is not the user's
+        assert rig.store is not None
+        someone_elses = new_id()
+        rig.store.add_connection(new_id(), someone_elses, ORIGIN)  # exists, but not the user's
+        assert (
+            await http.post(f"/api/v1/connections/{someone_elses}/login-session")
+        ).status_code == 404
         unknown = await http.post(f"/api/v1/connections/{new_id()}/login-session")
         assert unknown.status_code == 404
         assert unknown.json()["code"] == "not_found"
@@ -781,6 +795,8 @@ async def test_frames_and_input_are_not_logged(
         await rig.session.close("done")
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "TYPED-MARKER" not in text
+    assert '"t": "key"' not in text  # not even as a library's DEBUG line, one key at a time
+    assert not [r for r in caplog.records if r.name.startswith("websockets") and r.levelno < 30]
     assert "/9j/" not in text  # no JPEG data
     assert rig.session.stats.frames_sent > 0
     assert "screen" in text  # lifecycle is logged, content is not

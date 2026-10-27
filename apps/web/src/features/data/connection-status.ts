@@ -1,4 +1,12 @@
-import { DEFAULT_TIME_ZONE, formatDay, formatTime, formatUpdated, type IconName } from "@botai/design";
+import {
+  DEFAULT_TIME_ZONE,
+  displayHost,
+  formatDay,
+  formatTime,
+  formatUpdated,
+  type IconName,
+  safeHttpUrl,
+} from "@botai/design";
 import type { Connection, ConnectionStatus } from "@/api/types";
 
 export type ConnectionTone = "success" | "info" | "warning" | "danger" | "neutral";
@@ -156,4 +164,10 @@ export function describeConnection(
 export function attentionConnections(ids: readonly string[], all: readonly Connection[]): Connection[] {
   const wanted = new Set(ids);
   return all.filter((connection) => wanted.has(connection.id));
+}
+
+/** Адрес источника без схемы: «lk.fakeuni.test». Источник без адреса (документ) — только вид. */
+export function originLabel(connection: Connection): string {
+  const url = safeHttpUrl(connection.origin);
+  return url ? displayHost(url) : connectionKindTitle(connection.kind);
 }
