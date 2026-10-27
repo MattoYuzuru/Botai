@@ -107,7 +107,7 @@ export function StyleguidePage() {
             <p className="type-caption text-fg-muted">дизайн-система</p>
           </div>
           <h1 className="type-title text-fg">Витрина компонентов</h1>
-          <p className="max-w-prose type-ui text-fg-muted">
+          <p className="max-w-reading type-ui text-fg-muted">
             Все компоненты каталога в обеих темах. Данные синтетические: это не доказательство живого входа в
             вуз и не измерение производительности.
           </p>

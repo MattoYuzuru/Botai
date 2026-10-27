@@ -57,6 +57,59 @@ test("манифест и иконки отдаются; приложение у
   expect(registration.active).toBe("activated");
 });
 
+test("favicon декодируется, а портрет maskable непрозрачный и целиком внутри безопасного круга", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const ico = await page.request.get("/favicon.ico");
+  expect(ico.ok()).toBe(true);
+  expect((await ico.body()).subarray(0, 6)).toEqual(Buffer.from([0, 0, 1, 0, 3, 0]));
+  const icons = await page.evaluate(async () => {
+    async function pixels(src: string, size: number) {
+      const img = new Image();
+      img.width = img.height = size;
+      img.src = src;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas 2D недоступен");
+      context.drawImage(img, 0, 0, size, size);
+      return context.getImageData(0, 0, size, size).data;
+    }
+    // The responsive SVG and the ICO's small PNG counterpart must remain real,
+    // readable images, including after a static-host fallback would return HTML.
+    const small = await pixels("/favicon-varya-v2.svg", 16);
+    const png = await pixels("/favicon-varya-v2-16.png", 16);
+    const manifest = await (await fetch("/manifest.webmanifest")).json();
+    const mask = manifest.icons.find((icon: { purpose?: string }) => icon.purpose === "maskable");
+    const bitmap = await pixels(mask.src, 512);
+    const background = bitmap.slice(0, 4);
+    let ink = 0;
+    let outside = 0;
+    let transparent = 0;
+    for (let y = 0; y < 512; y++) {
+      for (let x = 0; x < 512; x++) {
+        const offset = (y * 512 + x) * 4;
+        if (bitmap[offset + 3] !== 255) transparent++;
+        if (bitmap.slice(offset, offset + 4).every((channel, i) => channel === background[i])) continue;
+        ink++;
+        if (Math.hypot(x + 0.5 - 256, y + 0.5 - 256) > 512 * 0.4) outside++;
+      }
+    }
+    return {
+      tinyMatches: small.every((channel, index) => channel === png[index]),
+      ink,
+      outside,
+      transparent,
+    };
+  });
+  expect(icons.tinyMatches).toBe(true);
+  expect(icons.ink).toBeGreaterThan(30_000);
+  expect(icons.outside).toBe(0);
+  expect(icons.transparent).toBe(0);
+});
+
 test("после первого открытия оболочка и снимки данных лежат в кэше", async ({ page }) => {
   await installAndWarm(page);
   const shell = await page.evaluate(async () => {

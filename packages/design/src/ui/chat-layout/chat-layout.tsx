@@ -50,7 +50,9 @@ export function ChatLayout({ header, children, composer, keyboardOpen = false, c
       className={cn("flex min-h-0 flex-col", className)}
     >
       {header}
-      <div className="relative min-h-0 flex-1">{children}</div>
+      <div data-chat-transcript="" className="relative mx-auto min-h-0 w-full max-w-col flex-1">
+        {children}
+      </div>
       <div
         data-chat-dock=""
         className={cn(

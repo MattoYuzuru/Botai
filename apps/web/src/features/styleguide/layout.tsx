@@ -18,7 +18,7 @@ export function Section({
         <h2 id={`${id}-title`} className="type-heading text-fg">
           {title}
         </h2>
-        {note && <p className="max-w-prose type-caption text-fg-muted">{note}</p>}
+        {note && <p className="max-w-reading type-caption text-fg-muted">{note}</p>}
       </header>
       <div className="flex flex-col gap-6">{children}</div>
     </section>

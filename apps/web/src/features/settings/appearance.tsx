@@ -14,7 +14,7 @@ export function AppearanceSettings() {
   const seasonal = seasonalPreference.use();
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex max-w-sm flex-col gap-2 px-3">
+      <div className="flex max-w-panel flex-col gap-2 px-3">
         <p className="type-label text-fg">Тема</p>
         <SegmentedControl<ThemePreference>
           label="Тема"

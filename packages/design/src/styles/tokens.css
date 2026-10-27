@@ -194,6 +194,8 @@
   /* Ширины колонок: длинный текст ~68 знаков, колонка 768–1023, предел контента ноутбука,
    * боковая панель 240 px и правая панель шита 420 px. */
   --container-prose: 34rem;
+  --container-reading: var(--container-prose);
+  --container-form: 27.5rem;
   --container-col: 46rem;
   --container-page: 72rem;
   --container-rail: 15rem;

@@ -1,7 +1,63 @@
 import { expect, test } from "@playwright/test";
+import { freezeClock } from "./data-support";
 import { DEMO, expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open, signIn } from "./support";
 
 test.describe("вход и онбординг", () => {
+  for (const theme of ["light", "dark"] as const) {
+    test(`вход и регистрация — компактная колонка по центру (${theme})`, async ({ page }, testInfo) => {
+      await page.emulateMedia({ colorScheme: theme });
+      for (const width of [390, 1280, 1512, 3024]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const [path, title] of [
+          ["/login", "Вход"],
+          ["/register", "Регистрация"],
+        ] as const) {
+          await open(page, path, "fresh");
+          await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+          const bounds = await page.locator("[data-auth-layout]").evaluate((main) => {
+            const box = main.getBoundingClientRect();
+            const form = main.querySelector("form")?.getBoundingClientRect();
+            return {
+              width: box.width,
+              center: box.left + box.width / 2,
+              maximum: getComputedStyle(main).maxWidth,
+              formWidth: form?.width ?? 0,
+              viewport: window.innerWidth,
+            };
+          });
+          expect(bounds.maximum).not.toBe("none");
+          expect(bounds.width).toBeLessThanOrEqual(440);
+          expect(Math.abs(bounds.center - bounds.viewport / 2)).toBeLessThanOrEqual(1);
+          expect(bounds.formWidth).toBeLessThanOrEqual(400);
+          expect(bounds.formWidth).toBeGreaterThanOrEqual(350);
+          await expectNoHorizontalOverflow(page, `${title} ${width} ${theme}`);
+          if (width !== 3024) {
+            await page.screenshot({
+              path: testInfo.outputPath(`${path.slice(1)}-${width}-${theme}.png`),
+              fullPage: true,
+            });
+          }
+        }
+      }
+    });
+  }
+
+  test("вход и регистрация сохраняют форму при увеличении текста до 200 %", async ({ page }) => {
+    for (const width of [320, 390, 430]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const path of ["/login", "/register"]) {
+        await open(page, path, "fresh");
+        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+        await page.evaluate(() => {
+          document.documentElement.style.fontSize = "200%";
+        });
+        await expectNoHorizontalOverflow(page, `${path} ${width} текст 200%`);
+        await expect(
+          page.getByRole("button", { name: path === "/login" ? "Войти" : "Создать аккаунт" }),
+        ).toBeEnabled();
+      }
+    }
+  });
   test("без сессии — экран входа; неверный пароль объясняется у поля, верный открывает приложение", async ({
     page,
   }) => {
@@ -61,6 +117,79 @@ test.describe("вход и онбординг", () => {
 });
 
 test.describe("каркас", () => {
+  for (const theme of ["light", "dark"] as const) {
+    test(`ноутбук: заголовки и содержимое выровнены, страницы широкие, чат и подключение — в колонке (${theme})`, async ({
+      page,
+    }, testInfo) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await freezeClock(page);
+      for (const width of [1280, 1512]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const [path, title] of [
+          ["/", "Сегодня"],
+          ["/schedule", "Расписание"],
+          ["/tasks", "Задания"],
+          ["/study", "Учёба"],
+        ] as const) {
+          await open(page, path, "connected");
+          await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+          const dataScreen = page.locator(`[data-screen=${path === "/" ? "today" : path.slice(1)}]`);
+          await expect(dataScreen).toBeVisible();
+          await expect(dataScreen).not.toHaveAttribute("data-state", "loading");
+          const bounds = await page.evaluate(() => {
+            const main = document.querySelector("main")?.getBoundingClientRect();
+            const header = document.querySelector("header > div")?.getBoundingClientRect();
+            return {
+              main: main && { x: main.x, width: main.width },
+              header: header && { x: header.x, width: header.width },
+            };
+          });
+          expect(bounds.main?.width ?? 0).toBeGreaterThan(736);
+          expect(bounds.main?.width ?? 0).toBeLessThanOrEqual(1152);
+          expect(Math.abs((bounds.main?.x ?? 0) - (bounds.header?.x ?? 0))).toBeLessThanOrEqual(1);
+          expect(Math.abs((bounds.main?.width ?? 0) - (bounds.header?.width ?? 0))).toBeLessThanOrEqual(1);
+          await expectNoHorizontalOverflow(page, `${path} ${width}`);
+          if (path === "/study") {
+            expect((await page.locator('[aria-label="Тема"]').boundingBox())?.width ?? 0).toBeLessThanOrEqual(
+              420,
+            );
+          }
+          if (width === 1512)
+            await page.screenshot({
+              path: testInfo.outputPath(`${path === "/" ? "today" : path.slice(1)}-1512-${theme}.png`),
+              fullPage: true,
+            });
+        }
+        await open(page, "/chat?thread=new&pace=0", "connected");
+        await expect(page.getByRole("heading", { level: 1, name: "Чат" })).toBeVisible();
+        await expect(page.getByRole("list", { name: "Подсказки" })).toBeVisible();
+        const chat = await page.evaluate(() =>
+          ["header > div", "[data-chat-transcript]", "[data-chat-dock]"].map((selector) => {
+            const box = document.querySelector(selector)?.getBoundingClientRect();
+            return { x: box?.x ?? 0, width: box?.width ?? 0 };
+          }),
+        );
+        for (const box of chat) {
+          expect(box.width).toBe(736);
+          expect(box.x).toBe(chat[0]?.x);
+        }
+        if (width === 1512)
+          await page.screenshot({ path: testInfo.outputPath(`chat-1512-${theme}.png`), fullPage: true });
+        await open(page, "/connect", "connected");
+        await expect(page.getByRole("heading", { level: 1, name: "Подключение вуза" })).toBeVisible();
+        await expect(page.getByRole("radiogroup", { name: "Вузы" })).toBeVisible();
+        expect((await page.getByRole("main").boundingBox())?.width).toBe(736);
+        expect((await page.locator("main form").boundingBox())?.width ?? 0).toBeLessThanOrEqual(544);
+        if (width === 1512)
+          await page.screenshot({ path: testInfo.outputPath(`connect-1512-${theme}.png`), fullPage: true });
+        await open(page, "/welcome", "empty");
+        await expect(page.getByRole("heading", { level: 2, name: "Что такое BotAI" })).toBeVisible();
+        expect((await page.getByRole("main").boundingBox())?.width).toBe(736);
+        if (width === 1512)
+          await page.screenshot({ path: testInfo.outputPath(`welcome-1512-${theme}.png`), fullPage: true });
+      }
+    });
+  }
   test("пять вкладок; на телефоне — нижняя панель, на ноутбуке — боковая панель 240 px с Wordmark", async ({
     page,
     isMobile,

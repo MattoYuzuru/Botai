@@ -65,7 +65,7 @@ export function ChatMessage({
     >
       <div
         className={cn(
-          "flex max-w-prose min-w-0 flex-col gap-3 rounded-lg px-4 py-3",
+          "flex max-w-reading min-w-0 flex-col gap-3 rounded-lg px-4 py-3",
           isUser ? "bg-accent-subtle text-fg" : "w-full border border-border bg-surface",
           status === "queued" && "opacity-80",
         )}
