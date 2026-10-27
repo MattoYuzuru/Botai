@@ -3,5 +3,9 @@
 from __future__ import annotations
 
 from botai.core.handlers import HandlerTable
+from botai.core.jobs import JobKind
+from botai.sources.runner import make_sync_handler
 
-HANDLERS: HandlerTable = {}
+HANDLERS: HandlerTable = {
+    JobKind.SYNC: make_sync_handler(),
+}
