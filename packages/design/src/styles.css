@@ -1,6 +1,0 @@
-/* Owner: W4. Tokens per docs/design/styleguide.md §2. Placeholder accent only. */
-@import "tailwindcss";
-
-@theme {
-  --color-accent-fg: #1e4fb1;
-}

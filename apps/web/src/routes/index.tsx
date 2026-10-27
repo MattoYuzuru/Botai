@@ -1,3 +1,4 @@
+import { Wordmark } from "@botai/design";
 import { createFileRoute } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/")({
@@ -6,10 +7,9 @@ export const Route = createFileRoute("/")({
 
 function Today() {
   return (
-    <main className="p-4">
-      <h1 className="text-xl font-semibold">
-        Bot<span className="text-accent-fg">AI</span>
-      </h1>
+    <main className="px-safe-4 pt-safe-6 pb-safe-6 xs:px-safe-5">
+      <h1 className="sr-only">BotAI</h1>
+      <Wordmark size="lg" />
     </main>
   );
 }

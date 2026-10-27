@@ -3,8 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#2a61ce" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f9fafc" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1115" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="BotAI — учебный хаб студента: расписание, сроки и ответы агента из ваших вузов." />
     <title>BotAI</title>
+    <script>
+      // До первой отрисовки: сохранённая тема и спокойный режим, чтобы страница не мигала.
+      try {
+        const theme = localStorage.getItem("botai.theme");
+        if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+        if (localStorage.getItem("botai.motion") === "calm") document.documentElement.setAttribute("data-motion", "calm");
+      } catch {
+        // хранилище недоступно — остаются системные настройки
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

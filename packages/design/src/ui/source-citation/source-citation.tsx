@@ -1,0 +1,82 @@
+import { cn } from "../../lib/cn";
+import { DEFAULT_TIME_ZONE, formatAgo } from "../../lib/format";
+import { displayHost, safeHttpUrl } from "../../lib/safe-url";
+import { Badge } from "../badge/badge";
+import { Icon } from "../icon";
+
+export interface SourceCitationProps {
+  title: string;
+  url: string | null | undefined;
+  /** Когда страница была получена, мс. */
+  fetchedAt: number;
+  nowMs: number;
+  timeZone?: string;
+  /** Идентификатор пространства (атрибут), название вуза — отдельным пропом. */
+  spaceId?: string;
+  spaceTitle?: string;
+  /** Фрагмент, на который опирается ответ. */
+  snippet?: string;
+  /** Снимок помечен устаревшим на сервере. */
+  stale?: boolean;
+  className?: string;
+}
+
+/**
+ * Источник ответа: название, вуз и время выборки. Недоступный адрес не кликабелен («Источник недоступен»),
+ * но подпись и время остаются: ответ без источника не имитирует источник, а пропавший источник не прячется.
+ */
+export function SourceCitation({
+  title,
+  url,
+  fetchedAt,
+  nowMs,
+  timeZone = DEFAULT_TIME_ZONE,
+  spaceId,
+  spaceTitle,
+  snippet,
+  stale = false,
+  className,
+}: SourceCitationProps) {
+  const safe = safeHttpUrl(url);
+  const body = (
+    <>
+      <Icon name="source" size={16} className="mt-0.5 text-info" />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate type-label text-fg">{title}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 type-caption text-fg-muted">
+          {spaceTitle && <Badge tone="neutral">{spaceTitle}</Badge>}
+          {safe ? <span className="truncate">{displayHost(safe)}</span> : <span>Источник недоступен</span>}
+          <time
+            dateTime={new Date(fetchedAt).toISOString()}
+          >{`Получено ${formatAgo(fetchedAt, nowMs, timeZone)}`}</time>
+          {stale && <Badge tone="warning">Устарело</Badge>}
+        </span>
+        {snippet && <span className="line-clamp-2 type-caption text-fg-subtle">{snippet}</span>}
+      </span>
+      {safe && <Icon name="external" size={16} className="mt-0.5 text-fg-subtle" />}
+    </>
+  );
+  const shared = "flex min-h-11 items-start gap-2 rounded-md bg-bg-subtle px-3 py-2";
+  if (!safe) {
+    return (
+      <div data-space-id={spaceId} data-unavailable="" className={cn(shared, className)}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <a
+      href={safe.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-space-id={spaceId}
+      className={cn(
+        shared,
+        "transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed",
+        className,
+      )}
+    >
+      {body}
+    </a>
+  );
+}

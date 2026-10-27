@@ -1,0 +1,492 @@
+/*
+ * Токены BotAI. Единственное место, где живут сырые значения цвета, размеров и движения.
+ * Смысл и контракт — docs/design/styleguide.md §2–§5. Правда о значениях — этот файл:
+ * tokens.test.ts пересчитывает гамут и контрасты по формулам OKLab → sRGB и WCAG.
+ *
+ * Слои:
+ *   1. Палитра (--palette-*) — шкалы OKLCH. В Tailwind не попадает: экран знает только семантику.
+ *   2. Семантика (--color-*, --shadow-*) — пара «светлая, тёмная» через light-dark().
+ *      Тема — атрибут data-theme="light|dark" на <html> или на любом узле; без него — системная.
+ *   3. Акцент пространства — data-space="<id>" переопределяет только --color-accent*.
+ *   4. @theme — имена для Tailwind; стандартные шкалы Tailwind сброшены: text-sm и bg-red-500 нет.
+ *
+ * Имена семантических цветов — контракт между потоками работ: не переименовываем и не удаляем.
+ */
+
+:root {
+  /* Бумага — светлая нейтраль: фоны и линии светлой темы, текст тёмной. Холодный тон ВШЭ. */
+  --palette-paper-0: oklch(1 0 0);
+  --palette-paper-50: oklch(0.985 0.0035 262.2);
+  --palette-paper-100: oklch(0.97 0.004 262.2);
+  --palette-paper-150: oklch(0.954 0.005 262.2);
+  --palette-paper-200: oklch(0.93 0.005 262.2);
+  --palette-paper-300: oklch(0.876 0.006 262.2);
+
+  /* Грифель — тёмная нейтраль: текст светлой темы, поверхности тёмной. */
+  --palette-slate-300: oklch(0.775 0.012 262.2);
+  --palette-slate-400: oklch(0.645 0.012 262.2);
+  --palette-slate-500: oklch(0.544 0.012 262.2);
+  --palette-slate-600: oklch(0.465 0.012 262.2);
+  --palette-slate-700: oklch(0.37 0.01 262.2);
+  --palette-slate-750: oklch(0.33 0.01 262.2);
+  --palette-slate-800: oklch(0.276 0.01 262.2);
+  --palette-slate-850: oklch(0.235 0.01 262.2);
+  --palette-slate-900: oklch(0.2 0.01 262.2);
+  --palette-slate-925: oklch(0.175 0.01 262.2);
+  --palette-slate-950: oklch(0.149 0.01 262.2);
+
+  /* ВШЭ — акцент по умолчанию. Ступень 900 — фирменный #0f2d69 из маскота. */
+  --palette-hse-50: oklch(0.972 0.013 262.2);
+  --palette-hse-100: oklch(0.945 0.026 262.2);
+  --palette-hse-200: oklch(0.895 0.05 262.2);
+  --palette-hse-300: oklch(0.825 0.086 262.2);
+  --palette-hse-400: oklch(0.735 0.135 262.2);
+  --palette-hse-500: oklch(0.63 0.175 262.2);
+  --palette-hse-600: oklch(0.52 0.18 262.2);
+  --palette-hse-700: oklch(0.455 0.165 262.2);
+  --palette-hse-800: oklch(0.385 0.135 262.2);
+  --palette-hse-900: oklch(0.315 0.111 262.2);
+  --palette-hse-950: oklch(0.25 0.075 262.2);
+
+  /* Лазурь — нейтральная справка, «источник». */
+  --palette-azure-50: oklch(0.972 0.017 228);
+  --palette-azure-100: oklch(0.945 0.034 228);
+  --palette-azure-200: oklch(0.895 0.065 228);
+  --palette-azure-300: oklch(0.825 0.112 228);
+  --palette-azure-400: oklch(0.735 0.142 228);
+  --palette-azure-500: oklch(0.63 0.121 228);
+  --palette-azure-600: oklch(0.52 0.101 228);
+  --palette-azure-700: oklch(0.455 0.088 228);
+  --palette-azure-800: oklch(0.385 0.075 228);
+  --palette-azure-900: oklch(0.315 0.062 228);
+  --palette-azure-950: oklch(0.25 0.051 228);
+
+  /* Хвоя — сдано, подключено, синхронизировано. */
+  --palette-pine-50: oklch(0.972 0.018 156);
+  --palette-pine-100: oklch(0.945 0.04 156);
+  --palette-pine-200: oklch(0.895 0.072 156);
+  --palette-pine-300: oklch(0.825 0.112 156);
+  --palette-pine-400: oklch(0.735 0.15 156);
+  --palette-pine-500: oklch(0.63 0.151 156);
+  --palette-pine-600: oklch(0.52 0.125 156);
+  --palette-pine-700: oklch(0.455 0.11 156);
+  --palette-pine-800: oklch(0.385 0.093 156);
+  --palette-pine-900: oklch(0.315 0.077 156);
+  --palette-pine-950: oklch(0.25 0.063 156);
+
+  /* Янтарь — внимание, близкий срок, устаревший снимок. */
+  --palette-amber-50: oklch(0.972 0.018 80);
+  --palette-amber-100: oklch(0.945 0.04 80);
+  --palette-amber-200: oklch(0.895 0.072 80);
+  --palette-amber-300: oklch(0.825 0.112 80);
+  --palette-amber-400: oklch(0.735 0.15 80);
+  --palette-amber-500: oklch(0.63 0.129 80);
+  --palette-amber-600: oklch(0.52 0.107 80);
+  --palette-amber-700: oklch(0.455 0.094 80);
+  --palette-amber-800: oklch(0.385 0.08 80);
+  --palette-amber-900: oklch(0.315 0.067 80);
+  --palette-amber-950: oklch(0.25 0.055 80);
+
+  /* Клюква — ошибка, просрочено, необратимое действие. */
+  --palette-cranberry-50: oklch(0.972 0.013 25);
+  --palette-cranberry-100: oklch(0.945 0.027 25);
+  --palette-cranberry-200: oklch(0.895 0.054 25);
+  --palette-cranberry-300: oklch(0.825 0.096 25);
+  --palette-cranberry-400: oklch(0.735 0.15 25);
+  --palette-cranberry-500: oklch(0.63 0.175 25);
+  --palette-cranberry-600: oklch(0.52 0.18 25);
+  --palette-cranberry-700: oklch(0.455 0.165 25);
+  --palette-cranberry-800: oklch(0.385 0.135 25);
+  --palette-cranberry-900: oklch(0.315 0.111 25);
+  --palette-cranberry-950: oklch(0.25 0.075 25);
+}
+
+/*
+ * Регистрация семантических имён для Tailwind. `reference`: переменные не выводятся в :root —
+ * их значения задаёт блок семантики ниже, поэтому классы всегда смотрят на текущую тему.
+ */
+@theme reference {
+  --color-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-shadow-*: initial;
+
+  --color-bg: var(--color-bg);
+  --color-bg-subtle: var(--color-bg-subtle);
+  --color-surface: var(--color-surface);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-overlay: var(--color-overlay);
+  --color-hover: var(--color-hover);
+  --color-pressed: var(--color-pressed);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-control: var(--color-control);
+  --color-fg: var(--color-fg);
+  --color-fg-muted: var(--color-fg-muted);
+  --color-fg-subtle: var(--color-fg-subtle);
+  --color-fg-on-accent: var(--color-fg-on-accent);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-subtle: var(--color-accent-subtle);
+  --color-accent-fg: var(--color-accent-fg);
+  --color-info: var(--color-info);
+  --color-info-subtle: var(--color-info-subtle);
+  --color-info-fg: var(--color-info-fg);
+  --color-success: var(--color-success);
+  --color-success-subtle: var(--color-success-subtle);
+  --color-success-fg: var(--color-success-fg);
+  --color-warning: var(--color-warning);
+  --color-warning-subtle: var(--color-warning-subtle);
+  --color-warning-fg: var(--color-warning-fg);
+  --color-danger: var(--color-danger);
+  --color-danger-hover: var(--color-danger-hover);
+  --color-danger-subtle: var(--color-danger-subtle);
+  --color-danger-fg: var(--color-danger-fg);
+  --color-focus-ring: var(--color-focus-ring);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+@theme static {
+  --text-*: initial;
+  --radius-*: initial;
+  --font-weight-*: initial;
+  --tracking-*: initial;
+  --ease-*: initial;
+  --animate-*: initial;
+  --breakpoint-*: initial;
+  --container-*: initial;
+  --font-serif: initial;
+
+  /* Шаг сетки 4 px (styleguide §4). */
+  --spacing: 0.25rem;
+
+  /* Шрифты грузятся локально из @fontsource-variable, внешних шрифтов нет (PWA работает офлайн). */
+  --font-sans: "Geist Variable", -apple-system, system-ui, Roboto, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --tracking-tighter: -0.02em;
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0em;
+
+  /* Радиусы §4. rounded-full — встроенный. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Брейкпоинты §7: 430 — поля 20 px и плитки в две колонки, 768 — колонка по центру,
+   * 1024 — боковая панель вместо TabBar, 1280 — ноутбук. */
+  --breakpoint-xs: 26.875rem;
+  --breakpoint-md: 48rem;
+  --breakpoint-lg: 64rem;
+  --breakpoint-xl: 80rem;
+
+  /* Ширины колонок: длинный текст ~68 знаков, колонка 768–1023, предел контента ноутбука,
+   * боковая панель 240 px и правая панель шита 420 px. */
+  --container-prose: 34rem;
+  --container-col: 46rem;
+  --container-page: 72rem;
+  --container-rail: 15rem;
+  --container-panel: 26.25rem;
+
+  /* Движение §5: одна кривая на вход, одна на выход, одна на циклы. */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-soft: cubic-bezier(0.32, 0, 0.67, 0);
+  --ease-in-out-soft: cubic-bezier(0.65, 0, 0.35, 1);
+  --default-transition-duration: 180ms;
+  --default-transition-timing-function: var(--ease-soft);
+
+  --animate-fade-in: fade-in 180ms var(--ease-soft);
+  --animate-fade-out: fade-out 120ms var(--ease-in-soft) forwards;
+  --animate-pop-in: pop-in 180ms var(--ease-soft);
+  --animate-pop-out: pop-out 120ms var(--ease-in-soft) forwards;
+  --animate-dialog-in: dialog-in 280ms var(--ease-soft);
+  --animate-dialog-out: dialog-out 120ms var(--ease-in-soft) forwards;
+  --animate-sheet-in: sheet-in 280ms var(--ease-soft);
+  --animate-sheet-out: sheet-out 180ms var(--ease-in-soft) forwards;
+  --animate-panel-in: panel-in 280ms var(--ease-soft);
+  --animate-panel-out: panel-out 180ms var(--ease-in-soft) forwards;
+  --animate-message-in: message-in 180ms var(--ease-soft);
+  --animate-spin: spin 800ms linear infinite;
+  --animate-shimmer: shimmer 2400ms var(--ease-in-out-soft) infinite;
+  --animate-pulse-soft: pulse-soft 2400ms var(--ease-in-out-soft) infinite;
+  --animate-rail: rail 2400ms var(--ease-in-out-soft) infinite;
+  --animate-caret: caret 1200ms steps(1) infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translate(var(--pop-x, 0), var(--pop-y, 0)) scale(0.98);
+    }
+  }
+  @keyframes pop-out {
+    to {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+  }
+  @keyframes dialog-in {
+    from {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+  }
+  @keyframes dialog-out {
+    to {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+  }
+  @keyframes sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+  }
+  @keyframes sheet-out {
+    to {
+      transform: translateY(100%);
+    }
+  }
+  @keyframes panel-in {
+    from {
+      transform: translateX(100%);
+    }
+  }
+  @keyframes panel-out {
+    to {
+      transform: translateX(100%);
+    }
+  }
+  @keyframes message-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+  @keyframes rail {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  @keyframes caret {
+    50% {
+      opacity: 0;
+    }
+  }
+}
+
+/*
+ * Семантика. Пара «светлая, тёмная» — light-dark(): тема берётся из color-scheme узла,
+ * поэтому data-theme на вложенном элементе (витрина /styleguide) меняет тему только внутри него.
+ * Значения без пары (accent, danger, fg-on-accent) одинаковы в обеих темах.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Поверхности: чем выше слой, тем светлее в обеих темах. */
+  --color-bg: light-dark(var(--palette-paper-50), var(--palette-slate-925));
+  --color-bg-subtle: light-dark(var(--palette-paper-100), var(--palette-slate-950));
+  --color-surface: light-dark(var(--palette-paper-0), var(--palette-slate-900));
+  --color-surface-raised: light-dark(var(--palette-paper-0), var(--palette-slate-850));
+  --color-overlay: light-dark(
+    color-mix(in oklab, var(--palette-slate-900) 36%, transparent),
+    color-mix(in oklab, var(--palette-slate-950) 64%, transparent)
+  );
+  --color-hover: light-dark(
+    color-mix(in oklab, var(--palette-slate-850) 5%, transparent),
+    color-mix(in oklab, var(--palette-paper-150) 6%, transparent)
+  );
+  --color-pressed: light-dark(
+    color-mix(in oklab, var(--palette-slate-850) 9%, transparent),
+    color-mix(in oklab, var(--palette-paper-150) 10%, transparent)
+  );
+
+  /* Линии. border и border-strong — декоративные (≈1.5:1), не единственный признак контрола. */
+  --color-border: light-dark(var(--palette-paper-200), var(--palette-slate-800));
+  --color-border-strong: light-dark(var(--palette-paper-300), var(--palette-slate-750));
+  --color-control: light-dark(var(--palette-slate-400), var(--palette-slate-500));
+
+  /* Текст. */
+  --color-fg: light-dark(var(--palette-slate-850), var(--palette-paper-150));
+  --color-fg-muted: light-dark(var(--palette-slate-600), var(--palette-slate-300));
+  --color-fg-subtle: light-dark(var(--palette-slate-500), var(--palette-slate-400));
+  --color-fg-on-accent: var(--palette-paper-0);
+
+  /* Акцент пространства. accent и accent-hover — только заливка; цветной текст — accent-fg. */
+  --color-accent: var(--palette-hse-600);
+  --color-accent-hover: var(--palette-hse-700);
+  --color-accent-subtle: light-dark(var(--palette-hse-50), var(--palette-hse-950));
+  --color-accent-fg: light-dark(var(--palette-hse-700), var(--palette-hse-300));
+
+  /* Статусы. Смысл от вуза не зависит. */
+  --color-info: light-dark(var(--palette-azure-600), var(--palette-azure-400));
+  --color-info-subtle: light-dark(var(--palette-azure-50), var(--palette-azure-950));
+  --color-info-fg: light-dark(var(--palette-azure-700), var(--palette-azure-300));
+  --color-success: light-dark(var(--palette-pine-600), var(--palette-pine-400));
+  --color-success-subtle: light-dark(var(--palette-pine-50), var(--palette-pine-950));
+  --color-success-fg: light-dark(var(--palette-pine-700), var(--palette-pine-300));
+  --color-warning: light-dark(var(--palette-amber-600), var(--palette-amber-400));
+  --color-warning-subtle: light-dark(var(--palette-amber-50), var(--palette-amber-950));
+  --color-warning-fg: light-dark(var(--palette-amber-800), var(--palette-amber-300));
+  --color-danger: var(--palette-cranberry-600);
+  --color-danger-hover: var(--palette-cranberry-700);
+  --color-danger-subtle: light-dark(var(--palette-cranberry-50), var(--palette-cranberry-950));
+  --color-danger-fg: light-dark(var(--palette-cranberry-700), var(--palette-cranberry-300));
+
+  --color-focus-ring: light-dark(var(--palette-hse-500), var(--palette-hse-400));
+
+  /* Тени тонированы Грифелем; в тёмной теме глубже и с кромкой. */
+  --shadow-xs: 0 1px 1px light-dark(oklch(0.2 0.01 262 / 0.05), oklch(0 0 0 / 0.3));
+  --shadow-sm:
+    0 1px 2px light-dark(oklch(0.2 0.01 262 / 0.06), oklch(0 0 0 / 0.36)),
+    0 1px 1px light-dark(oklch(0.2 0.01 262 / 0.03), oklch(0 0 0 / 0.2)),
+    inset 0 1px 0 light-dark(transparent, oklch(1 0 0 / 0.04));
+  --shadow-md:
+    0 6px 16px -4px light-dark(oklch(0.2 0.01 262 / 0.1), oklch(0 0 0 / 0.55)),
+    0 2px 4px -1px light-dark(oklch(0.2 0.01 262 / 0.05), oklch(0 0 0 / 0.3)),
+    inset 0 1px 0 light-dark(transparent, oklch(1 0 0 / 0.04));
+  --shadow-lg:
+    0 24px 56px -12px light-dark(oklch(0.2 0.01 262 / 0.2), oklch(0 0 0 / 0.7)),
+    0 6px 16px -6px light-dark(oklch(0.2 0.01 262 / 0.08), oklch(0 0 0 / 0.36)),
+    inset 0 1px 0 light-dark(transparent, oklch(1 0 0 / 0.05));
+
+  /* Служебное: выделение текста и скроллбар. */
+  --selection: light-dark(
+    color-mix(in oklab, var(--palette-hse-500) 22%, transparent),
+    color-mix(in oklab, var(--palette-hse-400) 30%, transparent)
+  );
+  --scrollbar-thumb: light-dark(
+    color-mix(in oklab, var(--palette-slate-600) 30%, transparent),
+    color-mix(in oklab, var(--palette-slate-300) 24%, transparent)
+  );
+}
+
+/*
+ * Запасной вариант для браузеров без light-dark() (Safari 16.4–17.4, Chrome до 123): там работает светлая тема.
+ * Блок повторяет светлые значения семантики выше; совпадение проверяет tokens.test.ts.
+ */
+@supports not (color: light-dark(white, black)) {
+  :root {
+    --color-bg: var(--palette-paper-50);
+    --color-bg-subtle: var(--palette-paper-100);
+    --color-surface: var(--palette-paper-0);
+    --color-surface-raised: var(--palette-paper-0);
+    --color-overlay: color-mix(in oklab, var(--palette-slate-900) 36%, transparent);
+    --color-hover: color-mix(in oklab, var(--palette-slate-850) 5%, transparent);
+    --color-pressed: color-mix(in oklab, var(--palette-slate-850) 9%, transparent);
+    --color-border: var(--palette-paper-200);
+    --color-border-strong: var(--palette-paper-300);
+    --color-control: var(--palette-slate-400);
+    --color-fg: var(--palette-slate-850);
+    --color-fg-muted: var(--palette-slate-600);
+    --color-fg-subtle: var(--palette-slate-500);
+    --color-accent-subtle: var(--palette-hse-50);
+    --color-accent-fg: var(--palette-hse-700);
+    --color-info: var(--palette-azure-600);
+    --color-info-subtle: var(--palette-azure-50);
+    --color-info-fg: var(--palette-azure-700);
+    --color-success: var(--palette-pine-600);
+    --color-success-subtle: var(--palette-pine-50);
+    --color-success-fg: var(--palette-pine-700);
+    --color-warning: var(--palette-amber-600);
+    --color-warning-subtle: var(--palette-amber-50);
+    --color-warning-fg: var(--palette-amber-800);
+    --color-danger-subtle: var(--palette-cranberry-50);
+    --color-danger-fg: var(--palette-cranberry-700);
+    --color-focus-ring: var(--palette-hse-500);
+    --shadow-xs: 0 1px 1px oklch(0.2 0.01 262 / 0.05);
+    --shadow-sm:
+      0 1px 2px oklch(0.2 0.01 262 / 0.06), 0 1px 1px oklch(0.2 0.01 262 / 0.03), inset 0 1px 0 transparent;
+    --shadow-md:
+      0 6px 16px -4px oklch(0.2 0.01 262 / 0.1), 0 2px 4px -1px oklch(0.2 0.01 262 / 0.05),
+      inset 0 1px 0 transparent;
+    --shadow-lg:
+      0 24px 56px -12px oklch(0.2 0.01 262 / 0.2), 0 6px 16px -6px oklch(0.2 0.01 262 / 0.08),
+      inset 0 1px 0 transparent;
+    --selection: color-mix(in oklab, var(--palette-hse-500) 22%, transparent);
+    --scrollbar-thumb: color-mix(in oklab, var(--palette-slate-600) 30%, transparent);
+  }
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/*
+ * Акцент пространства вуза. Переопределяет только --color-accent*; success, warning, danger,
+ * info, нейтрали, тени и фокус не меняются никогда. Блок на вуз выводится из лестницы §2:
+ * L общие, C = min(профиль ВШЭ, 0.985 × предел гаммы). Сверка — tokens.test.ts.
+ * ВШЭ — значения по умолчанию, отдельного блока не требует.
+ */
+[data-space="cu"] {
+  --color-accent: oklch(0.52 0.18 292);
+  --color-accent-hover: oklch(0.455 0.165 292);
+  --color-accent-subtle: light-dark(oklch(0.972 0.013 292), oklch(0.25 0.075 292));
+  --color-accent-fg: light-dark(oklch(0.455 0.165 292), oklch(0.825 0.086 292));
+}
+
+[data-space="reserve"] {
+  --color-accent: oklch(0.52 0.18 325);
+  --color-accent-hover: oklch(0.455 0.165 325);
+  --color-accent-subtle: light-dark(oklch(0.972 0.013 325), oklch(0.25 0.075 325));
+  --color-accent-fg: light-dark(oklch(0.455 0.165 325), oklch(0.825 0.086 325));
+}
+
+/* ВШЭ и сводный экран «Все вузы» — акцент по умолчанию; блок нужен, чтобы вернуть его внутри другого пространства. */
+[data-space="hse"],
+[data-space="all"] {
+  --color-accent: var(--palette-hse-600);
+  --color-accent-hover: var(--palette-hse-700);
+  --color-accent-subtle: light-dark(var(--palette-hse-50), var(--palette-hse-950));
+  --color-accent-fg: light-dark(var(--palette-hse-700), var(--palette-hse-300));
+}
