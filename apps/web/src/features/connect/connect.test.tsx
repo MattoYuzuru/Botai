@@ -119,7 +119,8 @@ describe("ProgressWall: подключение вуза", () => {
     await userEvent.click(screen.getByRole("button", { name: "Готово" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     // Вуз появился: на «Сегодня» уже не онбординг.
-    expect(await screen.findByText("Раздел готовится")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Пары" })).toBeInTheDocument();
+    expect(screen.queryByText("Вузов пока нет")).toBeNull();
     expect(useActiveJob.getState().job).toBeNull();
     expect(current.db.connections.at(-1)).toMatchObject({ status: "active", hasPassword: true });
   });
