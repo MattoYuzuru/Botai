@@ -25,7 +25,7 @@ async def login_page() -> str:
 </form></body></html>"""
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", response_model=None)
 async def login_submit(
     username: str = Form(...), password: str = Form(...)
 ) -> HTMLResponse | RedirectResponse:
@@ -49,7 +49,7 @@ async def otp_page() -> str:
 </form></body></html>"""
 
 
-@router.post("/auth/otp")
+@router.post("/auth/otp", response_model=None)
 async def otp_submit(request: Request, otp: str = Form(...)) -> HTMLResponse | RedirectResponse:
     pending = request.cookies.get("FAKEUNI_OTP")
     if pending not in _PENDING_OTP or otp != data.OTP:
@@ -64,3 +64,21 @@ async def otp_submit(request: Request, otp: str = Form(...)) -> HTMLResponse | R
 
 def is_logged_in(request: Request) -> bool:
     return request.cookies.get(COOKIE) in SESSIONS
+
+
+# --- redirects to hosts the browser must never reach (security check C2) ---------------------
+
+
+@router.get("/redirect/evil")
+async def redirect_evil() -> RedirectResponse:
+    return RedirectResponse("https://evil.localhost/collect?c=1", status_code=302)
+
+
+@router.get("/redirect/ip")
+async def redirect_ip() -> RedirectResponse:
+    return RedirectResponse("https://127.0.0.1:8443/secret", status_code=302)
+
+
+@router.get("/redirect/metadata")
+async def redirect_metadata() -> RedirectResponse:
+    return RedirectResponse("https://169.254.169.254/latest/meta-data/", status_code=302)
