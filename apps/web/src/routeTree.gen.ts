@@ -10,7 +10,6 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
-import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as StyleguideRouteImport } from './routes/styleguide'
@@ -20,14 +19,11 @@ import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppScheduleRouteImport } from './routes/_app/schedule'
 import { Route as AppStudyRouteImport } from './routes/_app/study'
 import { Route as AppTasksRouteImport } from './routes/_app/tasks'
+import { Route as ConnectIndexRouteImport } from './routes/connect/index'
+import { Route as ConnectJobIdRouteImport } from './routes/connect/$jobId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ConnectRoute = ConnectRouteImport.update({
-  id: '/connect',
-  path: '/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -75,10 +71,19 @@ const AppTasksRoute = AppTasksRouteImport.update({
   path: '/tasks',
   getParentRoute: () => AppRoute,
 } as any)
+const ConnectIndexRoute = ConnectIndexRouteImport.update({
+  id: '/connect/',
+  path: '/connect/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectJobIdRoute = ConnectJobIdRouteImport.update({
+  id: '/connect/$jobId',
+  path: '/connect/$jobId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
-  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
@@ -87,9 +92,10 @@ export interface FileRoutesByFullPath {
   '/schedule': typeof AppScheduleRoute
   '/study': typeof AppStudyRoute
   '/tasks': typeof AppTasksRoute
+  '/connect/$jobId': typeof ConnectJobIdRoute
+  '/connect/': typeof ConnectIndexRoute
 }
 export interface FileRoutesByTo {
-  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
@@ -98,12 +104,13 @@ export interface FileRoutesByTo {
   '/schedule': typeof AppScheduleRoute
   '/study': typeof AppStudyRoute
   '/tasks': typeof AppTasksRoute
+  '/connect/$jobId': typeof ConnectJobIdRoute
   '/': typeof AppIndexRoute
+  '/connect': typeof ConnectIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
-  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
@@ -112,13 +119,14 @@ export interface FileRoutesById {
   '/_app/schedule': typeof AppScheduleRoute
   '/_app/study': typeof AppStudyRoute
   '/_app/tasks': typeof AppTasksRoute
+  '/connect/$jobId': typeof ConnectJobIdRoute
   '/_app/': typeof AppIndexRoute
+  '/connect/': typeof ConnectIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/connect'
     | '/login'
     | '/register'
     | '/styleguide'
@@ -127,9 +135,10 @@ export interface FileRouteTypes {
     | '/schedule'
     | '/study'
     | '/tasks'
+    | '/connect/$jobId'
+    | '/connect/'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/connect'
     | '/login'
     | '/register'
     | '/styleguide'
@@ -138,11 +147,12 @@ export interface FileRouteTypes {
     | '/schedule'
     | '/study'
     | '/tasks'
+    | '/connect/$jobId'
     | '/'
+    | '/connect'
   id:
     | '__root__'
     | '/_app'
-    | '/connect'
     | '/login'
     | '/register'
     | '/styleguide'
@@ -151,16 +161,19 @@ export interface FileRouteTypes {
     | '/_app/schedule'
     | '/_app/study'
     | '/_app/tasks'
+    | '/connect/$jobId'
     | '/_app/'
+    | '/connect/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
-  ConnectRoute: typeof ConnectRoute
   LoginRoute: typeof LoginRoute
   RegisterRoute: typeof RegisterRoute
   StyleguideRoute: typeof StyleguideRoute
   WelcomeRoute: typeof WelcomeRoute
+  ConnectJobIdRoute: typeof ConnectJobIdRoute
+  ConnectIndexRoute: typeof ConnectIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -170,13 +183,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AppRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/connect': {
-      id: '/connect'
-      path: '/connect'
-      fullPath: '/connect'
-      preLoaderRoute: typeof ConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -242,6 +248,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTasksRouteImport
       parentRoute: typeof AppRoute
     }
+    '/connect/': {
+      id: '/connect/'
+      path: '/connect'
+      fullPath: '/connect/'
+      preLoaderRoute: typeof ConnectIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect/$jobId': {
+      id: '/connect/$jobId'
+      path: '/connect/$jobId'
+      fullPath: '/connect/$jobId'
+      preLoaderRoute: typeof ConnectJobIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -265,11 +285,12 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
-  ConnectRoute: ConnectRoute,
   LoginRoute: LoginRoute,
   RegisterRoute: RegisterRoute,
   StyleguideRoute: StyleguideRoute,
   WelcomeRoute: WelcomeRoute,
+  ConnectJobIdRoute: ConnectJobIdRoute,
+  ConnectIndexRoute: ConnectIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

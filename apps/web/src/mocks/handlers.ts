@@ -1,10 +1,15 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
+import { fieldsHash } from "@/lib/hash";
+import { runConnect } from "./connect-script";
 import { findUser, type MockDb, type MockUser, persistDb, ulid } from "./db";
+import { JobSim } from "./job-sim";
 
 type S = components["schemas"];
 
 export interface HandlerOptions {
+  /** Множитель пауз сценария подключения: 1 — как для человека, 0 — мгновенно (тесты). */
+  jobPace?: number;
   /** Задержка ответов, мс: в браузере видны скелетоны, в тестах — 0. */
   latency?: number;
   /** Сохранять изменения между перезагрузками страницы (только в браузере). */
@@ -32,7 +37,67 @@ const meOut = (db: MockDb, user: MockUser): S["MeOut"] => ({
  * Обработчики MSW по OpenAPI бэкенда. Один набор на браузер (`VITE_MOCKS=1`), Vitest и Playwright.
  * Эндпоинтов, которых нет в OpenAPI, здесь нет и не будет.
  */
-export function createHandlers(db: MockDb, { latency = 0, persist = false }: HandlerOptions = {}) {
+type AskedBlock = {
+  type?: string;
+  mode?: string;
+  required?: boolean;
+  allowOther?: boolean;
+  secret?: boolean;
+  maxLength?: number;
+  options?: { value: string }[];
+};
+
+/** Совпадает ли ответ по форме с вопросом. Повторяет проверки сервера: см. `_check_values` в `botai/jobs/answers.py`. */
+export function answerFits(asked: unknown, values: S["AnswerIn"]["values"]): boolean {
+  const block = (asked ?? {}) as AskedBlock;
+  switch (block.type) {
+    case "choice": {
+      const picked = typeof values === "string" ? [values] : Array.isArray(values) ? values : null;
+      if (!picked) return false;
+      if (block.mode === "single" && picked.length !== 1) return false;
+      if (block.required && picked.length === 0) return false;
+      const allowed = new Set((block.options ?? []).map((option) => option.value));
+      return picked.every(
+        (value) =>
+          allowed.has(value) || (block.allowOther === true && value.length > 0 && value.length <= 500),
+      );
+    }
+    case "input":
+      if (typeof values !== "string") return false;
+      if ((block.required || block.secret) && values === "") return false;
+      return values.length <= (block.maxLength ?? 200);
+    case "confirm":
+    case "approval":
+      return typeof values === "boolean";
+    case "login":
+      return values === null || values === undefined || typeof values === "boolean";
+    default:
+      return false;
+  }
+}
+
+type Proposal = {
+  id: string;
+  expiresAt: string;
+  request: { fields: { name: string; value: string; editable: boolean }[] };
+};
+
+/** Блок `approval` с этим предложением среди заданий мока: так сервер находит предложение по id. */
+function findApproval(db: MockDb, proposalId: string) {
+  for (const sim of db.sims.values()) {
+    for (const event of sim.events) {
+      const data = event.data as { type?: string; id?: string; proposal?: Proposal };
+      if (event.event === "block" && data.type === "approval" && data.proposal?.id === proposalId && data.id)
+        return { sim, blockId: data.id, proposal: data.proposal };
+    }
+  }
+  return null;
+}
+
+export function createHandlers(
+  db: MockDb,
+  { latency = 0, persist = false, jobPace = 0 }: HandlerOptions = {},
+) {
   const save = () => {
     if (persist) persistDb(db);
   };
@@ -156,6 +221,118 @@ export function createHandlers(db: MockDb, { latency = 0, persist = false }: Han
           ]
         : [];
       return HttpResponse.json(sections);
+    }),
+
+    http.post("*/api/v1/spaces/:spaceId/connections", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const space = db.spaces.find((item) => item.id === String(params.spaceId));
+      if (!space) return problem(404, "not_found", "Пространство не найдено");
+      const body = (await request.json()) as S["ConnectionCreate"];
+      const university = db.universities.find((item) => item.id === space.universityId);
+      const connection: S["ConnectionOut"] = {
+        id: ulid(),
+        spaceId: space.id,
+        adapter: null,
+        kind: body.kind ?? "portal",
+        origin: body.url ?? university?.origins[0] ?? "https://lk.fakeuni.test",
+        title: body.title ?? "Личный кабинет",
+        status: "learning",
+        hasPassword: false,
+        lastSyncAt: null,
+        nextSyncAt: null,
+        errorCode: null,
+        errorDetail: null,
+      };
+      db.connections.push(connection);
+      const jobId = ulid();
+      const sim = new JobSim(jobId, db.now, jobPace);
+      db.sims.set(jobId, sim);
+      save();
+      void runConnect(sim, db, connection.id, db.jobVariant).then(save);
+      return HttpResponse.json({ connection, jobId } satisfies S["ConnectionStarted"], { status: 201 });
+    }),
+
+    http.get("*/api/v1/connections/:connectionId", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const connection = db.connections.find((item) => item.id === String(params.connectionId));
+      return connection ? HttpResponse.json(connection) : problem(404, "not_found", "Подключение не найдено");
+    }),
+
+    http.get("*/api/v1/jobs/:jobId/events", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const sim = db.sims.get(String(params.jobId));
+      if (!sim) return problem(404, "not_found", "Задание не найдено");
+      const last = Number(request.headers.get("last-event-id") ?? 0) || 0;
+      return new HttpResponse(sim.stream(last), {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      });
+    }),
+
+    http.post("*/api/v1/jobs/:jobId/answers", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const sim = db.sims.get(String(params.jobId));
+      if (!sim) return problem(404, "not_found", "Задание не найдено");
+      const body = (await request.json()) as S["AnswerIn"];
+      // Секретные поля сервер не повторяет и не журналирует: помечаем по самому блоку.
+      const asked = sim.events.find(
+        (event) => event.event === "block" && (event.data as { id?: string }).id === body.blockId,
+      );
+      if (!asked) return problem(404, "not_found", "Блок не найден");
+      // Форма и размер — как у настоящего сервера (`botai/jobs/answers.py`); значение в ответе не повторяется.
+      if (!answerFits(asked.data, body.values))
+        return problem(422, "validation", "Ответ не подходит к вопросу");
+      const secret = (asked.data as { secret?: boolean }).secret === true;
+      const result = sim.answer(body.blockId, body.values, secret);
+      if (result === "answered") return problem(409, "block_answered", "На этот вопрос уже ответили");
+      if (!result) return problem(404, "not_found", "Вопрос не найден");
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.post("*/api/v1/jobs/:jobId/cancel", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      db.sims.get(String(params.jobId))?.cancel();
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.post("*/api/v1/actions/:proposalId/approve", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const found = findApproval(db, String(params.proposalId));
+      if (!found) return problem(404, "not_found", "Предложение не найдено");
+      const body = (await request.json()) as S["ApproveIn"];
+      const { proposal } = found;
+      if (Date.parse(proposal.expiresAt) <= db.now())
+        return problem(409, "action_expired", "Время подтверждения истекло, запросите заново");
+      // Как `approve` на сервере: хеш считается по тому, что человек видел, а итоговые поля — по правкам.
+      const original = Object.fromEntries(proposal.request.fields.map((field) => [field.name, field.value]));
+      if (body.fieldsHash !== (await fieldsHash(original)))
+        return problem(409, "action_changed", "Содержимое изменилось, посмотрите его ещё раз");
+      const editable = new Set(
+        proposal.request.fields.filter((field) => field.editable).map((field) => field.name),
+      );
+      const sameKeys =
+        Object.keys(body.fields).sort().join("\u0000") === Object.keys(original).sort().join("\u0000");
+      const untouched = Object.keys(original).every(
+        (name) => editable.has(name) || body.fields[name] === original[name],
+      );
+      if (!sameKeys || !untouched)
+        return problem(409, "action_changed", "Поля не совпадают с показанными вам");
+      found.sim.answer(found.blockId, true, false);
+      return HttpResponse.json({}, { status: 202 });
+    }),
+
+    http.post("*/api/v1/actions/:proposalId/reject", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const found = findApproval(db, String(params.proposalId));
+      if (!found) return problem(404, "not_found", "Предложение не найдено");
+      found.sim.answer(found.blockId, false, false);
+      return new HttpResponse(null, { status: 204 });
     }),
   ];
 }

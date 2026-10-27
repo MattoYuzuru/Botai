@@ -1,4 +1,5 @@
 import { setupWorker } from "msw/browser";
+import { JOB_VARIANTS, type JobVariant } from "./connect-script";
 import { createDb, restoreDb, type Scenario } from "./db";
 import { createHandlers } from "./handlers";
 
@@ -27,9 +28,34 @@ function readLatency(): number {
   return Number.isFinite(value) ? value : 250;
 }
 
+/** Сценарий подключения вуза (`?job=wrong-password|push|failure|approval`), запоминается на вкладку. */
+function readJobVariant(): JobVariant {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("job");
+    if (fromUrl && (JOB_VARIANTS as readonly string[]).includes(fromUrl)) {
+      window.sessionStorage.setItem("botai.mock.job", fromUrl);
+      return fromUrl as JobVariant;
+    }
+    const stored = window.sessionStorage.getItem("botai.mock.job");
+    return stored && (JOB_VARIANTS as readonly string[]).includes(stored) ? (stored as JobVariant) : "basic";
+  } catch {
+    return "basic";
+  }
+}
+
+/** Скорость подключения: `?pace=0` — мгновенно (e2e), по умолчанию — как для человека. */
+function readPace(): number {
+  const raw = new URLSearchParams(window.location.search).get("pace");
+  const value = raw === null ? Number.NaN : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : 1;
+}
+
 export async function startMocks(): Promise<void> {
   const scenario = readScenario();
   const db = restoreDb() ?? createDb(scenario ?? "fresh");
-  const worker = setupWorker(...createHandlers(db, { latency: readLatency(), persist: true }));
+  db.jobVariant = readJobVariant();
+  const worker = setupWorker(
+    ...createHandlers(db, { latency: readLatency(), persist: true, jobPace: readPace() }),
+  );
   await worker.start({ onUnhandledRequest: "bypass", quiet: true });
 }

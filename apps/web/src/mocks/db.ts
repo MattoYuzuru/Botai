@@ -3,6 +3,8 @@
  * OpenAPI, вуз вымышленный (`fakeuni.test`): ничего реального и ничего под конкретный вуз.
  */
 import type { components } from "@/api/schema.gen";
+import type { JobVariant } from "./connect-script";
+import type { JobSim } from "./job-sim";
 
 type S = components["schemas"];
 
@@ -48,6 +50,10 @@ export interface MockDb {
   spaces: S["SpaceOut"][];
   connections: S["ConnectionOut"][];
   universities: S["UniversityOut"][];
+  /** Задания подключения (живут только в памяти вкладки). */
+  sims: Map<string, JobSim>;
+  /** Какой сценарий подключения проигрывать (`?job=wrong-password`). */
+  jobVariant: JobVariant;
 }
 
 const HSE_ORIGIN = "https://lk.fakeuni.test";
@@ -119,6 +125,8 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
     spaces: [],
     connections: [],
     universities: seedUniversities(),
+    sims: new Map(),
+    jobVariant: "basic",
   };
   if (scenario === "fresh" || scenario === "empty") return db;
 
@@ -153,7 +161,7 @@ const STORAGE_KEY = "botai.mock.db";
 
 export function persistDb(db: MockDb): void {
   try {
-    const { now: _now, ...rest } = db;
+    const { now: _now, sims: _sims, ...rest } = db;
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(rest));
   } catch {
     /* хранилище недоступно */
@@ -163,7 +171,7 @@ export function persistDb(db: MockDb): void {
 export function restoreDb(now: () => number = Date.now): MockDb | null {
   try {
     const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    return raw ? { ...(JSON.parse(raw) as Omit<MockDb, "now">), now } : null;
+    return raw ? { ...(JSON.parse(raw) as Omit<MockDb, "now" | "sims">), now, sims: new Map() } : null;
   } catch {
     return null;
   }
