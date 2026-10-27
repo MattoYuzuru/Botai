@@ -49,6 +49,10 @@ class Settings(BaseSettings):
 
     quota_tokens_per_day: int = 2_000_000
     quota_requests_per_minute: int = 30
+    # Whole-pool daily spend cap on the shared key (security.md T7). 0 disables the cap.
+    quota_pool_usd_per_day: float = 3.0
+    # Failed BotAI logins allowed per (client, e-mail) in a 15-minute window.
+    login_failures_per_window: int = 10
 
 
 @lru_cache

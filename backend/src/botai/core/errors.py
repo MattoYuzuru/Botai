@@ -34,6 +34,8 @@ class ErrorCode(StrEnum):
     CONFLICT = "conflict"
     BLOCK_ANSWERED = "block_answered"
     NOT_IMPLEMENTED = "not_implemented"
+    TOO_MANY_ATTEMPTS = "too_many_attempts"
+    INTERNAL = "internal_error"
 
 
 _STATUS: dict[ErrorCode, int] = {
@@ -45,6 +47,8 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.BLOCK_ANSWERED: 409,
     ErrorCode.QUOTA_EXCEEDED: 429,
     ErrorCode.NOT_IMPLEMENTED: 501,
+    ErrorCode.TOO_MANY_ATTEMPTS: 429,
+    ErrorCode.INTERNAL: 500,
     ErrorCode.ACTION_CHANGED: 409,
     ErrorCode.ACTION_EXPIRED: 410,
 }
