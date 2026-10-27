@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from botai.agent.chat import handle_chat
 from botai.core.handlers import HandlerTable
+from botai.core.jobs import JobKind
 
-HANDLERS: HandlerTable = {}
+HANDLERS: HandlerTable = {JobKind.CHAT: handle_chat}

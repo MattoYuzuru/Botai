@@ -113,6 +113,7 @@ class HarnessResult:
     error_code: str | None = None
     error_detail: str = ""  # human text of the provider error, safe to show
     prefix_version: str = ""
+    prefix_tokens: int = 0  # estimate: system text + tool schemas
     trace: list[StepTrace] = field(default_factory=list)
     tool_calls: list[ToolRecord] = field(default_factory=list)
     findings: list[InjectionFinding] = field(default_factory=list)
@@ -223,7 +224,12 @@ class _Run:
     ) -> None:
         self.purpose, self.budget, self.prefix, self.tools = purpose, budget, prefix, tools
         self.ctx, self.services, self.user_id, self.job_id = ctx, services, user_id, job_id
-        self.result = HarnessResult(content="", steps=0, prefix_version=prefix.version)
+        self.result = HarnessResult(
+            content="",
+            steps=0,
+            prefix_version=prefix.version,
+            prefix_tokens=estimate_tokens(prefix.system.content) + estimate_tools(prefix.tools),
+        )
         self._seen: dict[tuple[str, str], str] = {}
 
     async def call_tool(self, call: LlmToolCall) -> str:
@@ -310,7 +316,7 @@ async def run(
     result = state.result
     with_tools = bool(tools)
     convo: list[LlmMessage] = [prefix.system, *_scrub_messages(messages, keep_reasoning=with_tools)]
-    prefix_tokens = estimate_tools(prefix.tools)
+    tools_tokens = estimate_tools(prefix.tools)
 
     with usage_scope(user_id, job_id):
         for step in range(budget.max_steps):
@@ -319,7 +325,7 @@ async def run(
                 break
             if (
                 budget.max_input_tokens is not None
-                and estimate_messages(convo) + prefix_tokens > budget.max_input_tokens
+                and estimate_messages(convo) + tools_tokens > budget.max_input_tokens
             ):
                 result.stopped = "budget"
                 break
