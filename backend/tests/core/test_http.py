@@ -69,3 +69,74 @@ async def test_exhausted_429_is_rate_limited() -> None:
         with pytest.raises(BotaiError) as exc:
             await request_with_retries(client, "GET", "https://fakeuni.test/x", policy=FAST)
     assert exc.value.code == ErrorCode.SOURCE_RATE_LIMITED
+
+
+async def test_body_over_cap_is_refused() -> None:
+    big = b"x" * 2048
+    async with build_client(
+        allow_hosts=["fakeuni.test"],
+        proxy_url=None,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=big)),
+    ) as client:
+        with pytest.raises(BotaiError) as exc:
+            await request_with_retries(
+                client, "GET", "https://fakeuni.test/big", policy=FAST, max_bytes=1024
+            )
+    assert exc.value.code == ErrorCode.SOURCE_UNAVAILABLE
+
+
+async def test_trickling_body_cannot_outlive_budget() -> None:
+    import asyncio
+
+    async def trickle():
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            yield b"."
+
+    async with build_client(
+        allow_hosts=["fakeuni.test"],
+        proxy_url=None,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=trickle())),
+    ) as client:
+        with pytest.raises(BotaiError) as exc:
+            await request_with_retries(
+                client, "GET", "https://fakeuni.test/slow", policy=FAST, budget_s=0.3
+            )
+    assert exc.value.code == ErrorCode.SOURCE_UNAVAILABLE
+
+
+async def test_returned_response_is_fully_read_and_decoded() -> None:
+    async with build_client(
+        allow_hosts=["fakeuni.test"],
+        proxy_url=None,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"ok": "да"})),
+    ) as client:
+        resp = await request_with_retries(client, "GET", "https://fakeuni.test/j", policy=FAST)
+    assert resp.json() == {"ok": "да"}
+
+
+async def test_redirect_chain_and_final_url_survive_capped_read() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "https://fakeuni.test/auth/login"})
+        return httpx.Response(200, text="login page")
+
+    async with build_client(
+        allow_hosts=["fakeuni.test"], proxy_url=None, transport=httpx.MockTransport(handler)
+    ) as client:
+        resp = await request_with_retries(client, "GET", "https://fakeuni.test/start", policy=FAST)
+    assert str(resp.url) == "https://fakeuni.test/auth/login"
+    assert [r.status_code for r in resp.history] == [302]
+
+
+async def test_follow_redirects_false_is_honoured() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "https://fakeuni.test/auth/login"})
+
+    async with build_client(
+        allow_hosts=["fakeuni.test"], proxy_url=None, transport=httpx.MockTransport(handler)
+    ) as client:
+        resp = await request_with_retries(
+            client, "GET", "https://fakeuni.test/probe", policy=FAST, follow_redirects=False
+        )
+    assert resp.status_code == 302
