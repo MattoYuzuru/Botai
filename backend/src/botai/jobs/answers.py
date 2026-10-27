@@ -62,7 +62,9 @@ def _check_values(block: AgentUiBlock, values: list[str] | str | bool | None) ->
             picked = values
         else:
             raise _bad()
-        if block.mode == "single" and len(picked) != 1:
+        # An optional question may be skipped ("Не знаю"): [] or "" is a valid answer then.
+        picked = [v for v in picked if v != ""]
+        if block.mode == "single" and len(picked) > 1:
             raise _bad()
         if block.required and not picked:
             raise _bad()
