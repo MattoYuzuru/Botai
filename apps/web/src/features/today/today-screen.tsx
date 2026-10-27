@@ -15,7 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Screen } from "@/app/screen";
-import { resolveDataState, toScheduleState } from "@/features/data/data-state";
+import { resolveDataState, scheduleListState } from "@/features/data/data-state";
 import { todayQuery } from "@/features/data/queries";
 import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
@@ -76,13 +76,7 @@ export function TodayScreen() {
     staleItems: [...events, ...deadlines.map((view) => view.deadline)].some((row) => row.provenance.stale),
   });
   const timeZone = directory.homeZone;
-  // Свежие данные без пар — честное «Пар нет»; у устаревших или неполных данных пустота объясняется иначе.
-  const scheduleState =
-    events.length > 0 || state === "loading"
-      ? toScheduleState(state)
-      : state === "ok" || state === "empty"
-        ? "empty"
-        : null;
+  const scheduleState = scheduleListState(state, events.length > 0);
   const selectedEvent = events.find((row) => row.id === eventId) ?? null;
   const selectedDeadline: DeadlineView | null =
     deadlines.find((view) => view.deadline.id === deadlineId) ?? null;

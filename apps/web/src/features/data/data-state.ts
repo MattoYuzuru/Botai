@@ -40,3 +40,16 @@ export function toScheduleState(state: DataState): "loading" | "empty" | "ok" | 
   if (state === "empty") return "empty";
   return state === "ok" ? "ok" : "stale";
 }
+
+/**
+ * Состояние списка пар: свежие данные без пар — честное «Пар нет»; у устаревших, офлайн-снимка и данных,
+ * которым нужен вход, пустота не объявляется «Пар нет» (данные могут быть неполными) — `null`, и экран
+ * объясняет это сам.
+ */
+export function scheduleListState(
+  state: DataState,
+  hasItems: boolean,
+): "loading" | "empty" | "ok" | "stale" | null {
+  if (hasItems || state === "loading") return toScheduleState(state);
+  return state === "ok" || state === "empty" ? "empty" : null;
+}

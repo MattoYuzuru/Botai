@@ -49,6 +49,11 @@ export {
   type ScheduleDayState,
   type ScheduleItem,
 } from "./schedule/schedule-day";
+export {
+  ScheduleGrid,
+  type ScheduleGridDay,
+  type ScheduleGridProps,
+} from "./schedule/schedule-grid";
 export { ScheduleWeek, type ScheduleWeekProps, type WeekDay } from "./schedule/schedule-week";
 export { ScreenHeader, type ScreenHeaderProps } from "./screen-header/screen-header";
 export { ScrollArea, type ScrollAreaProps } from "./scroll-area/scroll-area";
