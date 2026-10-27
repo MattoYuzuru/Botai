@@ -57,7 +57,7 @@ export function MascotStage({
       data-mascot-stage=""
       data-situation={situation}
       data-motion={motion}
-      className={cn("flex items-center gap-3", className)}
+      className={cn("flex flex-wrap items-center gap-3", className)}
     >
       {visible && (
         <Mascot
@@ -71,9 +71,13 @@ export function MascotStage({
         />
       )}
       {hasText && (
-        <div className="flex min-w-0 flex-col items-start gap-2">
+        <div className="flex min-w-0 flex-1 basis-40 flex-col items-start gap-2">
           {badge && (
-            <Badge tone={badge.tone} data-mascot-badge="">
+            <Badge
+              tone={badge.tone}
+              data-mascot-badge=""
+              className="h-auto min-h-6 max-w-full whitespace-normal py-0.5"
+            >
               {badge.text}
             </Badge>
           )}
@@ -83,7 +87,12 @@ export function MascotStage({
             </p>
           )}
           {intent && (
-            <Button variant="secondary" onClick={() => onIntent?.(intent)}>
+            <Button
+              variant="secondary"
+              onClick={() => onIntent?.(intent)}
+              // При зуме текста до 200 % подпись переносится, а не выходит за карточку.
+              className="h-auto min-h-11 max-w-full whitespace-normal py-2.5"
+            >
               {intent.label}
             </Button>
           )}

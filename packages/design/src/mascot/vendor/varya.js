@@ -382,6 +382,7 @@ const CSS = `
 .varya .stars{animation:varya-tw 1.6s steps(1) infinite}
 @keyframes varya-tw{50%{opacity:.3}}
 /* BOTAI: ноги, образы, петли и действия */
+.varya.p-key [data-prop="key"],.varya.p-cloudx [data-prop="cloudx"]{display:inline}
 .varya .legsB,.varya .legsC,.varya .santa,.varya .glint,.varya .leaf{display:none}
 .varya.skin-new-year .santa,.varya.skin-new-year .glint,.varya.skin-leaf .leaf,.varya.skin-mug .mug{display:inline}
 .varya.skin-new-year .capg,.varya.skin-new-year .tuft{display:none}

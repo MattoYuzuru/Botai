@@ -27,6 +27,8 @@ export interface VaryaMountOptions {
   lookRange?: readonly [number, number];
   random?: () => number;
   onAnim?: (animation: string | null) => void;
+  /** Реплика оригинальных ситуаций doodle_vibe. Botai её не передаёт и не показывает. */
+  onSay?: (label: string, text: string, situation: { id: string }) => void;
 }
 
 export interface VaryaHandle {

@@ -100,7 +100,11 @@ describe("MascotStage", () => {
     expect(screen.getByText(/Домашнее задание 3: осталось/)).toBeInTheDocument();
     expect(svgOf(container)?.getAttribute("data-sit")).toBe("deadline");
     await userEvent.click(screen.getByRole("button", { name: "Открыть срочную" }));
-    expect(onIntent).toHaveBeenCalledWith({ kind: "open-deadline", label: "Открыть срочную", deadlineId: "u" });
+    expect(onIntent).toHaveBeenCalledWith({
+      kind: "open-deadline",
+      label: "Открыть срочную",
+      deadlineId: "u",
+    });
   });
 
   it("без картинки (visible: false) экран остаётся понятным: бейдж, реплика и действие на месте", () => {
@@ -128,7 +132,13 @@ describe("MascotStage", () => {
   });
 
   it("реакция на событие: одна, потом подтверждение; без картинки не тратится", () => {
-    const event = { id: "d1", spaceId: "hse", kind: "deadline-done" as const, at: NOW - 1_000, title: "Эссе" };
+    const event = {
+      id: "d1",
+      spaceId: "hse",
+      kind: "deadline-done" as const,
+      at: NOW - 1_000,
+      title: "Эссе",
+    };
     const presentation = resolveMascot(context({ recentEvent: event }));
     expect(presentation.reactionEventId).toBe("d1");
     const onReactionEnd = vi.fn();
@@ -191,31 +201,31 @@ describe("MascotDock", () => {
 
   it("static: переход мгновенный, сцена не играет", () => {
     const { container } = render(<MascotDock mode="floor" situation="idle" motion="static" seed={5} />);
-    const moving = container.querySelector<HTMLElement>("[data-dock] > div");
+    const moving = container.querySelector<HTMLElement>("[data-dock] > div > div");
     expect(moving?.style.transitionDuration).toBe("0s");
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
     expect(svgOf(container)?.classList.contains("still")).toBe(true);
-    expect(svgOf(container)?.className.baseVal).not.toMatch(/\ba-/);
+    expect(svgOf(container)?.getAttribute("class") ?? "").not.toMatch(/\ba-/);
   });
 
   it("сцена: через паузу 6–10 с Варя делает действие, потом возвращается к покою", () => {
     const first = stageStep(5, 0);
     const { container } = render(<MascotDock mode="floor" situation="idle" seed={5} />);
-    expect(svgOf(container)?.className.baseVal).not.toMatch(/\ba-/);
+    expect(svgOf(container)?.getAttribute("class") ?? "").not.toMatch(/\ba-/);
     act(() => {
       vi.advanceTimersByTime(first.pauseMs - 100);
     });
-    expect(svgOf(container)?.className.baseVal).not.toMatch(/\ba-|\bl-run\b/);
+    expect(svgOf(container)?.getAttribute("class") ?? "").not.toMatch(/\ba-|\bl-run\b/);
     act(() => {
       vi.advanceTimersByTime(200);
     });
-    expect(svgOf(container)?.className.baseVal ?? "").toMatch(/\ba-|\bl-run\b/);
+    expect(svgOf(container)?.getAttribute("class") ?? "").toMatch(/\ba-|\bl-run\b/);
     act(() => {
       vi.advanceTimersByTime(first.durationMs + 100);
     });
-    expect(svgOf(container)?.className.baseVal ?? "").not.toMatch(/\ba-|\bl-run\b/);
+    expect(svgOf(container)?.getAttribute("class") ?? "").not.toMatch(/\ba-|\bl-run\b/);
   });
 
   it("пузырь едет вместе с Варей и сам не прячет её от касаний мимо спрайта", () => {

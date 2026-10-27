@@ -56,7 +56,21 @@ describe("вендоренный renderer Вари", () => {
 
   it("у каждого сезонного окна есть готовый спрайт для статичного режима", () => {
     for (const event of MASCOT_EVENTS) {
-      expect(existsSync(sprite(event.staticFallback)), `${event.eventId}: ${event.staticFallback}`).toBe(true);
+      expect(existsSync(sprite(event.staticFallback)), `${event.eventId}: ${event.staticFallback}`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("у каждого предмета, который держит ситуация, в CSS есть правило показа (иначе знак невидим)", () => {
+    const api = varya() as VaryaApi & { CSS: string };
+    const used = new Set<string>();
+    for (const item of api.SITUATIONS) {
+      for (const prop of [...(item.hold?.props ?? []), ...(item.pose.props ?? [])]) used.add(prop);
+    }
+    expect(used.size).toBeGreaterThan(8);
+    for (const prop of used) {
+      expect(api.CSS, `предмет ${prop}`).toContain(`.p-${prop} [data-prop="${prop}"]`);
     }
   });
 

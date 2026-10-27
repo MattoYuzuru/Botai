@@ -7,7 +7,7 @@
  * Варя — персонаж и обращается на «ты»; интерфейс остаётся безличным и на «вы» (QUESTIONS Q31). Реплика —
  * одна строка до 48 знаков, без восклицаний и эмодзи, и никогда не несёт учётных данных.
  */
-import { DEFAULT_TIME_ZONE, formatDay, formatTime, dayNumber } from "../lib/format";
+import { DEFAULT_TIME_ZONE, dayNumber, formatDay, formatTime } from "../lib/format";
 import type { MascotSituationId } from "./types";
 
 /** Поля, которые можно подставить. `noPairs`, `noDue`, `allDone` — признаки без значения (значение — пустая строка). */

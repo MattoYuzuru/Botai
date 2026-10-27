@@ -25,7 +25,7 @@ export interface StageStep {
 
 /** Смешивает зерно и номер в 32-битное число для независимого генератора шага. */
 function mix(seed: number, index: number): number {
-  let h = Math.imul(seed >>> 0 ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(index + 1, 0xc2b2ae35);
+  let h = Math.imul((seed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(index + 1, 0xc2b2ae35);
   h ^= h >>> 15;
   h = Math.imul(h, 0x2c1b3c6d);
   h ^= h >>> 12;

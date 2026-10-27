@@ -68,10 +68,26 @@ describe("календарь сезонных образов §7", () => {
 
   it("реестр: окна, образы и приоритеты из §7", () => {
     const byId = Object.fromEntries(MASCOT_EVENTS.map((event) => [event.eventId, event]));
-    expect(byId["new-year"]).toMatchObject({ from: { month: 12, day: 20 }, to: { month: 1, day: 11 }, priority: 100 });
-    expect(byId["session-winter"]).toMatchObject({ from: { month: 1, day: 10 }, to: { month: 2, day: 1 }, priority: 50 });
-    expect(byId["session-summer"]).toMatchObject({ from: { month: 6, day: 1 }, to: { month: 7, day: 1 }, priority: 50 });
-    expect(byId["knowledge-day"]).toMatchObject({ from: { month: 9, day: 1 }, to: { month: 9, day: 2 }, priority: 60 });
+    expect(byId["new-year"]).toMatchObject({
+      from: { month: 12, day: 20 },
+      to: { month: 1, day: 11 },
+      priority: 100,
+    });
+    expect(byId["session-winter"]).toMatchObject({
+      from: { month: 1, day: 10 },
+      to: { month: 2, day: 1 },
+      priority: 50,
+    });
+    expect(byId["session-summer"]).toMatchObject({
+      from: { month: 6, day: 1 },
+      to: { month: 7, day: 1 },
+      priority: 50,
+    });
+    expect(byId["knowledge-day"]).toMatchObject({
+      from: { month: 9, day: 1 },
+      to: { month: 9, day: 2 },
+      priority: 60,
+    });
     expect(new Set(MASCOT_EVENTS.map((event) => event.eventId)).size).toBe(MASCOT_EVENTS.length);
     expect(skinAt(msk(6, 15, 12))).toBe("session-summer");
     expect(skinAt(msk(7, 1, 0, 0))).toBeNull();

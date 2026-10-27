@@ -48,7 +48,9 @@ describe("реестр реплик §6", () => {
       }
       for (const field of variant.needs) {
         if (!used.includes(field)) {
-          expect(FLAG_FIELDS, `${key}: «${variant.text}» требует ${field}, но не подставляет его`).toContain(field);
+          expect(FLAG_FIELDS, `${key}: «${variant.text}» требует ${field}, но не подставляет его`).toContain(
+            field,
+          );
         }
       }
     }
@@ -101,7 +103,9 @@ describe("renderTemplate и выбор реплики", () => {
   it("не хватает поля — null, пустое значение тоже считается нехваткой", () => {
     expect(renderTemplate("{title} в {time}", { title: "Алгоритмы" })).toBeNull();
     expect(renderTemplate("{title} в {time}", { title: "Алгоритмы", time: "" })).toBeNull();
-    expect(renderTemplate("{title} в {time}", { title: "Алгоритмы", time: "09:30" })).toBe("Алгоритмы в 09:30");
+    expect(renderTemplate("{title} в {time}", { title: "Алгоритмы", time: "09:30" })).toBe(
+      "Алгоритмы в 09:30",
+    );
   });
 
   it("берётся самый содержательный вариант; без данных — вариант без числа", () => {
@@ -112,7 +116,10 @@ describe("renderTemplate и выбор реплики", () => {
   });
 
   it("слишком длинный вариант отбрасывается, а не обрезается", () => {
-    const fields: LineFields = { title: "Практическое задание по курсу «Вычислительные методы»", left: "5 ч" };
+    const fields: LineFields = {
+      title: "Практическое задание по курсу «Вычислительные методы»",
+      left: "5 ч",
+    };
     expect(pickLine("deadline", fields)).toBe("Осталось 5 ч");
     expect(availableLines("deadline", fields)).toEqual(["Осталось 5 ч"]);
   });

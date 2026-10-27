@@ -175,7 +175,10 @@ describe("resolveMascot: приоритет §2 сверху вниз", () => {
   });
 
   it("13. ночь 23:00–05:00 по времени пространства: night и тема pj", () => {
-    expect(resolveMascot(ctx({ nowMs: msk(10, 27, 23, 0) }))).toMatchObject({ situation: "night", theme: "pj" });
+    expect(resolveMascot(ctx({ nowMs: msk(10, 27, 23, 0) }))).toMatchObject({
+      situation: "night",
+      theme: "pj",
+    });
     expect(resolveMascot(ctx({ nowMs: msk(10, 28, 4, 59) })).situation).toBe("night");
     expect(situationOf({ nowMs: msk(10, 27, 22, 59) })).toBe("idle");
     expect(situationOf({ nowMs: msk(10, 28, 5, 0) })).toBe("idle");
@@ -194,7 +197,12 @@ describe("resolveMascot: приоритет §2 сверху вниз", () => {
 
   it("14. всё сдано и снимок свежий: done-поза без реакции, статично", () => {
     const result = resolveMascot(
-      ctx({ snapshot: withDeadlines(deadline("a", NOW - HOUR, { done: true }), deadline("b", null, { done: true })) }),
+      ctx({
+        snapshot: withDeadlines(
+          deadline("a", NOW - HOUR, { done: true }),
+          deadline("b", null, { done: true }),
+        ),
+      }),
     );
     expect(result).toMatchObject({ situation: "done", motion: "static", reactionEventId: null });
     expect(result.line).toBe("Пока всё сдано");
@@ -238,7 +246,9 @@ describe("resolveMascot: фикстуры §8", () => {
   });
 
   it("overdue: «Просрочено», без упрёков и без реакции", () => {
-    const result = resolveMascot(ctx({ snapshot: withDeadlines(deadline("o", NOW - 3 * HOUR, { title: "Эссе" })) }));
+    const result = resolveMascot(
+      ctx({ snapshot: withDeadlines(deadline("o", NOW - 3 * HOUR, { title: "Эссе" })) }),
+    );
     expect(result.situation).toBe("overdue");
     expect(result.badge).toEqual({ tone: "danger", text: "Просрочено" });
     expect(result.reactionEventId).toBeNull();
@@ -262,12 +272,20 @@ describe("resolveMascot: фикстуры §8", () => {
   });
 
   it("done-once: одна реакция на событие, после подтверждения и по истечении минуты не повторяется", () => {
-    const event = { id: "d1", spaceId: "hse", kind: "deadline-done" as const, at: NOW - 5_000, title: "Эссе" };
+    const event = {
+      id: "d1",
+      spaceId: "hse",
+      kind: "deadline-done" as const,
+      at: NOW - 5_000,
+      title: "Эссе",
+    };
     const first = resolveMascot(ctx({ recentEvent: event }));
     expect(first).toMatchObject({ situation: "done", reactionEventId: "d1", motion: "animated" });
     expect(first.line).toBe("Эссе сдано");
     // Подтверждено по идентификатору или по ключу «пространство:событие» — после перезагрузки не повторяется.
-    expect(resolveMascot(ctx({ recentEvent: event, acknowledgedEventIds: ["d1"] })).reactionEventId).toBeNull();
+    expect(
+      resolveMascot(ctx({ recentEvent: event, acknowledgedEventIds: ["d1"] })).reactionEventId,
+    ).toBeNull();
     expect(
       resolveMascot(ctx({ recentEvent: event, acknowledgedEventIds: [eventKey(event)] })).reactionEventId,
     ).toBeNull();
@@ -329,10 +347,12 @@ describe("resolveMascot: фикстуры §8", () => {
     expect(resolveMascot(ctx({ activity: "syncing", work: { startedAtMs: null, stage: null } })).line).toBe(
       "Обновляю ВШЭ",
     );
-    expect(resolveMascot(ctx({ activity: "syncing", work: { startedAtMs: NOW + 5_000, stage: null } })).line).toBe(
-      "Обновляю ВШЭ",
+    expect(
+      resolveMascot(ctx({ activity: "syncing", work: { startedAtMs: NOW + 5_000, stage: null } })).line,
+    ).toBe("Обновляю ВШЭ");
+    const connect = resolveMascot(
+      ctx({ activity: "connecting", work: { startedAtMs: NOW, stage: "список курсов" } }),
     );
-    const connect = resolveMascot(ctx({ activity: "connecting", work: { startedAtMs: NOW, stage: "список курсов" } }));
     expect(connect.line).toBe("Читаю список курсов");
     expect(resolveMascot(ctx({ activity: "connecting" })).line).toBe("Изучаю твой вуз");
   });
@@ -350,7 +370,10 @@ describe("resolveMascot: фикстуры §8", () => {
 
   it("night: число открытых работ из снимка; без данных — «Уже поздно»", () => {
     const nowMs = msk(10, 27, 23, 40);
-    const open = withDeadlines(deadline("a", nowMs + 100 * HOUR), deadline("b", nowMs + 200 * HOUR, { done: true }));
+    const open = withDeadlines(
+      deadline("a", nowMs + 100 * HOUR),
+      deadline("b", nowMs + 200 * HOUR, { done: true }),
+    );
     expect(plain(resolveMascot(ctx({ nowMs, snapshot: open })).line)).toBe("1 работа — на утро?");
     expect(resolveMascot(ctx({ nowMs, snapshot: null })).line).toBe("Уже поздно");
     expect(resolveMascot(ctx({ nowMs, snapshot: snapshot() })).line).toBe("Уже поздно");
@@ -358,13 +381,15 @@ describe("resolveMascot: фикстуры §8", () => {
 
   it("приветствие пустого чата берёт пары из снимка или обходится без числа", () => {
     const today = { classCount: 3, firstStartMs: msk(10, 27, 9, 30) };
-    expect(plain(resolveMascot(ctx({ snapshot: snapshot({ today }) })).line)).toBe("Сегодня 3 пары, первая в 09:30");
-    expect(plain(resolveMascot(ctx({ snapshot: snapshot({ today: { ...today, classCount: 5 } }) })).line)).toBe(
-      "Сегодня 5 пар, первая в 09:30",
+    expect(plain(resolveMascot(ctx({ snapshot: snapshot({ today }) })).line)).toBe(
+      "Сегодня 3 пары, первая в 09:30",
     );
-    expect(resolveMascot(ctx({ snapshot: snapshot({ today: { classCount: 0, firstStartMs: null } }) })).line).toBe(
-      "Пар сегодня нет",
-    );
+    expect(
+      plain(resolveMascot(ctx({ snapshot: snapshot({ today: { ...today, classCount: 5 } }) })).line),
+    ).toBe("Сегодня 5 пар, первая в 09:30");
+    expect(
+      resolveMascot(ctx({ snapshot: snapshot({ today: { classCount: 0, firstStartMs: null } }) })).line,
+    ).toBe("Пар сегодня нет");
     // Нет данных о парах — нет числа.
     expect(resolveMascot(ctx()).line).toBe("Спроси меня про дедлайны");
     expect(resolveMascot(ctx({ snapshot: null })).line).toBe("Спроси меня про дедлайны");
@@ -397,7 +422,11 @@ describe("resolveMascot: бейдж и выбор работы", () => {
 
   it("сданные работы в расчёт срочности не входят", () => {
     const result = resolveMascot(
-      ctx({ snapshot: snapshot({ deadlines: [deadline("d", NOW + HOUR, { done: true }), deadline("o", NOW + 60 * HOUR)] }) }),
+      ctx({
+        snapshot: snapshot({
+          deadlines: [deadline("d", NOW + HOUR, { done: true }), deadline("o", NOW + 60 * HOUR)],
+        }),
+      }),
     );
     expect(result.situation).toBe("tip");
   });
@@ -412,7 +441,10 @@ describe("resolveMascot: бейдж и выбор работы", () => {
 
   it("просроченное — бейдж «Просрочено» с тоном danger", () => {
     const result = resolveMascot(
-      ctx({ activity: "thinking", snapshot: snapshot({ deadlines: [deadline("o", NOW - HOUR), deadline("p", NOW - 2 * HOUR)] }) }),
+      ctx({
+        activity: "thinking",
+        snapshot: snapshot({ deadlines: [deadline("o", NOW - HOUR), deadline("p", NOW - 2 * HOUR)] }),
+      }),
     );
     expect(result.badge?.tone).toBe("danger");
     expect(plain(result.badge?.text)).toBe("Просрочено · и ещё 1");
@@ -478,7 +510,9 @@ describe("resolveMascot: сезонные образы поверх позы", (
     expect(resolveMascot(ctx({ ...thinking, nowMs: instant })).skin).toBeNull();
     expect(resolveMascot(ctx({ ...thinking, nowMs: instant + MINUTE })).skin).toBe("new-year");
     // Для пространства на 4 часа восточнее та же минута уже в новом окне.
-    expect(resolveMascot(ctx({ ...thinking, nowMs: instant, timeZone: "Asia/Krasnoyarsk" })).skin).toBe("new-year");
+    expect(resolveMascot(ctx({ ...thinking, nowMs: instant, timeZone: "Asia/Krasnoyarsk" })).skin).toBe(
+      "new-year",
+    );
   });
 
   it("10 января 23:59 → 11 января 00:00: колпак уходит, срочность не сбрасывается", () => {
@@ -547,7 +581,9 @@ describe("resolveMascot: чистота", () => {
   });
 
   it("не изменяет контекст", () => {
-    const input = ctx({ snapshot: snapshot({ deadlines: [deadline("b", NOW + 2 * HOUR), deadline("a", NOW + HOUR)] }) });
+    const input = ctx({
+      snapshot: snapshot({ deadlines: [deadline("b", NOW + 2 * HOUR), deadline("a", NOW + HOUR)] }),
+    });
     const copy = structuredClone(input);
     resolveMascot(input);
     expect(input).toEqual(copy);
@@ -565,9 +601,14 @@ describe("resolveMascot: чистота", () => {
 });
 
 describe("detectDoneEvent: событие «сдано» между снимками", () => {
-  const before = snapshot({ deadlines: [deadline("a", NOW + HOUR), deadline("b", NOW + 2 * HOUR, { done: true })] });
+  const before = snapshot({
+    deadlines: [deadline("a", NOW + HOUR), deadline("b", NOW + 2 * HOUR, { done: true })],
+  });
   const after = snapshot({
-    deadlines: [deadline("a", NOW + HOUR, { done: true, title: "Эссе" }), deadline("b", NOW + 2 * HOUR, { done: true })],
+    deadlines: [
+      deadline("a", NOW + HOUR, { done: true, title: "Эссе" }),
+      deadline("b", NOW + 2 * HOUR, { done: true }),
+    ],
   });
 
   it("работа была открыта и стала сданной — событие", () => {
