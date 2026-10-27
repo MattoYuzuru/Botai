@@ -1,0 +1,77 @@
+# Production stack on mnema (docs/plan/deployment.md). Compose project: botai.
+# One host port only: 127.0.0.1:18090 (Caddy → api). Never touch the mnema-prod project.
+# Secrets live in /srv/botai/app.secrets (0600, botai-deploy) and are never baked into images.
+name: botai
+
+x-app: &app
+  image: ghcr.io/mattoyuzuru/botai-app:${IMAGE_TAG:?IMAGE_TAG is required}
+  env_file: [/srv/botai/app.secrets]
+  environment:
+    DATABASE_URL: postgresql+asyncpg://botai:${POSTGRES_PASSWORD:?}@postgres:5432/botai
+    EGRESS_PROXY_URL: http://proxy:3128
+    ENV: prod
+    BOTAI_ENV: prod
+    PUBLIC_BASE_URL: https://botai.mnema.app
+    LLM_PROVIDER: deepseek
+  restart: unless-stopped
+  networks: [botai]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: botai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: botai
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botai"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [botai]
+    mem_limit: 768m
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    profiles: [tools]
+
+  api:
+    <<: *app
+    ports: ["127.0.0.1:18090:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    mem_limit: 768m
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "botai.worker"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      proxy: { condition: service_started }
+    shm_size: 1gb
+    mem_limit: 2g
+
+  proxy:
+    <<: *app
+    command: ["python", "-m", "botai.browser.proxy", "--listen", "0.0.0.0:3128"]
+    mem_limit: 256m
+
+volumes:
+  pgdata: {}
+
+networks:
+  botai: {}
