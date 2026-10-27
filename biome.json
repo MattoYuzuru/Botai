@@ -2,7 +2,14 @@
   "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
-    "includes": ["apps/**", "packages/**", "!**/dist", "!**/*.gen.ts", "!packages/design/src/mascot/vendor"]
+    "includes": [
+      "apps/**",
+      "packages/**",
+      "!**/dist",
+      "!**/*.gen.ts",
+      "!packages/design/src/mascot/vendor",
+      "!apps/web/public/mockServiceWorker.js"
+    ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
   "javascript": {
@@ -20,6 +27,7 @@
         "useHookAtTopLevel": "error"
       },
       "suspicious": { "noExplicitAny": "error" },
+      "a11y": { "useValidAriaRole": { "level": "error", "options": { "ignoreNonDom": true } } },
       "style": {
         "noNonNullAssertion": "warn",
         "noRestrictedImports": {
@@ -33,5 +41,11 @@
         }
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/design/src/styles/**"],
+      "linter": { "rules": { "complexity": { "noImportantStyles": "off" } } }
+    }
+  ]
 }

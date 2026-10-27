@@ -1,0 +1,11 @@
+/*
+ * Точка входа стилей. Порядок важен: Tailwind → токены → база.
+ * Шрифты Geist подключаются в apps/web/src/main.tsx (локальные @fontsource-variable, кириллица включена).
+ * Правила — docs/design/styleguide.md.
+ */
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./base.css";
+
+/* Классы дизайн-системы лежат в этом пакете, а workspace-ссылка в node_modules Tailwind не сканирует. */
+@source "../";

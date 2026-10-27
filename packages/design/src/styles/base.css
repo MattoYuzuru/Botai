@@ -1,0 +1,315 @@
+/*
+ * Глобальная база: шрифт, фон, выделение, фокус, скроллбары, сокращённое движение.
+ * Плюс утилиты дизайн-системы: типографические роли (type-*), длительности (duration-*),
+ * слои (z-*), safe area (*-safe) и скелетон.
+ */
+
+@layer base {
+  html {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    /* Жест «потянуть вниз» — это скрытая кнопка «Обновить»; её в приложении нет. */
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    min-height: 100dvh;
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.25rem;
+    background-color: var(--color-bg);
+    /* Без задержки двойного нажатия на iOS и Android; зум щипком остаётся. */
+    touch-action: manipulation;
+  }
+
+  #root {
+    isolation: isolate;
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background-color: var(--selection);
+  }
+
+  /* Единое кольцо фокуса для клавиатуры: 2 px, отступ 2 px. Мышь и касание его не вызывают. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  /* Числа во времени, отсчёте, оценках и счётчиках не прыгают: «08:30» и «11:45» одной ширины. */
+  time,
+  data,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+  }
+
+  /* Нативные подсказки браузера не нужны, а нативная кнопка наследует шрифт. */
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Автозаполнение не должно перекрашивать поля в системный жёлтый. */
+  input:-webkit-autofill,
+  textarea:-webkit-autofill {
+    -webkit-text-fill-color: var(--color-fg);
+    caret-color: var(--color-fg);
+    box-shadow: inset 0 0 0 100rem var(--color-bg-subtle);
+    transition: background-color 9999s ease-out;
+  }
+}
+
+/*
+ * Сокращённое движение — строгое правило (styleguide §5). Срабатывает при системной настройке
+ * prefers-reduced-motion и при «спокойном режиме» (атрибут data-motion="calm" на <html>).
+ * Переходы — 1 мс, циклы остановлены на первом кадре, вход слоёв — сразу в конечное состояние.
+ * Отдельных @keyframes вне этого пакета не пишем — тогда правило работает само.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+:root[data-motion="calm"] *,
+:root[data-motion="calm"] *::before,
+:root[data-motion="calm"] *::after {
+  animation: none !important;
+  transition-duration: 1ms !important;
+  transition-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+/* Скрытая вкладка: декоративные циклы стоят (атрибут ставит useDocumentVisibility). */
+:root[data-hidden="true"] *,
+:root[data-hidden="true"] *::before,
+:root[data-hidden="true"] *::after {
+  animation-play-state: paused !important;
+}
+
+/* ---------- Типографические роли (styleguide §3). Предпочтительный способ задавать текст. ---------- */
+
+@utility type-display {
+  font-size: 1.625rem;
+  line-height: 2rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-tighter);
+}
+@utility type-title {
+  font-size: 1.25rem;
+  line-height: 1.625rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-tighter);
+}
+@utility type-heading {
+  font-size: 1.0625rem;
+  line-height: 1.5rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+@utility type-subheading {
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+  font-weight: var(--font-weight-semibold);
+}
+@utility type-body {
+  font-size: 1rem;
+  line-height: 1.5rem;
+  font-weight: var(--font-weight-normal);
+}
+@utility type-ui {
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+  font-weight: var(--font-weight-normal);
+}
+@utility type-label {
+  font-size: 0.8125rem;
+  line-height: 1rem;
+  font-weight: var(--font-weight-medium);
+}
+@utility type-caption {
+  font-size: 0.8125rem;
+  line-height: 1rem;
+  font-weight: var(--font-weight-normal);
+}
+@utility type-mono {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Длительности (styleguide §5) ---------- */
+
+@utility duration-fast {
+  --tw-duration: 120ms;
+  transition-duration: 120ms;
+}
+@utility duration-base {
+  --tw-duration: 180ms;
+  transition-duration: 180ms;
+}
+@utility duration-slow {
+  --tw-duration: 280ms;
+  transition-duration: 280ms;
+}
+
+/* ---------- Слои (styleguide §4) ---------- */
+
+@utility z-sticky {
+  z-index: 10;
+}
+@utility z-stage {
+  z-index: 15;
+}
+@utility z-dock {
+  z-index: 20;
+}
+@utility z-scrim {
+  z-index: 40;
+}
+@utility z-layer {
+  z-index: 50;
+}
+@utility z-toast {
+  z-index: 60;
+}
+@utility z-banner {
+  z-index: 70;
+}
+
+/* ---------- Safe area (styleguide §7): ничего не прижимается к краю без env() ---------- */
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+@utility px-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+/* Отступ в шагах сетки плюс safe area: pt-safe-3, pb-safe-2, px-safe-4. */
+@utility pt-safe-* {
+  padding-top: calc(var(--spacing) * --value(integer) + env(safe-area-inset-top, 0px));
+}
+@utility pb-safe-* {
+  padding-bottom: calc(var(--spacing) * --value(integer) + env(safe-area-inset-bottom, 0px));
+}
+@utility px-safe-* {
+  padding-left: calc(var(--spacing) * --value(integer) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--spacing) * --value(integer) + env(safe-area-inset-right, 0px));
+}
+@utility bottom-safe {
+  bottom: env(safe-area-inset-bottom, 0px);
+}
+@utility top-safe {
+  top: env(safe-area-inset-top, 0px);
+}
+
+/* ---------- Скелетон: форма будущего содержимого, спокойный блик (styleguide §9) ---------- */
+
+@utility skeleton {
+  background-color: var(--color-hover);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-hover) 40%,
+    var(--color-pressed) 50%,
+    var(--color-hover) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: var(--animate-shimmer);
+}
+
+/* ---------- Движение всплывающих слоёв (Radix ставит data-state и data-side) ---------- */
+
+@utility motion-pop {
+  transform-origin: var(
+    --radix-popper-transform-origin,
+    var(--radix-select-content-transform-origin, center)
+  );
+  &[data-state="open"] {
+    animation: var(--animate-pop-in);
+  }
+  &[data-state="closed"] {
+    animation: var(--animate-pop-out);
+  }
+  &[data-side="bottom"] {
+    --pop-y: -4px;
+  }
+  &[data-side="top"] {
+    --pop-y: 4px;
+  }
+}
+@utility motion-overlay {
+  &[data-state="open"] {
+    animation: var(--animate-fade-in);
+  }
+  &[data-state="closed"] {
+    animation: var(--animate-fade-out);
+  }
+}
+@utility motion-dialog {
+  &[data-state="open"] {
+    animation: var(--animate-dialog-in);
+  }
+  &[data-state="closed"] {
+    animation: var(--animate-dialog-out);
+  }
+}
+@utility motion-sheet {
+  &[data-state="open"] {
+    animation: var(--animate-sheet-in);
+  }
+  &[data-state="closed"] {
+    animation: var(--animate-sheet-out);
+  }
+  @media (min-width: 64rem) {
+    &[data-state="open"] {
+      animation: var(--animate-panel-in);
+    }
+    &[data-state="closed"] {
+      animation: var(--animate-panel-out);
+    }
+  }
+}
