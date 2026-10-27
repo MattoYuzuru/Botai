@@ -11,7 +11,7 @@ import { outbox } from "./runtime";
 
 let current = createDataServer();
 
-function useScenario(scenario: Scenario) {
+function setScenario(scenario: Scenario) {
   current.server.close();
   current = createDataServer(scenario);
   current.server.listen({ onUnhandledRequest: "error" });
@@ -21,7 +21,7 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
-beforeEach(() => useScenario("connected"));
+beforeEach(() => setScenario("connected"));
 afterEach(() => {
   current.server.resetHandlers();
   outbox.clear();
@@ -114,7 +114,7 @@ describe("Варя в чате: сцена, насест, реплики", () =>
   });
 
   it("нужен повторный вход — у Вари ключ, и это же сказано текстом вне картинки", async () => {
-    useScenario("reauth");
+    setScenario("reauth");
     renderApp("/chat?thread=new");
     await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
     await waitFor(() => expect(sprite()?.getAttribute("data-sit")).toBe("reauth"), wait);

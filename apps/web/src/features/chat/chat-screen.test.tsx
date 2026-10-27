@@ -11,7 +11,7 @@ import { outbox } from "./runtime";
 
 let current = createDataServer();
 
-function useScenario(scenario: Scenario) {
+function setScenario(scenario: Scenario) {
   current.server.close();
   current = createDataServer(scenario);
   resetChatState(current.db);
@@ -23,7 +23,7 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
-beforeEach(() => useScenario("connected"));
+beforeEach(() => setScenario("connected"));
 afterEach(() => {
   current.server.resetHandlers();
   outbox.clear();
@@ -115,7 +115,7 @@ describe("чат: пустой чат и подсказки из настоящ�
   });
 
   it("вуз не подключён: приглашение «Подключить вуз» вместо выдуманных подсказок", async () => {
-    useScenario("empty");
+    setScenario("empty");
     renderApp("/chat?thread=new");
     expect(await screen.findByRole("link", { name: "Подключить вуз" }, wait)).toHaveAttribute(
       "href",

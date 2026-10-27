@@ -24,7 +24,7 @@ import { MascotSyncIndicator } from "./mascot-sync-indicator";
 import { availabilityOf } from "./use-mascot";
 
 let current = createDataServer();
-function useScenario(scenario: Scenario) {
+function setScenario(scenario: Scenario) {
   current.server.close();
   current = createDataServer(scenario);
   current.server.listen({ onUnhandledRequest: "error" });
@@ -34,7 +34,7 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
-beforeEach(() => useScenario("connected"));
+beforeEach(() => setScenario("connected"));
 afterEach(() => {
   current.server.resetHandlers();
   // «Войти снова» привязывает задание ко всему приложению: следующий тест начинается без него.
@@ -175,7 +175,7 @@ describe("состояние Вари из состояния источнико
 
 describe("MascotPresence: тихое присутствие и действия", () => {
   function mount(screenName: "today" | "schedule", scenario: Scenario = "connected") {
-    useScenario(scenario);
+    setScenario(scenario);
     const root = createRootRoute({
       component: () => (
         <>
@@ -241,7 +241,7 @@ describe("MascotPresence: тихое присутствие и действия"
   });
 
   it("в покое Варя не показывается: ни картинки, ни подписи", async () => {
-    useScenario("fresh");
+    setScenario("fresh");
     const { container } = mount("today", "fresh");
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(container.querySelector("svg.varya")).toBeNull();
