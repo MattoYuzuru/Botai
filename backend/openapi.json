@@ -3471,6 +3471,7 @@
     },
     "/api/v1/spaces/{space_id}/sections": {
       "get": {
+        "description": "Dynamic sections (FR-014): only the kinds of data the space actually has.",
         "operationId": "list_sections_api_v1_spaces__space_id__sections_get",
         "parameters": [
           {
@@ -3538,6 +3539,7 @@
     },
     "/api/v1/universities": {
       "get": {
+        "description": "The learned registry (shared by the pool): rows appear when a student names a university.",
         "operationId": "search_universities_api_v1_universities_get",
         "parameters": [
           {

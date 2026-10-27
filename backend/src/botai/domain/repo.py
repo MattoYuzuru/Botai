@@ -7,8 +7,21 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.db.models import (
+    Assignment,
+    Connection,
+    Course,
+    Deadline,
+    Document,
+    Grade,
+    Location,
+    NewsItem,
+    Person,
+    ScheduleEvent,
+)
 from botai.domain.schemas import (
     CourseOut,
     DeadlineOut,
@@ -17,6 +30,42 @@ from botai.domain.schemas import (
     PersonOut,
     ScheduleEventOut,
 )
+
+# Section kinds of the API (FR-014) and the tables that feed them, in display order.
+_SECTION_TABLES = (
+    ("courses", Course),
+    ("scheduleEvents", ScheduleEvent),
+    ("deadlines", Deadline),
+    ("assignments", Assignment),
+    ("grades", Grade),
+    ("people", Person),
+    ("locations", Location),
+    ("news", NewsItem),
+)
+
+
+async def section_counts(
+    session: AsyncSession, user_id: str, space_id: str
+) -> list[tuple[str, int]]:
+    """How many rows of each kind the connections of one space have (documents: the space)."""
+    connection_ids = select(Connection.id).where(
+        Connection.user_id == user_id, Connection.space_id == space_id
+    )
+    counts: list[tuple[str, int]] = []
+    for kind, model in _SECTION_TABLES:
+        n = await session.scalar(
+            select(func.count())
+            .select_from(model)
+            .where(model.user_id == user_id, model.connection_id.in_(connection_ids))
+        )
+        counts.append((kind, int(n or 0)))
+    docs = await session.scalar(
+        select(func.count())
+        .select_from(Document)
+        .where(Document.user_id == user_id, Document.space_id == space_id)
+    )
+    counts.append(("documents", int(docs or 0)))
+    return counts
 
 
 async def list_events(
