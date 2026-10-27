@@ -20,6 +20,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from botai.browser.egress import ProxyEgress
+from botai.browser.gateway import PlaywrightGateway
 from botai.browser.proxy import EgressProxy, derive_key
 from tests.fakeuni.app import create_fakeuni
 
@@ -117,3 +119,17 @@ async def egress(fakeuni_port: int) -> AsyncIterator[EgressProxy]:
         yield proxy
     finally:
         await proxy.close()
+
+
+@pytest.fixture(scope="session")
+def egress_access(egress: EgressProxy) -> ProxyEgress:
+    """How code under test obtains proxy tokens for the shared fixture proxy."""
+    return ProxyEgress(PROXY_SECRET, proxy=egress)
+
+
+@pytest.fixture(scope="session")
+async def gateway(egress_access: ProxyEgress) -> AsyncIterator[PlaywrightGateway]:
+    # sandbox off and certificate errors ignored: fixture server only, never a real site
+    gw = PlaywrightGateway(egress_access, sandbox=False, ignore_https_errors=True)
+    yield gw
+    await gw.aclose()

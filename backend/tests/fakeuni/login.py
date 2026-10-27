@@ -1,10 +1,24 @@
-"""Owner: W2. Keycloak-like login: username+password form, then an OTP step, then a session cookie."""
+"""Owner: W2. The synthetic university's ways in.
+
+* `/auth/login` → `/auth/otp` → `/app`: Keycloak-like username+password, then an SMS code (default
+  path; `/` redirects here through `/app`).
+* `/plain/login`: username+password only.
+* `/two/username` → `/two/password`: the two-page flow.
+* `/push/login` → `/push/wait`: wait for an approval on a phone (tests call `approve_push()`).
+* `/captcha/login`: a form with a captcha stand-in iframe that a human has to tick.
+* `/sso/start` → `id.fakeuni.test/sso/login` → `/sso/callback`: login on a second host.
+* `/blocked`: the site refuses the visit (bot protection page).
+
+Wrong credentials re-render the same form with an error, like real sites. Every successful path
+ends with the `FAKEUNI_SESSION` cookie on fakeuni.test. Nothing here resembles a real university.
+"""
 
 from __future__ import annotations
 
 import base64
 import json
 import secrets
+from html import escape
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -15,26 +29,90 @@ router = APIRouter()
 SESSIONS: set[str] = set()
 _PENDING_OTP: set[str] = set()
 COOKIE = "FAKEUNI_SESSION"
+ROOT_TARGET = "/app"  # where `/` sends a visitor; tests point it at other entrances
+
+PUSH_PENDING: set[str] = set()
+PUSH_APPROVED: set[str] = set()
+HUMANS: set[str] = set()
+_SSO_CODES: set[str] = set()
+ATTEMPTS: list[tuple[str, str]] = []  # (flow, "user"/"otp"): wrong tries, for lockout tests
+
+
+def approve_push() -> None:
+    """The student taps "approve" on the phone."""
+    PUSH_APPROVED.update(PUSH_PENDING)
+
+
+def expire_all_sessions() -> None:
+    SESSIONS.clear()
+
+
+def is_logged_in(request: Request) -> bool:
+    return request.cookies.get(COOKIE) in SESSIONS
+
+
+def _page(title: str, body: str) -> str:
+    return f"<!doctype html><html><head><title>{escape(title)}</title></head><body>{body}</body></html>"
+
+
+def _error(text: str) -> str:
+    return f'<div class="kc-feedback-text" role="alert">{escape(text)}</div>'
+
+
+def _start_session(to: str = "/app") -> RedirectResponse:
+    token = secrets.token_hex(16)
+    SESSIONS.add(token)
+    resp = RedirectResponse(to, status_code=303)
+    resp.set_cookie(COOKIE, token, httponly=True, secure=True)
+    return resp
+
+
+def _credentials_ok(username: str, password: str) -> bool:
+    return username == data.USERNAME and password == data.PASSWORD
+
+
+@router.get("/", response_model=None)
+async def root() -> RedirectResponse:
+    return RedirectResponse(ROOT_TARGET, status_code=302)
+
+
+# --- default: credentials, then an SMS code ---------------------------------------------------
+
+
+def _login_form(error: str = "") -> str:
+    return _page(
+        "Вход — Фейкуни",
+        f"""{error}<form id="kc-form-login" method="post" action="/auth/login">
+  <label for="username">Почта</label><input id="username" name="username" type="email" autocomplete="username">
+  <label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password">
+  <button id="kc-login" type="submit">Войти</button>
+</form>""",
+    )
+
+
+def _otp_form(error: str = "") -> str:
+    return _page(
+        "Код подтверждения",
+        f"""{error}<p class="hint">Код отправлен на s***@fakeuni.test</p>
+<form id="kc-otp-login-form" method="post" action="/auth/otp">
+  <label for="otp">Код из SMS</label><input id="otp" name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+  <button id="kc-otp-submit" type="submit">Подтвердить</button>
+</form>""",
+    )
 
 
 @router.get("/auth/login", response_class=HTMLResponse)
 async def login_page() -> str:
-    return """<!doctype html><html><head><title>Вход — Фейкуни</title></head><body>
-<form id="kc-form-login" method="post" action="/auth/login">
-  <label for="username">Почта</label><input id="username" name="username" type="email" autocomplete="username">
-  <label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password">
-  <button id="kc-login" type="submit">Войти</button>
-</form></body></html>"""
+    return _login_form()
 
 
 @router.post("/auth/login", response_model=None)
 async def login_submit(
     username: str = Form(...), password: str = Form(...)
 ) -> HTMLResponse | RedirectResponse:
-    if username != data.USERNAME or password != data.PASSWORD:
-        return HTMLResponse(
-            '<div class="kc-feedback-text">Неверный логин или пароль</div>', status_code=401
-        )
+    if not _credentials_ok(username, password):
+        ATTEMPTS.append(("auth", "user"))
+        return HTMLResponse(_login_form(_error("Неверный логин или пароль")), status_code=401)
     pending = secrets.token_hex(8)
     _PENDING_OTP.add(pending)
     resp = RedirectResponse("/auth/otp", status_code=303)
@@ -44,31 +122,274 @@ async def login_submit(
 
 @router.get("/auth/otp", response_class=HTMLResponse)
 async def otp_page() -> str:
-    return """<!doctype html><html><head><title>Код подтверждения</title></head><body>
-<form id="kc-otp-login-form" method="post" action="/auth/otp">
-  <label for="otp">Код из SMS</label><input id="otp" name="otp" autocomplete="one-time-code" inputmode="numeric">
-  <button id="kc-otp-submit" type="submit">Подтвердить</button>
-</form></body></html>"""
+    return _otp_form()
 
 
 @router.post("/auth/otp", response_model=None)
 async def otp_submit(request: Request, otp: str = Form(...)) -> HTMLResponse | RedirectResponse:
     pending = request.cookies.get("FAKEUNI_OTP")
     if pending not in _PENDING_OTP or otp != data.OTP:
-        return HTMLResponse('<div class="kc-feedback-text">Неверный код</div>', status_code=401)
+        ATTEMPTS.append(("auth", "otp"))
+        return HTMLResponse(_otp_form(_error("Неверный код")), status_code=401)
     _PENDING_OTP.discard(pending)
-    token = secrets.token_hex(16)
-    SESSIONS.add(token)
-    resp = RedirectResponse("/app", status_code=303)
-    resp.set_cookie(COOKIE, token, httponly=True, secure=True)
+    return _start_session()
+
+
+# --- username and password only ---------------------------------------------------------------
+
+
+def _plain_form(error: str = "") -> str:
+    return _page(
+        "Вход",
+        f"""{error}<form id="plain" method="post" action="/plain/login">
+  <label for="u">Логин</label><input id="u" name="login" type="text" autocomplete="username">
+  <label for="p">Пароль</label><input id="p" name="pass" type="password" autocomplete="current-password">
+  <button type="submit">Войти</button>
+</form>""",
+    )
+
+
+@router.get("/plain/login", response_class=HTMLResponse)
+async def plain_page() -> str:
+    return _plain_form()
+
+
+@router.post("/plain/login", response_model=None)
+async def plain_submit(
+    login: str = Form(...), pass_: str = Form(..., alias="pass")
+) -> HTMLResponse | RedirectResponse:
+    if not _credentials_ok(login, pass_):
+        ATTEMPTS.append(("plain", "user"))
+        return HTMLResponse(_plain_form(_error("Неверный логин или пароль")), status_code=401)
+    return _start_session()
+
+
+# --- two pages: username, then password ---------------------------------------------------------
+
+
+def _two_user_form(error: str = "") -> str:
+    return _page(
+        "Вход: логин",
+        f"""{error}<form id="two-user" method="post" action="/two/username">
+  <label for="username">Электронная почта</label><input id="username" name="username" type="text" autocomplete="username">
+  <button type="submit">Далее</button>
+</form>""",
+    )
+
+
+def _two_pass_form(error: str = "") -> str:
+    return _page(
+        "Вход: пароль",
+        f"""{error}<form id="two-pass" method="post" action="/two/password">
+  <label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Войти</button>
+</form>""",
+    )
+
+
+@router.get("/two/username", response_class=HTMLResponse)
+async def two_username_page() -> str:
+    return _two_user_form()
+
+
+@router.post("/two/username", response_model=None)
+async def two_username_submit(username: str = Form(...)) -> HTMLResponse | RedirectResponse:
+    if username != data.USERNAME:
+        return HTMLResponse(_two_user_form(_error("Пользователь не найден")), status_code=401)
+    resp = RedirectResponse("/two/password", status_code=303)
+    resp.set_cookie("FAKEUNI_TWO", "1", httponly=True, secure=True)
     return resp
 
 
-def is_logged_in(request: Request) -> bool:
-    return request.cookies.get(COOKIE) in SESSIONS
+@router.get("/two/password", response_class=HTMLResponse)
+async def two_password_page() -> str:
+    return _two_pass_form()
 
 
-# --- a bearer-token SPA, a captcha page and a download (gateway tests) ------------------------
+@router.post("/two/password", response_model=None)
+async def two_password_submit(
+    request: Request, password: str = Form(...)
+) -> HTMLResponse | RedirectResponse:
+    if request.cookies.get("FAKEUNI_TWO") != "1" or password != data.PASSWORD:
+        ATTEMPTS.append(("two", "user"))
+        return HTMLResponse(_two_pass_form(_error("Неверный пароль")), status_code=401)
+    return _start_session()
+
+
+# --- push approval ----------------------------------------------------------------------------
+
+
+def _push_form(error: str = "") -> str:
+    return _page(
+        "Вход (push)",
+        f"""{error}<form id="push-login" method="post" action="/push/login">
+  <input id="u" name="username" type="text" autocomplete="username">
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Войти</button>
+</form>""",
+    )
+
+
+@router.get("/push/login", response_class=HTMLResponse)
+async def push_page() -> str:
+    return _push_form()
+
+
+@router.post("/push/login", response_model=None)
+async def push_submit(
+    username: str = Form(...), password: str = Form(...)
+) -> HTMLResponse | RedirectResponse:
+    if not _credentials_ok(username, password):
+        ATTEMPTS.append(("push", "user"))
+        return HTMLResponse(_push_form(_error("Неверный логин или пароль")), status_code=401)
+    pending = secrets.token_hex(8)
+    PUSH_PENDING.add(pending)
+    resp = RedirectResponse("/push/wait", status_code=303)
+    resp.set_cookie("FAKEUNI_PUSH", pending, httponly=True, secure=True)
+    return resp
+
+
+@router.get("/push/wait", response_class=HTMLResponse)
+async def push_wait() -> str:
+    return _page(
+        "Подтверждение входа",
+        """<h1>Подтвердите вход на телефоне</h1>
+<p>Мы отправили запрос в приложение университета. Нажмите «Это я».</p>
+<script>
+setInterval(async () => {
+  const j = await (await fetch('/push/status')).json();
+  if (j.approved) location.href = '/push/finish';
+}, 250);
+</script>""",
+    )
+
+
+@router.get("/push/status")
+async def push_status(request: Request) -> dict[str, bool]:
+    return {"approved": request.cookies.get("FAKEUNI_PUSH") in PUSH_APPROVED}
+
+
+@router.get("/push/finish", response_model=None)
+async def push_finish(request: Request) -> RedirectResponse:
+    pending = request.cookies.get("FAKEUNI_PUSH")
+    if pending not in PUSH_APPROVED:
+        return RedirectResponse("/push/login", status_code=303)
+    PUSH_PENDING.discard(pending or "")
+    PUSH_APPROVED.discard(pending or "")
+    return _start_session()
+
+
+# --- captcha stand-in ---------------------------------------------------------------------------
+
+
+def _captcha_form(error: str = "") -> str:
+    return _page(
+        "Вход",
+        f"""{error}<form id="login" method="post" action="/captcha/login">
+  <input id="u" name="username" type="text" autocomplete="username">
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <div class="g-recaptcha" data-sitekey="fixture"></div>
+  <iframe src="/captcha/widget" title="reCAPTCHA" width="300" height="76"></iframe>
+  <button id="go" type="submit">Войти</button>
+</form>""",
+    )
+
+
+@router.get("/captcha/login", response_class=HTMLResponse)
+async def captcha_login() -> str:
+    return _captcha_form()
+
+
+@router.post("/captcha/login", response_model=None)
+async def captcha_submit(
+    request: Request, username: str = Form(...), password: str = Form(...)
+) -> HTMLResponse | RedirectResponse:
+    if request.cookies.get("FAKEUNI_HUMAN") not in HUMANS:
+        return HTMLResponse(_captcha_form(_error("Подтвердите, что вы не робот")), status_code=401)
+    if not _credentials_ok(username, password):
+        ATTEMPTS.append(("captcha", "user"))
+        return HTMLResponse(_captcha_form(_error("Неверный логин или пароль")), status_code=401)
+    return _start_session()
+
+
+@router.get("/captcha/widget", response_class=HTMLResponse)
+async def captcha_widget() -> str:
+    return _page(
+        "reCAPTCHA",
+        """<label><input type="checkbox" id="human"> Я не робот</label>
+<script>
+document.getElementById('human').addEventListener('change', () => fetch('/captcha/solve', {method: 'POST'}));
+</script>""",
+    )
+
+
+@router.post("/captcha/solve")
+async def captcha_solve() -> Response:
+    token = secrets.token_hex(8)
+    HUMANS.add(token)
+    resp = Response(status_code=204)
+    resp.set_cookie("FAKEUNI_HUMAN", token, secure=True, samesite="none")
+    return resp
+
+
+# --- SSO on a second host ----------------------------------------------------------------------
+
+
+@router.get("/sso/start", response_model=None)
+async def sso_start() -> RedirectResponse:
+    return RedirectResponse("https://id.fakeuni.test/sso/login", status_code=302)
+
+
+def _sso_form(error: str = "") -> str:
+    return _page(
+        "Единый вход",
+        f"""{error}<form id="sso" method="post" action="/sso/login">
+  <label for="login">Логин</label><input id="login" name="username" type="text" autocomplete="username">
+  <label for="pw">Пароль</label><input id="pw" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Продолжить</button>
+</form>""",
+    )
+
+
+@router.get("/sso/login", response_class=HTMLResponse)
+async def sso_login_page() -> str:
+    return _sso_form()
+
+
+@router.post("/sso/login", response_model=None)
+async def sso_login_submit(
+    username: str = Form(...), password: str = Form(...)
+) -> HTMLResponse | RedirectResponse:
+    if not _credentials_ok(username, password):
+        ATTEMPTS.append(("sso", "user"))
+        return HTMLResponse(_sso_form(_error("Неверный логин или пароль")), status_code=401)
+    code = secrets.token_hex(8)
+    _SSO_CODES.add(code)
+    resp = RedirectResponse(f"https://fakeuni.test/sso/callback?code={code}", status_code=303)
+    resp.set_cookie("IDP_SESSION", secrets.token_hex(8), httponly=True, secure=True)
+    return resp
+
+
+@router.get("/sso/callback", response_model=None)
+async def sso_callback(code: str) -> RedirectResponse | HTMLResponse:
+    if code not in _SSO_CODES:
+        return HTMLResponse(_error("Код входа недействителен"), status_code=400)
+    _SSO_CODES.discard(code)
+    return _start_session()
+
+
+# --- a site that refuses the visit ----------------------------------------------------------------
+
+
+@router.get("/blocked", response_class=HTMLResponse)
+async def blocked() -> HTMLResponse:
+    return HTMLResponse(
+        _page("Access denied", "<h1>Access denied</h1><p>Your request was blocked.</p>"),
+        status_code=403,
+    )
+
+
+# --- a bearer-token SPA, a download (gateway tests) ------------------------------------------------
 
 
 def _fake_jwt(exp: int) -> str:
@@ -106,23 +427,6 @@ async def spa_token() -> dict[str, object]:
     return {"access_token": SPA_JWT, "expires_in": 300}
 
 
-@router.get("/captcha/login", response_class=HTMLResponse)
-async def captcha_login() -> str:
-    return """<!doctype html><html><head><title>Вход</title></head><body>
-<form id="login" method="post" action="/captcha/login">
-  <input id="u" name="username" type="text" autocomplete="username">
-  <input id="p" name="password" type="password" autocomplete="current-password">
-  <div class="g-recaptcha" data-sitekey="fixture"></div>
-  <iframe src="/captcha/widget" title="reCAPTCHA" width="300" height="76"></iframe>
-  <button id="go" type="submit">Войти</button>
-</form></body></html>"""
-
-
-@router.get("/captcha/widget", response_class=HTMLResponse)
-async def captcha_widget() -> str:
-    return """<!doctype html><html><body><label><input type="checkbox" id="human"> Я не робот</label></body></html>"""
-
-
 @router.get("/download")
 async def download() -> Response:
     return Response(
@@ -132,7 +436,7 @@ async def download() -> Response:
     )
 
 
-# --- redirects to hosts the browser must never reach (security check C2) ---------------------
+# --- redirects to hosts the browser must never reach (security check C2) ---------------------------
 
 
 @router.get("/redirect/evil")
