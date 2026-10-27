@@ -113,6 +113,7 @@ test.describe("витрина", () => {
 
   test("акцент ЦУ меняет заливку primary-кнопки и не трогает danger", async ({ page }) => {
     await page.goto("/styleguide");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     const fills = () =>
       page.evaluate(() => {
         const color = (selector: string) => {

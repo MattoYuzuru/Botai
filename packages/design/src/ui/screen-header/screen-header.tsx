@@ -45,7 +45,7 @@ export function ScreenHeader({
         className,
       )}
     >
-      <div className="flex min-h-14 items-center gap-2">
+      <div className="mx-auto flex min-h-14 w-full max-w-col items-center gap-2 lg:max-w-page">
         {leading === "back" ? (
           <IconButton icon="back" label="Назад" onClick={onBack} className="-ml-2" />
         ) : (

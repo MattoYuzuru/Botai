@@ -208,6 +208,11 @@
   z-index: 70;
 }
 
+/* Отступ слева под боковую панель 240 px (от 1024 px, styleguide §7). */
+@utility pl-rail {
+  padding-left: var(--container-rail);
+}
+
 /* ---------- Safe area (styleguide §7): ничего не прижимается к краю без env() ---------- */
 
 @utility pt-safe {

@@ -91,7 +91,7 @@ export function TabBar({
       className={cn(
         "@container relative z-dock border-t border-border bg-bg-subtle px-safe pb-safe-2",
         !inline && "fixed inset-x-0 bottom-0",
-        "data-[hidden]:hidden",
+        "data-[hidden]:max-lg:hidden",
         wide(
           "lg:inset-y-0 lg:right-auto lg:flex lg:w-rail lg:flex-col lg:gap-6 lg:border-t-0 lg:border-r lg:px-3 lg:pt-safe-5 lg:pb-safe-4",
         ),

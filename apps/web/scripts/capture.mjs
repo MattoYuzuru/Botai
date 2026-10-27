@@ -5,8 +5,8 @@
  *   node scripts/capture.mjs --base http://127.0.0.1:5173 --out shots \
  *     --page "styleguide=/styleguide|palette,controls" --page today=/
  *
- * `--page имя=путь|якорь,якорь`: без якорей снимается страница целиком, с якорями — каждый раздел
- * (элемент с этим id) отдельным файлом. Снимки — это витрина на синтетических данных, а не доказательство живого входа в вуз.
+ * `--page имя=путь|якорь,якорь^кнопка`: без якорей снимается страница целиком, с якорями — каждый раздел
+ * (элемент с этим id) отдельным файлом; `^кнопка` — нажать кнопку с таким именем перед снимком. Снимки — это витрина на синтетических данных, а не доказательство живого входа в вуз.
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -22,9 +22,12 @@ const all = (name) => args.flatMap((arg, index) => (arg === `--${name}` ? [args[
 const base = option("base", "http://127.0.0.1:5173");
 const out = option("out", "shots");
 const pages = all("page").map((spec) => {
-  const [name, rest = "/"] = spec.split("=");
-  const [path = "/", anchors = ""] = rest.split("|");
-  return { name, path, anchors: anchors ? anchors.split(",") : [] };
+  const split = spec.indexOf("=");
+  const name = spec.slice(0, split);
+  const rest = spec.slice(split + 1) || "/";
+  const [target, click = ""] = rest.split("^");
+  const [path = "/", anchors = ""] = (target ?? "/").split("|");
+  return { name, path, anchors: anchors ? anchors.split(",") : [], click };
 });
 
 const viewports = [
@@ -55,6 +58,11 @@ try {
         await page.goto(`${base}${target.path}`, { waitUntil: "domcontentloaded", timeout: 90_000 });
         await page.waitForSelector("h1", { timeout: 90_000 });
         await page.evaluate(() => document.fonts.ready);
+        if (target.click) {
+          // Действие перед снимком: нажать кнопку по имени (открыть шит, переключатель и т. п.).
+          await page.getByRole("button", { name: new RegExp(target.click) }).first().click();
+          await page.waitForTimeout(500);
+        }
         await page.waitForTimeout(400);
         const stem = `${target.name}-${viewport.label}-${theme}`;
         if (target.anchors.length === 0) {
