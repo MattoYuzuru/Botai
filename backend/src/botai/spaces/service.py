@@ -1,0 +1,206 @@
+"""Spaces and connections: creation, secrets, jobs. Callers pass the request's `AsyncSession`."""
+
+from __future__ import annotations
+
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from botai.core.errors import BotaiError, ErrorCode
+from botai.core.jobs import JobKind
+from botai.core.queue import JobQueue
+from botai.core.vault import SecretKind, Vault
+from botai.db.models import Connection, Space
+from botai.spaces import repo, universities
+from botai.spaces.schemas import (
+    ConnectionCreate,
+    ConnectionOut,
+    SecretIn,
+    SpaceCreate,
+    SpaceOut,
+    SpaceUpdate,
+)
+
+# Connections in these states have no finished setup (or were switched off): no sync, no repair.
+_NOT_READY = frozenset({"draft", "learning", "disabled"})
+_ICAL_SCHEMES = frozenset({"http", "https", "webcal"})
+_ORIGIN_MAX = 255
+
+
+def space_out(space: Space) -> SpaceOut:
+    return SpaceOut.model_validate(space)
+
+
+async def connection_out(vault: Vault, conn: Connection) -> ConnectionOut:
+    return ConnectionOut(
+        id=conn.id,
+        space_id=conn.space_id,
+        origin=conn.origin,
+        kind=conn.kind,  # type: ignore[arg-type]  # validated by the response model
+        adapter=conn.adapter,
+        title=conn.title,
+        status=conn.status,  # type: ignore[arg-type]
+        has_password=await vault.has(conn.user_id, conn.id, SecretKind.PASSWORD),
+        last_sync_at=conn.last_sync_at,
+        next_sync_at=conn.next_sync_at,
+        error_code=conn.error_code,
+        error_detail=conn.error_detail,
+    )
+
+
+# --- spaces ---------------------------------------------------------------------------------------
+
+
+async def create_space(session: AsyncSession, user_id: str, body: SpaceCreate) -> Space:
+    uni = await universities.find_or_create(
+        session,
+        title=body.title,
+        university_id=body.university_id,
+        homepage_url=body.homepage_url,
+    )
+    space = Space(
+        user_id=user_id,
+        university_id=uni.id,
+        title=" ".join(body.title.split()),
+        accent_hue=uni.accent_hue,
+    )
+    session.add(space)
+    await session.commit()
+    return space
+
+
+async def update_space(
+    session: AsyncSession, user_id: str, space_id: str, body: SpaceUpdate
+) -> Space:
+    space = await repo.get_space(session, user_id, space_id)
+    if body.title is not None:
+        title = " ".join(body.title.split())
+        if not title:
+            raise BotaiError(ErrorCode.VALIDATION, "Название не может быть пустым")
+        space.title = title
+    if body.time_zone is not None:
+        try:
+            ZoneInfo(body.time_zone)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise BotaiError(ErrorCode.VALIDATION, "Неизвестный часовой пояс") from None
+        space.time_zone = body.time_zone
+    await session.commit()
+    return space
+
+
+async def delete_space(session: AsyncSession, user_id: str, space_id: str) -> None:
+    """Removes the space with everything it owns (FR-023): connections, snapshots, documents and
+    facts go by foreign keys; the secrets, which have none, go here."""
+    space = await repo.get_space(session, user_id, space_id)
+    connection_ids = list(
+        await session.scalars(
+            select(Connection.id).where(
+                Connection.user_id == user_id, Connection.space_id == space.id
+            )
+        )
+    )
+    await repo.purge_connection_secrets(session, user_id, connection_ids)
+    await session.delete(space)
+    await session.commit()
+
+
+# --- connections ----------------------------------------------------------------------------------
+
+
+def _host(origin: str) -> str:
+    return urlsplit(origin).hostname or ""
+
+
+async def create_connection(
+    session: AsyncSession, queue: JobQueue, user_id: str, space_id: str, body: ConnectionCreate
+) -> tuple[Connection, str]:
+    """Creates a `draft` connection and enqueues its `connect` job (login + learn)."""
+    space = await repo.get_space(session, user_id, space_id)
+    origin = universities.origin_of(body.url) if body.url else ""
+    if len(origin) > _ORIGIN_MAX:
+        raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
+    kind = body.kind or "other"
+
+    conn: Connection | None = None
+    if origin:
+        # A repeated request while the first one is still being set up is the same connection.
+        conn = await session.scalar(
+            select(Connection).where(
+                Connection.user_id == user_id,
+                Connection.space_id == space.id,
+                Connection.origin == origin,
+                Connection.kind == kind,
+                Connection.status.in_(("draft", "learning")),
+            )
+        )
+    created = conn is None
+    if conn is None:
+        conn = Connection(
+            user_id=user_id,
+            space_id=space.id,
+            origin=origin,
+            kind=kind,
+            title=(body.title or _host(origin) or "Источник").strip()[:120],
+            status="draft",
+            allow_hosts=[_host(origin)] if origin else [],
+        )
+        session.add(conn)
+    # End our transaction before the queue (which works in its own) is called.
+    await session.commit()
+
+    try:
+        job_id = await queue.enqueue(
+            JobKind.CONNECT,
+            user_id=user_id,
+            connection_id=conn.id,
+            payload={"url": body.url, "kind": body.kind} if body.url or body.kind else {},
+            dedupe=True,
+        )
+    except Exception:
+        if created:  # no job means nobody would ever finish this connection
+            await session.delete(conn)
+            await session.commit()
+        raise
+    return conn, job_id
+
+
+async def delete_connection(session: AsyncSession, user_id: str, connection_id: str) -> None:
+    conn = await repo.get_connection(session, user_id, connection_id)
+    await repo.purge_connection_secrets(session, user_id, [conn.id])
+    await session.delete(conn)
+    await session.commit()
+
+
+async def enqueue_for_connection(
+    session: AsyncSession, queue: JobQueue, user_id: str, connection_id: str, kind: JobKind
+) -> str:
+    """Manual `sync` / `repair`. Deduplicated: a job already queued or running is returned."""
+    conn = await repo.get_connection(session, user_id, connection_id)
+    if conn.status in _NOT_READY:
+        raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
+    await session.commit()  # the queue works in its own transaction
+    return await queue.enqueue(kind, user_id=user_id, connection_id=conn.id, dedupe=True)
+
+
+async def put_secret(
+    session: AsyncSession, vault: Vault, user_id: str, connection_id: str, body: SecretIn
+) -> None:
+    conn = await repo.get_connection(session, user_id, connection_id)
+    value = body.value.strip()
+    if not value:
+        raise BotaiError(ErrorCode.VALIDATION, "Значение не может быть пустым")
+    if body.kind == "ical_url" and urlsplit(value).scheme.lower() not in _ICAL_SCHEMES:
+        raise BotaiError(ErrorCode.VALIDATION, "Нужна ссылка на календарь (https:// или webcal://)")
+    await session.commit()  # the Vault works in its own transaction
+    await vault.put(user_id, conn.id, SecretKind(body.kind), value)
+
+
+async def forget_password(
+    session: AsyncSession, vault: Vault, user_id: str, connection_id: str
+) -> None:
+    conn = await repo.get_connection(session, user_id, connection_id)
+    await session.commit()  # the Vault works in its own transaction
+    await vault.delete(user_id, conn.id, SecretKind.PASSWORD)
+    await vault.delete(user_id, conn.id, SecretKind.LOGIN)

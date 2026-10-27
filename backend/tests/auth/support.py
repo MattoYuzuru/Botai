@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -15,20 +16,39 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from botai.api.deps import get_clock
+from botai.api.deps import get_clock, get_services
 from botai.auth import security, service
+from botai.core.browser import FakeBrowserGateway
 from botai.core.clock import FrozenClock
+from botai.core.embed import NoopEmbedder
 from botai.core.ids import new_id
-from botai.core.vault import generate_kek_b64
-from botai.db.models import User
+from botai.core.llm import ScriptedLlm
+from botai.core.queue import InMemoryJobQueue
+from botai.core.services import Services
+from botai.core.vault import generate_kek_b64, load_kek
+from botai.db.models import Connection, Space, User
 from botai.db.session import db_session
 from botai.main import create_app
 from botai.settings import Settings, get_settings
+from botai.vault.pg import PgVault
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 PASSWORD = "correct-horse-battery"
 
 Sm = async_sessionmaker[AsyncSession]
+
+# `from tests.auth.support import *` in a conftest.py brings in exactly the fixtures.
+__all__ = [
+    "app",
+    "cheap_hasher",
+    "client",
+    "clock",
+    "new_client",
+    "queue",
+    "services",
+    "settings",
+    "tx_sessionmaker",
+]
 
 
 @pytest.fixture
@@ -64,8 +84,38 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def app(tx_sessionmaker: Sm, settings: Settings, clock: FrozenClock) -> FastAPI:
+def queue() -> InMemoryJobQueue:
+    return InMemoryJobQueue()
+
+
+@pytest.fixture
+def services(
+    tx_sessionmaker: Sm, settings: Settings, clock: FrozenClock, queue: InMemoryJobQueue
+) -> Services:
+    """Real Vault on the test transaction; every other collaborator is a test double."""
+    vault = PgVault(
+        tx_sessionmaker,
+        {settings.botai_kek_id: load_kek(settings.botai_kek.get_secret_value())},
+        settings.botai_kek_id,
+        clock=clock,
+    )
+    return Services(
+        settings=settings,
+        db=tx_sessionmaker,
+        clock=clock,
+        vault=vault,
+        llm=ScriptedLlm(),
+        browser=FakeBrowserGateway({}, NOW, "https://fake.invalid"),
+        sessions=cast(Any, None),
+        queue=queue,
+        embedder=NoopEmbedder(),
+    )
+
+
+@pytest.fixture
+def app(tx_sessionmaker: Sm, settings: Settings, clock: FrozenClock, services: Services) -> FastAPI:
     app = create_app()
+    app.dependency_overrides[get_services] = lambda: services
 
     async def _db() -> AsyncIterator[AsyncSession]:
         async with tx_sessionmaker() as session:
@@ -153,3 +203,38 @@ async def signup(
     )
     assert r.status_code == 201, r.text
     return Account(id=r.json()["user"]["id"], email=email, password=password)
+
+
+async def make_space(sm: Sm, user_id: str, title: str = "Университет") -> str:
+    space_id = new_id()
+    async with sm() as session:
+        session.add(Space(id=space_id, user_id=user_id, title=title))
+        await session.commit()
+    return space_id
+
+
+async def make_connection(
+    sm: Sm,
+    user_id: str,
+    space_id: str,
+    *,
+    status: str = "active",
+    origin: str = "https://lms.example.org",
+    kind: str = "lms",
+) -> str:
+    conn_id = new_id()
+    async with sm() as session:
+        session.add(
+            Connection(
+                id=conn_id,
+                user_id=user_id,
+                space_id=space_id,
+                origin=origin,
+                kind=kind,
+                title="Источник",
+                status=status,
+                allow_hosts=[],
+            )
+        )
+        await session.commit()
+    return conn_id

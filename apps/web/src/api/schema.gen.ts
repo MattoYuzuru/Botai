@@ -607,7 +607,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Sections */
+        /**
+         * List Sections
+         * @description Dynamic sections (FR-014): only the kinds of data the space actually has.
+         */
         get: operations["list_sections_api_v1_spaces__space_id__sections_get"];
         put?: never;
         post?: never;
@@ -641,7 +644,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Search Universities */
+        /**
+         * Search Universities
+         * @description The learned registry (shared by the pool): rows appear when a student names a university.
+         */
         get: operations["search_universities_api_v1_universities_get"];
         put?: never;
         post?: never;
