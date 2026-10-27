@@ -174,7 +174,12 @@ class LoginFlow:
 
     # -- public ------------------------------------------------------------------------------
 
-    async def ensure(self, ctx: object, *, user_id: str, connection_id: str) -> SessionState:
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> SessionState:
+        """A session that works. `force` skips the stored one: a caller that has just seen the
+        site refuse it (its data request answered 401 while the probe still passes) logs in
+        anew instead of being handed the same session again."""
         job = cast(JobContext, ctx)  # the SessionProvider protocol types it as `object`
         key = (user_id, connection_id)
         async with self._locks.setdefault(key, asyncio.Lock()):
@@ -182,7 +187,7 @@ class LoginFlow:
             info = await self._store.connection(user_id, connection_id)
             preset = await self._store.preset_for(info.origin)
             hosts = list(preset.allow_hosts) if preset else list(info.allow_hosts)
-            stored = await self._stored_session(user_id, connection_id)
+            stored = None if force else await self._stored_session(user_id, connection_id)
             if stored is not None:
                 verdict = await check_session(
                     stored, preset, hosts, now=self._clock.now(), egress=self._egress
