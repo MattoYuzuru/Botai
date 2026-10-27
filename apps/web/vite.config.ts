@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
 
 /**
  * Целевые браузеры: iOS Safari 17.5+, Android Chrome 123+ и свежие настольные. На них нативно работает
@@ -11,8 +12,29 @@ import { defineConfig } from "vitest/config";
  */
 const TARGETS = ["es2023", "chrome123", "safari17.5", "firefox120"];
 
+/**
+ * Service Worker MSW (мок-режим, `VITE_MOCKS=1`) отдаётся только dev-сервером: в сборку он не попадает,
+ * поэтому лежит не в `public/`.
+ */
+const mswWorker = (): Plugin => ({
+  name: "botai-msw-worker",
+  apply: "serve",
+  configureServer(server) {
+    const file = new URL("./src/mocks/worker/mockServiceWorker.js", import.meta.url);
+    server.middlewares.use("/mockServiceWorker.js", (_request, response) => {
+      response.setHeader("content-type", "text/javascript");
+      response.end(readFileSync(file));
+    });
+  },
+});
+
 export default defineConfig({
-  plugins: [TanStackRouterVite({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
+  plugins: [
+    mswWorker(),
+    TanStackRouterVite({ target: "react", autoCodeSplitting: true }),
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: { "@": new URL("./src", import.meta.url).pathname },
     // Одна копия React на приложение и дизайн-систему: две копии дают «Invalid hook call».

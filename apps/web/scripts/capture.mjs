@@ -60,7 +60,10 @@ try {
         await page.evaluate(() => document.fonts.ready);
         if (target.click) {
           // Действие перед снимком: нажать кнопку по имени (открыть шит, переключатель и т. п.).
-          await page.getByRole("button", { name: new RegExp(target.click) }).first().click();
+          await page
+            .getByRole("button", { name: new RegExp(target.click) })
+            .first()
+            .click();
           await page.waitForTimeout(500);
         }
         await page.waitForTimeout(400);
