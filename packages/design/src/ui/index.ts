@@ -32,6 +32,9 @@ export { HandoffCard, type HandoffCardProps } from "./handoff-card/handoff-card"
 export { Icon, type IconName, type IconProps, type IconSize, iconRegistry } from "./icon";
 export { IconButton, type IconButtonProps } from "./icon-button/icon-button";
 export { Input, type InputProps } from "./input/input";
+export { Mascot, type MascotHandle, type MascotProps } from "./mascot/mascot";
+export { HOP_MS, MascotDock, type MascotDockProps } from "./mascot-dock/mascot-dock";
+export { MascotStage, type MascotStageProps, REACTION_MS } from "./mascot-stage/mascot-stage";
 export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
 export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
 export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";

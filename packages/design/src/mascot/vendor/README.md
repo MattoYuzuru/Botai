@@ -1,3 +1,9 @@
+> **Botai.** Это снимок `doodle_vibe/mascot` (коммит `d84008e`, 25.10.2026), дальше им владеет Botai: обратной
+> синхронизации нет. Правки Botai помечены `BOTAI:` в `varya.js` и перечислены в
+> [docs/design/vendor.md](../../../../../docs/design/vendor.md). Реплики из этого README и из `lines` оригинальных
+> ситуаций в Botai не показываются — в них выдуманные числа; реплики Botai берёт из `mascot/lines.ts`.
+> Пересборка спрайтов: `node packages/design/src/mascot/vendor/tools/export.mjs`.
+
 # Ворона Варя
 
 Пиксельный маскот Doodle для ВШЭ. Вороны тащат в гнездо всё блестящее, а Варя тащит к себе дедлайны, пары и
