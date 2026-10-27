@@ -6,6 +6,10 @@ import { defineConfig, devices } from "@playwright/test";
  * в package.json (1.63.0), потому что другой Chromium в окружении разработки недоступен.
  */
 const PORT = Number(process.env.E2E_PORT ?? 5199);
+/** Стенд PWA: собранное приложение с настоящим service worker и поддельным API (e2e/pwa-server.mjs). */
+const PWA_PORT = Number(process.env.E2E_PWA_PORT ?? 5198);
+const PWA_URL = process.env.E2E_PWA_URL ?? `http://127.0.0.1:${PWA_PORT}`;
+const NOT_PWA = /pwa\.spec\.ts$/;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -23,14 +27,35 @@ export default defineConfig({
   },
   webServer: process.env.E2E_BASE_URL
     ? undefined
-    : {
-        command: `VITE_MOCKS=1 pnpm exec vite --host 127.0.0.1 --port ${PORT} --strictPort`,
-        url: `http://127.0.0.1:${PORT}`,
-        reuseExistingServer: !process.env.CI,
-        timeout: 60_000,
-      },
+    : [
+        {
+          command: `VITE_MOCKS=1 pnpm exec vite --host 127.0.0.1 --port ${PORT} --strictPort`,
+          url: `http://127.0.0.1:${PORT}`,
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+        },
+        {
+          command: `pnpm build && PWA_PORT=${PWA_PORT} node e2e/pwa-server.mjs`,
+          url: `${PWA_URL}/manifest.webmanifest`,
+          reuseExistingServer: !process.env.CI,
+          timeout: 240_000,
+        },
+      ],
   projects: [
-    { name: "phone", use: { ...devices["Pixel 7"], viewport: { width: 390, height: 844 } } },
-    { name: "laptop", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
+    {
+      name: "phone",
+      testIgnore: NOT_PWA,
+      use: { ...devices["Pixel 7"], viewport: { width: 390, height: 844 } },
+    },
+    {
+      name: "laptop",
+      testIgnore: NOT_PWA,
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
+    },
+    {
+      name: "pwa",
+      testMatch: NOT_PWA,
+      use: { ...devices["Pixel 7"], baseURL: PWA_URL, serviceWorkers: "allow" },
+    },
   ],
 });

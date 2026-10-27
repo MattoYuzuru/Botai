@@ -37,7 +37,12 @@ export const dataKeys = {
   job: (jobId: string) => ["jobs", jobId] as const,
 };
 
-const live = { staleTime: 30_000, refetchInterval: backgroundInterval } as const;
+/** Снимок из офлайн-кэша устаревает сразу: вернулась сеть — данные запрашиваются заново, а не ждут таймера. */
+function staleAfter(query: { state: { data: { snapshotAt: number | null } | undefined } }): number {
+  return query.state.data?.snapshotAt != null ? 0 : 30_000;
+}
+
+const live = { staleTime: staleAfter, refetchInterval: backgroundInterval } as const;
 
 export const todayQuery = () =>
   queryOptions({
