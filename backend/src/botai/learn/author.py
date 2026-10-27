@@ -9,7 +9,6 @@ Nothing the model writes is ever executed: it is data that must pass the schema 
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import logging
 import re
@@ -23,16 +22,12 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import LlmProvider, LlmRequest, LlmResponse
 from botai.learn import prompting
 from botai.learn.lint import LintContext, lint_spec
+from botai.learn.revisions import author_digest as author_digest
 
 log = logging.getLogger(__name__)
 
 DEFAULT_FRESHNESS = {"syncEveryMinutes": 180, "staleAfterMinutes": 720}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
-
-
-def author_digest(user_id: str) -> str:
-    """Pseudonymous id of the spec's author for the canary (does not reveal who it is)."""
-    return hashlib.sha256(f"author|{user_id}".encode()).hexdigest()
 
 
 def iso_z(moment: datetime) -> str:
@@ -207,12 +202,18 @@ async def author_kind(
     revision: int,
     now: datetime,
     digest: str,
+    previous: dict[str, Any] | None = None,
+    problem: str | None = None,
 ) -> Authored:
-    """Ask for candidates of one kind; lint each; retry once on a rejection or a broken answer."""
+    """Ask for candidates of one kind; lint each; retry once on a rejection or a broken answer.
+    With `previous` (the endpoint that stopped working) it is a repair."""
     out = Authored(kind)
     feedback: list[str] | None = None
     for attempt in range(2):
-        data, spent = await _ask(llm, prompting.author_request(kind, observation, feedback))
+        request = prompting.author_request(
+            kind, observation, feedback, previous=previous, problem=problem
+        )
+        data, spent = await _ask(llm, request)
         out.calls += 1
         out.tokens += spent
         if data is None:

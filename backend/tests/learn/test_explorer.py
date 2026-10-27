@@ -4,139 +4,22 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Awaitable, Callable
-from typing import Any
 
-import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
-from botai.core.llm import LlmResponse, ScriptedLlm
-from botai.core.queue import InMemoryJobQueue
-from botai.core.vault import InMemoryVault, SecretKind
+from botai.core.llm import LlmResponse
 from botai.db import models as m
-from botai.learn.handlers import make_handlers
 from tests.fakeuni import data
 from tests.learn import support as ls
+from tests.learn.conftest import EnvFactory
 from tests.sources import recipes
-from tests.sources.helpers import FAST, NOW
-from tests.sources.support import FakeSessions, Seeded, make_services, seed_connection
-
-PRESET = {"expired": {"redirectPathPrefix": ["/auth/"]}}
-
-
-class Env:
-    def __init__(
-        self,
-        db: AsyncSession,
-        sm: async_sessionmaker[AsyncSession],
-        app: object,
-        seeded: Seeded,
-        responses: list[LlmResponse],
-        browser: Any,
-        **overrides: Any,
-    ) -> None:
-        self.db, self.seeded = db, seeded
-        self.llm = ScriptedLlm(queue=responses)
-        self.vault = InMemoryVault()
-        self.sessions = overrides.pop("sessions", FakeSessions())
-        self.queue = InMemoryJobQueue()
-        self.services = make_services(
-            sm,
-            llm=self.llm,
-            vault=self.vault,
-            sessions=self.sessions,
-            queue=self.queue,
-            browser=browser,
-        )
-        self.handlers = make_handlers(transport=httpx.ASGITransport(app=app), retry=FAST)  # type: ignore[arg-type]
-        self.ctx: InMemoryJobContext
-        self.asked: list[Any] = []
-
-    async def prepare(self) -> None:
-        for kind, value in (
-            (SecretKind.LOGIN, data.USERNAME),
-            (SecretKind.PASSWORD, data.PASSWORD),
-        ):
-            await self.vault.put(self.seeded.user_id, self.seeded.connection_id, kind, value)
-
-    async def run(
-        self,
-        kind: JobKind = JobKind.CONNECT,
-        payload: dict[str, Any] | None = None,
-        **user: Any,
-    ) -> dict[str, Any]:
-        self.ctx, self.asked = ls.scripted_user(
-            self.seeded.user_id, self.seeded.connection_id, **user
-        )
-        result = await self.handlers[kind](self.ctx, self.services, payload or {})
-        assert result is not None
-        return result
-
-    async def conn(self) -> m.Connection:
-        self.db.expire_all()
-        return (
-            await self.db.execute(
-                select(m.Connection).where(m.Connection.id == self.seeded.connection_id)
-            )
-        ).scalar_one()
-
-    async def specs(self, origin: str = data.ORIGIN) -> list[tuple[int, str]]:
-        self.db.expire_all()
-        rows = await self.db.execute(
-            select(m.AdapterSpecRow.revision, m.AdapterSpecRow.state)
-            .where(m.AdapterSpecRow.origin == origin)
-            .order_by(m.AdapterSpecRow.revision)
-        )
-        return [(r[0], r[1]) for r in rows.all()]
-
-    async def count(self, model: Any) -> int:
-        self.db.expire_all()
-        return (
-            await self.db.execute(
-                select(func.count())
-                .select_from(model)
-                .where(model.connection_id == self.seeded.connection_id)
-            )
-        ).scalar_one()
-
-
-EnvFactory = Callable[..., Awaitable[Env]]
-
-
-@pytest.fixture
-async def make_env(
-    db: AsyncSession, sm: async_sessionmaker[AsyncSession], fakeuni_app: object
-) -> EnvFactory:
-    async def build(
-        responses: list[LlmResponse],
-        *,
-        with_spec: bool = False,
-        home_extra: str = "",
-        sessions: FakeSessions | None = None,
-        **seed: Any,
-    ) -> Env:
-        seeded = await seed_connection(
-            db,
-            with_spec=with_spec,
-            status="active" if with_spec else "draft",
-            preset=PRESET,
-            university=True,
-            **seed,
-        )
-        browser = await ls.fake_site(fakeuni_app, home_extra=home_extra)
-        env = Env(
-            db, sm, fakeuni_app, seeded, responses, browser, sessions=sessions or FakeSessions()
-        )
-        await env.prepare()
-        return env
-
-    return build
-
+from tests.sources.helpers import NOW
+from tests.sources.support import FakeSessions
 
 # --- the happy path -------------------------------------------------------------------------
 

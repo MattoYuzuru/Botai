@@ -12,6 +12,7 @@ from botai.core.http import RetryPolicy
 from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
 from botai.learn.explorer import Explorer
+from botai.learn.repair import make_repair_handler
 
 
 def _connection_id(ctx: JobContext, payload: dict[str, Any]) -> str:
@@ -36,7 +37,11 @@ def make_handlers(
         explorer = Explorer(ctx, services, transport=transport, retry=retry)
         return await explorer.learn(_connection_id(ctx, payload), payload)
 
-    return {JobKind.CONNECT: connect, JobKind.LEARN: learn}
+    return {
+        JobKind.CONNECT: connect,
+        JobKind.LEARN: learn,
+        JobKind.REPAIR: make_repair_handler(transport=transport, retry=retry),
+    }
 
 
 HANDLERS: HandlerTable = make_handlers()

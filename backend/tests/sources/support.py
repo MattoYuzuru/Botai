@@ -175,7 +175,7 @@ async def seed_connection(
         space_id=space.id,
         origin=origin,
         kind=kind,
-        adapter=kind_of_spec if with_spec else None,
+        adapter=(adapter or kind_of_spec) if (with_spec or adapter) else None,
         title="Кабинет",
         status=status,
         spec_id=spec_row.id if spec_row is not None and attach_spec else None,

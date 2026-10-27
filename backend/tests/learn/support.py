@@ -17,6 +17,7 @@ from botai.contracts.agent_ui import (
 from botai.core.browser import FakeBrowserGateway, FakePage, ObservedRequest
 from botai.core.jobs import InMemoryJobContext
 from botai.core.llm import LlmResponse, LlmUsage
+from tests.fakeuni import api as fakeuni_api
 from tests.fakeuni import data
 from tests.fakeuni.login import COOKIE
 from tests.sources import recipes
@@ -45,7 +46,9 @@ async def fake_site(app: object, *, home_extra: str = "") -> FakeBrowserGateway:
     if home_extra:
         shell = shell.replace("<div id='root'>", f"<p>{home_extra}</p><div id='root'>")
     me = await fetch(app, "/api/v2/me", token)
-    timetable = await fetch(app, "/api/v2/timetable", token)
+    moved = fakeuni_api.STATE.timetable_version == "v3"
+    timetable_path = "/api/v3/schedule" if moved else "/api/v2/timetable"
+    timetable = await fetch(app, timetable_path, token)
     deadlines = await fetch(app, "/api/v2/tasks/deadlines", token)
     news = await fetch(app, "/news", token)
     table = await fetch(app, "/portal/deadlines", token)
@@ -62,7 +65,7 @@ async def fake_site(app: object, *, home_extra: str = "") -> FakeBrowserGateway:
 
     xhr = [
         req("/api/v2/me", me),
-        req("/api/v2/timetable?from=2026-10-26&to=2026-11-01", timetable),
+        req(f"{timetable_path}?from=2026-10-26&to=2026-11-01", timetable),
         req("/api/v2/tasks/deadlines", deadlines),
     ]
     pages = {
