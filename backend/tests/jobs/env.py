@@ -93,6 +93,7 @@ class Env:
         *,
         name: str | None = None,
         notify: bool = True,
+        services: Services | None = None,
         **config: Any,
     ) -> Worker:
         cfg = RunnerConfig(
@@ -104,7 +105,7 @@ class Env:
         )
         notifier = Notifier(dsn_for_asyncpg(self.settings.database_url) if notify else None)
         self.notifiers.append(notifier)
-        return Worker(handlers, self.services, config=cfg, notifier=notifier, name=name)
+        return Worker(handlers, services or self.services, config=cfg, notifier=notifier, name=name)
 
     def start(self, worker: Worker) -> asyncio.Task[None]:
         task = asyncio.create_task(worker.run())

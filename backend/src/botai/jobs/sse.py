@@ -57,6 +57,7 @@ def _terminal_events(job: Job, now: datetime, after: int) -> list[ServerSentEven
                     str(err.get("code", "internal_error")),
                     str(err.get("detail", "")),
                     int(err.get("status", 500)),
+                    err.get("extra"),
                 ),
             )
         )

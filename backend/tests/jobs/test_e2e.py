@@ -207,8 +207,7 @@ async def test_invite_to_connect_job_to_answers(env: Env) -> None:
     # --- a late reconnect gets only what is new ------------------------------------------------
     last = stream.events[-1]["id"]
     tail = await friend.get(f"/api/v1/jobs/{job_id}/events", headers={"Last-Event-ID": last})
-    assert tail.status_code == 200
-    assert tail.text.strip() == ""
+    assert tail.status_code == 204  # nothing new, and the browser must stop reconnecting
 
 
 def _asked(stream: Stream, block_id: str) -> bool:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from sse_starlette import EventSourceResponse
 
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
 from botai.db.session import DbSession
 from botai.jobs import answers, sse
+from botai.jobs.events import TERMINAL, has_events_after
 from botai.jobs.notify import dsn_for_asyncpg, shared_notifier
 from botai.jobs.schemas import AnswerIn, JobOut
 
@@ -20,25 +21,29 @@ async def get_job(job_id: str, user: AuthUser, session: DbSession) -> JobOut:
     return JobOut.model_validate(await answers.get_job(session, user.id, job_id))
 
 
-@router.get("/jobs/{job_id}/events", responses={200: {"content": {"text/event-stream": {}}}})
+@router.get(
+    "/jobs/{job_id}/events",
+    responses={
+        200: {"content": {"text/event-stream": {}}},
+        204: {"description": "The job has ended and nothing is newer than Last-Event-ID"},
+    },
+)
 async def job_events(
     job_id: str, request: Request, user: AuthUser, session: DbSession, services: ServicesDep
-) -> EventSourceResponse:
+) -> Response:
     """text/event-stream: status | block | block_update | error | done; resume by Last-Event-ID.
 
     Only the owner of the job may listen. The stream replays the buffered events after
     `Last-Event-ID`, then follows the job until it ends; `: keepalive` every 15 seconds."""
-    await answers.get_job(session, user.id, job_id)
+    job = await answers.get_job(session, user.id, job_id)
+    after = sse.parse_last_event_id(request.headers.get("last-event-id"))
+    if job.state in TERMINAL and after and not await has_events_after(session, job_id, after):
+        # A browser reconnects to a closed stream forever; 204 tells EventSource to stop.
+        return Response(status_code=204)
     await session.rollback()  # do not hold a connection for the whole stream
     notifier = await shared_notifier(dsn_for_asyncpg(services.settings.database_url))
     return EventSourceResponse(
-        sse.stream(
-            services.db,
-            notifier,
-            job_id=job_id,
-            after=sse.parse_last_event_id(request.headers.get("last-event-id")),
-            now=services.clock.now,
-        ),
+        sse.stream(services.db, notifier, job_id=job_id, after=after, now=services.clock.now),
         ping=sse.KEEPALIVE_SECONDS,
         ping_message_factory=sse.keepalive,
     )

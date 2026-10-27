@@ -227,7 +227,9 @@ class Worker:
                 job, f"Источник недоступен, повторю через {minutes} мин", delay=delay
             )
             return
-        await self._fail(job, err.code.value, err.detail or "Задание не выполнено", err.status)
+        await self._fail(
+            job, err.code.value, err.detail or "Задание не выполнено", err.status, extra=err.extra
+        )
 
     async def _fail_unexpected(self, job: Claimed, kind: str, tb: Any = None) -> None:
         # Type and frames only: an exception message may carry a URL with a token or page text.
@@ -264,16 +266,27 @@ class Worker:
                 await session.commit()
         await self._drop_transient(job)
 
-    async def _fail(self, job: Claimed, code: str, detail: str, status: int) -> None:
+    async def _fail(
+        self,
+        job: Claimed,
+        code: str,
+        detail: str,
+        status: int,
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         now = self.services.clock.now()
         async with self.services.db() as session:
             row = await self._locked(session, job.id)
             if row is None:
                 await session.rollback()
             else:
-                body = error_event(row, code, detail, status)
+                body = error_event(row, code, detail, status, extra)
                 row.state = "failed"
-                row.error = {"code": code, "detail": detail, "status": status}
+                stored: dict[str, Any] = {"code": code, "detail": detail, "status": status}
+                if extra:
+                    stored["extra"] = extra
+                row.error = stored
                 row.finished_at = now
                 row.locked_by = None
                 await append_event(session, job.id, "status", status_data(row, now))

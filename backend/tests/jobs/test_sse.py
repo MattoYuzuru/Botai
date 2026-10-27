@@ -106,7 +106,9 @@ async def test_last_event_id_resumes_after_the_last_seen_event(env: Env) -> None
 
     last = everything[-1]["id"]
     caught_up = await client.get(f"/api/v1/jobs/{job_id}/events", headers={"Last-Event-ID": last})
-    assert parse(caught_up.text)[0] == []  # nothing is repeated, the stream just ends
+    # nothing is repeated; 204 makes a browser's EventSource stop reconnecting to a closed stream
+    assert caught_up.status_code == 204
+    assert caught_up.content == b""
     junk = await client.get(
         f"/api/v1/jobs/{job_id}/events", headers={"Last-Event-ID": "not-a-number"}
     )
