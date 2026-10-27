@@ -21,6 +21,7 @@ from botai.core.errors import BotaiError, ErrorCode
 
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 TOTAL_BUDGET_S = 30.0
+MAX_BODY_BYTES = 10 * 1024 * 1024  # a university page or API answer; documents pass a bigger cap
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,23 +102,32 @@ async def request_with_retries(
     *,
     policy: RetryPolicy = RetryPolicy(),
     budget_s: float = TOTAL_BUDGET_S,
+    max_bytes: int = MAX_BODY_BYTES,
     **kwargs: object,
 ) -> httpx.Response:
     """Send a request with LLD §5 semantics. Never retries 4xx except 408/425/429.
 
-    Raises BotaiError(source_unavailable | source_rate_limited) when retries are exhausted.
-    Auth-expiry detection (401/403/login redirect) is the caller's job: those responses are
-    returned as-is, not retried.
+    The whole call, retries and body reading included, is bounded by `budget_s` (a server that
+    trickles bytes cannot outlive it), and the body is read in a stream capped at `max_bytes`.
+    The returned response is fully read. Raises BotaiError(source_unavailable |
+    source_rate_limited) when retries are exhausted. Auth-expiry detection (401/403/login
+    redirect) is the caller's job: those responses are returned as-is, not retried.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget_s
     last_exc: Exception | None = None
     last_response: httpx.Response | None = None
     for attempt in range(policy.attempts):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
         try:
-            response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
+            async with asyncio.timeout(remaining):
+                response = await _send_capped(client, method, url, max_bytes, kwargs)
         except BotaiError:
             raise
+        except TimeoutError as exc:
+            last_exc, last_response = exc, None
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_exc, last_response = exc, None
         else:
@@ -142,3 +152,49 @@ async def request_with_retries(
         else f"Сайт вуза ответил {last_response.status_code if last_response else '?'}"
     )
     raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, detail)
+
+
+async def _send_capped(
+    client: httpx.AsyncClient, method: str, url: str, max_bytes: int, kwargs: dict[str, object]
+) -> httpx.Response:
+    send_opts: dict[str, object] = {
+        k: kwargs[k] for k in ("follow_redirects", "auth") if k in kwargs
+    }
+    build_opts = {k: v for k, v in kwargs.items() if k not in send_opts}
+    request = client.build_request(method, url, **build_opts)  # type: ignore[arg-type]
+    response = await client.send(request, stream=True, **send_opts)  # type: ignore[arg-type]
+    try:
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            raise _too_big(request)
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > max_bytes:
+                raise _too_big(request)
+            chunks.append(chunk)
+    finally:
+        await response.aclose()
+    headers = [
+        (k, v)
+        for k, v in response.headers.multi_items()
+        if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+    ]
+    full = httpx.Response(
+        response.status_code,
+        headers=headers,
+        content=b"".join(chunks),
+        request=response.request,  # the final request after redirects, not the first one
+        extensions={"http_version": response.extensions.get("http_version", b"HTTP/1.1")},
+    )
+    full.history = list(response.history)
+    return full
+
+
+def _too_big(request: httpx.Request) -> BotaiError:
+    return BotaiError(
+        ErrorCode.SOURCE_UNAVAILABLE,
+        f"Ответ {request.url.host} слишком большой",
+        extra={"host": request.url.host},
+    )
