@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,103 +28,7 @@ from botai.core.llm import (
     ScriptedLlm,
 )
 from tests.agent.conftest import TEST_KEY, make_settings
-
-Handler = Callable[[httpx.Request], httpx.Response]
-
-
-def sse(*chunks: dict[str, Any]) -> httpx.Response:
-    text = "".join(f"data: {json.dumps(c, ensure_ascii=False)}\n\n" for c in chunks)
-    return httpx.Response(
-        200,
-        content=(text + "data: [DONE]\n\n").encode(),
-        headers={"content-type": "text/event-stream"},
-    )
-
-
-def answer_chunks(
-    text: str = "ок", *, reasoning: str | None = None, usage: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
-    chunks: list[dict[str, Any]] = []
-    if reasoning:
-        chunks.append({"choices": [{"index": 0, "delta": {"reasoning_content": reasoning}}]})
-    chunks.append({"choices": [{"index": 0, "delta": {"content": text}}]})
-    chunks.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
-    chunks.append(
-        {
-            "choices": [],
-            "usage": usage
-            or {
-                "prompt_tokens": 100,
-                "completion_tokens": 20,
-                "prompt_cache_hit_tokens": 80,
-                "prompt_cache_miss_tokens": 20,
-                "completion_tokens_details": {"reasoning_tokens": 12},
-            },
-        }
-    )
-    return chunks
-
-
-class FakeGate:
-    def __init__(self, *, deny: bool = False) -> None:
-        self.deny = deny
-        self.checked: list[str] = []
-        self.recorded: list[dict[str, Any]] = []
-
-    async def check(self, user_id: str) -> None:
-        self.checked.append(user_id)
-        if self.deny:
-            raise BotaiError(ErrorCode.QUOTA_EXCEEDED, "Дневной лимит исчерпан")
-
-    async def record(
-        self, *, user_id: str, job_id: str | None, purpose: str, usage: LlmUsage, peak: bool
-    ) -> None:
-        self.recorded.append(
-            {"user_id": user_id, "job_id": job_id, "purpose": purpose, "usage": usage, "peak": peak}
-        )
-
-
-class Wire:
-    """Records requests, answers with a script of handlers (the last one repeats)."""
-
-    def __init__(self, *handlers: Handler) -> None:
-        self.handlers = list(handlers) or [lambda _r: sse(*answer_chunks())]
-        self.requests: list[httpx.Request] = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        index = min(len(self.requests) - 1, len(self.handlers) - 1)
-        return self.handlers[index](request)
-
-    def body(self, n: int = -1) -> dict[str, Any]:
-        return json.loads(self.requests[n].content)
-
-
-def provider(
-    wire: Wire,
-    *,
-    gate: FakeGate | None = None,
-    stream: bool = True,
-    sleeps: list[float] | None = None,
-    **settings: object,
-) -> DeepSeekProvider:
-    async def sleep(seconds: float) -> None:
-        if sleeps is not None:
-            sleeps.append(seconds)
-
-    return DeepSeekProvider(
-        make_settings(**settings),
-        gate=gate or FakeGate(),
-        stream=stream,
-        transport=httpx.MockTransport(wire),
-        sleep=sleep,
-        now=lambda: datetime(2026, 10, 31, 12, 0, tzinfo=UTC),  # Saturday: off-peak
-    )
-
-
-def req(text: str = "привет", **kw: Any) -> LlmRequest:
-    return LlmRequest(messages=[LlmMessage(role="user", content=text)], **kw)
-
+from tests.agent.support import FakeGate, Wire, answer_chunks, provider, req, sse
 
 # --- profiles -----------------------------------------------------------------------------------
 
