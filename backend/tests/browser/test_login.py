@@ -331,6 +331,43 @@ async def test_expired_session_logs_in_again_with_the_stored_password(
     assert len(rig.store.presets[ORIGIN]) == 1
 
 
+async def test_a_login_that_meets_no_code_page_does_not_make_the_preset_forget_it(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preset is shared by every student of the origin. A site that trusts this device and
+    asks for no SMS code once must not teach everybody else that it never asks (found by the
+    full-stack test, W7)."""
+    rig = make_rig()
+    await rig.ensure(Student())
+    (before,) = rig.store.presets[ORIGIN]
+    assert [s["id"] for s in before["steps"]] == ["username-password", "otp"]
+
+    login.expire_all_sessions()
+    monkeypatch.setattr(login, "OTP_REQUIRED", False)
+    student = Student(password="never used", username="never used")
+    second, _ = await rig.ensure(student)
+
+    assert await works(second)
+    assert student.asked == []  # nothing to ask: the Vault had the login and the password
+    (after,) = rig.store.presets[ORIGIN]  # no new revision, the old one was replayed
+    assert [s["id"] for s in after["steps"]] == ["username-password", "otp"]
+    assert after["mfa"] == before["mfa"] == {"possible": "yes", "automate": False, "kinds": ["sms"]}
+
+
+async def test_a_page_a_login_does_meet_is_learned_next_to_the_known_ones(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """Keeping what an earlier login saw does not stop the preset from learning something new."""
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/"))  # a preset that knows no step yet
+    await rig.ensure(Student())
+
+    known, learned = rig.store.presets[ORIGIN]
+    assert known.get("steps", []) == []
+    assert [s["id"] for s in learned["steps"]] == ["username-password", "otp"]
+    assert learned["revision"] == 2
+
+
 async def test_login_without_otp_step_and_a_two_page_flow(make_rig: Callable[..., Rig]) -> None:
     for start, expected in (
         ("/plain/login", ["login", "password"]),

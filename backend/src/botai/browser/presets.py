@@ -316,6 +316,42 @@ def build_preset(
     return preset
 
 
+def keep_known(preset: dict[str, Any], known: LoginPreset) -> dict[str, Any]:
+    """The preset of a login that replayed `known`, without forgetting what the login did not meet.
+
+    A login meets only the pages it meets: a site that trusts this device asks for no SMS code,
+    a student who went through a captcha once sees none the next time. The preset is shared by
+    every student of the origin, so a run must not make it forget the pages, the second factor or
+    the captcha an earlier run saw. What the run did meet replaces its old self (same step id).
+    """
+    old = [s.model_dump(by_alias=True, exclude_none=True) for s in known.steps]
+    fresh = {s["id"]: s for s in preset["steps"]}
+    preset["steps"] = ([fresh.pop(s["id"], s) for s in old] + list(fresh.values()))[:MAX_STEPS]
+
+    if known.mfa.get("possible") == "yes":
+        kinds = sorted({*known.mfa.get("kinds", []), *preset["mfa"].get("kinds", [])})
+        preset["mfa"] = {**preset["mfa"], "possible": "yes", **({"kinds": kinds} if kinds else {})}
+    if known.captcha.get("possible") == "yes":
+        preset["captcha"] = {**preset["captcha"], "possible": "yes"}
+
+    def union(newer: list[str], older: object) -> list[str]:
+        both = [*(older if isinstance(older, list) else []), *newer]
+        return list(dict.fromkeys(p for p in both if isinstance(p, str)))[:MAX_STEPS]
+
+    # the pages that mean "logged out", from the pages every run has met
+    if "urlPathNot" in preset["success"] or "urlPathNot" in known.success:
+        preset["success"]["urlPathNot"] = union(
+            preset["success"].get("urlPathNot", []), known.success.get("urlPathNot")
+        )
+    preset["expired"]["redirectPathPrefix"] = union(
+        preset["expired"].get("redirectPathPrefix", []), known.expired.get("redirectPathPrefix")
+    )
+    problems = schemas.errors("login-preset.schema.json", preset)
+    if problems:
+        raise ValueError("merged preset does not match the schema: " + "; ".join(problems))
+    return preset
+
+
 def comparable(preset: dict[str, Any] | LoginPreset) -> dict[str, Any]:
     """The part of a preset that decides whether a new revision is worth saving: what the site
     asks for, not how long this particular session happens to live."""

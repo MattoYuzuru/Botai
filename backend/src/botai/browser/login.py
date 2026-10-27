@@ -49,6 +49,7 @@ from botai.browser.presets import (
     Recorder,
     build_preset,
     comparable,
+    keep_known,
 )
 from botai.browser.probe import check_session, learn_probe, probe_ok
 from botai.browser.session import decode_session, encode_session
@@ -427,11 +428,10 @@ class LoginFlow:
                 avoid=_avoid_tokens(run.creds),
             )
             known = run.preset
-            if run.preset is not None and not run.recorder.forms:
-                # nothing new was observed (for instance a human did every step): keep the old steps
-                preset["steps"] = [
-                    s.model_dump(by_alias=True, exclude_none=True) for s in run.preset.steps
-                ]
+            if known is not None:
+                # this run met only some of the pages (a human did every step, or the site trusted
+                # the device and asked for no code): the others stay in the shared preset
+                preset = keep_known(preset, known)
             if known is None or comparable(known) != comparable(preset):
                 revision = await self._store.save_preset(
                     run.info.origin, preset, connection_id=run.connection_id
