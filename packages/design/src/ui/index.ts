@@ -28,10 +28,18 @@ export { DeadlineItem, type DeadlineItemProps } from "./deadline-item/deadline-i
 export { Dialog, type DialogProps } from "./dialog/dialog";
 export { EmptyState, type EmptyStateProps } from "./empty-state/empty-state";
 export { Field, type FieldProps, useFieldControl } from "./field/field";
+export { GradeTile, type GradeTileProps } from "./grade-tile/grade-tile";
 export { HandoffCard, type HandoffCardProps } from "./handoff-card/handoff-card";
 export { Icon, type IconName, type IconProps, type IconSize, iconRegistry } from "./icon";
 export { IconButton, type IconButtonProps } from "./icon-button/icon-button";
 export { Input, type InputProps } from "./input/input";
+export {
+  ListRow,
+  ListRowBody,
+  type ListRowBodyProps,
+  type ListRowProps,
+  listRowClass,
+} from "./list-row/list-row";
 export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
 export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
 export { Mascot, type MascotHandle, type MascotProps } from "./mascot/mascot";
