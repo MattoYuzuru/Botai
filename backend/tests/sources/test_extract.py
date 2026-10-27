@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -174,3 +174,21 @@ def test_dangerous_patterns_are_rejected(pattern: str) -> None:
 def test_matching_is_bounded() -> None:
     assert rxsafe.first_group(r"(\d+)", "x" * 10_000 + "5") is None
     assert rxsafe.first_group(r"(\d+)", "abc 42") == "42"
+
+
+# --- the session as the login flow stores it ----------------------------------------------
+
+
+async def test_a_session_sealed_by_the_login_flow_is_readable_by_sync() -> None:
+    from botai.browser.session import encode_session
+    from botai.core.vault import InMemoryVault, SecretKind
+    from botai.sources.session import cookie_jar, load_session
+    from tests.sources.helpers import CONN_ID, NOW, USER_ID, session_state
+
+    vault = InMemoryVault()
+    sealed = encode_session(session_state("tok-from-login", expires_hint=NOW + timedelta(days=3)))
+    await vault.put(USER_ID, CONN_ID, SecretKind.SESSION, sealed)
+    state = await load_session(vault, USER_ID, CONN_ID)
+    assert state is not None
+    assert state.expires_hint == NOW + timedelta(days=3)
+    assert cookie_jar(state, NOW).get("FAKEUNI_SESSION", domain="fakeuni.test") == "tok-from-login"
