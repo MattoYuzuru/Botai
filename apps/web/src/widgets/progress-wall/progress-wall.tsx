@@ -9,7 +9,7 @@ import {
   ThinkingStream,
   useNow,
 } from "@botai/design";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { ApiError, humanMessage } from "@/api/errors";
 import { AgentBlockView } from "@/features/agent-blocks/agent-block";
 import type { BlockContext } from "@/features/agent-blocks/context";
@@ -41,7 +41,15 @@ export interface ProgressWallProps {
   headingLevel?: 1 | 3;
   /** Менеджер потоков; по умолчанию общий. Витрина и тесты подставляют свой. */
   manager?: JobManager;
+  /**
+   * Варя на экране (mascot.md §3). `rail` — бежит по рельсу, пока работа идёт или ждёт человека; `header` —
+   * после итога стоит рядом с названием. Без функции экран выглядит как раньше: картинка ничего не несёт,
+   * стадия, время и вопросы остаются текстом.
+   */
+  renderMascot?: (state: WallMascotState, slot: "rail" | "header") => ReactNode;
 }
+
+export type WallMascotState = "running" | "waiting" | "done" | "failed";
 
 /** Что показать человеку при сбое задания — по коду ошибки, без технических слов (styleguide §9). */
 export function describeProblem(problem: JobProblem): { text: string; chat: boolean } {
@@ -103,6 +111,7 @@ export function ProgressWall({
   onAskInChat,
   headingLevel = 1,
   manager = defaultManager,
+  renderMascot,
 }: ProgressWallProps) {
   const job = useJob(jobId, manager);
   const nowMs = useNow(1000);
@@ -162,6 +171,13 @@ export function ProgressWall({
   );
   const attention = needsHuman(job);
   const problem = job.problem ? describeProblem(job.problem) : null;
+  const mascotState: WallMascotState = terminal
+    ? job.state === "done"
+      ? "done"
+      : "failed"
+    : attention
+      ? "waiting"
+      : "running";
 
   return (
     <div className="mx-auto flex w-full max-w-col flex-col gap-6" data-progress-wall={job.state}>
@@ -171,6 +187,7 @@ export function ProgressWall({
           {spaceTitle && <p className="type-caption text-fg-muted">{spaceTitle}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {terminal && renderMascot?.(mascotState, "header")}
           {attention && <Badge tone="warning">Нужен ответ</Badge>}
           {!terminal && (
             <IconButton icon="chevron-down" label="Свернуть" variant="secondary" onClick={onMinimize} />
@@ -180,7 +197,13 @@ export function ProgressWall({
 
       {!terminal && (
         <section aria-label="Ход работы" className="flex flex-col gap-3">
-          <ProgressRail stage={doneSteps} stageCount={null} elapsedMs={elapsed} etaKnown={false} />
+          <ProgressRail
+            stage={doneSteps}
+            stageCount={null}
+            elapsedMs={elapsed}
+            etaKnown={false}
+            runner={renderMascot?.(mascotState, "rail")}
+          />
           <StageTitle className="type-heading text-fg">{stage}</StageTitle>
           {job.link === "reconnecting" && (
             <p className="flex items-center gap-2 type-caption text-fg-muted">

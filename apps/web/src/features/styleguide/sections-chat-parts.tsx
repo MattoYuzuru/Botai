@@ -58,7 +58,7 @@ export function ContextSection() {
               nowMs={NOW}
               timeZone={MSK}
               internal={{
-                href: "/study?document=doc-2",
+                href: "/study/documents",
                 label: "Открыть документ в «Учёбе»",
                 icon: "document",
               }}
@@ -70,7 +70,7 @@ export function ContextSection() {
               nowMs={NOW}
               timeZone={MSK}
               internal={{
-                href: "/study?connection=c-1",
+                href: "/study/connections",
                 label: "Открыть подключение в «Учёбе»",
                 icon: "connection",
               }}

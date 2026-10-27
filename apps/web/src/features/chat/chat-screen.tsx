@@ -2,6 +2,7 @@ import {
   ChatComposer,
   ChatLayout,
   IconButton,
+  MascotDock,
   ScreenHeader,
   ScrollArea,
   SkeletonText,
@@ -30,6 +31,7 @@ import { buildSuggestions } from "./suggestions";
 import { ThreadsSheet } from "./threads-sheet";
 import { awaitingReply, buildTimeline, isReplying, keptBlocks } from "./timeline";
 import { TimelineView } from "./timeline-view";
+import { useChatMascot } from "./use-chat-mascot";
 import { useStickToBottom } from "./use-stick-to-bottom";
 
 const NEW_THREAD = "new";
@@ -157,6 +159,21 @@ export function ChatScreen() {
     setDraft("");
   };
 
+  // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.
+  const mascot = useChatMascot({
+    mode: showEmpty || (activeId === null && timeline.length === 0) ? "floor" : "perch",
+    replying,
+    waitingForHuman,
+    stage: job && !isTerminal(job.state) ? job.stage : null,
+    typing: draft.trim().length > 0,
+    keyboardOpen,
+    replyCount: timeline.filter(
+      (item) =>
+        item.kind === "agent" || (item.kind === "live" && item.blocks.some((block) => block.type === "text")),
+    ).length,
+    threadKey: activeId ?? NEW_THREAD,
+  });
+
   const scroll = useStickToBottom(timeline.length + (job?.blocks.length ?? 0) + (job?.state ?? ""), activeId);
   // Название экрана — «Чат», как у остальных вкладок; тема открытого чата — подзаголовок.
   const subtitle = activeThread && activeThread.title !== "Новый чат" ? activeThread.title : undefined;
@@ -187,19 +204,23 @@ export function ChatScreen() {
         />
       }
       composer={
-        <ChatComposer
-          value={draft}
-          onValueChange={setDraft}
-          onSend={send}
-          disabled={replying}
-          placeholder={
-            waitingForHuman
-              ? "Ответьте на вопрос выше"
-              : replying
-                ? "Агент отвечает…"
-                : "Спросите про пары и сроки"
-          }
-        />
+        // Насест — верхняя кромка поля: слой Вари стоит в той же обёртке и едет вместе с полем над клавиатурой.
+        <div className="relative">
+          <ChatComposer
+            value={draft}
+            onValueChange={setDraft}
+            onSend={send}
+            disabled={replying}
+            placeholder={
+              waitingForHuman
+                ? "Ответьте на вопрос выше"
+                : replying
+                  ? "Агент отвечает…"
+                  : "Спросите про пары и сроки"
+            }
+          />
+          <MascotDock {...mascot} />
+        </div>
       }
     >
       <ScrollArea
@@ -208,7 +229,9 @@ export function ChatScreen() {
         onViewportScroll={scroll.onScroll}
         viewportClassName="px-safe-4 xs:px-safe-5"
       >
-        <div className="mx-auto flex min-h-full w-full max-w-col flex-col justify-end py-4">
+        <div
+          className={`mx-auto flex min-h-full w-full max-w-col flex-col justify-end pt-4 ${showEmpty ? "pb-4" : "pb-10"}`}
+        >
           {resolving || (activeId && messagesResult.isPending && timeline.length === 0) ? (
             <SkeletonText lines={4} label="Загрузка чата" />
           ) : showEmpty ? (

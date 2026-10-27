@@ -177,6 +177,22 @@ export function pickLine(key: LineKey, fields: LineFields, seed = 0): string | n
   return top[index]?.text ?? null;
 }
 
+/**
+ * Следующая реплика той же ситуации по нажатию на Варю (mascot.md §4.3): все подходящие варианты по кругу, а не
+ * только самые содержательные. `current` — реплика, которая сейчас на экране; `step` ≥ 1 — сколько раз нажали.
+ */
+export function cycleLines(
+  key: LineKey,
+  fields: LineFields,
+  current: string | null,
+  step = 1,
+): string | null {
+  const all = availableLines(key, fields);
+  if (all.length === 0) return null;
+  const at = current === null ? -1 : all.indexOf(current);
+  return all[(((at + step) % all.length) + all.length) % all.length] ?? null;
+}
+
 /** «14:05» для сегодняшнего снимка, «24 октября» для более раннего: подпись реплики офлайна. */
 export function formatSnapshotTime(ms: number, nowMs: number, timeZone = DEFAULT_TIME_ZONE): string {
   return dayNumber(ms, timeZone) === dayNumber(nowMs, timeZone)

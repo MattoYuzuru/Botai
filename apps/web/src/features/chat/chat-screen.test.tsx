@@ -11,7 +11,7 @@ import { outbox } from "./runtime";
 
 let current = createDataServer();
 
-function useScenario(scenario: Scenario) {
+function setScenario(scenario: Scenario) {
   current.server.close();
   current = createDataServer(scenario);
   resetChatState(current.db);
@@ -23,7 +23,7 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
-beforeEach(() => useScenario("connected"));
+beforeEach(() => setScenario("connected"));
 afterEach(() => {
   current.server.resetHandlers();
   outbox.clear();
@@ -60,14 +60,13 @@ describe("чат: история, источники и шкала контек�
       await screen.findByText("Что сегодня по расписанию?", { selector: "p, span, div" }, wait),
     ).toBeTruthy();
     const link = await screen.findByRole("link", { name: /Открыть подключение в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/study\?connection=/));
+    expect(link).toHaveAttribute("href", "/study/connections");
     // Внешний источник — в новой вкладке, внутренний — в той же.
     const external = screen.getByRole("link", { name: /lk\.fakeuni\.test/ });
     expect(external).toHaveAttribute("target", "_blank");
     expect(link).not.toHaveAttribute("target");
     await userEvent.setup().click(link);
-    await waitFor(() => expect(router.state.location.pathname).toBe("/study"));
-    expect(router.state.location.search).toMatchObject({ connection: expect.any(String) });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/study/connections"));
   });
 
   it("шкала контекста в шапке: число из ответа сервера, шит с сегментами и источниками", async () => {
@@ -116,7 +115,7 @@ describe("чат: пустой чат и подсказки из настоящ�
   });
 
   it("вуз не подключён: приглашение «Подключить вуз» вместо выдуманных подсказок", async () => {
-    useScenario("empty");
+    setScenario("empty");
     renderApp("/chat?thread=new");
     expect(await screen.findByRole("link", { name: "Подключить вуз" }, wait)).toHaveAttribute(
       "href",
@@ -152,7 +151,7 @@ describe("чат: ответ агента", () => {
     const user = await openNewChat(userEvent.setup());
     await ask(user, "Какие правила сдачи курсовых?");
     const link = await screen.findByRole("link", { name: /Открыть документ в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/study\?document=/));
+    expect(link).toHaveAttribute("href", "/study/documents");
   });
 
   it("«Не знаю: …» помечено «Не уверен», источника нет и он не имитируется", async () => {

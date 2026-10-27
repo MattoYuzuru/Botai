@@ -1,4 +1,12 @@
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "../../lib/cn";
 import { stageStep } from "../../mascot/stage-plan";
 import type { MascotMotion, MascotSituationId, MascotSkinId, MascotTheme } from "../../mascot/types";
@@ -25,8 +33,13 @@ export interface MascotDockProps {
   motion?: MascotMotion;
   /** Зерно детерминированной сцены: порядок и длительности действий. */
   seed?: number;
-  /** Пузырь-реплика над Варей (mascot.md §4.3). Живёт в слое Вари и едет вместе с ней. */
+  /**
+   * Пузырь-реплика над Варей (mascot.md §4.3): `MascotBubble`. Стоит над насестом справа или по центру над сценой,
+   * а не внутри спрайта, поэтому масштаб Вари его не уменьшает.
+   */
   bubble?: ReactNode;
+  /** Действия Вари снаружи: кивок на ответ, взмах крылом. */
+  ref?: Ref<MascotHandle>;
   /** Нажатие на саму Варю: следующая реплика, пасхалка. Не единственный способ: действие дублируют кнопки экрана. */
   onTap?: () => void;
   className?: string;
@@ -48,8 +61,19 @@ export function MascotDock({
   bubble,
   onTap,
   className,
+  ref,
 }: MascotDockProps) {
   const sprite = useRef<MascotHandle>(null);
+  useImperativeHandle(
+    ref,
+    () => ({
+      act: (name) => sprite.current?.act(name),
+      react: () => sprite.current?.react(),
+      setLoop: (name) => sprite.current?.setLoop(name),
+      settle: () => sprite.current?.settle(),
+    }),
+    [],
+  );
   const body = useRef<HTMLDivElement>(null);
   const previousMode = useRef(mode);
   const [position, setPosition] = useState(0.5);
@@ -123,7 +147,6 @@ export function MascotDock({
 
   const perch = mode === "perch";
   const style = {
-    "--dock-p": String(position),
     transitionDuration: !animated ? "0s" : perch ? `${HOP_MS}ms` : walkMs !== null ? `${walkMs}ms` : "0s",
     transitionTimingFunction: !perch && walkMs !== null ? "linear" : "cubic-bezier(0.22, 1, 0.36, 1)",
   } as CSSProperties;
@@ -138,6 +161,7 @@ export function MascotDock({
       )}
     >
       <div
+        style={{ "--dock-p": String(position) } as CSSProperties}
         className={cn(
           "absolute inset-x-0 bottom-0",
           // Размеры по ширине слоя (он равен ширине поля ввода): пол 96 px, от экрана 390 px — 120 px;
@@ -147,6 +171,25 @@ export function MascotDock({
           "@min-[24.375rem]:[--dock-perch:2.5rem] @min-[24.375rem]:[--dock-scale:0.3333]",
         )}
       >
+        {bubble && (
+          <div
+            data-dock-bubble=""
+            style={
+              perch
+                ? undefined
+                : { transitionDuration: style.transitionDuration, transitionTimingFunction: "linear" }
+            }
+            className={cn(
+              "pointer-events-auto absolute z-sticky w-max max-w-[min(18rem,100cqw)]",
+              perch
+                ? "right-4 bottom-[calc(var(--dock-perch)_*_0.75_+_0.25rem)]"
+                : // Над сценой пузырь идёт за Варей по полу и не выходит за края поля.
+                  "bottom-[calc(var(--dock-floor)_*_0.8_+_0.5rem)] left-[clamp(9rem,calc((100cqw_-_var(--dock-floor))_*_var(--dock-p)_+_var(--dock-floor)_/_2),calc(100cqw_-_9rem))] -translate-x-1/2 transition-[left]",
+            )}
+          >
+            {bubble}
+          </div>
+        )}
         <div
           style={style}
           className={cn(
@@ -157,11 +200,6 @@ export function MascotDock({
           )}
         >
           <div ref={body} className="relative size-full">
-            {bubble && (
-              <div className="pointer-events-auto absolute right-0 bottom-full mb-2 w-max max-w-[min(18rem,80cqw)]">
-                {bubble}
-              </div>
-            )}
             {/* Нажатие по спрайту — дополнительный способ (реплика, пасхалка); смысл дублирует текст экрана. */}
             <div
               aria-hidden="true"

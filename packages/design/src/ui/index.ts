@@ -53,7 +53,13 @@ export {
 } from "./list-row/list-row";
 export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
 export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
-export { Mascot, type MascotHandle, type MascotProps } from "./mascot/mascot";
+export { Mascot, MascotAnimationPolicy, type MascotHandle, type MascotProps } from "./mascot/mascot";
+export {
+  BUBBLE_MAX_CHARS,
+  BUBBLE_MS,
+  MascotBubble,
+  type MascotBubbleProps,
+} from "./mascot-bubble/mascot-bubble";
 export { HOP_MS, MascotDock, type MascotDockProps } from "./mascot-dock/mascot-dock";
 export { MascotStage, type MascotStageProps, REACTION_MS } from "./mascot-stage/mascot-stage";
 export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";

@@ -4,6 +4,7 @@ import { queryKeys } from "@/api/queries";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
 import { ProgressWall } from "@/widgets/progress-wall/progress-wall";
+import { WallMascot } from "./wall-mascot";
 
 /** Экран хода подключения: `ProgressWall` на потоке задания. Свёртывание ничего не обрывает. */
 export function ConnectProgress({ jobId }: { jobId: string }) {
@@ -33,6 +34,7 @@ export function ConnectProgress({ jobId }: { jobId: string }) {
         onFinish={() => void finish()}
         onCancel={() => void jobManager.cancel(jobId)}
         onAskInChat={() => void navigate({ to: "/chat" })}
+        renderMascot={(state, slot) => <WallMascot state={state} slot={slot} />}
       />
     </main>
   );

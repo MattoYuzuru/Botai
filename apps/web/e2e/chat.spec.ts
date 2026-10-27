@@ -94,7 +94,7 @@ test.describe("ответ агента", () => {
     await expect(external).toHaveAttribute("target", "_blank");
     const internal = page.getByRole("link", { name: /Открыть подключение в «Учёбе»/ });
     await internal.click();
-    await expect(page).toHaveURL(/\/study\?connection=/);
+    await expect(page).toHaveURL(/\/study\/connections$/);
   });
 
   test("шкала контекста: плоская полоса в шапке, шит с сегментами и источниками", async ({ page }) => {
@@ -182,5 +182,144 @@ test.describe("нет сети", () => {
     await expect(page.getByText(/Ближайшие работы/)).toBeVisible();
     await expect(page.getByText("Отправится, когда появится сеть")).toHaveCount(0);
     await expect(timeline(page).getByText("Что сдавать на неделе?", { exact: true })).toHaveCount(1);
+  });
+});
+
+test.describe("Варя в чате", () => {
+  const sprite = (page: Page) => page.locator("[data-dock] svg.varya");
+  const box = async (locator: ReturnType<Page["locator"]>) => {
+    const value = await locator.boundingBox();
+    if (!value) throw new Error("элемент не виден");
+    return { left: value.x, top: value.y, right: value.x + value.width, bottom: value.y + value.height };
+  };
+
+  test("пустой чат: Варя на сцене 120 px, лапы на кромке поля, подсказки не перекрыты", async ({ page }) => {
+    await openChat(page, "/chat?thread=new&pace=0");
+    await expect(page.getByRole("list", { name: "Подсказки" })).toBeVisible();
+    await expect(page.locator("[data-dock]")).toHaveAttribute("data-dock", "floor");
+    await expect(sprite(page)).toHaveCount(1);
+    const girl = await box(sprite(page));
+    const form = await box(page.locator("form[data-composer]"));
+    const list = await box(page.getByRole("list", { name: "Подсказки" }));
+    expect(Math.abs(girl.bottom - girl.top - 120)).toBeLessThanOrEqual(1);
+    // Лапы на верхней кромке поля (запас — пустые 5 % поля спрайта).
+    expect(Math.abs(girl.bottom - form.top)).toBeLessThanOrEqual(8);
+    // Подсказки стоят выше сцены.
+    expect(list.bottom).toBeLessThanOrEqual(girl.top + 8);
+  });
+
+  test("первое сообщение: прыжок на насест не дольше 280 мс, одна Варя, лапы на кромке, поля не перекрыты", async ({
+    page,
+  }) => {
+    await openChat(page, "/chat?thread=new&pace=0");
+    await expect(sprite(page)).toBeVisible();
+    const handle = await sprite(page).elementHandle();
+    const series = await page.evaluate(async () => {
+      const svg = document.querySelector("[data-dock] svg.varya") as SVGSVGElement;
+      const started = performance.now();
+      const first = document.querySelector<HTMLElement>("[aria-label='Подсказки'] button");
+      first?.click();
+      const samples: { t: number; w: number }[] = [];
+      await new Promise<void>((resolve) => {
+        const tick = () => {
+          samples.push({ t: performance.now() - started, w: svg.getBoundingClientRect().width });
+          if (performance.now() - started < 700) requestAnimationFrame(tick);
+          else resolve();
+        };
+        requestAnimationFrame(tick);
+      });
+      return samples;
+    });
+    expect(series[0]?.w).toBeGreaterThan(90);
+    // Длительность перелёта — от первого кадра, где размер пошёл меняться, до кадра, где он перестал: задержка
+    // между нажатием и началом движения (нагрузка на runner) в 280 мс не входит.
+    const started = series.find((sample) => Math.abs(sample.w - (series[0]?.w ?? 0)) > 0.5);
+    const settled = series.find(
+      (sample) => sample.t >= (started?.t ?? 0) && Math.abs(sample.w - (series.at(-1)?.w ?? 0)) < 0.5,
+    );
+    const duration = (settled?.t ?? Number.POSITIVE_INFINITY) - (started?.t ?? 0);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThanOrEqual(280 + 120);
+    // Тот же экземпляр на насесте.
+    expect(
+      await page.evaluate((previous) => previous === document.querySelector("[data-dock] svg.varya"), handle),
+    ).toBe(true);
+    await expect(page.locator("[data-dock]")).toHaveAttribute("data-dock", "perch");
+    await expect(sprite(page)).toHaveCount(1);
+    const girl = await box(sprite(page));
+    const form = await box(page.locator("form[data-composer]"));
+    const field = await box(composer(page));
+    const send = await box(page.getByRole("button", { name: "Отправить" }));
+    expect(Math.abs(girl.bottom - form.top)).toBeLessThanOrEqual(4);
+    expect(girl.bottom).toBeLessThanOrEqual(field.top + 4);
+    expect(girl.bottom).toBeLessThanOrEqual(send.top + 4);
+    // Справа 16 px от края поля, 36 px (поле уже 390 px) или 40 px.
+    expect(Math.abs(form.right - 16 - girl.right)).toBeLessThanOrEqual(2);
+    const size = form.right - form.left >= 390 ? 40 : 36;
+    expect(Math.abs(girl.right - girl.left - size)).toBeLessThanOrEqual(1);
+  });
+
+  test("последнее сообщение не уходит под Варю: нижний отступ ленты закрывает её выступ", async ({
+    page,
+  }) => {
+    await openChat(page, "/chat?thread=new&pace=0");
+    await ask(page, "Какая следующая пара?");
+    await expect(
+      timeline(page)
+        .getByText(/Следующая пара|пары закончились|Не знаю/)
+        .first(),
+    ).toBeVisible();
+    await page.waitForTimeout(500);
+    const girl = await box(sprite(page));
+    const last = await box(timeline(page).getByRole("listitem").last());
+    expect(last.bottom).toBeLessThanOrEqual(girl.top);
+  });
+
+  test("реплика из данных на сцене: aria-hidden, до 48 знаков; печать и нажатие её убирают", async ({
+    page,
+  }) => {
+    await openChat(page, "/chat?thread=new&pace=0");
+    const bubble = page.locator("[data-dock-bubble] [data-mascot-bubble]");
+    await expect(bubble).toBeVisible();
+    await expect(bubble).toHaveAttribute("aria-hidden", "true");
+    expect([...((await bubble.textContent()) ?? "")].length).toBeLessThanOrEqual(48);
+    await composer(page).fill("Ка");
+    await expect(bubble).toHaveCount(0);
+  });
+
+  test("нажатие по пузырю закрывает его", async ({ page }) => {
+    await openChat(page, "/chat?thread=new&pace=0");
+    const bubble = page.locator("[data-dock-bubble] [data-mascot-bubble]");
+    await expect(bubble).toBeVisible();
+    await bubble.click();
+    await expect(bubble).toHaveCount(0);
+  });
+
+  test("спокойный режим: Варя статична на сцене и на насесте, реплика остаётся текстом", async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem("botai.motion", "calm"));
+    await openChat(page, "/chat?thread=new&pace=0");
+    await expect(sprite(page)).toHaveClass(/still/);
+    await expect(page.locator("[data-dock-bubble] [data-mascot-bubble]")).toBeVisible();
+    await ask(page, "Расскажи анекдот");
+    await expect(page.getByText("Не уверен")).toBeVisible();
+    await expect(sprite(page)).toHaveClass(/still/);
+  });
+
+  test("открытая клавиатура на телефоне: нижней панели нет, Варя статична, реплики нет", async ({
+    page,
+  }, info) => {
+    test.skip(info.project.name !== "phone", "клавиатура бывает только на касательном экране");
+    await openChat(page, "/chat?thread=new&pace=0");
+    await expect(sprite(page)).toBeVisible();
+    await composer(page).focus();
+    await expect(page.getByRole("navigation", { name: "Основная навигация" })).toBeHidden();
+    await expect(sprite(page)).toHaveClass(/still/);
+    await expect(page.locator("[data-dock-bubble]")).toHaveCount(0);
+    // Поле и Варя остаются в видимой области.
+    const form = await box(page.locator("form[data-composer]"));
+    const girl = await box(sprite(page));
+    const viewport = page.viewportSize();
+    expect(form.bottom).toBeLessThanOrEqual((viewport?.height ?? 0) + 1);
+    expect(girl.top).toBeGreaterThanOrEqual(0);
   });
 });

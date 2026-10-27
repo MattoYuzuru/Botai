@@ -9,7 +9,7 @@ import { textConfidence } from "./confidence";
 import { internalHref, internalIcon, internalLabel, parseInternalLink } from "./internal-links";
 import type { TimelineItem } from "./timeline";
 
-/** Внутренняя ссылка источника открывается в приложении (`/study?document=…`), всё остальное — как обычно. */
+/** Внутренняя ссылка источника открывается в приложении (`/study/documents`, `/study/connections`), всё остальное — как обычно. */
 export function useInternalLink(): NonNullable<BlockContext["internalLink"]> {
   const router = useRouter();
   return useCallback(

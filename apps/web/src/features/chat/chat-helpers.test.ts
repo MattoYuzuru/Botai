@@ -16,12 +16,12 @@ describe("внутренние ссылки источников", () => {
   it("botai://documents и botai://connections — внутренние, ведут в «Учёбу»", () => {
     const doc = parseInternalLink("botai://documents/01JMKCDB000");
     expect(doc).toEqual({ kind: "document", id: "01JMKCDB000" });
-    expect(internalHref(doc as never)).toBe("/study?document=01JMKCDB000");
+    expect(internalHref(doc as never)).toBe("/study/documents");
     expect(internalLabel(doc as never)).toContain("документ");
     expect(internalIcon(doc as never)).toBe("document");
     const conn = parseInternalLink("botai://connections/abc_DEF-1");
     expect(conn).toEqual({ kind: "connection", id: "abc_DEF-1" });
-    expect(internalHref(conn as never)).toBe("/study?connection=abc_DEF-1");
+    expect(internalHref(conn as never)).toBe("/study/connections");
     expect(internalIcon(conn as never)).toBe("connection");
   });
 
@@ -43,8 +43,9 @@ describe("внутренние ссылки источников", () => {
     }
   });
 
-  it("идентификатор в адресе экранируется", () => {
-    expect(internalHref({ kind: "document", id: "a-b_c" })).toBe("/study?document=a-b_c");
+  it("адрес — раздел «Учёбы» из реестра разделов, идентификатор в адрес не попадает", () => {
+    expect(internalHref({ kind: "document", id: "a-b_c" })).toBe("/study/documents");
+    expect(internalHref({ kind: "connection", id: "x y/z" })).toBe("/study/connections");
   });
 });
 
