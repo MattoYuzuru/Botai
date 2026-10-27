@@ -22,6 +22,31 @@ function readColor(token: string, host: HTMLElement) {
   return color;
 }
 
+// Один наблюдатель на все образцы: тема меняется атрибутом на <html> или на предке витрины.
+const readers = new Set<() => void>();
+let observer: MutationObserver | null = null;
+
+function subscribe(reader: () => void, doc: Document) {
+  readers.add(reader);
+  if (!observer) {
+    observer = new MutationObserver(() => {
+      for (const read of readers) read();
+    });
+    observer.observe(doc.documentElement, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ["data-theme", "data-space"],
+    });
+  }
+  return () => {
+    readers.delete(reader);
+    if (readers.size === 0) {
+      observer?.disconnect();
+      observer = null;
+    }
+  };
+}
+
 /**
  * Образец цвета для витрины /styleguide: hex и контраст считаются из вычисленного цвета токена
  * в текущей теме, а не хранятся руками, поэтому витрина не расходится с CSS.
@@ -40,14 +65,7 @@ export function Swatch({ token, label, against = "--color-bg", className }: Swat
       setInfo({ hex: toHex(color), ratio: base && color.alpha === 1 ? contrastRatio(color, base) : null });
     };
     read();
-    // Тема меняется атрибутом на <html> или на предке витрины: перечитываем.
-    const observer = new MutationObserver(read);
-    observer.observe(host.ownerDocument.documentElement, {
-      attributes: true,
-      subtree: true,
-      attributeFilter: ["data-theme", "data-space"],
-    });
-    return () => observer.disconnect();
+    return subscribe(read, host.ownerDocument);
   }, [token, against]);
 
   return (

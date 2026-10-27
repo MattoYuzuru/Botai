@@ -24,5 +24,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
+    // Витрина /styleguide рендерит весь каталог: в CI (медленный раннер) 5 с по умолчанию не хватает.
+    testTimeout: 30_000,
   },
 });
