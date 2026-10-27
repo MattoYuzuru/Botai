@@ -1,6 +1,6 @@
 # Botai — архитектура
 
-Статус: **draft**, 2026-10-26. Описывает целевую систему; код не написан.
+Статус: **accepted**, 2026-10-27. Текстовое описание; диаграммы — [HLD](hld.md) и [LLD](lld.md).
 Связанные: [требования](../product/requirements.md), [безопасность](security.md),
 [контракты](contracts.md), [план работ](../plan/workstreams.md).
 
@@ -55,19 +55,9 @@
 
 ## 3. Технологический выбор
 
-| Слой | Выбор | Почему |
-|---|---|---|
-| Frontend | React 19 + TypeScript + Vite + Tailwind v4 + TanStack Router/Query + Zustand | Совпадает со стеком BPMN.Space, откуда берётся дизайн-метод; токены Tailwind v4 через `@theme` |
-| Backend | Node 24 + TypeScript + Fastify | Playwright первого класса в Node; совпадает с прошлым проектом владельца |
-| БД | PostgreSQL 17 + pgvector | Один узел хранит и домен, и индекс; конкурентные воркеры без гонок SQLite |
-| Очередь | pg-boss поверх Postgres | Без Redis в MVP; задания переживают перезапуск |
-| Браузер | Playwright + Chromium в отдельном контейнере | Изоляция, память вместо диска, собственный профиль |
-| LLM | DeepSeek через OpenAI-совместимый API, за интерфейсом `LlmProvider` | Дёшево; смена провайдера и BYOK без переписывания |
-| Эмбеддинги | CPU-модель за интерфейсом `Embedder` (выбор в M2 по [исследованию](../research/feasibility.md)) | Решение отложено до измерений, контракт зафиксирован сразу |
-| Запуск | docker compose на одном VPS в РФ | Нет VPN у пользователя, данные в РФ |
-
-Отклонено: SQLite (конкурентность воркеров и pgvector), Redis (лишний узел в
-MVP), Kubernetes (один сервер), stealth-форки браузера (обход защиты запрещён).
+Стек — [ADR-0003](../adr/0003-stack.md): Python 3.13 + FastAPI + SQLAlchemy + Playwright на бэкенде,
+TypeScript + React + Vite + Tailwind v4 на фронтенде, PostgreSQL (домен, очередь заданий,
+полнотекстовый поиск, Vault). Раскладка модулей и интерфейсы — [LLD](lld.md).
 
 ## 4. Модель данных
 

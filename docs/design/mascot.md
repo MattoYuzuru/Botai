@@ -85,7 +85,7 @@ type MascotContext = {
   nowMs: number;                    // те же часы, что ушли в UI
   timeZone: string;                 // часовой пояс пространства
   screen: 'chat' | 'schedule' | 'deadlines' | 'progress' | 'other';
-  availability: 'ready' | 'unknown' | 'empty' | 'offline' | 'reauth' | 'error';
+  availability: 'ready' | 'unknown' | 'empty' | 'offline' | 'reauth' | 'repairing';
   activity: 'idle' | 'connecting' | 'syncing' | 'thinking';
   snapshot: {
     spaceId: string; updatedAt: number; stale: boolean;
@@ -125,7 +125,7 @@ type MascotPresentation = {
 |---|---|---|---|---|
 | 1 | `availability: 'reauth'` (код `source_auth_required`) | `reauth` | сдержанное | «Войти снова» → `reauth` |
 | 2 | `availability: 'offline'` | `offline` | статично | — (повтор сам при сети) |
-| 3 | `availability: 'error'` | `error` | статично | «Повторить» → `retry` |
+| 3 | `availability: 'repairing'` | `sync` (чинит) | бег на месте | «Что случилось» → `open-chat` |
 | 4 | `activity: 'connecting'` | `connect` | бег на месте | «Открыть ход» → `open-progress` |
 | 5 | `activity: 'syncing'` | `sync` | бег на месте | «Открыть ход» → `open-progress` |
 | 6 | `activity: 'thinking'` | `think` | наклон головы, пузыри | «К чату» → `open-chat` |
@@ -185,9 +185,9 @@ type MascotPresentation = {
 | Нужно | Что появляется | Поведение |
 |---|---|---|
 | Уточняющий вопрос (`choice`, `input`) | Карточка вопроса под стадией: текст + `RadioGroup`/`Checkbox`/`Input` + «Ответить» | Подпись «Жду ответа»; при `required: true` сказано, что без ответа работа не продолжится. У необязательного есть «Не знаю» / «Пропустить». Таймаута у ожидания нет |
-| Вход в ЛК вуза (`login`) | Карточка «Нужно войти в ЛК ВШЭ» + `Button primary` «Войти» → `LoginSessionView` | Вход делает человек; капча и MFA (`needs`) — сигнал «нужен человек», а не задача обхода. Пароль и кадры не попадают ни в поток, ни в лог, ни в реплику |
+| Вход в ЛК вуза (`login`) | Карточка «Нужно войти в ЛК ВШЭ» + поля входа зеркалом (`SecretField`); `RemoteScreen` — только для капчи | Вход делает человек; капча и MFA (`needs`) — сигнал «нужен человек», а не задача обхода. Пароль и кадры не попадают ни в поток, ни в лог, ни в реплику |
 | Согласие на запись (`approval`) | `ApprovalCard`: метод, хост, поля и вуз, кнопки «Подтвердить» / «Не делать» | Подтверждение одноразовое и истекает (`expiresAt` виден). Автоподтверждения по таймеру нет; отказ продолжает работу без этого шага |
-| Сбой стадии (`event: error`) | Шаг `failed` + причина человеческим языком; ниже «Повторить стадию» и «Пропустить» | Остальной прогресс сохраняется, итог покажет, что не подключилось. `egress_blocked` показывает хост и спрашивает пользователя, `source_auth_required` ведёт на вход |
+| Сбой стадии (`event: error`) | Шаг `failed` + причина человеческим языком; агент сам пробует стадию ещё раз в фоне, затем предлагает «Пропустить» | Остальной прогресс сохраняется, итог покажет, что не подключилось. `egress_blocked` показывает хост и спрашивает пользователя, `source_auth_required` ведёт на вход |
 
 Любой из этих блоков объявляется один раз через `aria-live="polite"`; стадии и секунды не
 объявляются. Сворачивание экрана оставляет вопрос доступным: в шапке — `Badge tone="warning"`

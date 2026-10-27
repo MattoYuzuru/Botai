@@ -2,19 +2,35 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://botai.local/contracts/recipe.schema.json",
   "title": "LearnedRecipe",
-  "description": "Декларативный рецепт чтения одного origin. Не содержит личных значений. Исполняется без LLM.",
+  "description": "Декларативный рецепт чтения одного origin: ответы JSON (JSON Pointer) или HTML (CSS-селекторы). Не содержит личных значений. Исполняется без LLM. См. ADR-0002, ADR-0005.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "origin", "revision", "learnedAt", "auth", "endpoints", "validation"],
+  "required": [
+    "version",
+    "origin",
+    "revision",
+    "learnedAt",
+    "auth",
+    "endpoints",
+    "validation"
+  ],
   "properties": {
-    "version": { "const": 1 },
+    "version": {
+      "const": 1
+    },
     "origin": {
       "type": "string",
       "pattern": "^https://[a-z0-9.-]+$",
       "description": "Только схема и хост. Путь, запрос и фрагмент запрещены."
     },
-    "revision": { "type": "integer", "minimum": 1 },
-    "learnedAt": { "type": "string", "format": "date-time" },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "learnedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
     "learnedByDigest": {
       "type": "string",
       "description": "Хеш идентичности автора рецепта для canary. Не раскрывает личность.",
@@ -23,45 +39,79 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "properties": {
-        "type": { "enum": ["cookie", "bearer", "none"] },
-        "headerName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,40}$" }
+        "type": {
+          "enum": [
+            "cookie",
+            "bearer",
+            "none"
+          ]
+        },
+        "headerName": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9-]{0,40}$"
+        }
       }
     },
     "bootstrap": {
       "type": "array",
       "maxItems": 4,
-      "items": { "$ref": "#/$defs/bootstrapStep" }
+      "items": {
+        "$ref": "#/$defs/bootstrapStep"
+      }
     },
     "endpoints": {
       "type": "array",
       "minItems": 1,
       "maxItems": 24,
-      "items": { "$ref": "#/$defs/endpoint" }
+      "items": {
+        "$ref": "#/$defs/endpoint"
+      }
     },
     "validation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requireKinds"],
+      "required": [
+        "requireKinds"
+      ],
       "properties": {
         "requireKinds": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/kind" }
+          "items": {
+            "$ref": "#/$defs/kind"
+          }
         },
-        "minItems": { "type": "integer", "minimum": 0, "default": 1 }
+        "minItems": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1
+        }
       }
     },
     "freshness": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "syncEveryMinutes": { "type": "integer", "minimum": 15, "maximum": 1440 },
-        "staleAfterMinutes": { "type": "integer", "minimum": 30, "maximum": 10080 }
+        "syncEveryMinutes": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 1440
+        },
+        "staleAfterMinutes": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 10080
+        }
       }
     },
-    "notes": { "type": "string", "maxLength": 2000 }
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    }
   },
   "$defs": {
     "kind": {
@@ -94,109 +144,324 @@
     "bootstrapStep": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "method", "path", "extract"],
+      "required": [
+        "id",
+        "method",
+        "path",
+        "extract"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/identifier" },
-        "method": { "const": "GET" },
-        "path": { "$ref": "#/$defs/path" },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "method": {
+          "const": "GET"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
         "extract": {
           "type": "object",
           "minProperties": 1,
           "maxProperties": 8,
-          "propertyNames": { "$ref": "#/$defs/identifier" },
-          "additionalProperties": { "$ref": "#/$defs/pointer" }
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/pointer"
+          }
         }
       }
     },
-    "identifier": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$" },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+    },
     "endpoint": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "request", "response"],
+      "required": [
+        "id",
+        "kind",
+        "request",
+        "response"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/identifier" },
-        "kind": { "$ref": "#/$defs/kind" },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
         "request": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["method", "path"],
+          "required": [
+            "method",
+            "path"
+          ],
           "properties": {
-            "method": { "enum": ["GET", "POST"] },
+            "method": {
+              "enum": [
+                "GET",
+                "POST"
+              ]
+            },
             "readOnlyPost": {
               "type": "boolean",
               "default": false,
               "description": "true обязателен для method=POST. Метод должен быть в allowlist read-only POST в коде (например AJAX-чтение Moodle)."
             },
-            "path": { "$ref": "#/$defs/path" },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
             "query": {
               "type": "object",
               "maxProperties": 12,
-              "propertyNames": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,40}$" },
-              "additionalProperties": { "$ref": "#/$defs/template" }
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/template"
+              }
             },
             "body": {
               "type": "object",
               "description": "Только для readOnlyPost. Значения — шаблоны, не литеральные личные данные.",
               "maxProperties": 12,
-              "additionalProperties": { "$ref": "#/$defs/template" }
+              "additionalProperties": {
+                "$ref": "#/$defs/template"
+              }
             }
           },
           "allOf": [
             {
-              "if": { "properties": { "method": { "const": "POST" } }, "required": ["method"] },
-              "then": { "required": ["readOnlyPost"], "properties": { "readOnlyPost": { "const": true } } }
+              "if": {
+                "properties": {
+                  "method": {
+                    "const": "POST"
+                  }
+                },
+                "required": [
+                  "method"
+                ]
+              },
+              "then": {
+                "required": [
+                  "readOnlyPost"
+                ],
+                "properties": {
+                  "readOnlyPost": {
+                    "const": true
+                  }
+                }
+              }
             }
           ]
         },
         "pagination": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type"],
+          "required": [
+            "type"
+          ],
           "properties": {
-            "type": { "enum": ["none", "offset", "page", "cursor"] },
-            "param": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,40}$" },
-            "limitParam": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,40}$" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
-            "maxPages": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 },
-            "cursorPath": { "$ref": "#/$defs/pointer" },
-            "totalPath": { "$ref": "#/$defs/pointer" }
+            "type": {
+              "enum": [
+                "none",
+                "offset",
+                "page",
+                "cursor"
+              ]
+            },
+            "param": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+            },
+            "limitParam": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "maxPages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 5
+            },
+            "cursorPath": {
+              "$ref": "#/$defs/pointer"
+            },
+            "totalPath": {
+              "$ref": "#/$defs/pointer"
+            }
           }
         },
         "response": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["itemsPath", "fields"],
-          "properties": {
-            "itemsPath": { "$ref": "#/$defs/pointer" },
-            "fields": {
-              "type": "object",
-              "minProperties": 1,
-              "maxProperties": 24,
-              "propertyNames": { "$ref": "#/$defs/identifier" },
-              "additionalProperties": { "$ref": "#/$defs/field" }
+          "oneOf": [
+            {
+              "$ref": "#/$defs/jsonResponse"
             },
-            "identity": {
-              "type": "array",
-              "description": "Если у источника нет стабильного id: поля, из которых Normalizer строит externalId.",
-              "items": { "$ref": "#/$defs/identifier" },
-              "minItems": 1,
-              "maxItems": 6
+            {
+              "$ref": "#/$defs/htmlResponse"
             }
-          }
+          ]
         }
       }
     },
     "field": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path"],
+      "required": [
+        "path"
+      ],
       "properties": {
-        "path": { "$ref": "#/$defs/pointer" },
-        "transform": {
-          "enum": ["iso", "unixSeconds", "unixMillis", "trim", "number", "bool", "html2text", "joinNames"]
+        "path": {
+          "$ref": "#/$defs/pointer"
         },
-        "fallbackPath": { "$ref": "#/$defs/pointer" },
-        "required": { "type": "boolean", "default": false }
+        "transform": {
+          "enum": [
+            "iso",
+            "unixSeconds",
+            "unixMillis",
+            "trim",
+            "number",
+            "bool",
+            "html2text",
+            "joinNames"
+          ]
+        },
+        "fallbackPath": {
+          "$ref": "#/$defs/pointer"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "cssSelector": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+    },
+    "htmlField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selector"
+      ],
+      "properties": {
+        "selector": {
+          "$ref": "#/$defs/cssSelector",
+          "description": "Относительно элемента списка; '.' — сам элемент."
+        },
+        "attr": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9-]{0,40}$",
+          "description": "Брать атрибут вместо текста (например href, datetime)."
+        },
+        "transform": {
+          "enum": [
+            "iso",
+            "unixSeconds",
+            "unixMillis",
+            "trim",
+            "number",
+            "bool",
+            "html2text",
+            "joinNames"
+          ]
+        },
+        "pattern": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Необязательное регулярное выражение; берётся первая группа. Только для текста узла."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "jsonResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "itemsPath",
+        "fields"
+      ],
+      "properties": {
+        "format": {
+          "const": "json"
+        },
+        "itemsPath": {
+          "$ref": "#/$defs/pointer"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 24,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "identity": {
+          "type": "array",
+          "description": "Если у источника нет стабильного id: поля, из которых Normalizer строит externalId.",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        }
+      }
+    },
+    "htmlResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "itemsSelector",
+        "fields"
+      ],
+      "properties": {
+        "format": {
+          "const": "html"
+        },
+        "itemsSelector": {
+          "$ref": "#/$defs/cssSelector"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 24,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/htmlField"
+          }
+        },
+        "identity": {
+          "type": "array",
+          "description": "Если у источника нет стабильного id: поля, из которых Normalizer строит externalId.",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        }
       }
     }
   }

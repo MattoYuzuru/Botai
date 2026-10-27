@@ -1,6 +1,6 @@
 # Навигатор по документации
 
-Состояние проекта: проектирование, 2026-10-26. Кода нет.
+Состояние проекта: реализация MVP, 2026-10-27.
 Первая точка входа — [README](../README.md), первое действие владельца —
 [вопросы](../QUESTIONS.md).
 
@@ -9,7 +9,7 @@
 | Задача | Куда идти |
 |---|---|
 | Понять, что продукт делает | [Требования](product/requirements.md) |
-| Понять, где живёт мой компонент | [Архитектура](architecture/overview.md) |
+| Понять, где живёт мой компонент | [HLD](architecture/hld.md), [LLD](architecture/lld.md), [обзор](architecture/overview.md) |
 | Узнать формат данных, который я читаю или пишу | [Контракты](architecture/contracts.md) |
 | Трогаю сессии, сеть, промпты или данные пользователя | [Безопасность](architecture/security.md) |
 | Оценить риск, стоимость или конкурентов | [Реализуемость](research/feasibility.md) |
@@ -23,12 +23,14 @@
 
 | ADR | Тема | Статус |
 |---|---|---|
-| [0001](adr/0001-human-login-in-remote-browser.md) | Вход выполняет человек в удалённом браузере; пароли не хранятся | proposed |
+| [0001](adr/0001-login-form-mirroring.md) | Вход — зеркало формы, пароль в Vault, удалённый экран как запасной путь | accepted |
 | [0002](adr/0002-recipe-as-bridge.md) | Декларативный рецепт — единственный мост обучение → исполнение | accepted |
-| [0003](adr/0003-stack.md) | Технологический стек | proposed |
+| [0003](adr/0003-stack.md) | Стек: Python-бэкенд, TS-фронтенд, Postgres | accepted |
 | [0004](adr/0004-agent-ui-blocks.md) | Своя схема блоков интерфейса агента вместо полного A2UI | accepted |
+| [0005](adr/0005-source-adapter-factory.md) | Фабрика источников и самопочинка | accepted |
+| [0006](adr/0006-retrieval-mvp.md) | Поиск в MVP: SQL + полнотекстовый Postgres | accepted |
 
-`proposed` означает, что решение ждёт ответа владельца в [QUESTIONS.md](../QUESTIONS.md).
+Решения владельца — [QUESTIONS.md](../QUESTIONS.md).
 
 ## Правила документации
 

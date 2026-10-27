@@ -1,6 +1,6 @@
 # Botai — контракты
 
-Статус: **draft**, 2026-10-26. Это замораживаемая часть: пять исполнителей
+Статус: **accepted**, 2026-10-27. Это замораживаемая часть: пять исполнителей
 работают параллельно именно потому, что эти схемы согласованы до кода.
 Изменение контракта — отдельный PR с ревью и отметкой в разделе 8.
 
@@ -102,16 +102,16 @@ type Provenance = {
   N, похожих на токен; нет подписанных URL; нет email, ФИО, числовых id
   конкретного человека; нет заголовков `Cookie`/`Authorization`.
 
-### Известное ограничение v1: только JSON
+### JSON и HTML
 
-Рецепт v1 описывает ответы-JSON (JSON Pointer на поля). ВШЭ и ЦУ под это подходят: у ЦУ
-собственный JSON API, у ВШЭ — JSON ЕЛК и AJAX Moodle. Но часть вузов отдаёт данные **только HTML**
-(ЕТИС и подобные — все неофициальные клиенты там парсят разметку, см.
-[исследование](../research/feasibility.md) §4b). Для них нужна ревизия `version: 2` с
-`response.format: "html"` и CSS-селекторами вместо указателей. Это заметно хрупче (вёрстка меняется
-чаще API), поэтому v2 вводится не раньше, чем M3 покажет третий вуз, которому это нужно
-([Q33](../../QUESTIONS.md)). До тех пор Explorer честно сообщает «вуз отдаёт только HTML, рецепт
-v1 не применим», а не пытается вытащить данные моделью на каждом sync.
+`response.format` — `json` (поля по JSON Pointer) или `html` (элементы списка по
+`itemsSelector`, поля по CSS-селектору, необязательно `attr` и `pattern`). Схема —
+[`recipe.schema.json`](../../contracts/recipe.schema.json). HTML хрупче JSON: вёрстка меняется
+чаще API, поэтому у HTML-рецептов канарейка ежедневная, а поломка сразу запускает repair
+([ADR-0005](../adr/0005-source-adapter-factory.md)).
+
+Рецепт — один из четырёх видов спецификации адаптера (`recipe`, `moodle_ws`, `ical`,
+`document`), см. [`adapter-spec.schema.json`](../../contracts/adapter-spec.schema.json).
 
 ### Жизненный цикл ревизии
 
@@ -131,14 +131,28 @@ v1 не применим», а не пытается вытащить данны
   "mfa": { "possible": "unknown", "automate": false },
   "captcha": { "possible": true, "automate": false },
   "capture": { "cookiesFor": ["lms.example.ru"], "bearerFrom": "none", "storage": "encrypted" },
-  "mode": "human"
+  "mode": "assisted",
+  "steps": [
+    { "id": "credentials", "match": { "urlHost": "id.example.ru" },
+      "fields": [
+        { "role": "username", "selector": "#username", "label": "Почта" },
+        { "role": "password", "selector": "#password", "label": "Пароль" }
+      ],
+      "submit": "button[type=submit]" },
+    { "id": "otp", "match": { "selectorPresent": "input[name=otp]" },
+      "fields": [ { "role": "otp", "selector": "input[name=otp]", "label": "Код из SMS" } ],
+      "submit": "button[type=submit]" }
+  ]
 }
 ```
 
 - `automate: false` неизменяемо для `mfa` и `captcha`: их всегда проходит человек.
-- `mode`: `human` (пользователь вводит всё сам) или `assisted` (сервер заполняет
-  форму значением, которое пользователь ввёл в этой же сессии; значение не
-  сохраняется). `assisted` требует явного согласия на конкретном подключении.
+- `mode`: `assisted` (по умолчанию: поля шагов зеркалятся нативными полями BotAI,
+  сервер вводит значения; пароль сохраняется в Vault для автовхода) или `screen`
+  (шаги проходит человек на запасном экране).
+- `steps` — выученные шаги формы: где поля логина, пароля, кода и кнопка отправки.
+  Без личных значений; общие на origin. Схема —
+  [`login-preset.schema.json`](../../contracts/login-preset.schema.json).
 - `allowHosts` становится allowlist'ом EgressProxy для этого подключения.
 
 ## 4. Блоки интерфейса агента (`contracts/agent-ui.schema.json`)
@@ -153,18 +167,22 @@ type AgentUiBlock =
   | { type: "choice";   id: string; question: string; mode: "single" | "multi";
       options: { value: string; label: string; hint?: string }[]; required: boolean }
   | { type: "input";    id: string; question: string; placeholder?: string;
-      inputKind: "text" | "url" | "number" | "date"; required: boolean }
+      inputKind: "text" | "url" | "number" | "date" | "email" | "password" | "code";
+      required: boolean; secret?: boolean; autocomplete?: string }
   | { type: "confirm";  id: string; question: string;
       confirmLabel: string; cancelLabel: string }
   | { type: "summary";  id: string; title: string;
       groups: { title: string; items: { label: string; value: string; sourceUrl?: string }[] }[] }
   | { type: "approval"; id: string; proposal: ActionProposal }
-  | { type: "login";    id: string; connectionId: string; sessionId: string };
+  | { type: "wait";     id: string; message: string; expiresAt?: string }
+  | { type: "handoff";  id: string; title: string; url: string; text: string }
+  | { type: "login";    id: string; connectionId: string; ticket: string; wsUrl: string };
 
 type AgentUiAnswer = { blockId: string; values: string[] | string | boolean };
 ```
 
-Правила: клиент никогда не исполняет код из блока; `markdown` рендерится без
+Правила: `secret: true` — значение идёт API → Vault → воркер, мимо LLM и событий; `login` —
+только запасной экран; `handoff` — write-действие, которое студент отправит сам. Клиент никогда не исполняет код из блока; `markdown` рендерится без
 HTML и без ссылок-действий; блок с `required: true` блокирует продолжение
 задания, и это видно в UI.
 
