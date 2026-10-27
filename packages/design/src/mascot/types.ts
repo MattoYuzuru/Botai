@@ -1,3 +1,5 @@
+import type { LineFields, LineKey } from "./lines";
+
 /**
  * Типы маскота Варя (docs/design/mascot.md §2). Состояние вычисляет чистая функция `resolveMascot`;
  * renderer получает только готовый объект `MascotPresentation`, никаких учебных данных, профиля,
@@ -145,4 +147,10 @@ export interface MascotPresentation {
   reactionEventId: string | null;
   /** Какое окно календаря дало образ (для витрины и тестов). */
   seasonalEventId: string | null;
+  /**
+   * Из какой записи реестра реплик и с какими полями собрана `line`: по нажатию на Варю берётся следующая реплика
+   * той же ситуации (`cycleLines`), без нового запроса данных.
+   */
+  lineKey: LineKey | null;
+  lineFields: LineFields;
 }

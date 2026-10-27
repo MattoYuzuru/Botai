@@ -49,6 +49,8 @@ export function EmptyChat({
           ))}
         </ul>
       )}
+      {/* Пол сцены Вари: полоса над полем ввода зарезервирована, раскладка не прыгает (mascot.md §4.2). */}
+      <div aria-hidden="true" data-stage-floor="" className="h-24 shrink-0 min-[390px]:h-30" />
     </div>
   );
 }
