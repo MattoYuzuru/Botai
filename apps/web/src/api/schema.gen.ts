@@ -592,7 +592,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Upload Document */
+        /**
+         * Upload Document
+         * @description PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB.
+         */
         post: operations["upload_document_api_v1_spaces__space_id__documents_upload_post"];
         delete?: never;
         options?: never;
@@ -609,7 +612,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Add Document Url */
+        /**
+         * Add Document Url
+         * @description A link to a file, a page, or a link-shared Google document or sheet.
+         */
         post: operations["add_document_url_api_v1_spaces__space_id__documents_url_post"];
         delete?: never;
         options?: never;
@@ -719,6 +725,8 @@ export interface components {
         Body_upload_document_api_v1_spaces__space_id__documents_upload_post: {
             /** File */
             file: string;
+            /** Note */
+            note?: string | null;
         };
         /** ConnectionCreate */
         ConnectionCreate: {
