@@ -13,7 +13,8 @@ export interface SwitcherSpace {
   shortTitle?: string;
   /** Тон акцента вуза — для справки; цветом вузы в списке не различаются. */
   hue?: number;
-  status: SourceState;
+  /** Сводное состояние источников; `none` — подключений ещё нет. */
+  status: SourceState | "none";
   updatedAt: number | null;
 }
 
@@ -24,6 +25,8 @@ export interface UniversitySpaceSwitcherProps {
   onChange: (id: string) => void;
   /** Показывать пункт «Все вузы». */
   allowAll?: boolean;
+  /** «Подключить ещё вуз» — последняя строка списка. */
+  onAdd?: () => void;
   nowMs: number;
   timeZone?: string;
   className?: string;
@@ -38,6 +41,7 @@ export function UniversitySpaceSwitcher({
   activeId,
   onChange,
   allowAll = false,
+  onAdd,
   nowMs,
   timeZone,
   className,
@@ -91,19 +95,38 @@ export function UniversitySpaceSwitcher({
                 selected={space.id === activeId}
                 onSelect={() => choose(space.id)}
                 caption={
-                  <SourceStatus
-                    state={space.status}
-                    spaceId={space.id}
-                    spaceTitle={space.shortTitle ?? space.title}
-                    updatedAt={space.updatedAt}
-                    nowMs={nowMs}
-                    timeZone={timeZone}
-                  />
+                  space.status === "none" ? (
+                    "Источники не подключены"
+                  ) : (
+                    <SourceStatus
+                      state={space.status}
+                      spaceId={space.id}
+                      spaceTitle={space.shortTitle ?? space.title}
+                      updatedAt={space.updatedAt}
+                      nowMs={nowMs}
+                      timeZone={timeZone}
+                    />
+                  )
                 }
               />
             </li>
           ))}
         </ul>
+        {onAdd && (
+          <div className="pt-2">
+            <Button
+              variant="ghost"
+              leadingIcon="plus"
+              fullWidth
+              onClick={() => {
+                setOpen(false);
+                onAdd();
+              }}
+            >
+              Подключить ещё вуз
+            </Button>
+          </div>
+        )}
       </Sheet>
     </>
   );

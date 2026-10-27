@@ -34,6 +34,7 @@ export { IconButton, type IconButtonProps } from "./icon-button/icon-button";
 export { Input, type InputProps } from "./input/input";
 export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
 export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
+export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";
 export { ProgressRail, type ProgressRailProps } from "./progress-rail/progress-rail";
 export {
   RadioGroup,

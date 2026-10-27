@@ -8,7 +8,7 @@
       "!**/dist",
       "!**/*.gen.ts",
       "!packages/design/src/mascot/vendor",
-      "!apps/web/public/mockServiceWorker.js"
+      "!apps/web/src/mocks/worker"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },

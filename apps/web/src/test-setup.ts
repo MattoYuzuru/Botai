@@ -27,6 +27,7 @@ if (!window.matchMedia) {
 }
 
 Element.prototype.scrollIntoView ??= () => {};
+window.scrollTo = () => {};
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.setPointerCapture ??= () => {};
 Element.prototype.releasePointerCapture ??= () => {};

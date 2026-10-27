@@ -6,13 +6,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { retryPolicy } from "./api/queries";
 import { routeTree } from "./routeTree.gen";
 
 // Сбой сети и сайта вуза обрабатывается в фоне: ретраи с нарастающей паузой, без кнопки «Повторить».
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 3,
+      retry: retryPolicy,
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
       staleTime: 30_000,
       refetchOnWindowFocus: false,
@@ -29,13 +30,22 @@ declare module "@tanstack/react-router" {
 
 initPreferences();
 
-const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>
-    </StrictMode>,
-  );
+async function start() {
+  // Мок-режим для разработки и e2e: бэкенд не нужен, ответы по сгенерированным типам OpenAPI.
+  if (import.meta.env.DEV && import.meta.env.VITE_MOCKS === "1") {
+    const { startMocks } = await import("./mocks/browser");
+    await startMocks();
+  }
+  const root = document.getElementById("root");
+  if (root) {
+    createRoot(root).render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+  }
 }
+
+void start();

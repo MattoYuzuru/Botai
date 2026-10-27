@@ -2,8 +2,8 @@ import { type FormEvent, useId, useRef, useState } from "react";
 import { cn } from "../../lib/cn";
 import { Button } from "../button/button";
 import { Field } from "../field/field";
-import { IconButton } from "../icon-button/icon-button";
 import { Input } from "../input/input";
+import { PasswordInput } from "../password-input/password-input";
 
 export type SecretKind = "password" | "code";
 
@@ -77,32 +77,33 @@ export function SecretField({
   return (
     <form onSubmit={submit} className={cn("flex flex-col gap-3", className)} autoComplete="on" noValidate>
       <Field label={label} hint={hint} error={error} disabled={disabled}>
-        <Input
-          ref={ref}
-          name={name ?? (kind === "code" ? "otp" : "password")}
-          type={kind === "code" || revealed ? "text" : "password"}
-          inputMode={kind === "code" ? "numeric" : undefined}
-          autoComplete={autoComplete}
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          maxLength={maxLength}
-          placeholder={placeholder}
-          aria-describedby={encryptedNote ? noteId : undefined}
-          onChange={(event) => setFilled(event.target.value.length > 0)}
-          trailing={
-            kind === "password" ? (
-              <IconButton
-                icon={revealed ? "hide" : "show"}
-                label={revealed ? "Скрыть пароль" : "Показать пароль"}
-                aria-pressed={revealed}
-                size="sm"
-                onClick={() => setRevealed((value) => !value)}
-                disabled={disabled}
-              />
-            ) : undefined
-          }
-        />
+        {kind === "password" ? (
+          <PasswordInput
+            ref={ref}
+            name={name ?? "password"}
+            autoComplete={autoComplete}
+            maxLength={maxLength}
+            placeholder={placeholder}
+            aria-describedby={encryptedNote ? noteId : undefined}
+            revealed={revealed}
+            onRevealedChange={setRevealed}
+            onChange={(event) => setFilled(event.target.value.length > 0)}
+          />
+        ) : (
+          <Input
+            ref={ref}
+            name={name ?? "otp"}
+            type="text"
+            inputMode="numeric"
+            autoComplete={autoComplete}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            maxLength={maxLength}
+            placeholder={placeholder}
+            onChange={(event) => setFilled(event.target.value.length > 0)}
+          />
+        )}
       </Field>
       {encryptedNote && (
         <p id={noteId} className="type-caption text-fg-muted">
