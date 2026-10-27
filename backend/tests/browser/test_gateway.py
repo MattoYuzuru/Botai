@@ -10,14 +10,12 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from botai.browser.egress import ProxyEgress
 from botai.browser.gateway import CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.proxy import EgressProxy
 from botai.browser.session import decode_session, encode_session
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
-from tests.browser.conftest import PROXY_SECRET
 from tests.fakeuni import data
 from tests.fakeuni.login import SPA_JWT, SPA_JWT_EXPIRES
 
@@ -25,15 +23,6 @@ pytestmark = pytest.mark.browser
 
 HOSTS = ("fakeuni.test", "id.fakeuni.test")
 Opener = Callable[..., Awaitable[PlaywrightHandle]]
-
-
-@pytest.fixture(scope="session")
-async def gateway(egress: EgressProxy) -> AsyncIterator[PlaywrightGateway]:
-    gw = PlaywrightGateway(
-        ProxyEgress(PROXY_SECRET, proxy=egress), sandbox=False, ignore_https_errors=True
-    )
-    yield gw
-    await gw.aclose()
 
 
 @pytest.fixture

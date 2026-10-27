@@ -442,19 +442,14 @@ class PlaywrightGateway:
             if self._browser is not None and self._browser.is_connected():
                 return self._browser
             if self._playwright is None:
-                self._playwright = await async_playwright().start()
+                self._playwright = await self._start_playwright()
             # With a proxy the browser needs no DNS of its own: only the proxy host resolves.
             proxy_host = urlsplit(proxy_server).hostname or ""
             resolver_rules = f"MAP * ~NOTFOUND, EXCLUDE {proxy_host}"
-            env: dict[str, str | float | bool] | None = None
-            if self._tmp_dir is not None:
-                self._tmp_dir.mkdir(parents=True, exist_ok=True)
-                env = {**os.environ, "TMPDIR": str(self._tmp_dir)}
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless,
                 chromium_sandbox=self._sandbox,
                 proxy={"server": "http://per-context"},
-                env=env,
                 args=[
                     f"--host-resolver-rules={resolver_rules}",
                     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
@@ -469,6 +464,22 @@ class PlaywrightGateway:
             )
             self._browser.on("disconnected", self._on_disconnected)
             return self._browser
+
+    async def _start_playwright(self) -> Playwright:
+        """Start the driver. Its temporary directory (Chromium's profile) goes to `tmp_dir`,
+        which a deployment points at tmpfs."""
+        if self._tmp_dir is None:
+            return await async_playwright().start()
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        saved = os.environ.get("TMPDIR")
+        os.environ["TMPDIR"] = str(self._tmp_dir)
+        try:
+            return await async_playwright().start()
+        finally:
+            if saved is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = saved
 
     def _on_disconnected(self, _browser: Browser) -> None:
         """Chromium died or was closed: every context in it is gone."""
