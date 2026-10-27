@@ -17,6 +17,7 @@ export {
 } from "./button/button";
 export { Card, type CardProps } from "./card/card";
 export { ChatComposer, type ChatComposerProps } from "./chat-composer/chat-composer";
+export { ChatLayout, type ChatLayoutProps } from "./chat-layout/chat-layout";
 export {
   type ChatCitation,
   ChatMessage,
@@ -24,6 +25,15 @@ export {
   type MessageStatus,
 } from "./chat-message/chat-message";
 export { Checkbox, type CheckboxProps } from "./checkbox/checkbox";
+export {
+  ContextMeter,
+  ContextMeterBar,
+  type ContextMeterBarProps,
+  type ContextMeterProps,
+  type ContextSegment,
+  type ContextSourceItem,
+  formatTokens,
+} from "./context-meter/context-meter";
 export { DeadlineItem, type DeadlineItemProps } from "./deadline-item/deadline-item";
 export { Dialog, type DialogProps } from "./dialog/dialog";
 export { EmptyState, type EmptyStateProps } from "./empty-state/empty-state";
