@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.api.deps import ClockDep, SettingsDep
 from botai.auth import service
 from botai.auth.deps import AuthUser, OwnerUser
+from botai.auth.guard import LoginGuard
 from botai.auth.schemas import (
     InviteCreated,
     LoginRequest,
@@ -22,6 +23,8 @@ from botai.db.models import User
 from botai.db.session import DbSession
 from botai.settings import Settings
 from botai.usage.service import quota_snapshot
+
+LOGIN_GUARD = LoginGuard()
 
 router = APIRouter(prefix="/api/v1", tags=["auth"])
 
@@ -89,14 +92,22 @@ async def register(
 @router.post("/auth/login", response_model=MeOut)
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     session: DbSession,
     settings: SettingsDep,
     clock: ClockDep,
 ) -> MeOut:
-    user = await service.authenticate(
-        session, email=body.email, password=body.password.get_secret_value()
-    )
+    key = (request.client.host if request.client else "?", str(body.email).lower())
+    LOGIN_GUARD.check(key, now=clock.now(), limit=settings.login_failures_per_window)
+    try:
+        user = await service.authenticate(
+            session, email=body.email, password=body.password.get_secret_value()
+        )
+    except BotaiError:
+        LOGIN_GUARD.fail(key, now=clock.now())
+        raise
+    LOGIN_GUARD.reset(key)
     token = await service.open_session(
         session, user_id=user.id, now=clock.now(), ttl_days=settings.session_ttl_days
     )

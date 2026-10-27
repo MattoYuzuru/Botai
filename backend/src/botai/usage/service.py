@@ -104,6 +104,23 @@ async def check_quota(
     settings = settings or get_settings()
     now = now or SystemClock().now()
 
+    if settings.quota_pool_usd_per_day > 0:
+        start, end = day_bounds(now)
+        pool_spent = float(
+            await session.scalar(
+                select(func.coalesce(func.sum(LlmUsageRow.cost_usd), 0)).where(
+                    LlmUsageRow.created_at >= start, LlmUsageRow.created_at < end
+                )
+            )
+            or 0
+        )
+        if pool_spent >= settings.quota_pool_usd_per_day:
+            raise BotaiError(
+                ErrorCode.QUOTA_EXCEEDED,
+                "Общий дневной бюджет модели исчерпан. Он обновится в полночь по Москве.",
+                extra={"scope": "pool", "resetsAt": _iso(end)},
+            )
+
     used = await tokens_used_today(session, user_id, now)
     if used >= settings.quota_tokens_per_day:
         resets_at = day_bounds(now)[1]
