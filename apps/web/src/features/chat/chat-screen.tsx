@@ -158,7 +158,8 @@ export function ChatScreen() {
   };
 
   const scroll = useStickToBottom(timeline.length + (job?.blocks.length ?? 0) + (job?.state ?? ""), activeId);
-  const title = activeThread && activeThread.title !== "Новый чат" ? activeThread.title : "Чат";
+  // Название экрана — «Чат», как у остальных вкладок; тема открытого чата — подзаголовок.
+  const subtitle = activeThread && activeThread.title !== "Новый чат" ? activeThread.title : undefined;
 
   return (
     <ChatLayout
@@ -167,7 +168,8 @@ export function ChatScreen() {
         <ScreenHeader
           narrow
           sticky={false}
-          title={title}
+          title="Чат"
+          subtitle={subtitle}
           trailing={
             <>
               <ContextButton threadId={activeId} nowMs={nowMs} />

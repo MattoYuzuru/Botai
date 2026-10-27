@@ -20,7 +20,7 @@ export function ContextButton({ threadId, nowMs }: { threadId: string | null; no
         aria-label={`Контекст агента: занято ${formatTokens(used)} из ${formatTokens(limit)} токенов`}
         onClick={() => setOpen(true)}
         data-context-button=""
-        className="h-11 flex-col gap-0.5 px-2"
+        className="h-11 flex-col gap-1 px-2"
       >
         <ContextMeterBar limit={limit} segments={segments} className="w-12" />
         <span className="type-caption text-fg-muted" data-numeric="">

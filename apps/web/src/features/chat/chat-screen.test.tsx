@@ -141,9 +141,11 @@ describe("чат: ответ агента", () => {
     expect(document.querySelector("[data-live-reply]")).toBeNull();
     // Название чата подставилось из вопроса.
     await waitFor(
-      () => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Что сдавать на неделе?"),
+      () =>
+        expect(within(screen.getByRole("banner")).getByText("Что сдавать на неделе?")).toBeInTheDocument(),
       wait,
     );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Чат");
   });
 
   it("ответ из документов: источник-документ — внутренняя ссылка «Открыть документ в «Учёбе»»", async () => {
