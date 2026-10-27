@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent import harness
+from botai.agent import facts, harness
 from botai.agent.memory import (
     RECENT_TOKENS,
     history_messages,
@@ -236,6 +236,7 @@ async def handle_chat(
     )
 
     text, done = compose_answer(result, env, now)
+    fact_id = await _remember(services, env, result, done, thread, question.text, now)
     if result.findings:
         text += INJECTION_NOTE
     text = text[:MAX_MARKDOWN]
@@ -250,6 +251,7 @@ async def handle_chat(
 
     return {
         "messageId": message_id,
+        "factId": fact_id,
         "stopped": result.stopped,
         "steps": result.steps,
         "tokens": result.total_tokens,
@@ -265,6 +267,38 @@ async def handle_chat(
             for r in (done.cited if done else [])
         ],
     }
+
+
+async def _remember(
+    services: Services,
+    env: ChatEnv,
+    result: harness.HarnessResult,
+    done: Finalized | None,
+    thread: ChatThread,
+    question: str,
+    now: datetime,
+) -> str | None:
+    """Keep a document-based answer as a fact. Never for a page that tried to instruct us."""
+    if (
+        result.stopped != "answer"
+        or done is None
+        or result.findings
+        or "search_documents" not in env.used
+    ):
+        return None
+    try:
+        return await facts.remember(
+            services,
+            user_id=env.user_id,
+            space_id=thread.space_id,
+            question=question,
+            answer=done.markdown,
+            cited=done.cited,
+            now=now,
+        )
+    except Exception:
+        log.exception("failed to save the fact")  # the answer is still delivered
+        return None
 
 
 async def _store_reply(
