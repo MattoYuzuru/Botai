@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, update
 
+from botai.agent.llm import current_scope
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import HandlerTable
 from botai.core.jobs import JobCancelled, JobContext, JobKind, JobState
@@ -533,3 +534,18 @@ async def test_run_forever_is_the_worker_entry_point(env: Env) -> None:
     finally:
         stop.set()
         await asyncio.wait_for(task, 10)
+
+
+async def test_handlers_run_inside_the_users_llm_usage_scope(env: Env) -> None:
+    """Quota and `llm_usage` need to know whose LLM call it is, whichever module makes it."""
+    seen: list[tuple[str, str | None] | None] = []
+
+    async def handler(ctx: JobContext, services: Services, payload: Payload) -> None:
+        scope = current_scope()
+        seen.append((scope.user_id, scope.job_id) if scope else None)
+
+    user_id, _, job_id = await _queue(env)
+    env.start(env.worker({JobKind.SYNC: handler}))
+    await env.wait_for(job_id, {"done"})
+    assert seen == [(user_id, job_id)]
+    assert current_scope() is None  # nothing leaks out of the job

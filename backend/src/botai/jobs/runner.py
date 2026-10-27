@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent.llm import usage_scope
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import Handler, HandlerTable
 from botai.core.ids import new_id
@@ -190,7 +191,9 @@ class Worker:
         )
         try:
             async with scope:
-                result = await handler(ctx, self.services, job.payload)
+                # every LLM call of the handler is quota-checked and recorded for this user and job
+                with usage_scope(job.user_id, job.id):
+                    result = await handler(ctx, self.services, job.payload)
         except JobCancelled as exc:
             log.info("job %s cancelled: %s", job.id, exc)
             await self._finish(job, "cancelled")
