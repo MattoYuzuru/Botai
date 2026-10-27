@@ -131,6 +131,16 @@ def test_foreign_hosts_keep_their_name_but_lose_query_values() -> None:
     assert out == "https://cdn.other.test/x/y?token=<personal>&page=2"
 
 
+def test_a_relative_link_stays_a_path_and_a_foreign_one_keeps_its_host() -> None:
+    """The hrefs of a page are mostly relative; they used to come out as `://None/app` (found by
+    the full-stack test, W7, with a real browser's page content)."""
+    r = Redactor()
+    assert r.url("/app", ORIGIN) == "/app"
+    assert r.url("/news/17?page=2", "") == "/news/17?page=2"
+    assert r.url("//cdn.other.test/x/y", ORIGIN) == "//cdn.other.test/x/y"
+    assert r.url("https://cdn.other.test/x", "") == "https://cdn.other.test/x"
+
+
 def test_json_is_reduced_to_a_shape() -> None:
     r = Redactor()
     doc: dict[str, Any] = {
@@ -177,8 +187,9 @@ def test_html_skeleton_keeps_structure_and_drops_the_rest() -> None:
     assert out.count('class="news-item"') == 3
     assert "+3 similar" in out
     assert 'datetime="2026-10-21"' in out
-    assert "/news/<v" in out or "<v" in out  # the numeric id in the link is pseudonymised
+    assert 'href="/news/<v' in out  # the numeric id in the link is pseudonymised, the path stays
     assert "1234" not in out
+    assert "None" not in out
 
 
 # --- menu links and the observer ------------------------------------------------------------

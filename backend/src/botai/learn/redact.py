@@ -152,7 +152,8 @@ class Redactor:
     def url(self, url: str, origin: str) -> str:
         """Path and query of a same-origin URL with ids pseudonymised; other hosts keep the host."""
         parts = urlsplit(url)
-        same = f"{parts.scheme}://{parts.netloc}" == origin
+        # a relative reference (`/app`, as written in a page's hrefs) belongs to the page's own site
+        same = not parts.netloc or f"{parts.scheme}://{parts.netloc}" == origin
         segments = []
         for seg in parts.path.split("/"):
             if seg and ID_SEGMENT.match(seg):
@@ -168,7 +169,8 @@ class Redactor:
                 shown = self._query_value(key, value)
                 pairs.append(f"{key}={shown}")
             query = "?" + "&".join(pairs)
-        return (path if same else f"{parts.scheme}://{parts.hostname}{path}") + query
+        scheme = f"{parts.scheme}:" if parts.scheme else ""  # `//cdn.other.test/x` has none
+        return (path if same else f"{scheme}//{parts.hostname}{path}") + query
 
     def _query_value(self, key: str, value: str) -> str:
         if PERSONAL_KEYS.search(key):
