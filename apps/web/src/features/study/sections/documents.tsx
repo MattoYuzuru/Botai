@@ -1,18 +1,24 @@
 import {
   Badge,
+  Button,
   Card,
+  Dialog,
   displayHost,
   formatAgo,
   formatDay,
   formatTime,
   ListRow,
   safeHttpUrl,
+  toast,
   useNow,
 } from "@botai/design";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { humanMessage } from "@/api/errors";
 import { documentsQuery } from "@/features/data/queries";
 import type { DocumentRow } from "@/features/data/types";
+import { AddDocumentSheet } from "../add-document-sheet";
+import { deleteDocument, refreshAfterChange } from "../connection-actions";
 import { ExternalLinkButton, ListSkeleton, RecordSheet, SectionEmpty } from "../parts";
 import { type SectionContext, SectionFrame } from "../section-frame";
 import { isTrustworthy, useSectionState } from "../use-section";
@@ -58,14 +64,25 @@ export function DocumentsSection({ ctx }: { ctx: SectionContext }) {
     staleItems: false,
     spaces: ctx.scope.spaces,
   });
+  const queryClient = useQueryClient();
   const [openId, setOpenId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<DocumentRow | null>(null);
   const showSpace = ctx.scope.isAll && ctx.directory.spaces.length > 1;
   const open = items.find((row) => row.id === openId) ?? null;
   const space = open ? ctx.directory.byId.get(open.spaceId) : undefined;
   const link = safeHttpUrl(open?.url);
 
   return (
-    <SectionFrame ctx={ctx} state={state}>
+    <SectionFrame
+      ctx={ctx}
+      state={state}
+      actions={
+        <Button variant="secondary" leadingIcon="plus" className="self-start" onClick={() => setAdding(true)}>
+          Добавить документ
+        </Button>
+      }
+    >
       {state === "loading" ? (
         <ListSkeleton label="Загрузка документов" />
       ) : items.length === 0 ? (
@@ -121,11 +138,46 @@ export function DocumentsSection({ ctx }: { ctx: SectionContext }) {
               fetchedAt: Date.parse(open.fetchedAt),
               spaceId: open.spaceId,
             },
-            actions: link ? (
-              <ExternalLinkButton href={link.href}>Открыть документ</ExternalLinkButton>
-            ) : undefined,
+            actions: (
+              <div className="flex flex-col gap-2">
+                {link && <ExternalLinkButton href={link.href}>Открыть документ</ExternalLinkButton>}
+                <Button
+                  variant="secondary"
+                  tone="danger"
+                  leadingIcon="trash"
+                  onClick={() => setDeleting(open)}
+                >
+                  Удалить документ
+                </Button>
+              </div>
+            ),
           }
         }
+      />
+      <AddDocumentSheet
+        open={adding}
+        onOpenChange={setAdding}
+        spaces={ctx.scope.spaces}
+        defaultSpaceId={ctx.scope.spaceId}
+      />
+      <Dialog
+        open={deleting !== null}
+        onOpenChange={(next) => !next && setDeleting(null)}
+        title="Удалить документ?"
+        description={`«${deleting?.title ?? ""}» исчезнет из BotAI и из ответов чата. Сам файл или страница у источника останутся.`}
+        confirmLabel="Удалить документ"
+        onConfirm={async () => {
+          const target = deleting;
+          if (!target) return;
+          try {
+            await deleteDocument(target.id);
+            toast("Документ удалён", { tone: "success" });
+            setOpenId(null);
+            await refreshAfterChange(queryClient, target.spaceId);
+          } catch (cause) {
+            toast("Не удалось удалить документ", { tone: "warning", description: humanMessage(cause) });
+          }
+        }}
       />
     </SectionFrame>
   );
