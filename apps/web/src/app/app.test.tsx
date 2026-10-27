@@ -155,7 +155,10 @@ describe("каркас приложения", () => {
       ["Сегодня", "Сегодня"],
     ] as const) {
       await userEvent.click(within(nav).getByRole("link", { name }));
-      expect(await screen.findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+      // Экран чата загружается отдельным чанком: холодный импорт в CI может занять больше 1 с.
+      expect(
+        await screen.findByRole("heading", { level: 1, name: title }, { timeout: 5_000 }),
+      ).toBeInTheDocument();
     }
   });
 

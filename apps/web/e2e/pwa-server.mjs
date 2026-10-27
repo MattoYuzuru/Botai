@@ -46,7 +46,8 @@ function provenance(now) {
 }
 
 function event(now) {
-  const start = Math.floor(now / 3_600_000) * 3_600_000 + 3_600_000;
+  // Текущий час остаётся в сегодняшнем дне Москвы даже после 23:00: фикстуру читают и /today, и расписание.
+  const start = Math.floor(now / 3_600_000) * 3_600_000;
   return {
     id: "evt-1",
     title: "Алгоритмы и структуры данных",

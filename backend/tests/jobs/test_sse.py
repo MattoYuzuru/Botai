@@ -12,6 +12,7 @@ import httpx
 import pytest
 from sqlalchemy import delete, func, select
 
+from botai.contracts import schemas
 from botai.contracts.agent_ui import ChoiceBlock, ChoiceOption, InputBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -92,7 +93,8 @@ async def test_a_finished_job_is_replayed_in_order_and_the_stream_ends(env: Env)
     assert events[2]["data"]["state"] == "running"
     assert events[2]["data"]["startedAt"].endswith("Z")
     assert events[3]["data"]["type"] == "choice"
-    assert events[3]["data"]["options"][0] == {"value": "a", "label": "А", "hint": None}
+    assert events[3]["data"]["options"][0] == {"value": "a", "label": "А"}
+    assert schemas.errors("agent-ui.schema.json", events[3]["data"]) == []
     assert events[-1]["data"] == {"result": {"found": 2}}
 
 

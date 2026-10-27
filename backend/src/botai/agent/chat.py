@@ -328,7 +328,7 @@ async def _store_reply(
                 user_id=ctx.user_id,
                 thread_id=thread.id,
                 role="agent",
-                blocks=[block.model_dump(by_alias=True, mode="json")],
+                blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
                 job_id=ctx.job_id,
                 created_at=services.clock.now(),
             )

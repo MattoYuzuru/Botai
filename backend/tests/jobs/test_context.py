@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from pydantic import TypeAdapter
 from sqlalchemy import select, text
 
+from botai.contracts import schemas
 from botai.contracts.agent_ui import (
+    AgentUiBlock,
     ChoiceBlock,
     ChoiceOption,
     ConfirmBlock,
@@ -33,6 +38,11 @@ pytestmark = pytest.mark.db
 Payload = dict[str, Any]
 SECRET = "S3cr3t-FIXTURE-d41d8"
 CODE = "482915"
+WIRE_EXAMPLES = json.loads(
+    (
+        Path(__file__).resolve().parents[3] / "contracts/examples/valid/agent-ui.blocks.json"
+    ).read_text("utf-8")
+)
 
 
 def choice(
@@ -136,6 +146,29 @@ async def test_emit_writes_camel_case_blocks_and_may_replace_by_id(env: Env) -> 
     }  # same id: the client replaces
     assert blocks[0]["type"] == "text"
     assert blocks[0]["at"].startswith("2026-10-27T12:00:00")
+
+
+async def test_emitted_blocks_match_the_wire_schema_without_null_optionals(env: Env) -> None:
+    """Validate persisted events, not a separately serialized contract example.
+
+    Pydantic restores missing optional fields as None; sending those nulls made the PWA
+    reject ordinary login fields, progress updates and nested summary items as unknown blocks.
+    """
+    adapter = TypeAdapter(AgentUiBlock)
+    blocks = [adapter.validate_python(raw) for raw in WIRE_EXAMPLES]
+    # A text without sources is the normal case for status messages and source-free chat replies.
+    blocks.append(TextBlock(id=new_id(), at=NOW, markdown="Начинаю подключение"))
+    _, uid, conn, job_id = await _login(env)
+    await _mark_running(env, job_id)
+    ctx = manual_ctx(env, job_id, uid, conn)
+    for block in blocks:
+        await ctx.emit(block)
+
+    emitted = [event.data for event in await env.events(job_id) if event.type == "block"]
+    assert len(emitted) == len(blocks)
+    for wire in emitted:
+        assert schemas.errors("agent-ui.schema.json", wire) == [], wire["type"]
+    assert "sources" not in emitted[-1]
 
 
 async def test_status_moves_the_job_between_running_and_waiting(env: Env) -> None:

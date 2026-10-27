@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +23,7 @@ from botai.agent.schemas import (
 )
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
-from botai.contracts.agent_ui import TextBlock
+from botai.contracts.agent_ui import AgentUiBlock, TextBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -30,6 +33,7 @@ from botai.db.session import DbSession
 router = APIRouter(prefix="/api/v1", tags=["agent"])
 
 ACTIVE_JOB_STATES = ("queued", "running", "waiting_user")
+_BLOCK = TypeAdapter(AgentUiBlock)
 
 
 def _thread_out(t: ChatThread) -> ThreadOut:
@@ -43,10 +47,20 @@ def _thread_out(t: ChatThread) -> ThreadOut:
 
 
 def _message_out(m: ChatMessage) -> MessageOut:
+    blocks: list[dict[str, Any]] = []
+    for raw in m.blocks:
+        try:
+            block = _BLOCK.validate_python(raw)
+        except ValidationError:
+            # Preserve future or malformed blocks for the PWA's explicit unknown-block fallback.
+            blocks.append(raw)
+        else:
+            # Existing rows may predate the wire fix and contain sources:null (or nested nulls).
+            blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
     return MessageOut(
         id=m.id,
         role="user" if m.role == "user" else "agent",
-        blocks=m.blocks,
+        blocks=blocks,
         job_id=m.job_id,
         created_at=m.created_at,
     )
@@ -140,7 +154,7 @@ async def post_message(
         user_id=user.id,
         thread_id=thread_id,
         role="user",
-        blocks=[block.model_dump(by_alias=True, mode="json")],
+        blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
         created_at=now,
     )
     session.add(message)

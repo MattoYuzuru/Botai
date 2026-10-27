@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     llm_profile_classify: str = "deepseek-flash:disabled:-"
     llm_profile_chat: str = "deepseek-flash:enabled:low"
     llm_profile_learn: str = "deepseek-flash:enabled:high"
-    llm_profile_repair: str = "deepseek-flash:enabled:high"
+    llm_profile_repair: str = "deepseek-flash:enabled:low"
     llm_profile_extract: str = "deepseek-flash:enabled:low"
     llm_debug_traces: bool = False  # reasoning_content to DEBUG logs; dev only
 

@@ -11,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent.chat import handle_chat
+from botai.contracts import schemas
+from botai.contracts.agent_ui import TextBlock
 from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.db.models import ChatMessage, Job
@@ -79,6 +81,7 @@ async def test_posting_a_message_stores_it_and_queues_one_chat_job(api: Api) -> 
         assert message["role"] == "user"
         assert message["blocks"][0]["type"] == "text"
         assert message["blocks"][0]["markdown"] == "Что завтра?"
+        assert schemas.errors("agent-ui.schema.json", message["blocks"][0]) == []
 
         (job,) = api.queue.jobs
         assert job["kind"] == JobKind.CHAT
@@ -88,6 +91,7 @@ async def test_posting_a_message_stores_it_and_queues_one_chat_job(api: Api) -> 
 
         listed = (await client.get(f"/api/v1/chat/threads/{thread}/messages")).json()
         assert [m["id"] for m in listed] == [message["id"]]
+        assert schemas.errors("agent-ui.schema.json", listed[0]["blocks"][0]) == []
 
 
 async def test_the_reply_of_the_job_shows_up_in_the_thread(api: Api) -> None:
@@ -104,6 +108,46 @@ async def test_the_reply_of_the_job_shows_up_in_the_thread(api: Api) -> None:
     assert [m["role"] for m in listed] == ["user", "agent"]
     assert listed[1]["jobId"] == accepted["jobId"]
     assert listed[1]["blocks"][0]["markdown"] == "Ответ."
+    assert "sources" not in listed[1]["blocks"][0]
+    # The history after a reload must obey the same wire schema as a live SSE block.
+    assert schemas.errors("agent-ui.schema.json", listed[1]["blocks"][0]) == []
+
+
+async def test_legacy_null_optionals_are_normalized_without_losing_unknown_blocks(api: Api) -> None:
+    thread = await add_thread(api.sm, api.user_id)
+    legacy = TextBlock(id=new_id(), at=NOW, markdown="Старый ответ.").model_dump(
+        by_alias=True, mode="json"
+    )
+    assert legacy["sources"] is None
+    unknown = {"type": "future", "id": new_id(), "value": None}
+    malformed = {"type": "input", "id": new_id(), "question": "Без обязательных полей"}
+    message_id = new_id()
+    async with api.sm() as session:
+        session.add(
+            ChatMessage(
+                id=message_id,
+                user_id=api.user_id,
+                thread_id=thread,
+                role="agent",
+                blocks=[legacy, unknown, malformed],
+                created_at=NOW,
+            )
+        )
+        await session.commit()
+
+    async with api.client() as client:
+        response = await client.get(f"/api/v1/chat/threads/{thread}/messages")
+    assert response.status_code == 200
+    [message] = response.json()
+    blocks = message["blocks"]
+    assert "sources" not in blocks[0]
+    assert schemas.errors("agent-ui.schema.json", blocks[0]) == []
+    assert blocks[1:] == [unknown, malformed]
+    # Compatibility is applied at the boundary, without rewriting the stored history.
+    async with api.sm() as session:
+        stored = await session.get(ChatMessage, message_id)
+        assert stored is not None
+        assert stored.blocks == [legacy, unknown, malformed]
 
 
 async def test_a_second_message_waits_while_the_first_is_being_answered(api: Api) -> None:

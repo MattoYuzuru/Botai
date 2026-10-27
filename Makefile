@@ -47,5 +47,6 @@ dev-worker:
 dev-web:
 	pnpm --filter @botai/web dev
 
-bench:            ## agent benchmark (L2): spends money, needs BOTAI_LIVE_LLM=1 (docs/plan/benchmark.md)
-	cd $(BACKEND) && BOTAI_LIVE_LLM=1 uv run --frozen python -m botai.agent.bench
+SCENARIO ?= B4
+bench:            ## agent benchmark (L2), e.g. `make bench SCENARIO=B1 ARGS="--models flash --profiles low,high"`
+	cd $(BACKEND) && BOTAI_LIVE_LLM=1 uv run --frozen python -m botai.agent.bench --scenario $(SCENARIO) $(ARGS)
