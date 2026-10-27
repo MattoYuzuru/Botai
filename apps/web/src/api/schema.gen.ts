@@ -482,7 +482,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Schedule */
+        /**
+         * Schedule
+         * @description Classes overlapping [start, end) from all spaces (or one), with cross-space conflicts.
+         *     A datetime without an offset is read as UTC.
+         */
         get: operations["schedule_api_v1_schedule_get"];
         put?: never;
         post?: never;

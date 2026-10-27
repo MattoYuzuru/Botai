@@ -3002,6 +3002,7 @@
     },
     "/api/v1/schedule": {
       "get": {
+        "description": "Classes overlapping [start, end) from all spaces (or one), with cross-space conflicts.\nA datetime without an offset is read as UTC.",
         "operationId": "schedule_api_v1_schedule_get",
         "parameters": [
           {
