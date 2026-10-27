@@ -1967,6 +1967,7 @@
     },
     "/api/v1/auth/logout": {
       "post": {
+        "description": "Idempotent: ends the session if there is one and always clears the cookie.",
         "operationId": "logout_api_v1_auth_logout_post",
         "responses": {
           "204": {
