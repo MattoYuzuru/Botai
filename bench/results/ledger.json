@@ -1,5 +1,5 @@
 {
-  "totalUsd": 0.102126,
+  "totalUsd": 0.408025,
   "capUsd": 12.0,
   "runs": [
     {
@@ -96,6 +96,79 @@
         "flash/high"
       ],
       "runs": 2,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T16:58:18.640531+00:00",
+      "scenario": "B1",
+      "usd": 0.147111,
+      "cells": [
+        "flash/disabled",
+        "flash/low",
+        "flash/high",
+        "flash/max",
+        "pro/disabled",
+        "pro/low",
+        "pro/high",
+        "pro/max"
+      ],
+      "runs": 24,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T17:02:10.092338+00:00",
+      "scenario": "B2",
+      "usd": 0.055546,
+      "cells": [
+        "flash/disabled",
+        "flash/low",
+        "flash/high",
+        "flash/max",
+        "pro/disabled",
+        "pro/low",
+        "pro/high",
+        "pro/max"
+      ],
+      "runs": 24,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T17:03:50.525054+00:00",
+      "scenario": "B3",
+      "usd": 0.065775,
+      "cells": [
+        "flash/disabled",
+        "flash/low",
+        "flash/high",
+        "flash/max",
+        "pro/disabled",
+        "pro/low",
+        "pro/high",
+        "pro/max"
+      ],
+      "runs": 24,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T17:09:27.634486+00:00",
+      "scenario": "B4",
+      "usd": 0.033355,
+      "cells": [
+        "pro/disabled",
+        "pro/low",
+        "pro/high"
+      ],
+      "runs": 30,
+      "partial": false
+    },
+    {
+      "at": "2026-10-27T17:10:08.301975+00:00",
+      "scenario": "B4",
+      "usd": 0.00411,
+      "cells": [
+        "flash/max"
+      ],
+      "runs": 10,
       "partial": false
     }
   ]
