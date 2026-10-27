@@ -1,21 +1,24 @@
-import { Badge, Card, displayHost, EmptyState, ListRow, safeHttpUrl, useNow } from "@botai/design";
-import type { Connection } from "@/api/types";
-import { connectionKindTitle, describeConnection } from "@/features/data/connection-status";
+import { Badge, Button, Card, EmptyState, Icon, ListRow, useNow } from "@botai/design";
+import { Link } from "@tanstack/react-router";
+import { useState } from "react";
+import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
+import { AddDocumentSheet } from "../add-document-sheet";
+import { ConnectionSheet } from "../connection-sheet";
 import { type SectionContext, SectionFrame } from "../section-frame";
 import { useSectionState } from "../use-section";
 
-/** Адрес источника без схемы: «lk.fakeuni.test». Источник без адреса (документ) — только вид. */
-export function originLabel(connection: Connection): string {
-  const url = safeHttpUrl(connection.origin);
-  return url ? displayHost(url) : connectionKindTitle(connection.kind);
-}
-
-/** «Подключения»: источники каждого вуза со статусом человеческим языком. Повторы и обновление идут сами. */
+/**
+ * «Подключения»: источники каждого вуза со статусом человеческим языком. Нажатие открывает управление:
+ * ссылка календаря или ключ, «Забыть пароль», удаление. Здесь же — «Добавить документ». Обновление и повторы
+ * идут сами, кнопки «Обновить» нет.
+ */
 export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
   const nowMs = useNow(30_000);
   const spaces = ctx.scope.spaces;
   const total = spaces.reduce((sum, space) => sum + space.connections.length, 0);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const state = useSectionState({
     hasData: ctx.directory.connectionsLoaded,
     isEmpty: total === 0,
@@ -24,16 +27,52 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
     staleItems: false,
     spaces,
   });
+  const all = spaces.flatMap((space) => space.connections.map((connection) => ({ connection, space })));
+  const open = all.find((row) => row.connection.id === openId);
 
   return (
-    <SectionFrame ctx={ctx} state={state}>
+    <SectionFrame
+      ctx={ctx}
+      state={state}
+      actions={
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" asChild>
+            <Link to="/connect">
+              <Icon name="plus" size={20} />
+              Подключить источник
+            </Link>
+          </Button>
+          <Button variant="secondary" leadingIcon="document" onClick={() => setAdding(true)}>
+            Добавить документ
+          </Button>
+        </div>
+      }
+    >
       {total === 0 ? (
         <EmptyState icon={ctx.def.icon} {...ctx.def.empty} />
       ) : (
         spaces.map((space) => (
-          <SpaceConnections key={space.id} space={space} nowMs={nowMs} showTitle={spaces.length > 1} />
+          <SpaceConnections
+            key={space.id}
+            space={space}
+            nowMs={nowMs}
+            showTitle={spaces.length > 1}
+            onOpen={setOpenId}
+          />
         ))
       )}
+      <ConnectionSheet
+        connection={open?.connection ?? null}
+        space={open?.space}
+        nowMs={nowMs}
+        onClose={() => setOpenId(null)}
+      />
+      <AddDocumentSheet
+        open={adding}
+        onOpenChange={setAdding}
+        spaces={spaces}
+        defaultSpaceId={ctx.scope.spaceId}
+      />
     </SectionFrame>
   );
 }
@@ -42,10 +81,12 @@ function SpaceConnections({
   space,
   nowMs,
   showTitle,
+  onOpen,
 }: {
   space: SpaceInfo;
   nowMs: number;
   showTitle: boolean;
+  onOpen: (id: string) => void;
 }) {
   if (space.connections.length === 0) return null;
   return (
@@ -76,6 +117,7 @@ function SpaceConnections({
                       <span>{view.detail}</span>
                     </>
                   }
+                  onOpen={() => onOpen(connection.id)}
                 />
               </li>
             );

@@ -38,6 +38,7 @@ export { DeadlineItem, type DeadlineItemProps } from "./deadline-item/deadline-i
 export { Dialog, type DialogProps } from "./dialog/dialog";
 export { EmptyState, type EmptyStateProps } from "./empty-state/empty-state";
 export { Field, type FieldProps, useFieldControl } from "./field/field";
+export { FilePicker, type FilePickerProps, formatBytes } from "./file-picker/file-picker";
 export { GradeTile, type GradeTileProps } from "./grade-tile/grade-tile";
 export { HandoffCard, type HandoffCardProps } from "./handoff-card/handoff-card";
 export { Icon, type IconName, type IconProps, type IconSize, iconRegistry } from "./icon";
