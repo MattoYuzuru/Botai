@@ -14,7 +14,7 @@
 | Трогаю сессии, сеть, промпты или данные пользователя | [Безопасность](architecture/security.md) |
 | Оценить риск, стоимость или конкурентов | [Реализуемость](research/feasibility.md) |
 | Делаю экран или компонент | [Стайлгайд](design/styleguide.md) |
-| Делаю маскота, прогресс или пустое состояние | [Маскот](design/mascot.md) |
+| Делаю маскота, прогресс или пустое состояние | [Маскот](design/mascot.md), [вендоренная Варя](design/vendor.md) |
 | Понять, кто что пишет и в каком порядке | [План работ](plan/workstreams.md), [брифы потоков](plan/briefs/README.md) |
 | Харнес агента, профили рассуждения | [agent-harness.md](architecture/agent-harness.md), [бенчмарк](plan/benchmark.md) |
 | Деплой на сервер | [deployment.md](plan/deployment.md) |

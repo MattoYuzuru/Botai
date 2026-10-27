@@ -11,6 +11,7 @@ import {
 import { type ReactNode, useEffect, useState } from "react";
 import { AgentBlocksSection, ProgressWallSection } from "./sections-agent";
 import { ControlsSection, PaletteSection, StatusSection, TypographySection } from "./sections-foundation";
+import { MascotSection } from "./sections-mascot";
 import { ChatSection, NavigationSection, StudySection } from "./sections-product";
 
 type ThemeChoice = "system" | "light" | "dark";
@@ -34,6 +35,7 @@ const SECTIONS = [
   ["blocks", "Блоки агента"],
   ["progress-wall", "ProgressWall"],
   ["navigation", "Навигация"],
+  ["mascot", "Варя"],
 ] as const;
 
 function Gallery() {
@@ -48,6 +50,7 @@ function Gallery() {
       <AgentBlocksSection />
       <ProgressWallSection />
       <NavigationSection />
+      <MascotSection />
     </div>
   );
 }
