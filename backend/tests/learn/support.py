@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
@@ -15,7 +16,7 @@ from botai.contracts.agent_ui import (
     InputBlock,
 )
 from botai.core.browser import FakeBrowserGateway, FakePage, ObservedRequest
-from botai.core.jobs import InMemoryJobContext
+from botai.core.jobs import InMemoryJobContext, JobState
 from botai.core.llm import LlmResponse, LlmUsage
 from tests.fakeuni import api as fakeuni_api
 from tests.fakeuni import data
@@ -149,3 +150,11 @@ def all_text(ctx: InMemoryJobContext) -> str:
     return json.dumps(
         [b.model_dump(mode="json", by_alias=True) for b in ctx.blocks], ensure_ascii=False
     )
+
+
+class StoppedByStudent(InMemoryJobContext):
+    """A job the student stops. The runner cancels its task, so the handler is not told by a
+    `JobCancelled` from a wait: it gets a `CancelledError` at whatever it awaits next."""
+
+    async def status(self, stage: str, *, state: JobState = JobState.RUNNING) -> None:
+        raise asyncio.CancelledError

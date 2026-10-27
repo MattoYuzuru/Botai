@@ -3,35 +3,38 @@
 Every stream tested its part with doubles of the others. Here nothing is a double except the
 university and the language model: the API, the job runner on a committed database, the handler
 table of the worker, the real Chromium logging in through the real EgressProxy over HTTPS, the
-Explorer authoring a spec from a ScriptedLlm, the sync Runner and its scheduler, the domain API and
-the chat.
+Explorer authoring a spec from a ScriptedLlm, the sync Runner and its scheduler, the repair, the
+domain API and the chat.
 
-The test plays the student exactly as the PWA does: it follows the SSE stream of a job and
-answers its questions over `POST /api/v1/jobs/{id}/answers`.
+The tests play the student exactly as the PWA does: they follow the SSE stream of a job and
+answer its questions over `POST /api/v1/jobs/{id}/answers`.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
-from botai.browser.gateway import PlaywrightGateway
-from botai.browser.proxy import EgressProxy
 from botai.browser.session import decode_session
 from botai.core.llm import ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.db import models as m
 from botai.jobs.runner import schedule_syncs
+from botai.sources import runner as sources_runner
 from botai.worker import handler_table
 from tests.agent.rig import call, final, step
-from tests.auth.support import PASSWORD, make_user
 from tests.e2e.support import (
+    WRONG_PASSWORD,
     Attendance,
+    Campus,
+    Learner,
+    Stack,
     Student,
     WireTap,
     dump_database,
@@ -41,8 +44,10 @@ from tests.e2e.support import (
 from tests.fakeuni import api as fakeuni_api
 from tests.fakeuni import data
 from tests.fakeuni import login as fakeuni_login
-from tests.jobs.env import Env, live_http, session_header
+from tests.jobs.env import Env, live_http
 from tests.learn import support as ls
+from tests.sources import recipes
+from tests.sources.helpers import FAST
 
 pytestmark = [pytest.mark.db, pytest.mark.browser]
 
@@ -56,6 +61,7 @@ CLASSES = [
     ("Английский язык", "online", datetime(2026, 10, 30, 12, 10, tzinfo=UTC)),
 ]
 DEADLINES = ["ДЗ 3: деревья отрезков", "Лабораторная 2: индексы"]
+CONNECT_QUESTIONS = ["input:email", "input:password (secret)", "input:code (secret)"]
 
 
 def when(value: str) -> datetime:
@@ -70,13 +76,21 @@ class Secrets:
     """What must never leave the Vault, collected as the run produces it: the university's
     password and code, and every session cookie the university ever issued."""
 
-    def __init__(self, env: Env, user_id: str, connection_id: str) -> None:
-        self._env, self.user_id, self._connection = env, user_id, connection_id
-        self.needles = {"password": data.PASSWORD, "code": data.OTP}
+    def __init__(self, env: Env, learner: Learner) -> None:
+        self._env, self._learner = env, learner
+        self.user_id = learner.user_id
+        self.needles = {
+            "password": data.PASSWORD,
+            "code": data.OTP,
+            "mistyped password": WRONG_PASSWORD,
+        }
 
     async def session(self, label: str) -> str:
         """The cookie of the session in the Vault now; it joins the things that must not leak."""
-        raw = await self._env.services.vault.get(self.user_id, self._connection, SecretKind.SESSION)
+        learner = self._learner
+        raw = await self._env.services.vault.get(
+            learner.user_id, learner.connection_id, SecretKind.SESSION
+        )
         assert raw is not None
         cookie = decode_session(raw.get_secret_value()).cookies[0].value.get_secret_value()
         assert cookie not in self.needles.values(), "the same session twice"
@@ -96,60 +110,35 @@ async def latest_job(env: Env, connection_id: str, kind: str) -> str:
     return job_id
 
 
+def start_worker(env: Env, llm: ScriptedLlm) -> None:
+    """The first Monday morning, a model that knows the university, the worker of production."""
+    env.clock.advance(MONDAY_MORNING - env.clock.now())
+    env.services.llm = llm
+    env.start(env.worker(handler_table()))  # the real handlers: connect, sync, repair, chat, ...
+
+
+# =================================================================================================
+# The story of the brief: a student connects a university and asks about it
+# =================================================================================================
+
+
 async def test_a_student_connects_a_university_and_asks_about_it(
-    stack: Env,
-    gateway: PlaywrightGateway,
-    egress: EgressProxy,
+    stack: Stack,
     wiretap: WireTap,
     capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = stack
-    env.clock.advance(MONDAY_MORNING - env.clock.now())
+    env, gateway = stack.env, stack.gateway
     learning_llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
-    env.services.llm = learning_llm
-    env.start(env.worker(handler_table()))  # the real handlers: connect, sync, chat, ...
+    start_worker(env, learning_llm)
 
     # === 1. the API: the owner invites a friend, the friend registers and adds a university =====
-    owner_id = await make_user(env.sm, "owner@example.com", is_owner=True, password=PASSWORD)
-    env.users.append(owner_id)
-    owner = env.new_client()
-    login = await owner.post(
-        "/api/v1/auth/login", json={"email": "owner@example.com", "password": PASSWORD}
-    )
-    assert login.status_code == 200
-    invite = (await owner.post("/api/v1/auth/invites")).json()["code"]
-
-    friend = env.new_client()
-    registered = await friend.post(
-        "/api/v1/auth/register",
-        json={
-            "inviteCode": invite,
-            "email": "anna@example.com",
-            "displayName": "Анна",
-            "password": PASSWORD,
-        },
-    )
-    assert registered.status_code == 201, registered.text
-    user_id = registered.json()["user"]["id"]
-    env.users.append(user_id)
-
-    space = (await friend.post("/api/v1/spaces", json={"title": "Фейкуни"})).json()
-    started = await friend.post(
-        f"/api/v1/spaces/{space['id']}/connections",
-        json={"kind": "portal", "url": "https://fakeuni.test/"},
-    )
-    assert started.status_code == 201, started.text
-    connection_id = started.json()["connection"]["id"]
-    connect_job = started.json()["jobId"]
-    assert started.json()["connection"]["status"] == "draft"
-    queued = await env.job(connect_job)
-    assert (queued.kind, queued.connection_id) == ("connect", connection_id)
-    secrets = Secrets(env, user_id, connection_id)
+    anna = await Campus(env).enrol("anna@example.com")
+    friend, connection_id = anna.client, anna.connection_id
+    secrets = Secrets(env, anna)
 
     async with live_http(env.app) as http:
-        student = Student(http, session_header(friend))
-
+        student = Student(http, anna.headers())
         statuses: list[str] = []
 
         async def connection_status(_block: dict[str, Any]) -> None:
@@ -157,15 +146,15 @@ async def test_a_student_connects_a_university_and_asks_about_it(
             statuses.append(status)
 
         # === 2-4. connect: Chromium logs in through the proxy, the Explorer learns, sync runs ===
-        connect = await student.attend(connect_job, on_question=connection_status)
+        connect = await student.attend(anna.connect_job, on_question=connection_status)
         await check_connect_job(env, connect, connection_id)
         assert statuses == ["learning"] * 4  # every question came while the connection was set up
         assert len(learning_llm.requests) == 2  # one authoring call per kind of data
-        assert gateway.active_for(user_id) is None  # no browser context outlives its job
+        assert gateway.active_for(anna.user_id) is None  # no browser context outlives its job
         first_session = await secrets.session("first")
 
         # === 5. what the student sees in the app ================================================
-        await check_the_app_shows_fakeuni(env, friend, connection_id, space["id"])
+        await check_the_app_shows_fakeuni(env, friend, connection_id, anna.space_id)
         await check_nothing_leaked(env, wiretap, secrets, learning_llm)
 
         # === 6a. the student presses "sync"; the university has forgotten the session: login and
@@ -193,7 +182,7 @@ async def test_a_student_connects_a_university_and_asks_about_it(
         assert "waiting_user" not in silent.states()
         assert silent.result["status"] == "ok"
         assert await secrets.session("third") not in {first_session, second_session}
-        assert gateway.active_for(user_id) is None
+        assert gateway.active_for(anna.user_id) is None
 
         refreshed = (await friend.get(f"/api/v1/connections/{connection_id}")).json()
         assert (refreshed["status"], refreshed["errorCode"]) == ("active", None)
@@ -213,7 +202,7 @@ async def test_a_student_connects_a_university_and_asks_about_it(
             ]
         )
         env.services.llm = chat_llm
-        thread = (await friend.post("/api/v1/chat/threads", json={"spaceId": space["id"]})).json()
+        thread = (await friend.post("/api/v1/chat/threads", json={"spaceId": anna.space_id})).json()
         posted = await friend.post(
             f"/api/v1/chat/threads/{thread['id']}/messages", json={"text": QUESTION}
         )
@@ -223,20 +212,270 @@ async def test_a_student_connects_a_university_and_asks_about_it(
 
     # === the whole run ============================================================================
     await check_nothing_leaked(env, wiretap, secrets, learning_llm, chat_llm, console=capfd)
-    check_egress(egress, wiretap)
-    await check_jobs(env, user_id)
+    check_egress(stack)
+    await check_jobs(env, anna.user_id)
     await check_registry(env)
-    await check_isolation(env, connection_id, connect_job, thread["id"])
+    await check_isolation(env, connection_id, anna.connect_job, thread["id"])
 
 
-async def check_connect_job(env: Env, connect: Attendance, connection_id: str) -> None:
-    # the form of the university became native fields, in the order the university asked them
+# =================================================================================================
+# The university changes its API: the sync notices, the repair is queued and done by the runner
+# =================================================================================================
+
+
+async def test_a_changed_university_is_repaired_and_the_data_come_back(stack: Stack) -> None:
+    env, gateway = stack.env, stack.gateway
+    moved = recipes.timetable_endpoint(path="/api/v3/schedule")
+    llm = ScriptedLlm(
+        queue=[ls.timetable_answer(), ls.deadlines_answer(), ls.answer([moved])]  # ..., repair
+    )
+    start_worker(env, llm)
+    anna = await Campus(env).enrol("anna@example.com")
+
+    async with live_http(env.app) as http:
+        student = Student(http, anna.headers())
+        connect = await student.attend(anna.connect_job)
+        assert connect.result["status"] == "ok"
+        before = (await anna.client.get("/api/v1/schedule", params=week())).json()
+        assert len(before) == 4
+
+        # the university moves the timetable to another address; its cabinet follows
+        fakeuni_api.STATE.timetable_version = "v3"
+        env.advance(hours=3)
+        sync = await student.attend(
+            (await anna.client.post(f"/api/v1/connections/{anna.connection_id}/sync")).json()[
+                "jobId"
+            ]
+        )
+        assert sync.result["status"] == "repairing"
+        assert sync.result["drift"][0]["kind"] == "scheduleEvents"
+        shown = (await anna.client.get(f"/api/v1/connections/{anna.connection_id}")).json()
+        assert (shown["status"], shown["errorCode"]) == ("repairing", "recipe_drift")
+        # while it is repaired the old data stay on screen
+        kept = (await anna.client.get("/api/v1/schedule", params=week())).json()
+        assert [e["id"] for e in kept] == [e["id"] for e in before]
+        today = (await anna.client.get("/api/v1/today")).json()
+        assert today["attention"] == [anna.connection_id]
+
+        # the sync queued the repair; the runner took it, nobody had to ask
+        repair = await student.attend(await latest_job(env, anna.connection_id, "repair"))
+        assert repair.asked == []
+        assert repair.result["status"] == "repaired"
+        assert [r.purpose for r in llm.requests] == ["learn", "learn", "repair"]
+        told = [b["markdown"] for b in repair.blocks("text")]
+        assert any("`/api/v2/timetable` → `/api/v3/schedule`" in line for line in told)
+        assert gateway.active_for(anna.user_id) is None
+
+        # the data are back, read by the new revision from the new address
+        connection = (await anna.client.get(f"/api/v1/connections/{anna.connection_id}")).json()
+        assert (connection["status"], connection["errorCode"]) == ("active", None)
+        after = (await anna.client.get("/api/v1/schedule", params=week())).json()
+        assert [e["id"] for e in after] == [e["id"] for e in before]  # the same classes
+        assert {e["provenance"]["sourceUrl"].split("?")[0] for e in after} == {
+            "https://fakeuni.test/api/v3/schedule"
+        }
+        assert (await anna.client.get("/api/v1/today")).json()["attention"] == []
+        async with env.sm() as s:
+            rows = (
+                await s.execute(
+                    select(m.AdapterSpecRow.revision, m.AdapterSpecRow.state)
+                    .where(m.AdapterSpecRow.origin == data.ORIGIN)
+                    .order_by(m.AdapterSpecRow.revision)
+                )
+            ).all()
+        assert [tuple(r) for r in rows] == [(1, "deprecated"), (2, "active")]
+
+        # and the next sync, on the new revision, calls no model
+        env.advance(hours=3)
+        again = await student.attend(
+            (await anna.client.post(f"/api/v1/connections/{anna.connection_id}/sync")).json()[
+                "jobId"
+            ]
+        )
+        assert again.result["status"] == "ok"
+        assert len(llm.requests) == 3
+
+
+# =================================================================================================
+# A second student of the same university: what the first one taught is reused
+# =================================================================================================
+
+
+async def test_a_second_student_of_the_university_reuses_what_the_first_one_taught(
+    stack: Stack,
+) -> None:
+    env = stack.env
+    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    start_worker(env, llm)
+    campus = Campus(env)
+    anna = await campus.enrol("anna@example.com")
+
+    async with live_http(env.app) as http:
+        assert (await Student(http, anna.headers()).attend(anna.connect_job)).result[
+            "status"
+        ] == "ok"
+        assert len(llm.requests) == 2
+
+        boris = await campus.enrol("boris@example.com")
+        connect = await Student(http, boris.headers()).attend(boris.connect_job)
+        # no description to write, nothing to confirm: he is only asked for his own credentials
+        assert [a.label for a in connect.asked] == CONNECT_QUESTIONS
+        assert connect.result["status"] == "ok"
+        assert connect.result["reused"] is True
+        assert len(llm.requests) == 2
+
+    # each sees his own rows, read from the same learned description
+    for who in (anna, boris):
+        events = (await who.client.get("/api/v1/schedule", params=week())).json()
+        assert [e["title"] for e in events] == [title for title, _, _ in CLASSES]
+        assert {e["provenance"]["connectionId"] for e in events} == {who.connection_id}
+        assert {e["provenance"]["spaceId"] for e in events} == {who.space_id}
+    async with env.sm() as s:
+        connections = (
+            await s.execute(
+                select(m.Connection.user_id, m.Connection.spec_id, m.Connection.status).where(
+                    m.Connection.id.in_([anna.connection_id, boris.connection_id])
+                )
+            )
+        ).all()
+        events = await s.scalar(select(func.count()).select_from(m.ScheduleEvent))
+    assert {c.status for c in connections} == {"active"}
+    assert len({c.spec_id for c in connections}) == 1  # one description, two students
+    assert events == 8
+    await check_registry(env)
+
+
+# =================================================================================================
+# The unhappy paths of the same journey: a typo in the password, and walking away
+# =================================================================================================
+
+
+async def test_a_mistyped_password_is_asked_again_and_only_the_right_one_is_kept(
+    stack: Stack, wiretap: WireTap
+) -> None:
+    env = stack.env
+    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    start_worker(env, llm)
+    anna = await Campus(env).enrol("anna@example.com")
+    secrets = Secrets(env, anna)
+
+    async with live_http(env.app) as http:
+        connect = await Student(http, anna.headers(), typos=1).attend(anna.connect_job)
+
+    # the university refused once; the app showed the form again with what went wrong
     assert [a.label for a in connect.asked] == [
+        "input:email",
+        "input:password (secret)",
         "input:email",
         "input:password (secret)",
         "input:code (secret)",
         "confirm",
     ]
+    for again in connect.asked[2:4]:
+        assert "не принял" in again.question
+        assert "попытка 2 из 3" in again.question
+    assert fakeuni_login.ATTEMPTS == [("auth", "user")]  # one wrong try reached the university
+    assert connect.result["status"] == "ok"
+    kept = await env.services.vault.get(anna.user_id, anna.connection_id, SecretKind.PASSWORD)
+    assert kept is not None
+    assert kept.get_secret_value() == data.PASSWORD  # not the typo
+    await secrets.session("only")
+    await check_nothing_leaked(env, wiretap, secrets, llm)  # the typo leaked nowhere either
+
+
+async def test_an_outage_is_retried_by_the_runner_while_the_old_data_stay(
+    stack: Stack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = stack.env
+    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    start_worker(env, llm)
+    monkeypatch.setattr(sources_runner, "RetryPolicy", lambda: FAST)  # not 0.5 + 2 + 8 s of sleep
+    anna = await Campus(env).enrol("anna@example.com")
+
+    async with live_http(env.app) as http:
+        student = Student(http, anna.headers())
+        assert (await student.attend(anna.connect_job)).result["status"] == "ok"
+        before = (await anna.client.get("/api/v1/schedule", params=week())).json()
+
+        # the university goes down: the sync cannot read it, and tells the runner to come back
+        fakeuni_api.STATE.fail_status = 503
+        env.advance(hours=3)
+        job = (await anna.client.post(f"/api/v1/connections/{anna.connection_id}/sync")).json()[
+            "jobId"
+        ]
+        for _ in range(400):
+            waiting = await env.job(job)
+            if waiting.stage and "повторю через 1 мин" in waiting.stage:
+                break
+            await asyncio.sleep(0.05)
+        assert (waiting.state, waiting.attempts) == ("queued", 1)
+        assert waiting.run_after == env.clock.now() + timedelta(minutes=1)
+        shown = (await anna.client.get(f"/api/v1/connections/{anna.connection_id}")).json()
+        assert (shown["status"], shown["errorCode"]) == ("active", "source_unavailable")
+        # the student keeps seeing the last good data, and the app does not call it a failure
+        assert (await anna.client.get("/api/v1/schedule", params=week())).json() == before
+        assert (await anna.client.get("/api/v1/today")).json()["attention"] == []
+
+        # the university is back; a minute later the runner takes the job again
+        fakeuni_api.STATE.fail_status = None
+        env.advance(minutes=2)
+        retried = await student.attend(job)
+    assert retried.result["status"] == "ok"
+    assert (await env.job(job)).attempts == 2
+    shown = (await anna.client.get(f"/api/v1/connections/{anna.connection_id}")).json()
+    assert (shown["status"], shown["errorCode"]) == ("active", None)
+    assert len(llm.requests) == 2  # the model was not asked about an outage
+
+
+async def test_a_student_who_walks_away_leaves_no_browser_and_no_secret_behind(
+    stack: Stack, wiretap: WireTap
+) -> None:
+    env, gateway = stack.env, stack.gateway
+    llm = ScriptedLlm()  # nothing is learned: no model call is expected
+    start_worker(env, llm)
+    anna = await Campus(env).enrol("anna@example.com")
+    secrets = Secrets(env, anna)
+
+    async with live_http(env.app) as http:
+        student = Student(http, anna.headers())
+        left = await student.attend(
+            anna.connect_job, walk_away_at=lambda block: block.get("inputKind") == "code"
+        )
+        assert [a.label for a in left.asked] == ["input:email", "input:password (secret)"]
+        assert left.waiting_on is not None
+        assert gateway.active_for(anna.user_id) is not None  # the code page is open in Chromium
+
+        stop = await http.post(f"/api/v1/jobs/{anna.connect_job}/cancel", headers=anna.headers())
+        assert stop.status_code == 204
+
+    await env.wait_for(anna.connect_job, {"cancelled"})
+    for _ in range(200):  # the handler is unwound by the runner: the page is closed with it
+        if gateway.active_for(anna.user_id) is None:
+            break
+        await asyncio.sleep(0.05)
+    assert gateway.active_for(anna.user_id) is None
+
+    connection = (await anna.client.get(f"/api/v1/connections/{anna.connection_id}")).json()
+    assert (connection["status"], connection["hasPassword"]) == ("draft", False)
+    for kind in SecretKind:  # nothing of the student's was kept: not the password, not a session
+        assert not await env.services.vault.has(anna.user_id, anna.connection_id, kind)
+    async with env.sm() as s:
+        left_over = await s.scalar(
+            select(func.count()).select_from(m.SecretRow).where(m.SecretRow.user_id == anna.user_id)
+        )
+    assert left_over == 0  # the answer to the secret question was taken and deleted
+    await check_no_marker_anywhere(env, wiretap, secrets, llm)
+    assert llm.requests == []
+
+
+# =================================================================================================
+# What each step looks like from the app
+# =================================================================================================
+
+
+async def check_connect_job(env: Env, connect: Attendance, connection_id: str) -> None:
+    # the form of the university became native fields, in the order the university asked them
+    assert [a.label for a in connect.asked] == [*CONNECT_QUESTIONS, "confirm"]
     assert "waiting_user" in connect.states()
     assert connect.names()[-1] == "done"
     result = connect.result
@@ -299,7 +538,6 @@ async def check_the_app_shows_fakeuni(
 
     sections = (await client.get(f"/api/v1/spaces/{space_id}/sections")).json()
     assert {s["kind"]: s["count"] for s in sections} == {"scheduleEvents": 4, "deadlines": 2}
-
     await check_registry(env)
 
 
@@ -363,17 +601,8 @@ async def check_nothing_leaked(
 ) -> None:
     """Security check C1 for the whole run: the university's password and code exist only as
     ciphertext in `secrets`; nowhere else, and never in what a model was sent."""
+    await check_no_marker_anywhere(env, wiretap, secrets, *models, console=console)
     needles = secrets.needles
-    dump = await dump_database(env.sm)  # every table, every column: job_events, job_answers, ...
-    assert data.USERNAME in dump  # the dump does hold the answers it is searched for secrets
-    assert leaks(dump, needles) == []
-    assert "egress host=" in wiretap.text  # the tap does hear the process it is listening to
-    assert leaks(wiretap.text, needles) == []
-    assert leaks(sent_to_models(*models), needles) == []
-    if console is not None:  # what the process wrote to its stdout and stderr, from the start
-        out = console.readouterr()
-        assert leaks(out.out + out.err, needles) == []
-
     async with env.sm() as s:
         stored = (
             await s.execute(
@@ -394,18 +623,35 @@ async def check_nothing_leaked(
     assert sum(a.is_secret for a in answers) >= 2  # the password and the code of the first login
 
 
-def check_egress(egress: EgressProxy, wiretap: WireTap) -> None:
-    """Everything the browser and the sync client sent to the university went through the proxy,
-    and the proxy let through exactly one host."""
-    hosts = {
-        line.split("host=")[1].split()[0]
-        for line in wiretap.lines
-        if "egress host=" in line and "decision=allow" in line
-    }
-    assert hosts == {"fakeuni.test"}
-    assert egress.stats["allow:ok"] > 10
+async def check_no_marker_anywhere(
+    env: Env,
+    wiretap: WireTap,
+    secrets: Secrets,
+    *models: ScriptedLlm,
+    console: pytest.CaptureFixture[str] | None = None,
+) -> None:
+    needles = secrets.needles
+    dump = await dump_database(env.sm)  # every table, every column: job_events, job_answers, ...
+    assert data.USERNAME in dump  # the dump does hold the answers it is searched for secrets
+    assert leaks(dump, needles) == []
+    assert "worker" in wiretap.text  # the tap does hear the process it is listening to
+    assert leaks(wiretap.text, needles) == []
+    assert leaks(sent_to_models(*models), needles) == []
+    if console is not None:  # what the process wrote to its stdout and stderr, from the start
+        out = console.readouterr()
+        assert leaks(out.out + out.err, needles) == []
+
+
+def check_egress(stack: Stack) -> None:
+    """Everything the browser and the sync client sent to the university went through the proxy
+    process, and it let through exactly one host."""
+    tunnels = [line.split("egress host=")[1].split() for line in stack.proxy_log()]
+    allowed = {fields[0] for fields in tunnels if "decision=allow" in fields}
+    refused = {fields[2] for fields in tunnels if fields[1] == "decision=deny"}
+    assert allowed == {"fakeuni.test"}
+    assert sum("decision=allow" in fields for fields in tunnels) > 10
     # Chromium offers no credentials until the proxy challenges it (407), then retries with them
-    assert {k for k in egress.stats if k.startswith("deny")} <= {"deny:auth_failed"}
+    assert refused <= {"reason=auth_failed"}
 
 
 async def check_jobs(env: Env, user_id: str) -> None:
