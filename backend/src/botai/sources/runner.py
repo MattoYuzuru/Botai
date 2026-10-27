@@ -35,6 +35,7 @@ from botai.core.http import RetryPolicy
 from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
 from botai.db import models as m
+from botai.learn import revisions
 from botai.sources import normalize, schedule
 from botai.sources.adapter import (
     AdapterResult,
@@ -453,7 +454,12 @@ async def sync_connection(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     retry: RetryPolicy | None = None,
+    accept_empty: bool = False,
+    queue_repair: bool = True,
 ) -> SyncOutcome:
+    """One sync. `accept_empty` takes an empty answer as the truth (a repair concluded that the
+    source really has nothing); `queue_repair=False` is for the repair job itself, which handles
+    drift and the health of the revision on its own."""
     user_id = ctx.user_id
     async with services.db() as db:
         snap = await load_snapshot(db, user_id, connection_id)
@@ -473,7 +479,9 @@ async def sync_connection(
         fetched = await fetch_with_reauth(ctx, services, snap, sctx)
         if isinstance(fetched, SyncOutcome):
             return fetched
-        return await _commit(ctx, services, snap, fetched, sctx.now)
+        return await _commit(
+            services, snap, fetched, sctx.now, accept_empty=accept_empty, queue_repair=queue_repair
+        )
     except BotaiError as err:
         return await _record_failure(services, snap, err)
     except NeedsUserInput as need:
@@ -524,7 +532,13 @@ async def _record_failure(services: Services, snap: Snapshot, err: BotaiError) -
 
 
 async def _commit(
-    ctx: JobContext, services: Services, snap: Snapshot, result: AdapterResult, now: datetime
+    services: Services,
+    snap: Snapshot,
+    result: AdapterResult,
+    now: datetime,
+    *,
+    accept_empty: bool,
+    queue_repair: bool,
 ) -> SyncOutcome:
     async with services.db() as db, db.begin():
         await normalize.lock_connection(db, snap.connection_id)
@@ -535,8 +549,13 @@ async def _commit(
         ).scalar_one_or_none()
         if current is None or current.status == "disabled":
             return SyncOutcome("skipped", detail="disabled")
-        baseline = await baseline_counts(db, snap.connection_id, current.last_sync_at)
+        baseline = (
+            {}
+            if accept_empty
+            else await baseline_counts(db, snap.connection_id, current.last_sync_at)
+        )
         verdict = assess(snap.spec, result, baseline)
+        spec_row = await db.get(m.AdapterSpecRow, snap.spec_id) if queue_repair else None
         stats = await normalize.apply_result(
             db,
             user_id=snap.user_id,
@@ -555,6 +574,13 @@ async def _commit(
             current.error_at = now
             current.next_sync_at = None if repairable else now + schedule.FAILURE_RETRY
             outcome = SyncOutcome("repairing" if repairable else "stale", kinds, verdict.drift)
+            # three drifts in a row retire the revision in favour of the previous one
+            if (
+                spec_row is not None
+                and spec_row.state == "active"
+                and await revisions.register_drift(db, spec_row, now, user_id=snap.user_id)
+            ):
+                outcome.detail = "rolled_back"
         else:
             current.status = "active"
             current.last_sync_at = now
@@ -562,7 +588,9 @@ async def _commit(
             current.error_code = current.error_detail = current.error_at = None
             current.spec_id, current.spec_revision = snap.spec_id, snap.spec_revision
             outcome = SyncOutcome("ok", kinds)
-    if outcome.status == "repairing":
+            if spec_row is not None and spec_row.state == "active" and snap.adapter == "recipe":
+                await revisions.register_ok(db, spec_row, now, user_id=snap.user_id)
+    if outcome.status == "repairing" and queue_repair:
         await services.queue.enqueue(
             JobKind.REPAIR,
             user_id=snap.user_id,
@@ -589,6 +617,15 @@ def make_sync_handler(
         outcome = await sync_connection(
             ctx, services, connection_id, transport=transport, retry=retry
         )
+        await _schedule_canaries(services)
         return outcome.as_dict()
 
     return handle
+
+
+async def _schedule_canaries(services: Services) -> None:
+    """The daily canary needs a periodic caller; every sync is one. Never breaks the sync."""
+    try:
+        await revisions.enqueue_due_canaries(services.db, services.queue, services.clock.now())
+    except Exception:
+        log.warning("scheduling canary checks failed", exc_info=True)

@@ -15,6 +15,7 @@ DEFAULT_EVERY = {"recipe": 180, "moodle_ws": 120, "ical": 180, "document": 0}
 MIN_EVERY = 15
 FAILURE_RETRY = timedelta(minutes=5)
 RATE_LIMIT_RETRY = timedelta(minutes=15)
+RETRY_AFTER_REPAIR = timedelta(hours=24)  # a repair that found nothing is not repeated at once
 JITTER_SHARE = 0.1
 
 

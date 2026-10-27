@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -47,7 +49,7 @@ from botai.learn.author import (
     candidate_spec,
     merge_bootstrap,
 )
-from botai.learn.canary import CanaryReport, run_canary
+from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.observe import Observations, observe
 from botai.learn.redact import Redactor
@@ -80,6 +82,7 @@ class Chosen:
     kind: Kind
     candidate: Candidate
     report: CanaryReport
+    comparison: Comparison | None = None
 
 
 def origin_from(url: str) -> str | None:
@@ -141,6 +144,16 @@ def sample_of(records: list[Record], kind: Kind, now: datetime) -> list[Record]:
     ordered = sorted(records, key=lambda r: str(r.fields.get(key, "")))
     upcoming = [r for r in ordered if str(r.fields.get(key, "")) >= now.isoformat()]
     return (upcoming or ordered)[:SAMPLE]
+
+
+def kinds_text(kinds: dict[str, dict[str, int]], only: Collection[str] | None = None) -> str:
+    """Counts per kind in a fixed order, from the Normalizer's per-kind stats."""
+    return ", ".join(
+        f"{KIND_LABELS[k].lower()}: {v['inserted'] + v['updated'] + v['unchanged']}"
+        for k in KIND_LABELS
+        if k in kinds and (only is None or k in only)
+        for v in [kinds[k]]
+    )
 
 
 class Explorer:
@@ -282,13 +295,7 @@ class Explorer:
 
     async def _report_sync(self, outcome: SyncOutcome, *, prefix: str) -> None:
         if outcome.status == "ok":
-            parts = [
-                f"{KIND_LABELS[k].lower()}: "
-                f"{outcome.kinds[k]['inserted'] + outcome.kinds[k]['updated'] + outcome.kinds[k]['unchanged']}"
-                for k in KIND_LABELS
-                if k in outcome.kinds
-            ]
-            what = ", ".join(parts) if parts else "данные пока не найдены"
+            what = kinds_text(outcome.kinds) or "данные пока не найдены"
             await self.ui.say(f"{prefix} Подключено: {what}. Дальше всё обновляется само.")
         elif outcome.status == "repairing":
             await self.ui.say(
@@ -435,10 +442,16 @@ class Explorer:
         info: ConnInfo,
         revision: int,
         digest: str,
+        *,
+        previous: dict[str, Any] | None = None,
+        problem: str | None = None,
+        baseline: dict[Kind, Counter[tuple[str, ...]]] | None = None,
     ) -> Chosen | None:
+        """Author, lint and canary the candidates of one kind and pick one. In a repair
+        (`previous` given) each candidate is also compared with the confirmed snapshot."""
         ui = self.ui
         label = KIND_LABELS[kind].lower()
-        stage = await ui.stage(f"Разбираю: {label}")
+        stage = await ui.stage(f"Разбираю: {label}" if previous is None else f"Чиню: {label}")
         try:
             authored = await author_kind(
                 self.services.llm,
@@ -449,6 +462,8 @@ class Explorer:
                 revision=revision,
                 now=self.services.clock.now(),
                 digest=digest,
+                previous=previous,
+                problem=problem,
             )
         except AuthorError:
             await stage.finish("failed", "Модель не вернула пригодный ответ")
@@ -462,7 +477,7 @@ class Explorer:
             )
             await stage.finish("skipped" if not authored.rejected else "failed", reason)
             return None
-        verified: list[tuple[Candidate, CanaryReport]] = []
+        verified: list[Chosen] = []
         for i, cand in enumerate(authored.candidates):
             spec = candidate_spec(
                 cand,
@@ -479,42 +494,54 @@ class Explorer:
                     ErrorCode.SOURCE_AUTH_REQUIRED, "Сайт не принял сессию сразу после входа"
                 ) from None
             if report.ok:
-                verified.append((cand, report))
+                comparison = (
+                    compare(kind, baseline.get(kind), report.valid.get(kind, []), sctx.tz)
+                    if baseline is not None
+                    else None
+                )
+                verified.append(Chosen(kind, cand, report, comparison))
         if not verified:
             await stage.finish("failed", "Проверка на вашей сессии не прошла")
             return None
-        pick = await self._pick(kind, verified, sctx.tz)
-        cand, report = verified[pick]
-        await stage.finish("ok", f"Найдено записей: {report.count(kind)}")
-        return Chosen(kind, cand, report)
+        picked = await self._pick(kind, verified, sctx.tz)
+        note = f"Найдено записей: {picked.report.count(kind)}"
+        if picked.comparison is not None and picked.comparison.baseline:
+            c = picked.comparison
+            note += f"; совпало с прежними данными: {c.matched} из {c.baseline}"
+        await stage.finish("ok", note)
+        return picked
 
-    async def _pick(
-        self, kind: Kind, verified: list[tuple[Candidate, CanaryReport]], tz: ZoneInfo
-    ) -> int:
-        """Several candidates that read different data: the student says which one is theirs."""
+    async def _pick(self, kind: Kind, verified: list[Chosen], tz: ZoneInfo) -> Chosen:
+        """One candidate. A repair prefers the one that reads the confirmed data again; several
+        candidates that read *different* data are a question for the student."""
         if len(verified) == 1:
-            return 0
-        id_sets = [frozenset(r.external_id for r in rep.valid[kind]) for _, rep in verified]
+            return verified[0]
+        matching = [c for c in verified if c.comparison and c.comparison.verdict == "match"]
+        if matching:
+            return max(matching, key=lambda c: c.comparison.ratio if c.comparison else 0.0)
+        id_sets = [frozenset(r.external_id for r in c.report.valid[kind]) for c in verified]
         if all(s == id_sets[0] for s in id_sets):
-            return 0  # the same data twice
+            return verified[0]  # the same data twice
         options: list[tuple[str, str, str | None]] = []
         now = self.services.clock.now()
-        for i, (_, rep) in enumerate(verified):
+        for i, cand in enumerate(verified):
             samples = [
-                "{}: {}".format(*describe(r, tz)) for r in sample_of(rep.valid[kind], kind, now)[:2]
+                "{}: {}".format(*describe(r, tz))
+                for r in sample_of(cand.report.valid[kind], kind, now)[:2]
             ]
             options.append(
-                (str(i), f"Вариант {i + 1}: {rep.count(kind)} записей", "; ".join(samples))
+                (str(i), f"Вариант {i + 1}: {cand.report.count(kind)} записей", "; ".join(samples))
             )
-        chosen = await self.ui.choose(
-            f"Нашлось несколько источников для раздела «{KIND_LABELS[kind].lower()}». Какой из них ваш?",
+        answer = await self.ui.choose(
+            f"Нашлось несколько источников для раздела «{KIND_LABELS[kind].lower()}». "
+            "Какой из них ваш?",
             options,
         )
         try:
-            idx = int(chosen or "0")
+            idx = int(answer or "0")
         except ValueError:
             idx = 0
-        return idx if 0 <= idx < len(verified) else 0
+        return verified[idx if 0 <= idx < len(verified) else 0]
 
     async def _ask_page(
         self, info: ConnInfo, pending: list[Kind], *, have_some: bool
@@ -606,7 +633,12 @@ class Explorer:
         return spec, report
 
     async def _show_summary(
-        self, info: ConnInfo, chosen: dict[Kind, Chosen], report: CanaryReport
+        self,
+        info: ConnInfo,
+        chosen: dict[Kind, Chosen],
+        report: CanaryReport,
+        *,
+        title: str = "Вот что удалось собрать",
     ) -> None:
         now = self.services.clock.now()
         groups: list[SummaryGroup] = []
@@ -620,7 +652,7 @@ class Explorer:
         groups.append(
             SummaryGroup(title="Источник", items=[item("Сайт", info.origin, info.origin)])
         )
-        await self.ui.summary("Вот что удалось собрать", groups)
+        await self.ui.summary(title, groups)
 
     async def _activate(
         self,
@@ -637,7 +669,7 @@ class Explorer:
             row = await revisions.add_revision(
                 db, origin=info.origin, adapter="recipe", spec=spec, state="canary", digest=digest
             )
-            await revisions.activate(db, row)
+            await revisions.activate(db, row, now=self.services.clock.now())
             conn = await db.get(m.Connection, info.connection_id)
             if conn is not None and conn.status != "disabled":
                 conn.adapter = "recipe"

@@ -8,6 +8,7 @@ between the requests of one exploration and the provider's prefix cache is hit.
 from __future__ import annotations
 
 import copy
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -78,28 +79,52 @@ def _fields_help(kind: Kind) -> str:
     return "\n".join(f"- `{name}` — {FIELD_HELP.get(name, name)}" for name in sorted(VOCAB[kind]))
 
 
-def task_prompt(kind: Kind, feedback: list[str] | None = None) -> str:
+PROBLEMS: dict[str, str] = {
+    "not_found": "адрес больше не отвечает (ошибка «не найдено»)",
+    "status": "сайт отвечает ошибкой на прежний запрос",
+    "format": "ответ пришёл в другом формате, чем описано",
+    "fields": "записи есть, но описанные поля в них больше не находятся",
+    "selector": "по прежним селекторам ничего не находится",
+    "bootstrap": "шаг подготовки не получает нужные значения",
+    "empty": "по прежнему описанию записей не находится, хотя раньше они были",
+}
+
+
+def _feedback_note(feedback: list[str] | None) -> str:
+    if not feedback:
+        return ""
+    lines = "\n".join(f"- {line}" for line in feedback[:12])
+    return (
+        "### Замечания к предыдущему варианту\n\n"
+        "Предыдущий вариант отклонила проверка. Исправь и верни новый ответ целиком. "
+        f"Замечания указывают место и причину, но не значения:\n{lines}"
+    )
+
+
+def task_prompt(
+    kind: Kind,
+    feedback: list[str] | None = None,
+    *,
+    previous: dict[str, Any] | None = None,
+    problem: str | None = None,
+) -> str:
+    """The kind-specific task. With `previous` it is a repair of an endpoint that stopped working."""
     required = sorted(REQUIRED[kind])
     if kind == "scheduleEvents":
         required = [*required, "endsAt (или durationMinutes)"]
-    note = ""
-    if feedback:
-        lines = "\n".join(f"- {line}" for line in feedback[:12])
-        note = (
-            "### Замечания к предыдущему варианту\n\n"
-            "Предыдущий вариант отклонила проверка. Исправь и верни новый ответ целиком. "
-            f"Замечания указывают место и причину, но не значения:\n{lines}"
-        )
-    return (
-        load("author.md")
-        .replace("{{kind_label}}", KIND_LABELS[kind])
+    template = load("repair.md" if previous is not None else "author.md")
+    text = (
+        template.replace("{{kind_label}}", KIND_LABELS[kind])
         .replace("{{kind}}", kind)
         .replace("{{kind_hint}}", KIND_HINTS[kind])
         .replace("{{fields}}", _fields_help(kind))
         .replace("{{required}}", ", ".join(f"`{r}`" for r in required))
-        .replace("{{feedback}}", note)
-        .strip()
+        .replace("{{feedback}}", _feedback_note(feedback))
+        .replace("{{problem}}", PROBLEMS.get(problem or "", "сайт отвечает не так, как описано"))
     )
+    if previous is not None:
+        text = text.replace("{{previous}}", json.dumps(previous, ensure_ascii=False, indent=1))
+    return text.strip()
 
 
 @lru_cache
@@ -148,16 +173,24 @@ def author_schema(kind: Kind) -> dict[str, Any]:
     }
 
 
-def author_request(kind: Kind, observation: str, feedback: list[str] | None = None) -> LlmRequest:
+def author_request(
+    kind: Kind,
+    observation: str,
+    feedback: list[str] | None = None,
+    *,
+    previous: dict[str, Any] | None = None,
+    problem: str | None = None,
+) -> LlmRequest:
+    task = task_prompt(kind, feedback, previous=previous, problem=problem)
     return LlmRequest(
         messages=[
             LlmMessage(role="system", content=system_prompt()),
-            LlmMessage(role="user", content=f"{observation}\n\n{task_prompt(kind, feedback)}"),
+            LlmMessage(role="user", content=f"{observation}\n\n{task}"),
         ],
         json_schema=author_schema(kind),
         max_tokens=4000,
         temperature=0.1,
-        purpose="learn",
+        purpose="learn" if previous is None else "repair",
     )
 
 
