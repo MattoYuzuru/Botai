@@ -9,6 +9,7 @@ import {
   Wordmark,
 } from "@botai/design";
 import { type ReactNode, useEffect, useState } from "react";
+import { AgentBlocksSection, ProgressWallSection } from "./sections-agent";
 import { ControlsSection, PaletteSection, StatusSection, TypographySection } from "./sections-foundation";
 import { ChatSection, NavigationSection, StudySection } from "./sections-product";
 
@@ -30,6 +31,8 @@ const SECTIONS = [
   ["status", "Состояния"],
   ["study", "Учебные данные"],
   ["chat", "Чат и агент"],
+  ["blocks", "Блоки агента"],
+  ["progress-wall", "ProgressWall"],
   ["navigation", "Навигация"],
 ] as const;
 
@@ -42,6 +45,8 @@ function Gallery() {
       <StatusSection />
       <StudySection />
       <ChatSection />
+      <AgentBlocksSection />
+      <ProgressWallSection />
       <NavigationSection />
     </div>
   );

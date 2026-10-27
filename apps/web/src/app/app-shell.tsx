@@ -2,6 +2,7 @@ import { AccentScope, Banner, SyncIndicator, TabBar, useOnline, Wordmark } from 
 import { useIsFetching, useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { meQuery, spacesQuery } from "@/api/queries";
+import { ActiveJobBar } from "./active-job-bar";
 import { useActiveSpaceId } from "./active-space";
 import { useComposerKeyboard } from "./keyboard";
 import { activeTab, MAIN_TABS, type TabPath } from "./nav";
@@ -47,6 +48,7 @@ export function AppShell() {
             Нет сети. Показаны последние данные, они обновятся, когда сеть вернётся.
           </Banner>
         )}
+        <ActiveJobBar />
         <Outlet />
       </div>
     </AccentScope>

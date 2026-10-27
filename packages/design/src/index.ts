@@ -2,6 +2,7 @@
 export * from "./lib/accents";
 export { cn } from "./lib/cn";
 export * from "./lib/color";
+export { resolveColorToken } from "./lib/dom-color";
 export * from "./lib/format";
 export * from "./lib/hooks";
 export { mergeRefs } from "./lib/merge-refs";

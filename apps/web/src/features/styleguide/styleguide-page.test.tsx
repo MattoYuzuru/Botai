@@ -22,6 +22,8 @@ describe("/styleguide", () => {
       "Состояния и статус",
       "Учебные данные",
       "Чат и агент",
+      "Блоки агента",
+      "ProgressWall",
       "Навигация и слои",
     ]) {
       expect(screen.getByRole("heading", { level: 2, name: title })).toBeInTheDocument();

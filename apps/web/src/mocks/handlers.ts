@@ -1,10 +1,14 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
+import { runConnect } from "./connect-script";
 import { findUser, type MockDb, type MockUser, persistDb, ulid } from "./db";
+import { JobSim } from "./job-sim";
 
 type S = components["schemas"];
 
 export interface HandlerOptions {
+  /** Множитель пауз сценария подключения: 1 — как для человека, 0 — мгновенно (тесты). */
+  jobPace?: number;
   /** Задержка ответов, мс: в браузере видны скелетоны, в тестах — 0. */
   latency?: number;
   /** Сохранять изменения между перезагрузками страницы (только в браузере). */
@@ -32,7 +36,10 @@ const meOut = (db: MockDb, user: MockUser): S["MeOut"] => ({
  * Обработчики MSW по OpenAPI бэкенда. Один набор на браузер (`VITE_MOCKS=1`), Vitest и Playwright.
  * Эндпоинтов, которых нет в OpenAPI, здесь нет и не будет.
  */
-export function createHandlers(db: MockDb, { latency = 0, persist = false }: HandlerOptions = {}) {
+export function createHandlers(
+  db: MockDb,
+  { latency = 0, persist = false, jobPace = 0 }: HandlerOptions = {},
+) {
   const save = () => {
     if (persist) persistDb(db);
   };
@@ -156,6 +163,90 @@ export function createHandlers(db: MockDb, { latency = 0, persist = false }: Han
           ]
         : [];
       return HttpResponse.json(sections);
+    }),
+
+    http.post("*/api/v1/spaces/:spaceId/connections", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const space = db.spaces.find((item) => item.id === String(params.spaceId));
+      if (!space) return problem(404, "not_found", "Пространство не найдено");
+      const body = (await request.json()) as S["ConnectionCreate"];
+      const university = db.universities.find((item) => item.id === space.universityId);
+      const connection: S["ConnectionOut"] = {
+        id: ulid(),
+        spaceId: space.id,
+        adapter: null,
+        kind: body.kind ?? "portal",
+        origin: body.url ?? university?.origins[0] ?? "https://lk.fakeuni.test",
+        title: body.title ?? "Личный кабинет",
+        status: "learning",
+        hasPassword: false,
+        lastSyncAt: null,
+        nextSyncAt: null,
+        errorCode: null,
+        errorDetail: null,
+      };
+      db.connections.push(connection);
+      const jobId = ulid();
+      const sim = new JobSim(jobId, db.now, jobPace);
+      db.sims.set(jobId, sim);
+      save();
+      void runConnect(sim, db, connection.id, db.jobVariant).then(save);
+      return HttpResponse.json({ connection, jobId } satisfies S["ConnectionStarted"], { status: 201 });
+    }),
+
+    http.get("*/api/v1/connections/:connectionId", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const connection = db.connections.find((item) => item.id === String(params.connectionId));
+      return connection ? HttpResponse.json(connection) : problem(404, "not_found", "Подключение не найдено");
+    }),
+
+    http.get("*/api/v1/jobs/:jobId/events", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const sim = db.sims.get(String(params.jobId));
+      if (!sim) return problem(404, "not_found", "Задание не найдено");
+      const last = Number(request.headers.get("last-event-id") ?? 0) || 0;
+      return new HttpResponse(sim.stream(last), {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      });
+    }),
+
+    http.post("*/api/v1/jobs/:jobId/answers", async ({ params, request }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const sim = db.sims.get(String(params.jobId));
+      if (!sim) return problem(404, "not_found", "Задание не найдено");
+      const body = (await request.json()) as S["AnswerIn"];
+      // Секретные поля сервер не повторяет и не журналирует: помечаем по самому блоку.
+      const asked = sim.events.find(
+        (event) => event.event === "block" && (event.data as { id?: string }).id === body.blockId,
+      );
+      const secret = (asked?.data as { secret?: boolean } | undefined)?.secret === true;
+      const result = sim.answer(body.blockId, body.values, secret);
+      if (result === "answered") return problem(409, "block_answered", "На этот вопрос уже ответили");
+      if (!result) return problem(404, "not_found", "Вопрос не найден");
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.post("*/api/v1/jobs/:jobId/cancel", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      db.sims.get(String(params.jobId))?.cancel();
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.post("*/api/v1/actions/:proposalId/approve", async () => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      return HttpResponse.json({}, { status: 202 });
+    }),
+
+    http.post("*/api/v1/actions/:proposalId/reject", async () => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      return new HttpResponse(null, { status: 204 });
     }),
   ];
 }

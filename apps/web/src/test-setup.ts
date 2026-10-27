@@ -28,6 +28,8 @@ if (!window.matchMedia) {
 
 Element.prototype.scrollIntoView ??= () => {};
 window.scrollTo = () => {};
+// jsdom не рисует: canvas нужен только как элемент, кадры в тестах не проверяются пикселями.
+HTMLCanvasElement.prototype.getContext = (() => null) as unknown as HTMLCanvasElement["getContext"];
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.setPointerCapture ??= () => {};
 Element.prototype.releasePointerCapture ??= () => {};
