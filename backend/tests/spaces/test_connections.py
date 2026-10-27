@@ -257,6 +257,8 @@ async def test_put_secret_goes_to_the_vault_and_never_comes_back(
     # nothing the API says afterwards contains it
     for path in (f"/api/v1/connections/{conn}", "/api/v1/spaces", "/api/v1/me"):
         assert TOKEN not in (await client.get(path)).text
+    # only the kind is reported back, so the UI can say "токен сохранён"
+    assert (await client.get(f"/api/v1/connections/{conn}")).json()["storedSecrets"] == ["token"]
 
 
 async def test_put_secret_replaces_the_previous_value(
