@@ -20,8 +20,9 @@ from botai.browser.screen import (
     _internal_bind,
     _remote_urls,
     screen_secret,
+    verify_ticket,
 )
-from botai.browser.screen_remote import AUTH_HEADER, sign
+from botai.browser.screen_remote import AUTH_HEADER, authorised, sign
 from botai.core.ids import new_id
 from botai.core.vault import generate_kek_b64
 from botai.settings import Settings
@@ -63,6 +64,14 @@ async def test_the_link_serves_only_signed_requests(
         with pytest.raises(InvalidStatus) as exc:
             await connect(_worker_url(rig, find), additional_headers=headers)
         assert exc.value.response.status_code == 403
+
+
+def test_non_ascii_credentials_are_refused_not_raised() -> None:
+    key = b"k" * 32
+    assert authorised(key, "123.é", "/x", now=123) is False
+    assert authorised(key, "١٢٣.abc", "/x", now=123) is False
+    assert authorised(key, "9" * 40 + ".abc", "/x", now=123) is False
+    assert verify_ticket(key, "é.é", now=1.0) is None
 
 
 async def test_the_link_knows_whose_screen_it_is(

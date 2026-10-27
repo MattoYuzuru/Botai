@@ -242,6 +242,8 @@ def mint_ticket(key: bytes, session_id: str, user_id: str, *, ttl_s: float, now:
 
 
 def verify_ticket(key: bytes, ticket: str, *, now: float) -> TicketClaims | None:
+    if not ticket.isascii():
+        return None
     body, dot, mac = ticket.partition(".")
     if not dot or not body or not mac:
         return None

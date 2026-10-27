@@ -188,7 +188,7 @@ class PgLoginStore:
 class Recorder:
     """What happened during one login, without any typed value."""
 
-    steps: list[LoginStep] = field(default_factory=lambda: list[LoginStep]())
+    forms: list[FormStep] = field(default_factory=lambda: list[FormStep]())
     login_paths: list[str] = field(default_factory=lambda: list[str]())
     mfa_kinds: set[str] = field(default_factory=lambda: set[str]())
     captcha_seen: bool = False
@@ -199,12 +199,16 @@ class Recorder:
     def form(self, step: FormStep) -> None:
         self.mirrored += 1
         self.login_paths.append(urlsplit(step.url).path)
-        learned = as_preset_step(step)
-        if learned is not None and all(s.id != learned.id for s in self.steps):
-            self.steps.append(learned)
+        if all(s.id != step.id for s in self.forms):
+            self.forms.append(step)
         for f in step.fields:
             if f.role == "otp":
                 self.mfa_kinds.add(_otp_kind(f.label))
+
+    def steps(self, avoid: Sequence[str] = ()) -> list[LoginStep]:
+        """The learned form steps, made safe to store."""
+        learned = (as_preset_step(form, avoid) for form in self.forms)
+        return [step for step in learned if step is not None]
 
     def push(self, url: str) -> None:
         self.mirrored += 1
@@ -245,11 +249,12 @@ def build_preset(
     probe: dict[str, Any] | None,
     final_url: str,
     now: datetime,
+    avoid: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The preset for this origin. Raises ValueError if it would not pass the schema."""
     host = urlsplit(origin).hostname or "site"
     allow = list(dict.fromkeys(hosts))[:MAX_HOSTS]
-    areas = list(dict.fromkeys(login_area(p) for p in recorder.login_paths))[:MAX_STEPS]
+    areas = list(dict.fromkeys(login_area(p, avoid) for p in recorder.login_paths))[:MAX_STEPS]
     success: dict[str, Any] = {}
     if probe is not None:
         success["probe"] = probe
@@ -301,7 +306,8 @@ def build_preset(
         "capture": capture,
         "mode": "screen" if recorder.by_human and not recorder.mirrored else "assisted",
         "steps": [
-            s.model_dump(by_alias=True, exclude_none=True) for s in recorder.steps[:MAX_STEPS]
+            s.model_dump(by_alias=True, exclude_none=True)
+            for s in recorder.steps(avoid)[:MAX_STEPS]
         ],
     }
     problems = schemas.errors("login-preset.schema.json", preset)

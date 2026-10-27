@@ -49,7 +49,8 @@ NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 10_000
 SETTLE_MS = 3_000
 MAX_LOG = 500
-SAMPLE_CHARS = 4_000
+SAMPLE_CHARS = 64_000  # a whole timetable or marks page as JSON, so the learner can parse it
+SAMPLE_BUDGET = 4_000_000  # characters of samples one browser context may hold
 HOLD_MAX_S = 30 * 60
 
 BearerFrom = Literal["none", "localStorage", "sessionStorage", "authorizationHeader"]
@@ -155,6 +156,7 @@ class PlaywrightHandle:
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
+        self._sampled = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
@@ -232,11 +234,13 @@ class PlaywrightHandle:
             task.add_done_callback(self._samples.discard)
 
     async def _sample(self, response: Response, entry: ObservedRequest) -> None:
+        if self._sampled >= SAMPLE_BUDGET:
+            return
         with contextlib.suppress(PlaywrightError, UnicodeError):
             body = await response.body()
-            entry.response_sample = scrub_sample(
-                body[: SAMPLE_CHARS * 4].decode("utf-8", "replace")
-            )
+            sample = scrub_sample(body[: SAMPLE_CHARS * 4].decode("utf-8", "replace"))
+            entry.response_sample = sample
+            self._sampled += len(sample or "")
 
     def _on_failed(self, request: Request) -> None:
         failure = request.failure or ""
@@ -301,29 +305,29 @@ class PlaywrightHandle:
     async def fill(self, selector: str, value: str) -> None:
         try:
             await self._page.fill(selector, value, timeout=ACTION_TIMEOUT_MS)
-        except PlaywrightError as exc:
-            # the message names the selector, never the value
+        except PlaywrightError:
+            # `from None`: Playwright's call log can quote the value that was being typed
             raise BotaiError(
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
-            ) from exc
+            ) from None
 
     async def click(self, selector: str) -> PageSnapshot:
         try:
             await self._page.click(selector, timeout=ACTION_TIMEOUT_MS)
-        except PlaywrightError as exc:
+        except PlaywrightError:
             raise BotaiError(
                 ErrorCode.SOURCE_UNAVAILABLE, "Кнопка на странице вуза не найдена"
-            ) from exc
+            ) from None
         await self._settle()
         return await self.snapshot()
 
     async def press(self, selector: str, key: str) -> PageSnapshot:
         try:
             await self._page.press(selector, key, timeout=ACTION_TIMEOUT_MS)
-        except PlaywrightError as exc:
+        except PlaywrightError:
             raise BotaiError(
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
-            ) from exc
+            ) from None
         await self._settle()
         return await self.snapshot()
 
@@ -371,7 +375,10 @@ class PlaywrightHandle:
         source = self._capture.bearer_from
         if source == "authorizationHeader":
             primary = (urlsplit(self.origin).hostname or "").lower()
-            bearer = self._bearer.get(primary) or next(iter(reversed(self._bearer.values())), None)
+            # the origin's own; failing that, the one token the browser sent anywhere (an API
+            # host next to the page host). Two different tokens: no guess.
+            sent = set(self._bearer.values())
+            bearer = self._bearer.get(primary) or (next(iter(sent)) if len(sent) == 1 else None)
         elif source in ("localStorage", "sessionStorage") and self._capture.bearer_key:
             bearer = await self._bearer_from_storage(source, self._capture.bearer_key)
         now = self._clock.now()
@@ -558,6 +565,7 @@ class PlaywrightGateway:
             raise BotaiError(
                 ErrorCode.SOURCE_UNAVAILABLE, "Браузер сейчас занят, попробуйте через минуту"
             ) from exc
+        context: BrowserContext | None = None
         try:
             credentials = await self._egress.credentials(
                 hosts, ttl_s=LOGIN_TOKEN_TTL_S, suffixes=suffixes
@@ -583,6 +591,9 @@ class PlaywrightGateway:
                 await self._restore(context, session)
             page = await context.new_page()
         except BaseException:
+            if context is not None:  # a half-built context would live on with its cookies
+                with contextlib.suppress(Exception):
+                    await context.close()
             self._slots.release()
             raise
         handle = PlaywrightHandle(
