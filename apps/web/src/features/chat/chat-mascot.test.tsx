@@ -1,12 +1,15 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/api/queries";
 import { jobManager } from "@/features/jobs/job-manager";
 import { useAcknowledged } from "@/features/mascot/acknowledged";
 import type { Scenario } from "@/mocks/db";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 import { useChatJobs } from "./chat-jobs";
+import { chatKeys } from "./queries";
 import { outbox } from "./runtime";
 
 let current = createDataServer();
@@ -61,6 +64,162 @@ describe("Варя в чате: сцена, насест, реплики", () =>
     expect(sprite()).toBe(before);
     expect(document.querySelectorAll("svg.varya")).toHaveLength(1);
   });
+
+  it.each(["before", "after"] as const)(
+    "принятие сообщения %s навигации не возвращает Варю на сцену",
+    async (acceptance) => {
+      let releaseMessage = () => {};
+      const messageGate = new Promise<void>((resolve) => {
+        releaseMessage = resolve;
+      });
+      current.server.use(
+        http.post("*/api/v1/chat/threads/:threadId/messages", async () => {
+          await messageGate;
+          // После паузы ответит обычный обработчик стенда.
+        }),
+      );
+      const user = userEvent.setup();
+      const { router, queryClient } = renderApp("/chat?thread=new");
+      await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
+      let releaseNavigation = () => {};
+      const navigationGate = new Promise<void>((resolve) => {
+        releaseNavigation = resolve;
+      });
+      const navigate = router.navigate.bind(router);
+      vi.spyOn(router, "navigate").mockImplementation((options) => {
+        const search = options.search;
+        if (options.to === "/chat" && typeof search === "object" && search && "thread" in search) {
+          return navigationGate.then(() => navigate(options));
+        }
+        return navigate(options);
+      });
+      const before = sprite();
+      const modes: (string | null)[] = [];
+      const observer = new MutationObserver(() => modes.push(dock()?.getAttribute("data-dock") ?? null));
+      observer.observe(dock() as Element, { attributes: true, attributeFilter: ["data-dock"] });
+      try {
+        await user.type(screen.getByRole("textbox", { name: "Сообщение агенту" }), "Что сдавать на неделе?");
+        await user.click(screen.getByRole("button", { name: "Отправить" }));
+        await waitFor(() => {
+          expect(outbox.snapshot).toHaveLength(1);
+          expect(typeof outbox.snapshot[0]?.threadId).toBe("string");
+        }, wait);
+        const threadId = outbox.snapshot[0]?.threadId;
+        expect(router.state.location.search).toMatchObject({ thread: "new" });
+        expect(dock()).toHaveAttribute("data-dock", "perch");
+        expect(
+          await screen.findByText("Что сдавать на неделе?", { selector: "p" }, wait),
+        ).toBeInTheDocument();
+
+        if (acceptance === "after") {
+          releaseNavigation();
+          await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: threadId }), wait);
+          await waitFor(
+            () => expect(queryClient.getQueryData(chatKeys.messages(threadId ?? ""))).toEqual([]),
+            wait,
+          );
+        }
+
+        releaseMessage();
+        await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
+        expect(router.state.location.search).toMatchObject({
+          thread: acceptance === "before" ? "new" : threadId,
+        });
+        expect(dock()).toHaveAttribute("data-dock", "perch");
+        expect(screen.queryByRole("heading", { level: 2, name: "Спросите про пары и сроки" })).toBeNull();
+
+        releaseNavigation();
+        await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: threadId }), wait);
+        await screen.findByText(/Ближайшие работы/, undefined, wait);
+        expect(modes).toEqual(["perch"]);
+        expect(sprite()).toBe(before);
+      } finally {
+        observer.disconnect();
+        releaseMessage();
+        releaseNavigation();
+      }
+    },
+  );
+
+  it.each(["new", "existing"] as const)(
+    "создание прежнего чата не уводит из другого открытого черновика (%s)",
+    async (destination) => {
+      let releaseThread = () => {};
+      const threadGate = new Promise<void>((resolve) => {
+        releaseThread = resolve;
+      });
+      current.server.use(
+        http.post("*/api/v1/chat/threads", async () => {
+          await threadGate;
+        }),
+      );
+      const user = userEvent.setup();
+      const { router } = renderApp("/chat?thread=new");
+      await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
+      try {
+        await user.type(screen.getByRole("textbox", { name: "Сообщение агенту" }), "Прежний вопрос");
+        await user.click(screen.getByRole("button", { name: "Отправить" }));
+        await waitFor(() => expect(outbox.snapshot).toHaveLength(1), wait);
+        if (destination === "new") {
+          await user.click(screen.getByRole("button", { name: "Новый чат" }));
+          await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
+          expect(dock()).toHaveAttribute("data-dock", "floor");
+          expect(screen.queryByText("Прежний вопрос", { selector: "p" })).toBeNull();
+        } else {
+          await user.click(screen.getByRole("button", { name: "История чатов" }));
+          await user.click(await screen.findByRole("link", { name: /Что сегодня по расписанию\?/ }, wait));
+          await screen.findByText("Что сегодня по расписанию?", { selector: "p" }, wait);
+        }
+        const opened = router.state.location.search;
+        await user.type(screen.getByRole("textbox", { name: "Сообщение агенту" }), "Новый черновик");
+        releaseThread();
+        await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
+        expect(router.state.location.search).toEqual(opened);
+        expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toHaveValue("Новый черновик");
+        expect(screen.queryByText("Прежний вопрос", { selector: "p" })).toBeNull();
+        if (destination === "new") expect(dock()).toHaveAttribute("data-dock", "floor");
+      } finally {
+        releaseThread();
+      }
+    },
+  );
+
+  it.each(["self", "other"] as const)(
+    "сохранённый черновик ждёт владельца /me и не показывает чужую очередь (%s)",
+    async (owner) => {
+      const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+      const ownerId = owner === "self" ? current.db.users[0]?.id : "different-owner";
+      if (!ownerId) throw new Error("Нужен пользователь стенда");
+      outbox.send("Что сдавать на неделе?", { ownerId, threadId: null, spaceId: null });
+      let meAvailable = false;
+      current.server.use(http.get("*/api/v1/me", () => (meAvailable ? undefined : HttpResponse.error())));
+      const { router, queryClient } = renderApp("/chat?thread=new");
+      await screen.findByRole("heading", { level: 1, name: "Чат" }, wait);
+      expect(queryClient.getQueryData(queryKeys.me)).toBeUndefined();
+      expect(screen.queryByText("Что сдавать на неделе?", { selector: "p" })).toBeNull();
+
+      meAvailable = true;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      if (owner === "self") {
+        await screen.findByText("Что сдавать на неделе?", { selector: "p" }, wait);
+        expect(dock()).toHaveAttribute("data-dock", "perch");
+      } else {
+        await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
+        expect(dock()).toHaveAttribute("data-dock", "floor");
+        expect(screen.queryByText("Что сдавать на неделе?", { selector: "p" })).toBeNull();
+      }
+      online.mockReturnValue(true);
+      window.dispatchEvent(new Event("online"));
+      await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
+      if (owner === "self") {
+        await waitFor(() => expect(router.state.location.search.thread).not.toBe("new"), wait);
+        await screen.findByText(/Ближайшие работы/, undefined, wait);
+      } else {
+        expect(router.state.location.search).toMatchObject({ thread: "new" });
+        expect(screen.queryByText("Что сдавать на неделе?", { selector: "p" })).toBeNull();
+      }
+    },
+  );
 
   it("на насесте она думает, пока агент отвечает, и стоит спокойно, когда ответ пришёл", async () => {
     const user = userEvent.setup();

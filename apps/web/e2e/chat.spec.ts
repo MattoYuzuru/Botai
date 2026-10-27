@@ -213,12 +213,18 @@ test.describe("Варя в чате", () => {
   }) => {
     await openChat(page, "/chat?thread=new&pace=0");
     await expect(sprite(page)).toBeVisible();
+    await expect(page.getByRole("list", { name: "Подсказки" }).getByRole("button").first()).toBeEnabled();
     const handle = await sprite(page).elementHandle();
-    const series = await page.evaluate(async () => {
+    const flight = await page.evaluate(async () => {
+      const dock = document.querySelector<HTMLElement>("[data-dock]");
       const svg = document.querySelector("[data-dock] svg.varya") as SVGSVGElement;
       const started = performance.now();
       const first = document.querySelector<HTMLElement>("[aria-label='Подсказки'] button");
-      first?.click();
+      if (!first || !dock) throw new Error("Пустой чат должен показать подсказку и Варю до отправки");
+      const modes: (string | undefined)[] = [];
+      const observer = new MutationObserver(() => modes.push(dock.dataset.dock));
+      observer.observe(dock, { attributes: true, attributeFilter: ["data-dock"] });
+      first.click();
       const samples: { t: number; w: number }[] = [];
       await new Promise<void>((resolve) => {
         const tick = () => {
@@ -228,8 +234,12 @@ test.describe("Варя в чате", () => {
         };
         requestAnimationFrame(tick);
       });
-      return samples;
+      observer.disconnect();
+      return { samples, modes };
     });
+    const series = flight.samples;
+    // Назначение серверного threadId не возвращает Варю на пол и не запускает второй прыжок.
+    expect(flight.modes).toEqual(["perch"]);
     expect(series[0]?.w).toBeGreaterThan(90);
     // Длительность перелёта — от первого кадра, где размер пошёл меняться, до кадра, где он перестал: задержка
     // между нажатием и началом движения (нагрузка на runner) в 280 мс не входит.

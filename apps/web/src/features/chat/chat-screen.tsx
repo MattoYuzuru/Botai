@@ -52,6 +52,14 @@ export function ChatScreen() {
   const keyboardOpen = useComposerKeyboard();
   const pendingAll = useOutbox();
   const [draft, setDraft] = useState("");
+  // Сохраняем принадлежность черновику, пока очередь получает threadId раньше маршрута.
+  const [draftMessages, setDraftMessages] = useState<
+    readonly { id: string; ownerId: string; threadId: string | null }[]
+  >(() =>
+    pendingAll
+      .filter((item) => item.threadId === null)
+      .map(({ id, ownerId, threadId }) => ({ id, ownerId, threadId })),
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
 
   // Какой чат открыт: явный `?thread=`, иначе последний, иначе пустой новый.
@@ -61,9 +69,27 @@ export function ChatScreen() {
   const activeThread = threads.data?.find((thread) => thread.id === activeId) ?? null;
 
   const pending = useMemo(
-    () => pendingAll.filter((item) => item.threadId === activeId),
-    [pendingAll, activeId],
+    () =>
+      pendingAll.filter(
+        (item) =>
+          item.ownerId === me.data?.user.id &&
+          (activeId === null
+            ? draftMessages.some((message) => message.id === item.id)
+            : item.threadId === activeId),
+      ),
+    [pendingAll, activeId, draftMessages, me.data?.user.id],
   );
+  useEffect(() => {
+    if (activeId !== null) setDraftMessages([]);
+  }, [activeId]);
+  const assignedThreadId = draftMessages.find(
+    (message) => message.ownerId === me.data?.user.id && message.threadId !== null,
+  )?.threadId;
+  useEffect(() => {
+    if (activeId === null && assignedThreadId) {
+      void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true });
+    }
+  }, [activeId, assignedThreadId, navigate]);
   const jobRef = useChatJobs((state) => (activeId ? state.byThread[activeId] : undefined));
   const job = useJob(jobRef?.jobId) ?? null;
 
@@ -120,15 +146,19 @@ export function ChatScreen() {
   }, [activeId, finishedJobId, finishedState, finishedKeeps, queryClient]);
 
   // Очередь отправки: новый чат появляется в списке, отправленное сообщение — в ленте, отказ возвращает текст в поле.
-  const latest = useLatest({ activeId, param });
+  const latest = useLatest({ activeId, param, draftMessages, ownerId: me.data?.user.id });
   useEffect(
     () =>
       outbox.on((event) => {
         if (event.type === "thread") {
           void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
-          if (latest.current.activeId === null) {
-            void navigate({ to: "/chat", search: { thread: event.thread.id }, replace: true });
-          }
+          setDraftMessages((items) =>
+            items.map((item) =>
+              item.id === event.item.id && item.ownerId === event.item.ownerId
+                ? { ...item, threadId: event.thread.id }
+                : item,
+            ),
+          );
         } else if (event.type === "sent") {
           const sent = event.message;
           if (sent) {
@@ -138,30 +168,51 @@ export function ChatScreen() {
           }
           void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
         } else {
+          setDraftMessages((items) => items.filter((item) => item.id !== event.item.id));
           toast("Сообщение не отправлено", { tone: "warning", description: humanMessage(event.error) });
-          setDraft((current) => current || event.item.text);
+          const current = latest.current;
+          if (
+            event.item.ownerId === current.ownerId &&
+            (current.activeId === null
+              ? current.draftMessages.some((message) => message.id === event.item.id)
+              : event.item.threadId === current.activeId)
+          ) {
+            setDraft((current) => current || event.item.text);
+          }
         }
       }),
-    [queryClient, navigate, latest],
+    [queryClient, latest],
   );
 
   const timeline = useMemo(
     () => buildTimeline({ messages, pending, job, nowMs }),
     [messages, pending, job, nowMs],
   );
-  const showEmpty = !resolving && !(activeId && messagesResult.isPending) && timeline.length === 0;
+  const startingThread =
+    activeId === null && draftMessages.some((message) => message.ownerId === me.data?.user.id);
+  const showEmpty =
+    !startingThread && !resolving && !(activeId && messagesResult.isPending) && timeline.length === 0;
 
   const suggestions = useSuggestions(showEmpty, nowMs);
 
   const send = (text: string) => {
     if (!me.data) return;
-    outbox.send(text, { ownerId: me.data.user.id, threadId: activeId, spaceId: null });
+    const item = outbox.send(text, { ownerId: me.data.user.id, threadId: activeId, spaceId: null });
+    if (activeId === null) {
+      setDraftMessages((items) => [...items, { id: item.id, ownerId: item.ownerId, threadId: null }]);
+    }
     setDraft("");
+  };
+
+  const startNewChat = () => {
+    setDraft("");
+    setDraftMessages([]);
+    void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
   };
 
   // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.
   const mascot = useChatMascot({
-    mode: showEmpty || (activeId === null && timeline.length === 0) ? "floor" : "perch",
+    mode: showEmpty || (activeId === null && !startingThread && timeline.length === 0) ? "floor" : "perch",
     replying,
     waitingForHuman,
     stage: job && !isTerminal(job.state) ? job.stage : null,
@@ -191,14 +242,7 @@ export function ChatScreen() {
             <>
               <ContextButton threadId={activeId} nowMs={nowMs} />
               <IconButton icon="stale" label="История чатов" onClick={() => setHistoryOpen(true)} />
-              <IconButton
-                icon="plus"
-                label="Новый чат"
-                onClick={() => {
-                  setDraft("");
-                  void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
-                }}
-              />
+              <IconButton icon="plus" label="Новый чат" onClick={startNewChat} />
             </>
           }
         />
@@ -254,8 +298,7 @@ export function ChatScreen() {
         nowMs={nowMs}
         timeZone={timeZone}
         onNew={() => {
-          setDraft("");
-          void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
+          startNewChat();
         }}
       />
     </ChatLayout>
