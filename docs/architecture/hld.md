@@ -1,6 +1,6 @@
 # BotAI — High-Level Design
 
-Статус: **accepted**, 2026-10-27. Диаграммы — Mermaid: открываются в превью Markdown в IDE и на
+Статус: **описание реализации**, обновлено 2026-10-29. Диаграммы — Mermaid: открываются в превью Markdown в IDE и на
 GitHub. Детали модулей — [LLD](lld.md). Почему так — [ADR](../README.md#решения).
 
 ## 1. Система целиком
@@ -18,12 +18,14 @@ flowchart LR
         Browser["BrowserSvc<br/>Chromium · Playwright"]
         Proxy["EgressProxy<br/>allowlist хостов"]
         PG[("PostgreSQL<br/>домен · очередь · FTS · Vault")]
+        Search["SearchService<br/>бюджеты · fallback"]
     end
 
     subgraph Outside["Внешний мир"]
         Uni["Сайты вуза<br/>SSO · LMS · ЛК · страницы"]
         Docs["Файлы и Google-документы<br/>студента"]
         LLM["DeepSeek API"]
+        SearchAPI["Exa / DeepSeek Search API"]
     end
 
     PWA -- "REST + SSE" --> API
@@ -37,13 +39,17 @@ flowchart LR
     Proxy --> Uni
     Proxy --> Docs
     Worker -- "обучение, починка, чат" --> LLM
-    API -- "чат" --> LLM
+    Worker -- "публичный поиск" --> Search
+    Search --> Proxy
+    Proxy --> SearchAPI
 ```
 
 Два правила, на которых держится всё остальное:
 
-- **Наружу — только через EgressProxy.** Ни браузер, ни HTTP-клиент не ходят во внешний мир
-  напрямую. Allowlist — хосты конкретного подключения.
+- **Источники и публичный поиск — через EgressProxy.** Allowlist источника привязан к
+  подключению; поиск получает отдельное разрешение только для фиксированного API провайдера.
+  Существующий LLM-провайдер использует отдельный фиксированный путь DeepSeek, который
+  не получает URL из модели или источника. Поисковая выдача не расширяет доступ к вузу.
 - **Секреты — только в Vault.** В LLM уходят данные и вопросы, но не пароль, cookie или токен.
 
 ## 2. Два контура
