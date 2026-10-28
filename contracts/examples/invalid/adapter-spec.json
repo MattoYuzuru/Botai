@@ -2,5 +2,208 @@
   {"adapter": "recipe", "recipe": {"version": 1, "origin": "https://fakeuni.test/path", "revision": 1, "learnedAt": "2026-10-27T10:00:00Z",
     "auth": {"type": "cookie"}, "endpoints": [], "validation": {"requireKinds": ["scheduleEvents"]}}},
   {"adapter": "moodle_ws", "origin": "https://lms.fakeuni.test", "functions": ["core_user_update_users"]},
-  {"adapter": "python", "code": "import os"}
+  {"adapter": "python", "code": "import os"},
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 1,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "POST",
+            "path": "/calendar",
+            "render": true,
+            "readOnlyPost": true
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "article",
+            "fields": {
+              "title": {
+                "selector": "h2"
+              }
+            }
+          }
+        },
+        {
+          "id": "news",
+          "kind": "news",
+          "request": {
+            "method": "GET",
+            "path": "/news"
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "li.news-item",
+            "fields": {
+              "title": {
+                "selector": "a"
+              },
+              "url": {
+                "selector": "a",
+                "attr": "href"
+              },
+              "publishedAt": {
+                "selector": "time",
+                "attr": "datetime",
+                "transform": "iso"
+              }
+            },
+            "identity": [
+              "url"
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 1,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/calendar",
+            "render": true,
+            "body": {}
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "article",
+            "fields": {
+              "title": {
+                "selector": "h2"
+              }
+            }
+          }
+        },
+        {
+          "id": "news",
+          "kind": "news",
+          "request": {
+            "method": "GET",
+            "path": "/news"
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "li.news-item",
+            "fields": {
+              "title": {
+                "selector": "a"
+              },
+              "url": {
+                "selector": "a",
+                "attr": "href"
+              },
+              "publishedAt": {
+                "selector": "time",
+                "attr": "datetime",
+                "transform": "iso"
+              }
+            },
+            "identity": [
+              "url"
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 1,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/calendar",
+            "render": true
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "/items",
+            "fields": {
+              "title": {
+                "path": "/title"
+              }
+            }
+          }
+        },
+        {
+          "id": "news",
+          "kind": "news",
+          "request": {
+            "method": "GET",
+            "path": "/news"
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "li.news-item",
+            "fields": {
+              "title": {
+                "selector": "a"
+              },
+              "url": {
+                "selector": "a",
+                "attr": "href"
+              },
+              "publishedAt": {
+                "selector": "time",
+                "attr": "datetime",
+                "transform": "iso"
+              }
+            },
+            "identity": [
+              "url"
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  }
 ]

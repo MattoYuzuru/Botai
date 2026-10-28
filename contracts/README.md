@@ -6,6 +6,7 @@
 
 | Файл | Потребители |
 |---|---|
+| `conversation.md` | API, очередь, Explorer, ChatAgent, PWA |
 | `domain.schema.json` | Normalizer, API, PWA |
 | `recipe.schema.json` | Explorer, RecipeStore, Runner |
 | `login-preset.schema.json` | BrowserSvc, Explorer |

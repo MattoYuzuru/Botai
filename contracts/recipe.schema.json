@@ -134,7 +134,7 @@
     "template": {
       "type": "string",
       "maxLength": 120,
-      "description": "Литерал или шаблон: {today}, {nowUnix}, {plusDays:N}, {minusDays:N}, {имяПараметра} из bootstrap."
+      "description": "Литерал или шаблон: {today}, {weekStart} (понедельник текущей недели в timezone источника), {nowUnix}, {plusDays:N}, {minusDays:N}, {имяПараметра} из bootstrap."
     },
     "pointer": {
       "type": "string",
@@ -233,6 +233,11 @@
               "additionalProperties": {
                 "$ref": "#/$defs/template"
               }
+            },
+            "render": {
+              "type": "boolean",
+              "default": false,
+              "description": "Явное чтение отрисованного HTML в ограниченном браузере. Только GET и response.format=html; включается после успешной rendered-canary. Без флага — HTTP."
             }
           },
           "allOf": [
@@ -312,7 +317,48 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "request": {
+                "properties": {
+                  "render": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "render"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "request": {
+                "properties": {
+                  "method": {
+                    "const": "GET"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "body"
+                  ]
+                }
+              },
+              "response": {
+                "properties": {
+                  "format": {
+                    "const": "html"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "field": {
       "type": "object",
