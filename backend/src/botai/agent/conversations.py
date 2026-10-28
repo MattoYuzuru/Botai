@@ -67,7 +67,7 @@ async def create_thread(
         raise BotaiError(ErrorCode.VALIDATION, "Контекст подключения относится к чату подключения")
     context = (
         normalize_context(
-            body.connect_context.model_dump(mode="json", exclude_none=True)
+            body.connect_context.model_dump(mode="json", exclude_none=True, exclude_unset=True)
             if body.connect_context
             else {}
         )
@@ -114,7 +114,24 @@ async def create_thread(
             )
         )
         if existing is not None:
-            if existing.connect_context.get("_start_hash") != fingerprint:
+            previous_context = {
+                key: value for key, value in context.items() if key != "discovery_mode"
+            }
+            legacy_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "space_id": body.space_id,
+                        "title": body.title,
+                        "purpose": body.purpose,
+                        "context": previous_context,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            accepted_hashes = {fingerprint}
+            if context.get("discovery_mode") == "auto":
+                accepted_hashes.add(legacy_fingerprint)
+            if existing.connect_context.get("_start_hash") not in accepted_hashes:
                 raise BotaiError(
                     ErrorCode.CONFLICT, "Этот запрос уже использован для другого разговора"
                 )

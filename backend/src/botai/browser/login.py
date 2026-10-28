@@ -38,7 +38,6 @@ from botai.browser.forms import (
     UnknownPage,
     best_step,
     detect,
-    has_credential_fields,
     replay,
     safe_label,
     secretish,
@@ -53,7 +52,7 @@ from botai.browser.presets import (
     comparable,
     keep_known,
 )
-from botai.browser.probe import check_session, learn_probe, probe_ok
+from botai.browser.probe import check_session, learn_probe, probe_ok, requires_authentication
 from botai.browser.proxy import is_ip_literal, normalize_host
 from botai.browser.session import decode_session, encode_session
 from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, TextBlock, WaitBlock
@@ -464,7 +463,7 @@ class LoginFlow:
             return None
         if (urlsplit(snap.url).hostname or "").lower() not in run.handle.allow_hosts:
             return None
-        if has_credential_fields(snap):
+        if requires_authentication(snap):
             return None
         signature = page_signature(snap)
         if run.verified_page == signature and not force:

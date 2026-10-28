@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -40,8 +41,16 @@ from pydantic import SecretStr
 
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.pagescan import SCAN_JS, build_snapshot
-from botai.browser.session import jwt_expiry
-from botai.core.browser import ObservedRequest, PageSnapshot, SessionCookie, SessionState
+from botai.browser.probe import requires_authentication
+from botai.browser.read_views import ReadView, ReadViewRegistry
+from botai.browser.session import bounded_browser_storage, jwt_expiry, storage_origin
+from botai.core.browser import (
+    ObservedRequest,
+    PageSnapshot,
+    SessionCookie,
+    SessionOriginStorage,
+    SessionState,
+)
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_context, diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
@@ -66,11 +75,6 @@ _TOKEN_KEYS = re.compile(
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _NAV_URL = re.compile(r"\bat (https?://[^\s]+)")
 _OBSERVED_TYPES = frozenset({"xhr", "fetch", "document"})
-_AUTH_REQUIRED_TEXT = re.compile(
-    r"вы не вошли|для продолжения[^.\n]{0,60}войдите|необходимо авторизоваться|"
-    r"you are not (?:logged|signed) in|please (?:log|sign) in|authentication required",
-    re.IGNORECASE,
-)
 _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
     "job_id": None,
     "thread_id": None,
@@ -80,6 +84,30 @@ _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
     "block_id": None,
     "job_kind": None,
 }
+_SESSION_STORAGE_JS = """() => {
+  const items = [];
+  let size = 0;
+  try {
+    for (let i = 0; i < sessionStorage.length && items.length < 64; i++) {
+      const name = sessionStorage.key(i);
+      if (!name || name.length > 256) continue;
+      const value = sessionStorage.getItem(name);
+      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) continue;
+      items.push({name, value});
+      size += name.length + value.length;
+    }
+  } catch (_) {}
+  return {origin: location.origin, items};
+}"""
+_RESTORE_SESSION_STORAGE_JS = """(() => {
+  const origins = JSON.parse(__BOTAI_STORAGE_DATA__);
+  if (!Object.prototype.hasOwnProperty.call(origins, location.origin)) return;
+  try {
+    for (const [key, value] of Object.entries(origins[location.origin])) {
+      if (sessionStorage.getItem(key) === null) sessionStorage.setItem(key, value);
+    }
+  } catch (_) {}
+})();"""
 
 
 def _browser_diagnostics(connection_id: str) -> dict[str, object]:
@@ -201,6 +229,7 @@ class PlaywrightHandle:
         self.user_id = user_id
         self.connection_id = connection_id
         self._diagnostic_facts = _browser_diagnostics(connection_id)
+        self._read_view_registry = ReadViewRegistry()
         self.allow_hosts = tuple(allow_hosts)
         self.origin = origin
         self._capture = capture
@@ -259,6 +288,7 @@ class PlaywrightHandle:
         self._page_callbacks.append(callback)
 
     def _on_page(self, page: Page) -> None:
+        self._read_view_registry.invalidate()
         self._page = page
         self._navigation_request = None
         self._navigation_error = None
@@ -393,6 +423,7 @@ class PlaywrightHandle:
             await page.wait_for_load_state("networkidle", timeout=timeout_ms)
 
     async def goto(self, url: str) -> PageSnapshot:
+        self._read_view_registry.invalidate()
         started = monotonic()
         self._diagnostic(
             "browser.navigation.start",
@@ -442,6 +473,7 @@ class PlaywrightHandle:
         return snap
 
     async def snapshot(self) -> PageSnapshot:
+        self._read_view_registry.invalidate()
         last: PlaywrightError | None = None
         for _ in range(4):
             page = self._page
@@ -455,7 +487,7 @@ class PlaywrightHandle:
                     text_chars=len(snap.text),
                     form_count=len(snap.forms),
                     captcha_suspected=snap.captcha_suspected,
-                    auth_required=bool(_AUTH_REQUIRED_TEXT.search(snap.text[:8000])),
+                    auth_required=requires_authentication(snap),
                     credential_fields=any(
                         f.input_type == "password" for form in snap.forms for f in form.fields
                     ),
@@ -480,6 +512,18 @@ class PlaywrightHandle:
             raise BotaiError(
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
             ) from None
+
+    async def read_views(self) -> list[ReadView]:
+        if not self.read_only or self.closed:
+            return []
+        return await self._read_view_registry.discover(self._page)
+
+    async def activate_read_view(self, ref: str) -> PageSnapshot:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
+        await self._read_view_registry.activate(self._page, ref)
+        await self._settle()
+        return await self.snapshot()
 
     async def click(self, selector: str) -> PageSnapshot:
         if self.read_only:
@@ -526,7 +570,8 @@ class PlaywrightHandle:
 
     async def export_session(self) -> SessionState:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single
-        explicitly named storage key). Arbitrary tokens in storage are never collected."""
+        explicitly named key). Bounded browser storage stays only in the encrypted session,
+        separate from bearer discovery and from observations supplied to the model."""
         hosts = self._cookie_hosts()
         cookies: list[SessionCookie] = []
         for c in await self.context.cookies():
@@ -564,6 +609,7 @@ class PlaywrightHandle:
             exp = jwt_expiry(bearer)
             if exp is not None and (hint is None or exp < hint):
                 hint = exp
+        browser_storage = await self._export_browser_storage()
         self._diagnostic(
             "browser.export",
             connection_id=self.connection_id,
@@ -578,7 +624,48 @@ class PlaywrightHandle:
             bearer=SecretStr(bearer) if bearer else None,
             captured_at=now,
             expires_hint=hint,
+            browser_storage=browser_storage,
         )
+
+    async def _export_browser_storage(self) -> list[SessionOriginStorage]:
+        entries: dict[str, SessionOriginStorage] = {}
+        try:
+            state = await self.context.storage_state()
+            for item in state["origins"]:
+                origin = storage_origin(item["origin"], self.allow_hosts)
+                if origin is None:
+                    continue
+                entries[origin] = SessionOriginStorage(
+                    origin=origin,
+                    local_storage={
+                        value["name"]: SecretStr(value["value"])
+                        for value in item["localStorage"][:64]
+                    },
+                )
+            for page in self.context.pages:
+                if storage_origin(page.url, self.allow_hosts) is None:
+                    continue
+                raw: Any = await page.evaluate(_SESSION_STORAGE_JS)
+                if not isinstance(raw, dict) or not isinstance(raw.get("origin"), str):
+                    continue
+                origin = storage_origin(raw["origin"], self.allow_hosts)
+                values = raw.get("items")
+                if origin is None or not isinstance(values, list):
+                    continue
+                entry = entries.setdefault(origin, SessionOriginStorage(origin=origin))
+                entry.session_storage = {
+                    value["name"]: SecretStr(value["value"])
+                    for value in values[:64]
+                    if isinstance(value, dict)
+                    and isinstance(value.get("name"), str)
+                    and isinstance(value.get("value"), str)
+                }
+        except PlaywrightError:
+            # Playwright can quote a storage value or init script in its error details.
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Не удалось сохранить состояние браузера"
+            ) from None
+        return bounded_browser_storage(entries.values(), self.allow_hosts)
 
     # -- lifetime ----------------------------------------------------------------------------
 
@@ -811,7 +898,7 @@ class PlaywrightGateway:
             context.set_default_timeout(ACTION_TIMEOUT_MS)
             primary = origin or f"https://{hosts[0]}"
             if session is not None:
-                await self._restore(context, session)
+                await self._restore(context, session, allow_hosts=hosts)
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
                 route_diagnostics = _browser_diagnostics(connection_id)
@@ -846,13 +933,57 @@ class PlaywrightGateway:
         return handle
 
     @staticmethod
-    async def _restore(context: BrowserContext, session: SessionState) -> None:
+    async def _restore(
+        context: BrowserContext, session: SessionState, *, allow_hosts: Iterable[str] | None = None
+    ) -> None:
+        hosts = (
+            tuple(allow_hosts)
+            if allow_hosts is not None
+            else ((urlsplit(session.origin).hostname or ""),)
+        )
+        browser_storage = bounded_browser_storage(session.browser_storage, hosts)
         diagnostic_event(
             "browser.restore",
             cookie_count=len(session.cookies),
             bearer_present=session.bearer is not None,
-            storage_restored=False,
+            storage_restored=bool(browser_storage),
         )
+        if browser_storage:
+            try:
+                await context.set_storage_state(
+                    {
+                        "cookies": [],
+                        "origins": [
+                            {
+                                "origin": entry.origin,
+                                "localStorage": [
+                                    {"name": key, "value": value.get_secret_value()}
+                                    for key, value in entry.local_storage.items()
+                                ],
+                            }
+                            for entry in browser_storage
+                        ],
+                    }
+                )
+                session_values = {
+                    entry.origin: {
+                        key: value.get_secret_value()
+                        for key, value in entry.session_storage.items()
+                    }
+                    for entry in browser_storage
+                    if entry.session_storage
+                }
+                if session_values:
+                    # Fixed program; the serialized state is data, never executable source.
+                    await context.add_init_script(
+                        _RESTORE_SESSION_STORAGE_JS.replace(
+                            "__BOTAI_STORAGE_DATA__", json.dumps(json.dumps(session_values))
+                        )
+                    )
+            except PlaywrightError:
+                raise BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Не удалось восстановить состояние браузера"
+                ) from None
         if session.cookies:
             await context.add_cookies(
                 [

@@ -72,6 +72,46 @@ async def wait_pending(client: httpx.AsyncClient, thread: str) -> dict[str, Any]
             await asyncio.sleep(0.01)
 
 
+@pytest.mark.parametrize("requested", [None, ["courses"], ["scheduleEvents"]])
+async def test_general_source_discovers_types_while_explicit_kinds_stay_requested(
+    env: Env, requested: list[str] | None
+) -> None:
+    context: dict[str, Any] = {"entryUrls": [URL]}
+    if requested is not None:
+        context["requestedKinds"] = requested
+    _, _, thread_id, job_id = await start(env, context=context)
+    async with env.sm() as session:
+        thread = await session.get(ChatThread, thread_id)
+        job = await session.get(Job, job_id)
+        assert thread is not None
+        assert job is not None
+        mode = "auto" if requested is None else "requested"
+        assert thread.connect_context.get("discovery_mode", "requested") == mode
+        assert job.payload["learning_intent"].get("discovery_mode", "requested") == mode
+        if requested is not None:
+            assert thread.connect_context["requested_kinds"] == requested
+
+
+async def test_explicit_clarification_clears_durable_automatic_discovery(env: Env) -> None:
+    _, user_id, thread_id, job_id = await start(env, context={"entryUrls": [URL]})
+    await ctx(env, user_id, job_id).checkpoint_learning(
+        {
+            "entry_urls": [URL],
+            "requested_kinds": ["courses"],
+            "absent_kinds": [],
+            "user_note": "Только курсы",
+        }
+    )
+    async with env.sm() as session:
+        thread = await session.get(ChatThread, thread_id)
+        job = await session.get(Job, job_id)
+        assert thread is not None
+        assert job is not None
+        assert thread.connect_context.get("discovery_mode", "requested") == "requested"
+        assert job.payload["learning_intent"].get("discovery_mode", "requested") == "requested"
+        assert thread.connect_context["requested_kinds"] == ["courses"]
+
+
 async def test_connect_is_atomic_idempotent_and_tenant_scoped(env: Env) -> None:
     client = env.new_client()
     account = await env.account(client)

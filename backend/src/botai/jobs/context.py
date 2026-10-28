@@ -127,7 +127,7 @@ class PgJobContext:
 
     async def checkpoint_learning(self, intent: dict[str, Any]) -> None:
         bind_diagnostics(connection_id=self.connection_id)
-        allowed = {"entry_urls", "requested_kinds", "absent_kinds", "user_note"}
+        allowed = {"entry_urls", "requested_kinds", "absent_kinds", "user_note", "discovery_mode"}
         if set(intent) - allowed or not isinstance(intent.get("user_note", ""), str):
             raise ValueError("invalid learning intent checkpoint")
         from botai.spaces.conversations import normalize_context
@@ -153,7 +153,14 @@ class PgJobContext:
                     )
                 )
                 if thread is not None:
-                    thread.connect_context = {**thread.connect_context, **intent}
+                    # Omitted mode is the legacy explicit/requested mode. Do not keep an old
+                    # auto-discovery marker after the student narrows the task.
+                    previous = {
+                        key: value
+                        for key, value in thread.connect_context.items()
+                        if key != "discovery_mode"
+                    }
+                    thread.connect_context = {**previous, **intent}
                     thread.updated_at = now
             await session.commit()
         self._dialogue_delivered.clear()

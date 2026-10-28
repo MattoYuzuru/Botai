@@ -1,8 +1,9 @@
-"""Deterministic observation of a university site for the Explorer (no model involved).
+"""Shared redacted observation shaping and the deterministic fallback crawl.
 
 Starting from the home page, the observer follows a bounded number of same-origin menu links with
 the user's session, collects page snapshots and the network log, and turns them into a redacted
-bundle for the prompt. The model never drives the browser: it only reads this bundle.
+bundle for the prompt. The adaptive reference-only controller lives in `learn.discovery`;
+both paths use the same bounded, redacted bundle builder below.
 """
 
 from __future__ import annotations
@@ -13,10 +14,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
+from botai.browser.probe import requires_authentication
+from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.learn.addresses import navigation_url
@@ -34,7 +37,8 @@ _STATIC = re.compile(
 )
 _SKIP_LINK = re.compile(
     r"(?i)logout|log-out|signout|sign-out|/exit|delete|remove|unsubscribe|выйти|выход|удалить|"
-    r"отписаться|password|парол"
+    r"отписаться|password|парол|(?:^|[/_.?=&-])(?:submit|save|create|edit|pay|purchase|"
+    r"отправить|сохранить|создать|изменить|оплатить)(?:$|[/_.?=&-])"
 )
 _MENU = "nav a[href], header a[href], aside a[href], [role=navigation] a[href], .menu a[href], .sidebar a[href]"
 _SKIP_TYPES = ("image/", "font/", "text/css", "javascript", "video/", "audio/")
@@ -69,6 +73,12 @@ class Observations:
     observed: set[str] = field(default_factory=set, repr=False)
     injections: int = 0
     plain_text: str = ""  # redacted visible text of the pages, for light keyword checks
+    auth_required: bool = False
+    bot_protection: bool = False
+    discovered_kinds: tuple[Kind, ...] = ()
+    planner_tokens: int = 0
+    limited: bool = False
+    stop_reason: str = ""
 
     @property
     def empty(self) -> bool:
@@ -103,7 +113,7 @@ class Observations:
             if call.body and share >= 40:
                 body = call.body
                 if len(body) > share:
-                    body = _body_view(Redactor(), body, share)
+                    body = body_view(Redactor(), body, share)
                 parts.append(f"  {body}")
         parts.append("</observation>")
         text = "\n".join(parts)
@@ -130,7 +140,9 @@ class Observations:
 # --- links ----------------------------------------------------------------------------------
 
 
-def menu_links(html: str, base_url: str, origin: str) -> list[tuple[str, str]]:
+def menu_links(
+    html: str, base_url: str, origin: str, *, limit: int = MAX_LINKS_PER_PAGE
+) -> list[tuple[str, str]]:
     """Same-origin links worth visiting: the menu first, then the rest, without destructive ones."""
     tree = LexborHTMLParser(html)
     ordered: list[LexborNode] = list(tree.css(_MENU)) + list(tree.css("a[href]"))
@@ -138,9 +150,13 @@ def menu_links(html: str, base_url: str, origin: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for node in ordered:
         href = (node.attributes.get("href") or "").strip()
-        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
             continue
-        absolute = urldefrag(urljoin(base_url, href))[0]
+        if href.startswith("#") and not href.startswith(("#/", "#!/")):
+            continue
+        # Hash routes are SPA navigation, not an authentication fragment. The validator
+        # rejects credential fragments while preserving an observed #/courses route.
+        absolute = urljoin(base_url, href)
         parts = urlsplit(absolute)
         if f"{parts.scheme}://{parts.netloc}" != origin or _STATIC.search(parts.path):
             continue
@@ -154,7 +170,7 @@ def menu_links(html: str, base_url: str, origin: str) -> list[tuple[str, str]]:
             continue
         seen.add(key)
         out.append((label[:60], absolute))
-        if len(out) >= MAX_LINKS_PER_PAGE:
+        if len(out) >= limit:
             break
     return out
 
@@ -162,7 +178,8 @@ def menu_links(html: str, base_url: str, origin: str) -> list[tuple[str, str]]:
 def _url_key(url: str) -> tuple[str, tuple[tuple[str, str], ...]]:
     parts = urlsplit(url)
     # Different selected weeks/pages are distinct; ordering of the same query is not.
-    return parts.path or "/", tuple(sorted(parse_qsl(parts.query, keep_blank_values=True)))
+    path = (parts.path or "/") + (f"#{parts.fragment}" if parts.fragment else "")
+    return path, tuple(sorted(parse_qsl(parts.query, keep_blank_values=True)))
 
 
 # --- the observer ---------------------------------------------------------------------------
@@ -177,7 +194,7 @@ async def _visit(handle: BrowserHandle, url: str) -> PageSnapshot | None:
         return None
 
 
-def _body_view(redactor: Redactor, sample: str | None, limit: int = MAX_BODY_CHARS) -> str:
+def body_view(redactor: Redactor, sample: str | None, limit: int = MAX_BODY_CHARS) -> str:
     if not sample:
         return ""
     text = sample.strip()
@@ -193,7 +210,7 @@ def _body_view(redactor: Redactor, sample: str | None, limit: int = MAX_BODY_CHA
     return redactor.text(text, min(600, limit)) or ""
 
 
-def _interesting(call: ObservedRequest, origin: str) -> bool:
+def interesting_call(call: ObservedRequest, origin: str) -> bool:
     parts = urlsplit(call.url)
     if f"{parts.scheme}://{parts.netloc}" != origin or _STATIC.search(parts.path):
         return False
@@ -233,6 +250,7 @@ async def observe(
     *,
     start_urls: list[str],
     max_pages: int = MAX_PAGES,
+    max_requests: int | None = None,
 ) -> Observations:
     """Visit the start pages and the menu links they lead to, then read the network log."""
     started = time.monotonic()
@@ -241,6 +259,8 @@ async def observe(
     visited: set[str] = set()
     queue = list(start_urls)
     while queue and len(snapshots) < max_pages:
+        if max_requests is not None and len(await handle.network_log()) >= max_requests:
+            break
         url = queue.pop(0)
         if url in visited:
             continue
@@ -263,6 +283,10 @@ async def observe(
             **url_facts(snap.url),
         )
         snapshots.append((url, snap))
+        if requires_authentication(snap) or snap.captcha_suspected:
+            break
+        if max_requests is not None and len(await handle.network_log()) >= max_requests:
+            break
         if len(snapshots) == 1 or len(queue) < max_pages:
             for _, link in menu_links(snap.html, snap.url or url, origin):
                 if link not in visited and link not in queue:
@@ -273,7 +297,34 @@ async def observe(
         diagnostic_event("observe.network_failed", reason="network_log_failed")
         log_entries = []
 
-    obs = Observations(origin=origin)
+    return observations_of(
+        origin,
+        redactor,
+        snapshots,
+        log_entries,
+        visited_count=len(visited),
+        queued_count=len(queue),
+        started=started,
+    )
+
+
+def observations_of(
+    origin: str,
+    redactor: Redactor,
+    snapshots: list[tuple[str, PageSnapshot]],
+    log_entries: list[ObservedRequest],
+    *,
+    visited_count: int = 0,
+    queued_count: int = 0,
+    started: float | None = None,
+) -> Observations:
+    """Build the same redacted bundle from legacy crawling or adaptive browser actions."""
+    started = time.monotonic() if started is None else started
+    obs = Observations(
+        origin=origin,
+        auth_required=any(requires_authentication(snap) for _, snap in snapshots),
+        bot_protection=any(snap.captcha_suspected for _, snap in snapshots),
+    )
     # URLs first: that is where identifiers are met for the first time and get their pseudonyms
     for _, snap in snapshots:
         redactor.url(snap.url, origin)
@@ -282,7 +333,7 @@ async def observe(
     filtered_count = duplicate_count = processed_count = 0
     for call in sorted(log_entries, key=_call_priority, reverse=True):
         processed_count += 1
-        if not _interesting(call, origin):
+        if not interesting_call(call, origin):
             filtered_count += 1
             continue
         key = (call.method, _url_key(call.url))
@@ -313,7 +364,7 @@ async def observe(
         )
         texts.append(redactor.text(snap.text or _plain(snap.html), 1500) or "")
     for call in kept:
-        body = _body_view(redactor, call.response_sample)
+        body = body_view(redactor, call.response_sample)
         diagnostic_event(
             "observe.call",
             method=call.method if call.method in {"GET", "HEAD", "OPTIONS", "POST"} else "OTHER",
@@ -347,8 +398,8 @@ async def observe(
         filtered_count=filtered_count,
         duplicate_count=duplicate_count,
         unexamined_count=len(log_entries) - processed_count,
-        failed_count=len(visited) - len(snapshots),
-        queued_count=len(queue),
+        failed_count=max(0, visited_count - len(snapshots)),
+        queued_count=queued_count,
         sample_missing_count=sum(c.response_sample is None for c in kept),
         injection_count=obs.injections,
         elapsed_ms=round((time.monotonic() - started) * 1000),

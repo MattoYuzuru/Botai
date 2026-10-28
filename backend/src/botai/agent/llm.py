@@ -416,6 +416,10 @@ class DeepSeekProvider:
 
     # -- public --------------------------------------------------------------------------------
 
+    async def complete_observation(self, request: LlmRequest) -> LlmResponse:
+        """Explicit planner capability; discovery uses the same quotas and accounting."""
+        return await self.complete(request)
+
     async def complete(self, request: LlmRequest) -> LlmResponse:
         resolved = resolve(request, self._settings, self._profiles)
         body = build_body(request, resolved, stream=self._stream)

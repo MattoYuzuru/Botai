@@ -9,12 +9,85 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+from pydantic import SecretStr
 
-from botai.core.browser import SessionState
+from botai.core.browser import SessionOriginStorage, SessionState
+
+MAX_STORAGE_ORIGINS = 12
+MAX_STORAGE_ENTRIES = 64
+MAX_STORAGE_KEY_CHARS = 256
+MAX_STORAGE_VALUE_CHARS = 32_768
+MAX_STORAGE_BYTES = 256 * 1024
+
+
+def storage_origin(url: str, allow_hosts: Iterable[str]) -> str | None:
+    """A plain HTTPS origin explicitly allowed for this connection, never a suffix grant."""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if (
+            parts.scheme != "https"
+            or host not in {h.lower() for h in allow_hosts}
+            or parts.username is not None
+            or parts.password is not None
+            or parts.port not in (None, 443)
+        ):
+            return None
+        return f"https://{host}"
+    except ValueError:
+        return None
+
+
+def bounded_browser_storage(
+    entries: Iterable[SessionOriginStorage], allow_hosts: Iterable[str]
+) -> list[SessionOriginStorage]:
+    """Enforce the same bounds and origin boundary on capture and on restoring Vault data."""
+    hosts = tuple(allow_hosts)
+    result: list[SessionOriginStorage] = []
+    seen: set[str] = set()
+    remaining = MAX_STORAGE_BYTES
+    for entry in entries:
+        origin = storage_origin(entry.origin, hosts)
+        if origin is None or entry.origin.rstrip("/") != origin or origin in seen:
+            continue
+        if len(result) >= MAX_STORAGE_ORIGINS:
+            break
+        seen.add(origin)
+        stores: list[dict[str, SecretStr]] = []
+        for store in (entry.local_storage, entry.session_storage):
+            kept: dict[str, SecretStr] = {}
+            for key, value in store.items():
+                if len(kept) >= MAX_STORAGE_ENTRIES:
+                    break
+                raw = value.get_secret_value()
+                if (
+                    not key
+                    or len(key) > MAX_STORAGE_KEY_CHARS
+                    or len(raw) > MAX_STORAGE_VALUE_CHARS
+                ):
+                    continue
+                try:
+                    size = len(key.encode("utf-8")) + len(raw.encode("utf-8"))
+                except UnicodeError:
+                    continue
+                if size > remaining:
+                    continue
+                kept[key] = value
+                remaining -= size
+            stores.append(kept)
+        if any(stores):
+            result.append(
+                SessionOriginStorage(
+                    origin=origin, local_storage=stores[0], session_storage=stores[1]
+                )
+            )
+    return result
 
 
 def encode_session(state: SessionState) -> str:
@@ -37,6 +110,19 @@ def encode_session(state: SessionState) -> str:
             "bearer": state.bearer.get_secret_value() if state.bearer else None,
             "captured_at": state.captured_at.isoformat(),
             "expires_hint": state.expires_hint.isoformat() if state.expires_hint else None,
+            "browser_storage": [
+                {
+                    "origin": entry.origin,
+                    "local_storage": {
+                        key: value.get_secret_value() for key, value in entry.local_storage.items()
+                    },
+                    "session_storage": {
+                        key: value.get_secret_value()
+                        for key, value in entry.session_storage.items()
+                    },
+                }
+                for entry in state.browser_storage
+            ],
         },
         ensure_ascii=False,
         separators=(",", ":"),

@@ -197,6 +197,8 @@ class Repairer(Explorer):
 
         redactor = await self._redactor(snap)
         obs = await self._observe(snap, sctx.session, redactor, [])
+        if self._observed_session is not None:
+            sctx.session = self._observed_session
         lint_ctx = LintContext(
             allowed_hosts=snap.allow_hosts, expected_origin=snap.origin, observed=obs.observed
         )

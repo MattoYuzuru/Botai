@@ -128,6 +128,7 @@ _NUMBERS = set(
 _BOOLEANS = set(
     [
         "read_only",
+        "limited",
         "json_response",
         "html_response",
         "budget_exhausted",
@@ -179,6 +180,20 @@ _BOOLEANS = set(
     ]
 )
 _CODES: dict[str, set[str]] = {
+    "stop_reason": {
+        "finished",
+        "authentication",
+        "empty",
+        "step_budget",
+        "token_budget",
+        "page_budget",
+        "request_budget",
+        "no_progress",
+        "planner_unavailable",
+        "invalid_plan",
+        "provider_failed",
+        "timeout",
+    },
     "decision": {"allow", "deny"},
     "method": {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "OTHER"},
     "resource_type": {"xhr", "fetch", "document", "other"},
@@ -237,6 +252,7 @@ _CODES: dict[str, set[str]] = {
         "user",
         "event_budget",
         "fetch_failed",
+        "planner_unavailable",
         "internal",
         "bad_request",
         "auth_failed",

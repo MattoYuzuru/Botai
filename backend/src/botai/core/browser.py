@@ -61,6 +61,14 @@ class SessionCookie(BaseModel):
     secure: bool = True
 
 
+class SessionOriginStorage(BaseModel):
+    """Origin-scoped browser state, sealed with the session and never shown to a model."""
+
+    origin: str
+    local_storage: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
+    session_storage: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
+
+
 class SessionState(BaseModel):
     """What gets sealed into the Vault as kind=session (security.md §3)."""
 
@@ -69,6 +77,7 @@ class SessionState(BaseModel):
     bearer: SecretStr | None = None
     captured_at: datetime
     expires_hint: datetime | None = None
+    browser_storage: list[SessionOriginStorage] = Field(default_factory=list, repr=False)
 
 
 class BrowserHandle(Protocol):

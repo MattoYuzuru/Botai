@@ -3,8 +3,8 @@
 For a new university the job does, in this order:
 
 1. get a session (`services.sessions.ensure`, W2: mirrored login form, saved password, fallback);
-2. observe deterministically: the home page, a bounded number of same-origin menu links, the
-   network log; personal values are replaced by placeholders before anything is shown to a model;
+2. observe adaptively: the model selects among observed same-origin links and evidence refs;
+   the executor owns navigation, network capture, budgets and redaction;
 3. ask the model for one kind of data at a time, with the recipe schema as the response format;
 4. lint every candidate, run it on this very session (canary), and ask the student only when
    several candidates give different data;
@@ -23,7 +23,7 @@ import copy
 import json
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -54,9 +54,10 @@ from botai.learn.author import (
     parse_json,
 )
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
+from botai.learn.discovery import DiscoveryBudget, adaptive_observe
 from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
-from botai.learn.observe import Observations, observe
+from botai.learn.observe import Observations
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
 from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
@@ -123,6 +124,9 @@ class Explorer:
         self._confirmation_revisions = 0
         self._initial_note_pending = False
         self._previous_status: str | None = None
+        self._reauth_attempted = False
+        self._observed_session: SessionState | None = None
+        self._observation_limited = False
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -160,6 +164,7 @@ class Explorer:
             self.intent = LearningIntent(
                 entry_urls=(entry,) if entry else (),
                 requested_kinds=tuple(wanted_kinds(payload)),
+                discovery_mode="requested" if "kinds" in payload else "auto",
             )
         self._initial_note_pending = bool(self.intent.user_note)
         self._trace_intent()
@@ -242,7 +247,11 @@ class Explorer:
 
         url = foreign[-1]
         child_intent = LearningIntent(
-            (url,), self.intent.requested_kinds, self.intent.absent_kinds, self.intent.user_note
+            (url,),
+            self.intent.requested_kinds,
+            self.intent.absent_kinds,
+            self.intent.user_note,
+            self.intent.discovery_mode,
         )
         result = await continue_source(
             self.ctx, self.services, info.connection_id, url, child_intent.checkpoint()
@@ -435,10 +444,31 @@ class Explorer:
                 chosen_count=len(chosen),
                 token_count=self.tokens,
             )
-            if not pending:
+            if not pending and self.intent.discovery_mode != "auto":
                 break
             round_intent = self.intent
             obs = await self._observe(info, session, redactor, extra)
+            if obs.limited and not self._observation_limited:
+                await ui.say(
+                    "Пока не удалось полностью проверить источник: исследование достигло "
+                    "ограничения или план просмотра не сработал. Это не означает, что данных нет."
+                )
+            self._observation_limited = self._observation_limited or obs.limited
+            if self._observed_session is not None:
+                session = self._observed_session
+                sctx.session = session
+            if self.intent.discovery_mode == "auto" and obs.discovered_kinds:
+                self.intent = replace(
+                    self.intent,
+                    requested_kinds=tuple(
+                        kind
+                        for kind in obs.discovered_kinds
+                        if kind not in self.intent.absent_kinds
+                    ),
+                )
+                await self._checkpoint()
+                round_intent = self.intent  # discovery is not a concurrent user correction
+                pending = [kind for kind in self.intent.requested_kinds if kind not in chosen]
             if round_no == 0 and not obs.empty:
                 warning, spent = await find_warning(svc.llm, obs.plain_text)
                 self.tokens += spent
@@ -488,13 +518,22 @@ class Explorer:
 
         if not chosen:
             await ui.say(
-                "Не нашла в кабинете "
+                (
+                    "Пока не удалось проверить "
+                    if self._observation_limited
+                    else "Не нашла в кабинете "
+                )
                 + (", ".join(KIND_LABELS[k].lower() for k in pending) or "запрошенные данные")
                 + ". Ничего не сохраняю. Если пришлёте ссылку на страницу, где это видно, "
                 "попробую ещё раз."
             )
             return await self._fail(
-                info, "В кабинете не найдены нужные данные", ErrorCode.NOT_FOUND, say=False
+                info,
+                "Не удалось проверить запрошенные данные"
+                if self._observation_limited
+                else "В кабинете не найдены нужные данные",
+                ErrorCode.SOURCE_UNAVAILABLE if self._observation_limited else ErrorCode.NOT_FOUND,
+                say=False,
             )
 
         built = await self._assemble(info, chosen, base_spec, revision, digest, sctx, lint_ctx)
@@ -505,7 +544,7 @@ class Explorer:
         spec, report = built
         if pending:
             await ui.say(
-                "Не нашла: "
+                ("Не удалось проверить: " if self._observation_limited else "Не нашла: ")
                 + ", ".join(KIND_LABELS[k].lower() for k in pending)
                 + ". Остальное подключаю, к этому можно вернуться позже."
             )
@@ -539,20 +578,50 @@ class Explorer:
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
         stage = await self.ui.stage("Смотрю страницы кабинета")
-        handle = await self.services.browser.open(
-            user_id=info.user_id,
-            connection_id=info.connection_id,
-            allow_hosts=info.allow_hosts,
-            session=session,
-            read_only=True,
-            background=True,
-        )
-        try:
-            entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
-            start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
-            obs = await observe(handle, info.origin, redactor, start_urls=start_urls)
-        finally:
-            await handle.close()
+        entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
+        start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
+        obs = Observations(origin=info.origin)
+        for _ in range(2):
+            handle = await self.services.browser.open(
+                user_id=info.user_id,
+                connection_id=info.connection_id,
+                allow_hosts=info.allow_hosts,
+                session=session,
+                read_only=True,
+                background=True,
+            )
+            try:
+                obs = await adaptive_observe(
+                    handle,
+                    info.origin,
+                    redactor,
+                    start_urls=start_urls,
+                    intent=self.intent,
+                    llm=self.services.llm,
+                    budget=DiscoveryBudget(tokens=min(150_000, max(0, TOKEN_BUDGET - self.tokens))),
+                )
+            finally:
+                await handle.close()
+            self.tokens += obs.planner_tokens
+            if not obs.auth_required and not obs.bot_protection:
+                self._observed_session = session
+                break
+            if self._reauth_attempted:
+                await stage.finish("failed")
+                raise BotaiError(
+                    ErrorCode.SOURCE_BOT_PROTECTION
+                    if obs.bot_protection
+                    else ErrorCode.SOURCE_AUTH_REQUIRED,
+                    "После повторного входа источник всё ещё просит авторизоваться. Данные не проверены.",
+                )
+            self._reauth_attempted = True
+            await self.ui.say(
+                "Источник снова просит войти. Восстанавливаю вход перед поиском данных."
+            )
+            session = await self.services.sessions.ensure(
+                self.ctx, user_id=info.user_id, connection_id=info.connection_id, force=True
+            )
+            info = await self._info(info.connection_id)
         await stage.finish(
             "ok" if not obs.empty else "failed",
             f"Страниц: {len(obs.pages)}, запросов: {len(obs.calls)}",
@@ -720,7 +789,12 @@ class Explorer:
             if choice != "link":
                 return False
         answer = await self.ui.ask_learning_turn(
-            f"Не вижу: {labels}. Пришлите ссылку или поясните, что здесь есть и что подключить."
+            (
+                f"Пока не удалось проверить: {labels}. "
+                if self._observation_limited
+                else f"Не вижу: {labels}. "
+            )
+            + "Пришлите ссылку или поясните, что здесь есть и что подключить."
         )
         if not answer:
             return False
