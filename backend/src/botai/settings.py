@@ -30,6 +30,12 @@ class Settings(BaseSettings):
 
     llm_provider: Literal["deepseek", "mock"] = "mock"
     deepseek_api_key: SecretStr = SecretStr("")
+    exa_api_key: SecretStr = SecretStr("")
+    search_mode: Literal["auto", "off", "exa", "deepseek"] = "auto"
+    search_deadline_s: float = Field(default=15.0, ge=0.1, le=60)
+    search_max_calls: int = Field(default=4, ge=1, le=8)
+    search_max_cost_usd: float = Field(default=0.03, gt=0, le=0.10)
+    search_cooldown_s: float = Field(default=60.0, ge=1, le=3600)
     llm_base_url: str = "https://api.deepseek.com"
     llm_model_fast: str = "deepseek-flash"
     llm_model_pro: str = "deepseek-v4-pro"

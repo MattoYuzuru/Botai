@@ -69,6 +69,7 @@ def test_chat_agent_has_exactly_these_read_only_tools() -> None:
         "list_connections",
         "search_documents",
         "search_facts",
+        "search_public_web",
         "request_repair",
     }
     # T5: nothing that opens an address or sends data out.

@@ -12,6 +12,7 @@ from botai.core.embed import Embedder
 from botai.core.llm import LlmProvider
 from botai.core.queue import JobQueue
 from botai.core.vault import Vault
+from botai.search import SearchService
 from botai.settings import Settings
 
 
@@ -26,3 +27,4 @@ class Services:
     sessions: SessionProvider
     queue: JobQueue
     embedder: Embedder
+    search: SearchService | None = None
