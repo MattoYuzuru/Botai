@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, cast
+from typing import Any
 
 from botai.contracts.specs import Kind
 from botai.sources.templates import placeholders
@@ -14,7 +14,7 @@ def read_scope(raw: list[str] | None) -> tuple[Kind, ...] | None:
     if raw is None:
         return None
     # Unknown values fail closed: they cannot expand a connection to all kinds.
-    return tuple(dict.fromkeys(cast(Kind, value) for value in raw if value in KIND_LABELS))
+    return tuple(dict.fromkeys(value for value in raw if value in KIND_LABELS))
 
 
 def scoped_spec(spec: dict[str, Any], scope: tuple[Kind, ...] | None) -> dict[str, Any]:
