@@ -27,6 +27,7 @@ from botai.learn.observe import (
     MAX_CALLS,
     Observations,
     body_view,
+    data_response_health,
     interesting_call,
     menu_links,
     observations_of,
@@ -82,6 +83,7 @@ class ObservationSession:
     views: dict[str, ReadView] = field(default_factory=dict, repr=False)
     current_links: list[str] = field(default_factory=list)
     failures: set[str] = field(default_factory=set)
+    network_auth_required: bool = False
 
     def offer_entries(self, urls: list[str]) -> None:
         """Keep explicit entry pages and the source home available without inventing routes."""
@@ -154,6 +156,11 @@ class ObservationSession:
         # that new state before any response or DOM detail becomes a planner/author input.
         await protect_observation(self.handle, self.redactor)
         self.network_count = len(log)
+        self.network_auth_required, network_failed = data_response_health(log, self.origin)
+        if network_failed:
+            self.failures.add("data_request_failed")
+        else:
+            self.failures.discard("data_request_failed")
         by_request = {(call.method, call.url): ref for ref, call in self.calls.items()}
         changed_response = False
         # network_log is cumulative. Compare the newest response of each request with the
@@ -175,15 +182,19 @@ class ObservationSession:
                 or previous.response_sample != call.response_sample
                 or previous.status != call.status
             ):
-                changed_response = changed_response or bool(call.response_sample)
+                successful = call.status is not None and 200 <= call.status < 300
+                changed_response = changed_response or (successful and bool(call.response_sample))
                 self.inspected.discard(call_ref)
                 self.details.pop(call_ref, None)
-                self.delta.append(call_ref)
+                if successful:
+                    self.delta.append(call_ref)
         return new_shape or len(self.links) > previous_links or changed_response
 
     @property
     def auth_required(self) -> bool:
-        return any(requires_authentication(page) for page in self.pages.values())
+        return self.network_auth_required or any(
+            requires_authentication(page) for page in self.pages.values()
+        )
 
     @property
     def bot_protection(self) -> bool:

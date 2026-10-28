@@ -534,7 +534,8 @@ class Explorer:
             if obs.limited and not self._observation_limited:
                 await ui.say(
                     "Пока не удалось полностью проверить источник: исследование достигло "
-                    "ограничения или план просмотра не сработал. Это не означает, что данных нет."
+                    "ограничения, план просмотра не сработал или запрос данных завершился ошибкой. "
+                    "Это не означает, что данных нет."
                 )
             self._observation_limited = self._observation_limited or obs.limited
             if self._observed_session is not None:

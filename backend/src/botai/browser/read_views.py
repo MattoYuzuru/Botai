@@ -131,12 +131,20 @@ class ReadViewRegistry:
         except PlaywrightError:
             return []
 
-    async def activate(self, page: Page, ref: str) -> None:
+    def _entry(self, page: Page, ref: str) -> _Registered:
         entry = self._entries.get(ref)
         if not self._valid or page is not self._page or page.url != self._url or entry is None:
             raise BotaiError(
                 ErrorCode.CONFLICT, "Представление устарело. Сначала осмотрите страницу"
             )
+        return entry
+
+    def panel_id(self, page: Page, ref: str) -> str:
+        """Only the panel belonging to a registered current read capability may be watched."""
+        return self._entry(page, ref).controls
+
+    async def activate(self, page: Page, ref: str) -> None:
+        entry = self._entry(page, ref)
         try:
             facts: Any = await entry.element.evaluate(_TAB_FACTS)
             if facts != {

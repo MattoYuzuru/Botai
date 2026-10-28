@@ -285,7 +285,9 @@ async def test_observer_walks_the_menu_collects_calls_and_survives_dead_links() 
                 call("/api/me", json.dumps({"sub": "u-1", "fullName": "Иванова Анна"})),
                 call("/static/app.js", "var x", "application/javascript"),
                 call("/img/logo.png", "", "image/png"),
-                call("/api/me", "{}"),  # a duplicate
+                call(
+                    "/api/me", json.dumps({"sub": "u-1", "fullName": "Иванова Анна"})
+                ),  # a duplicate
                 call("/notes", "plain text with anna@fakeuni.test", "text/plain"),
                 call("/frag", "<ul><li class='r'>x</li></ul>", "text/html"),
             ],
