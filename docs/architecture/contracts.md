@@ -261,10 +261,12 @@ type ActionProposal = {
 ## 8. Журнал изменений контракта
 
 Расширение бесед и runtime — [contracts/conversation.md](../../contracts/conversation.md). Старые API/SSE/WS остаются совместимыми.
+Сброс личных данных и клиентской очереди — [contracts/account-reset.md](../../contracts/account-reset.md).
 
 | Дата | Что | Почему |
 |---|---|---|
 | 2026-10-26 | Первая редакция | Основание для параллельной работы |
+| 2026-10-29 | Optional `X-Botai-Data-Reset` на `/me`, без изменения JSON | FR-023: после очистки очередь и offline snapshots не восстанавливают удалённые попытки; потребители API auth/PWA/chat/offline |
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
