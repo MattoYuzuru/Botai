@@ -11,6 +11,7 @@ export function Screen({
   leading,
   onBack,
   trailing,
+  meta,
   narrow = false,
   children,
 }: {
@@ -19,6 +20,7 @@ export function Screen({
   leading?: "back" | ReactNode;
   onBack?: () => void;
   trailing?: ReactNode;
+  meta?: ReactNode;
   /** Одна читаемая колонка, в том числе на ноутбуке: подключение, формы и последовательные шаги. */
   narrow?: boolean;
   children: ReactNode;
@@ -31,10 +33,11 @@ export function Screen({
         leading={leading}
         onBack={onBack}
         trailing={trailing}
+        meta={meta}
         narrow={narrow}
       />
       <main
-        className={`mx-auto flex w-full max-w-col flex-col gap-6 px-safe-4 pt-4 pb-safe-24 xs:px-safe-5 lg:pb-safe-10 ${narrow ? "" : "lg:max-w-page"}`}
+        className={`mx-auto flex w-full max-w-col flex-1 flex-col gap-6 px-safe-4 pt-4 pb-safe-24 xs:px-safe-5 lg:pb-safe-10 ${narrow ? "" : "lg:max-w-page"}`}
       >
         {children}
       </main>

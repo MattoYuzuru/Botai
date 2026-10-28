@@ -1,7 +1,8 @@
 """The learned university registry (FR-032): rows appear when a student names a university.
 
-Nothing here knows a concrete university. A row is found by an explicit id, by a shared origin,
-or by the slug of its name; otherwise it is created with a deterministic accent hue (styleguide
+Name-only suggestions supplement the learned registry; sites and recipes still come from the agent.
+A row is found by an explicit id, aliases, a shared origin, or the slug of its name;
+otherwise it is created with a deterministic accent hue (styleguide
 §2: the window 235..345 keeps it away from the status colours).
 """
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import University
+from botai.spaces import catalog
 
 HUE_MIN = 235.0
 HUE_MAX = 345.0
@@ -82,13 +84,6 @@ def origin_of(url: str) -> str:
     return f"{parts.scheme}://{host}{suffix}"
 
 
-async def get_university(session: AsyncSession, university_id: str) -> University:
-    uni = await session.get(University, university_id)
-    if uni is None:
-        raise BotaiError(ErrorCode.NOT_FOUND, "Вуз не найден")
-    return uni
-
-
 async def find_or_create(
     session: AsyncSession,
     *,
@@ -98,7 +93,21 @@ async def find_or_create(
 ) -> University:
     """Registry row for a new space. Never mutates an existing row (it is shared)."""
     if university_id:
-        return await get_university(session, university_id)
+        known = await session.get(University, university_id)
+        if known is not None:
+            return known
+        suggestion = next((row for row in catalog.entries() if row.id == university_id), None)
+        if suggestion is None:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Вуз не найден")
+    else:
+        suggestion = catalog.identify(title)
+
+    # Prefer an already learned row: preserve recipes, warnings and spaces under its original id.
+    if suggestion is not None:
+        rows = (await session.scalars(select(University))).all()
+        for row in rows:
+            if catalog.identify(row.title, row.short_title, row.id) == suggestion:
+                return row
 
     origin = origin_of(homepage_url) if homepage_url else None
     if origin:
@@ -108,8 +117,8 @@ async def find_or_create(
         if by_origin is not None:
             return by_origin
 
-    clean = " ".join(title.split())
-    slug = slugify(clean)
+    clean = suggestion.title if suggestion else " ".join(title.split())
+    slug = suggestion.id if suggestion else slugify(clean)
     existing = await session.get(University, slug)
     if existing is not None:
         return existing
@@ -120,7 +129,7 @@ async def find_or_create(
         .values(
             id=slug,
             title=clean,
-            short_title=short_title_for(clean),
+            short_title=suggestion.short_title if suggestion else short_title_for(clean),
             origins=[origin] if origin else [],
             accent_hue=accent_hue_for(slug),
             accent_verified=False,
@@ -133,17 +142,36 @@ async def find_or_create(
 
 
 async def search(session: AsyncSession, q: str, *, limit: int = 20) -> list[University]:
-    """Substring search over the (small) registry. Done in Python: case folding of Cyrillic in
-    the database depends on its locale, `str.casefold` does not."""
+    """Merge learned rows with name-only suggestions, preserving learned ids and their metadata.
+
+    An empty query includes all learned rows: consumers resolve the short names of existing spaces.
+    Searching never persists a suggestion or implies support for its university's login.
+    """
     rows = (await session.execute(select(University).order_by(University.title))).scalars().all()
-    needle = " ".join(q.casefold().split())
+    learned = list(rows)
+    for entry in catalog.entries():
+        if any(catalog.identify(row.title, row.short_title, row.id) == entry for row in learned):
+            continue
+        learned.append(
+            University(
+                id=entry.id,
+                title=entry.title,
+                short_title=entry.short_title,
+                origins=[],
+                accent_hue=accent_hue_for(entry.id),
+                accent_verified=False,
+                third_party_warning=None,
+            )
+        )
+    needle = catalog.name_key(q)
     if needle:
-        rows = [
-            u
-            for u in rows
-            if needle in u.title.casefold()
-            or needle in u.short_title.casefold()
-            or needle in u.id
-            or any(needle in o for o in u.origins)
-        ]
-    return list(rows[:limit])
+        matches: list[University] = []
+        for row in learned:
+            entry = catalog.identify(row.title, row.short_title, row.id)
+            values = (row.title, row.short_title, row.id, *row.origins)
+            if entry:
+                values += catalog.names(entry)
+            if any(needle in catalog.name_key(value) for value in values):
+                matches.append(row)
+        return matches[:limit]
+    return learned

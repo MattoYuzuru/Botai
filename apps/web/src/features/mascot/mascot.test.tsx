@@ -170,6 +170,7 @@ describe("состояние Вари из состояния источнико
     expect(run(["none", "none"])).toBe("empty");
     expect(run(["none", "ok"])).toBe("ready");
     expect(run(["ok"], true, { loaded: false })).toBe("unknown");
+    expect(run(["none"], true, { connectionsLoaded: false })).toBe("unknown");
   });
 });
 

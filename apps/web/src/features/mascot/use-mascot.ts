@@ -44,7 +44,7 @@ export interface MascotFeed {
 
 /** Сводное состояние источников выбранной области: приоритет как у `SpaceStatus` (нет сети → вход → починка). */
 export function availabilityOf(directory: SpaceDirectory, scope: Scope, online: boolean): MascotAvailability {
-  if (!directory.loaded) return "unknown";
+  if (!directory.loaded || !directory.connectionsLoaded) return "unknown";
   if (directory.none) return "empty";
   const states = scope.spaces.map((space) => space.health.state);
   if (!online || states.includes("offline")) return "offline";

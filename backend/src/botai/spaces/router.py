@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/v1", tags=["spaces"])
 async def search_universities(
     user: AuthUser, session: DbSession, q: str = ""
 ) -> list[UniversityOut]:
-    """The learned registry (shared by the pool): rows appear when a student names a university."""
+    """Learned registry plus name-only suggestions; searching does not create integrations."""
     rows = await universities.search(session, q)
     return [UniversityOut.model_validate(u) for u in rows]
 

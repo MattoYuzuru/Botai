@@ -18,7 +18,7 @@ import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
 import { resolveDataState, scheduleListState, toScheduleState } from "@/features/data/data-state";
 import { addDays, isSameDay, startOfDay } from "@/features/data/dates";
 import { scheduleQuery } from "@/features/data/queries";
-import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
+import { HeaderFreshness, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
@@ -117,6 +117,7 @@ export function ScheduleScreen() {
     <Screen
       title="Расписание"
       subtitle={scope.isAll ? "Все вузы" : scope.spaces[0]?.title}
+      meta={<HeaderFreshness spaces={scope.spaces} nowMs={nowMs} />}
       trailing={
         <>
           <ScreenSyncIndicator />
@@ -211,8 +212,6 @@ export function ScheduleScreen() {
             )}
           </>
         )}
-
-        <FreshnessFooter spaces={scope.spaces} nowMs={nowMs} />
       </div>
 
       <EventSheet
