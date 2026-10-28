@@ -44,6 +44,7 @@ from botai.browser.forms import (
 )
 from botai.browser.gateway import CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.presets import (
+    MAX_HOSTS,
     ConnectionInfo,
     LoginStore,
     Recorder,
@@ -52,8 +53,9 @@ from botai.browser.presets import (
     keep_known,
 )
 from botai.browser.probe import check_session, learn_probe, probe_ok
+from botai.browser.proxy import is_ip_literal, normalize_host
 from botai.browser.session import decode_session, encode_session
-from botai.contracts.agent_ui import InputBlock, LoginBlock, WaitBlock
+from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, WaitBlock
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import PageSnapshot, SessionState
 from botai.core.clock import Clock, SystemClock
@@ -65,6 +67,11 @@ from botai.core.vault import SecretKind, Vault
 log = logging.getLogger(__name__)
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_ADDITIONAL_LOGIN_HOSTS = 4
+_BOT_PROTECTION_DETAIL = (
+    "Сайт вуза не пускает автоматический заход. Мы не обходим такую защиту: "
+    "попробуйте позже или войдите на сайте самостоятельно."
+)
 Outcome = PageSnapshot | SessionState
 
 
@@ -203,7 +210,7 @@ class LoginFlow:
             self._check_cooldown(key)
             info = await self._store.connection(user_id, connection_id)
             preset = await self._store.preset_for(info.origin)
-            hosts = list(preset.allow_hosts) if preset else list(info.allow_hosts)
+            hosts = self._hosts(info, preset)
             stored = None if force else await self._stored_session(user_id, connection_id)
             if stored is not None:
                 verdict = await check_session(
@@ -211,7 +218,56 @@ class LoginFlow:
                 )
                 if verdict is True:
                     return stored
-            return await self._login(job, user_id, connection_id, info, preset, hosts)
+            for added in range(MAX_ADDITIONAL_LOGIN_HOSTS + 1):
+                try:
+                    return await self._login(job, user_id, connection_id, info, preset, hosts)
+                except BotaiError as exc:
+                    host = self._host_to_approve(exc, hosts)
+                    if (
+                        host is None
+                        or added == MAX_ADDITIONAL_LOGIN_HOSTS
+                        or len(hosts) >= MAX_HOSTS
+                    ):
+                        raise
+                    answer = await job.ask(
+                        ConfirmBlock(
+                            id=new_id(),
+                            at=self._clock.now(),
+                            question=f"Сайт вуза перенаправил вход на {host}. "
+                            "Разрешить этому подключению обращаться к этому адресу?",
+                            confirm_label="Разрешить и продолжить",
+                            cancel_label="Не разрешать",
+                        )
+                    )
+                    if answer.values is not True:
+                        raise BotaiError(
+                            ErrorCode.EGRESS_BLOCKED,
+                            f"Переход на {host} не разрешён. Вход остановлен.",
+                            extra={"host": host},
+                        ) from None
+                    await self._store.allow_host(user_id, connection_id, host)
+                    info = await self._store.connection(user_id, connection_id)
+                    preset = await self._store.preset_for(info.origin)
+                    hosts = self._hosts(info, preset)
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    @staticmethod
+    def _hosts(info: ConnectionInfo, preset: LoginPreset | None) -> list[str]:
+        known: list[str] = list(preset.allow_hosts) if preset else []
+        hosts = list(dict.fromkeys([*known, *info.allow_hosts]))
+        if len(hosts) > MAX_HOSTS:
+            raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Достигнут предел адресов этого подключения")
+        return hosts
+
+    @staticmethod
+    def _host_to_approve(exc: BotaiError, hosts: list[str]) -> str | None:
+        if exc.code != ErrorCode.EGRESS_BLOCKED:
+            return None
+        raw = exc.extra.get("host")
+        host = normalize_host(raw) if isinstance(raw, str) else None
+        if host is None or is_ip_literal(host) or host in hosts:
+            return None
+        return host
 
     # -- the stored session and creds ----------------------------------------------------------
 
@@ -334,8 +390,7 @@ class LoginFlow:
             elif isinstance(detection, HardBlock):
                 raise BotaiError(
                     ErrorCode.SOURCE_BOT_PROTECTION,
-                    "Сайт вуза не пускает автоматический заход. Мы не обходим такую защиту: "
-                    "попробуйте позже или войдите на сайте самостоятельно.",
+                    _BOT_PROTECTION_DETAIL,
                 )
             else:
                 assert isinstance(detection, ErrorPage)
@@ -346,14 +401,9 @@ class LoginFlow:
         raise BotaiError(ErrorCode.LOGIN_FAILED, "Вход занял слишком много шагов, остановились")
 
     def _navigation_failure(self, run: _Run) -> BotaiError:
-        blocked = run.handle.blocked_hosts()
-        if blocked:
-            host = blocked[-1]
-            return BotaiError(
-                ErrorCode.EGRESS_BLOCKED,
-                f"Сайт вуза ведёт на {host}, а этот адрес не входит в разрешённые для подключения",
-                extra={"host": host},
-            )
+        failure = run.handle.navigation_failure()
+        if failure is not None:
+            return failure
         return BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Страница входа вуза не открылась")
 
     # -- success -------------------------------------------------------------------------------
@@ -657,12 +707,21 @@ class LoginFlow:
             if link.closed or run.handle.closed:
                 raise JobCancelled("the login screen was closed")
             now = await run.handle.snapshot()
+            found = detect(now)
+            # A human's CDP click does not pass through handle.goto(), which maps
+            # navigation errors. Do not leave a failed page waiting for 30 minutes
+            # or accept it because a previously captured session still probes OK.
+            if isinstance(found, ErrorPage):
+                await link.close("navigation_failed")
+                raise self._navigation_failure(run)
+            if isinstance(found, HardBlock):
+                await link.close("bot_protection")
+                raise BotaiError(ErrorCode.SOURCE_BOT_PROTECTION, _BOT_PROTECTION_DETAIL)
             said_done = link.take_done()
             finished = await self._try_finish(run, now, force=said_done)
             if finished is not None:
                 await link.succeed()
                 return finished
-            found = detect(now)
             same_form = best_step(now)
             if (
                 said_done

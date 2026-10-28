@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.browser.forms import FormStep, as_preset_step, login_area, looks_personal, safe_path
+from botai.browser.proxy import is_ip_literal, normalize_host
 from botai.contracts import schemas
 from botai.contracts.specs import LoginPreset, LoginStep
 from botai.core.browser import SessionState
@@ -43,6 +44,10 @@ class LoginStore(Protocol):
         """The user's connection, or BotaiError(not_found)."""
         ...
 
+    async def allow_host(self, user_id: str, connection_id: str, host: str) -> None:
+        """Add the exact DNS host the connection's owner just approved; preserve other hosts."""
+        ...
+
     async def preset_for(self, origin: str) -> LoginPreset | None:
         """The newest active preset for this origin."""
         ...
@@ -57,6 +62,16 @@ def normalize_origin(origin: str) -> str:
     host = (parts.hostname or "").lower()
     port = f":{parts.port}" if parts.port and parts.port != 443 else ""
     return f"https://{host}{port}"
+
+
+def _with_allowed_host(hosts: Sequence[str], host: str) -> tuple[str, ...]:
+    clean = normalize_host(host)
+    if clean is None or is_ip_literal(clean):
+        raise BotaiError(ErrorCode.VALIDATION, "Ожидалось точное DNS-имя сайта")
+    merged = tuple(dict.fromkeys([*hosts, clean]))
+    if len(merged) > MAX_HOSTS:
+        raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Достигнут предел адресов этого подключения")
+    return merged
 
 
 class InMemoryLoginStore:
@@ -92,6 +107,12 @@ class InMemoryLoginStore:
         rows = self.presets.get(normalize_origin(origin))
         return LoginPreset.model_validate(rows[-1]) if rows else None
 
+    async def allow_host(self, user_id: str, connection_id: str, host: str) -> None:
+        info = await self.connection(user_id, connection_id)
+        self.connections[(user_id, connection_id)] = replace(
+            info, allow_hosts=_with_allowed_host(info.allow_hosts, host)
+        )
+
     async def save_preset(self, origin: str, preset: dict[str, Any], *, connection_id: str) -> int:
         rows = self.presets.setdefault(normalize_origin(origin), [])
         revision = len(rows) + 1
@@ -115,9 +136,27 @@ class PgLoginStore:
             ).scalar_one_or_none()
         if row is None:
             raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
+        if row.status == "disabled":
+            raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
         return ConnectionInfo(
             normalize_origin(row.origin), tuple(row.allow_hosts or ()), row.login_preset_id
         )
+
+    async def allow_host(self, user_id: str, connection_id: str, host: str) -> None:
+        async with self._db() as session:
+            row = (
+                await session.execute(
+                    select(Connection)
+                    .where(Connection.id == connection_id, Connection.user_id == user_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
+            if row.status == "disabled":
+                raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
+            row.allow_hosts = list(_with_allowed_host(row.allow_hosts or (), host))
+            await session.commit()
 
     async def preset_for(self, origin: str) -> LoginPreset | None:
         async with self._db() as session:
