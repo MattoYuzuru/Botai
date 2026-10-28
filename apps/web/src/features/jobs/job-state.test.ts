@@ -4,8 +4,11 @@ import {
   applyEvent,
   initialJob,
   isTerminal,
+  jobFailed,
+  jobProblem,
   needsHuman,
   pendingQuestions,
+  supersededAuthQuestions,
   thinkingSteps,
 } from "./job-state";
 
@@ -109,6 +112,43 @@ describe("журнал события → состояние", () => {
 });
 
 describe("вопросы и ожидание человека", () => {
+  it("реальный matching LoginBlock заменяет только старый auth input без выдуманного ответа", () => {
+    let job = applyEvent(initialJob("J"), ev("block", input(1, { autocomplete: "username" })));
+    job = applyEvent(job, ev("block", input(2, { question: "Поиск курсов" })));
+    job = applyEvent(job, ev("block", input(3, { inputKind: "url" })));
+    job = applyEvent(
+      job,
+      ev("block", {
+        type: "login",
+        id: ID(4),
+        at: AT,
+        connectionId: ID(9),
+        ticket: "one-time",
+        wsUrl: "/api/v1/login-sessions/L/ws",
+        expiresAt: AT,
+      }),
+    );
+    expect(pendingQuestions(job, ID(8)).map((block) => block.id)).toEqual([ID(1), ID(2), ID(3)]);
+    expect(pendingQuestions(job).map((block) => block.id)).toEqual([ID(1), ID(2), ID(3)]);
+    expect(pendingQuestions(job, ID(9)).map((block) => block.id)).toEqual([ID(2), ID(3)]);
+    expect([...supersededAuthQuestions(job, ID(9))]).toEqual([ID(1)]);
+    expect(job.answers).toEqual({});
+    job = applyEvent(job, ev("block", input(5, { inputKind: "password" })));
+    expect(pendingQuestions(job, ID(9)).map((block) => block.id)).toEqual([ID(2), ID(3), ID(5)]);
+  });
+
+  it("done с legacy login_failed result остаётся ошибкой, а обычный done — успехом", () => {
+    const failed = applyEvent(
+      initialJob("J"),
+      ev("done", { result: { status: "error", detail: "login_failed" } }),
+    );
+    expect(jobFailed(failed)).toBe(true);
+    expect(jobProblem(failed)).toMatchObject({ code: "login_failed" });
+    const done = applyEvent(initialJob("J"), ev("done", { result: { status: "ok" } }));
+    expect(jobFailed(done)).toBe(false);
+    expect(jobProblem(done)).toBeNull();
+  });
+
   it("вопрос без ответа ждёт, отвеченный — нет; после завершения вопросов не остаётся", () => {
     let job = applyEvent(
       initialJob("J"),

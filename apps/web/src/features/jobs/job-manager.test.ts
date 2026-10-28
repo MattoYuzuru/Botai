@@ -42,6 +42,72 @@ async function until<T>(read: () => T | undefined | false, label: string): Promi
 }
 
 describe("поток задания подключения на MSW", () => {
+  it.each([
+    [204, "before"],
+    [409, "before"],
+    [409, "after"],
+  ] as const)(
+    "native answer HTTP%s и SSE %s: ручной handoff не выдумывает «Введено»",
+    async (status, order) => {
+      const jobId = "01JAAAAAAAAAAAAAAAAAAAAA91";
+      const connectionId = "01JAAAAAAAAAAAAAAAAAAAAA92";
+      const blockId = "01JAAAAAAAAAAAAAAAAAAAAA93";
+      const sim = new JobSim(jobId, () => Date.now(), 0);
+      db.sims.set(jobId, sim);
+      sim.status("Жду пароль", "waiting_user");
+      sim.block({
+        type: "input",
+        id: blockId,
+        at: new Date().toISOString(),
+        question: "Пароль",
+        inputKind: "password",
+        secret: true,
+        autocomplete: "current-password",
+        required: true,
+      });
+      let release: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      server.use(
+        http.post(`*/api/v1/jobs/${jobId}/answers`, async () => {
+          await pending;
+          return status === 204
+            ? new HttpResponse(null, { status })
+            : HttpResponse.json({ code: "block_answered", detail: "Этот шаг закрыт" }, { status });
+        }),
+      );
+      const manager = fastManager();
+      manager.start(jobId);
+      await until(() => manager.get(jobId)?.blocks.length === 1, "native вопрос");
+      const answer = manager.answer(jobId, blockId, "handoff-only-secret", null, connectionId);
+      const handoff = async () => {
+        sim.block({
+          type: "login",
+          id: "01JAAAAAAAAAAAAAAAAAAAAA94",
+          at: new Date().toISOString(),
+          connectionId,
+          ticket: "fixture-one-time-ticket",
+          wsUrl: "/api/v1/login-sessions/L/ws",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+        await until(() => manager.get(jobId)?.blocks.some((block) => block.type === "login"), "SSE handoff");
+      };
+      try {
+        if (order === "before") await handoff();
+        release?.();
+        await answer;
+        if (order === "after") await handoff();
+        expect(manager.get(jobId)?.answers[blockId]).toBeUndefined();
+        expect(JSON.stringify(manager.get(jobId))).not.toContain("handoff-only-secret");
+        expect(pendingQuestions(manager.get(jobId) ?? ({} as never), connectionId)).toEqual([]);
+      } finally {
+        release?.();
+        manager.stop(jobId);
+      }
+    },
+  );
+
   it("весь путь: логин, секретный пароль, выбор предметов, итог", async () => {
     const manager = fastManager();
     const { jobId } = await startJob("basic");

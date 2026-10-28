@@ -1,6 +1,7 @@
 import { Button, Field, Input, SecretField, type SecretKind } from "@botai/design";
 import { type FormEvent, useState } from "react";
 import type { Input as InputBlock } from "@/api/agent-ui.gen";
+import { isAuthInput } from "@/features/jobs/job-state";
 import type { BlockContext } from "./context";
 import { QuestionFrame } from "./question-frame";
 
@@ -55,13 +56,15 @@ function secretAutocomplete(value: InputBlock["autocomplete"], kind: SecretKind)
  */
 export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext }) {
   const answer = ctx.answers[block.id];
-  const busy = answer?.status === "sending";
+  const manual = isAuthInput(block) ? ctx.manualLogin : undefined;
+  const busy = answer?.status === "sending" || manual?.busy === true;
   const secret = block.secret === true || block.inputKind === "password";
 
   if (secret) {
     const kind: SecretKind = block.inputKind === "code" ? "code" : "password";
     return (
       <QuestionFrame question={block.question} required={block.required} answer={answer}>
+        {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
         <SecretField
           label="Ответ"
           kind={kind}
@@ -71,13 +74,16 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
           required={block.required}
           disabled={busy}
           encryptedNote={kind === "password"}
-          onSubmit={(value) => ctx.onAnswer(block.id, value, null)}
+          onSubmit={(value) => {
+            if (!busy) ctx.onAnswer(block.id, value, null);
+          }}
         />
         {!block.required && (
           <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, "", "Пропущено")}>
             Пропустить
           </Button>
         )}
+        <ManualLoginOption blockId={block.id} manual={manual} busy={busy} />
       </QuestionFrame>
     );
   }
@@ -88,9 +94,11 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
   const answer = ctx.answers[block.id];
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const manual = isAuthInput(block) ? ctx.manualLogin : undefined;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (busy) return;
     const found = validateInput(block.inputKind, value, block.required);
     setError(found);
     if (found) return;
@@ -100,6 +108,7 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
 
   return (
     <QuestionFrame question={block.question} required={block.required} answer={answer}>
+      {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <Field label="Ответ" error={error ?? undefined}>
           <Input
@@ -117,7 +126,7 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
           />
         </Field>
         <div className="flex flex-col gap-2 xs:flex-row xs:flex-wrap">
-          <Button type="submit" variant="primary" loading={busy} className="xs:min-w-40">
+          <Button type="submit" variant="primary" loading={busy} disabled={busy} className="xs:min-w-40">
             Ответить
           </Button>
           {!block.required && (
@@ -127,6 +136,36 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
           )}
         </div>
       </form>
+      <ManualLoginOption blockId={block.id} manual={manual} busy={busy} />
     </QuestionFrame>
+  );
+}
+
+function ManualLoginOption({
+  blockId,
+  manual,
+  busy,
+}: {
+  blockId: string;
+  manual: BlockContext["manualLogin"];
+  busy: boolean;
+}) {
+  if (!manual) return null;
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <Button type="button" variant="secondary" disabled={busy} onClick={() => manual.onOpen(blockId)}>
+        Открыть браузер
+      </Button>
+      {manual.busy && (
+        <p role="status" className="type-caption text-fg-muted">
+          Открываю браузер…
+        </p>
+      )}
+      {manual.error && (
+        <p role="alert" className="type-caption text-danger-fg">
+          {manual.error}
+        </p>
+      )}
+    </div>
   );
 }

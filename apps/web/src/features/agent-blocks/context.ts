@@ -9,6 +9,13 @@ export interface BlockContext {
   nowMs: number;
   timeZone: string;
   spaceTitle?: string;
+  /** Переход во вход через браузер: только контекст подключения, никогда не значения полей. */
+  manualLogin?: {
+    connectionId: string;
+    busy: boolean;
+    error: string | null;
+    onOpen: (blockId: string) => void;
+  };
   /** Ответ человека: значения для сервера и текст для истории (`null` — секрет, показываем «введено»). */
   onAnswer: (blockId: string, values: AnswerValues | null, shown: string | null) => void;
   /** Одобрение предложенного действия (ApprovalCard): метод, хост и поля уже подтверждены человеком. */

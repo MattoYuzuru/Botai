@@ -215,8 +215,9 @@ async def test_sync_and_repair_enqueue_a_deduplicated_job(
     r2 = await client.post(f"/api/v1/connections/{conn}/{path}")
     assert r1.status_code == r2.status_code == 202
     assert r1.json()["jobId"] == r2.json()["jobId"]
+    expected = JobKind.CONNECT if path == "sync" and status == "error" else kind
     assert [(j["kind"], j["connection_id"], j["user_id"]) for j in queue.jobs] == [
-        (kind, conn, acc.id)
+        (expected, conn, acc.id)
     ]
 
 
@@ -233,9 +234,44 @@ async def test_sync_and_repair_wait_for_a_finished_setup(
     acc = await signup(client, tx_sessionmaker, clock)
     conn = await make_connection(tx_sessionmaker, acc.id, await _space(client), status=status)
     r = await client.post(f"/api/v1/connections/{conn}/{path}")
-    assert r.status_code == 409
-    assert r.json()["code"] == "conflict"
-    assert queue.jobs == []
+    if path == "sync" and status != "disabled":
+        assert r.status_code == 202
+        assert [(j["kind"], j["connection_id"]) for j in queue.jobs] == [(JobKind.CONNECT, conn)]
+    else:
+        assert r.status_code == 409
+        assert r.json()["code"] == "conflict"
+        assert queue.jobs == []
+
+
+async def test_resume_setup_reuses_its_waiting_connect_job(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    started = await client.post(
+        f"/api/v1/spaces/{await _space(client)}/connections",
+        json={"url": "https://fakeuni.test/"},
+    )
+    assert started.status_code == 201
+    body = started.json()
+    resumed = await client.post(f"/api/v1/connections/{body['connection']['id']}/sync")
+    assert resumed.status_code == 202
+    assert resumed.json()["jobId"] == body["jobId"]
+    assert len(queue.jobs) == 1
+
+
+async def test_failed_configured_connection_still_syncs_its_adapter(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
+) -> None:
+    acc = await signup(client, tx_sessionmaker, clock)
+    conn = await make_connection(tx_sessionmaker, acc.id, await _space(client), status="error")
+    async with tx_sessionmaker() as session:
+        row = await session.get(Connection, conn)
+        assert row is not None
+        row.adapter = "recipe"
+        await session.commit()
+    response = await client.post(f"/api/v1/connections/{conn}/sync")
+    assert response.status_code == 202
+    assert [j["kind"] for j in queue.jobs] == [JobKind.SYNC]
 
 
 # --- secrets ------------------------------------------------------------------------------------

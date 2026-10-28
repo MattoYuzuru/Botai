@@ -88,7 +88,9 @@ def _check_values(block: AgentUiBlock, values: list[str] | str | bool | None) ->
         raise _bad()
 
 
-async def _asked_block(session: AsyncSession, job_id: str, block_id: str) -> AgentUiBlock:
+async def _asked_block(
+    session: AsyncSession, job_id: str, block_id: str
+) -> tuple[AgentUiBlock, int]:
     event = await session.scalar(
         select(JobEvent)
         .where(
@@ -107,16 +109,47 @@ async def _asked_block(session: AsyncSession, job_id: str, block_id: str) -> Age
         raise BotaiError(ErrorCode.NOT_FOUND, "Блок не найден") from None
     if block.type not in ASKING_TYPES:
         raise _bad()
-    return block
+    return block, event.seq
 
 
 async def record_answer(
     session: AsyncSession, vault: Vault, user_id: str, job_id: str, body: AnswerIn
 ) -> None:
-    job = await get_job(session, user_id, job_id)
+    # Serialize answer acceptance with emit/cancel, which lock the same job row.
+    # A handoff committed while this request was waiting must retire the native
+    # question before any answer slot or transient secret can be written.
+    job = await session.scalar(
+        select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
+    )
+    if job is None:
+        raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
     if job.state in TERMINAL:
         raise BotaiError(ErrorCode.CONFLICT, "Задание уже завершено")
-    block = await _asked_block(session, job_id, body.block_id)
+    block, asked_at = await _asked_block(session, job_id, body.block_id)
+    if (
+        isinstance(block, InputBlock)
+        and job.connection_id is not None
+        and block.input_kind != "url"
+        and (
+            block.autocomplete in {"username", "current-password", "one-time-code"}
+            or block.input_kind in {"password", "code"}
+        )
+    ):
+        handoff = await session.scalar(
+            select(JobEvent.id)
+            .where(
+                JobEvent.job_id == job_id,
+                JobEvent.type == "block",
+                JobEvent.seq > asked_at,
+                JobEvent.data["type"].astext == "login",
+                JobEvent.data["connectionId"].astext == job.connection_id,
+            )
+            .limit(1)
+        )
+        if handoff is not None:
+            raise BotaiError(
+                ErrorCode.BLOCK_ANSWERED, "Этот шаг уже закрыт. Продолжите вход в браузере"
+            )
     _check_values(block, body.values)
     secret = isinstance(block, InputBlock) and block.secret
 

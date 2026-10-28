@@ -29,6 +29,18 @@ _USER = re.compile(
     r"student|студент",
     re.IGNORECASE,
 )
+_SEARCH = re.compile(r"search|поиск|найти|искать", re.IGNORECASE)
+_LOGIN_FIELD = re.compile(r"username|uname|\blogin\b|логин|имя пользовател", re.IGNORECASE)
+_AUTH_CODE = re.compile(
+    r"otp|totp|one[-_ ]?time|passcode|2fa|mfa|\bsms\b|\bpin\b|"
+    r"verification|код[^.]{0,40}(?:подтвержден|смс|sms)",
+    re.IGNORECASE,
+)
+_AUTH_CONTEXT = re.compile(
+    r"log[-_ ]?in|sign[-_ ]?in|\bauth(?:entication)?\b|\bsso\b|вход|войти|авторизац",
+    re.IGNORECASE,
+)
+_NEWSLETTER = re.compile(r"newsletter|subscrib|подписк|рассылк", re.IGNORECASE)
 _PUSH = re.compile(
     r"подтвердите[^.]{0,60}(?:на телефон|в приложени|push|уведомлени)|"
     r"(?:push|пуш)[- ]?уведомлени|запрос на вход[^.]{0,40}(?:отправлен|телефон)|"
@@ -121,14 +133,24 @@ class UnknownPage:
 Detection = FormStep | PushWait | CaptchaPage | HardBlock | ErrorPage | UnknownPage
 
 
+def _is_search(field: FormField) -> bool:
+    hint = " ".join(filter(None, (field.name, field.label)))
+    return field.input_type.lower() == "search" or bool(_SEARCH.search(hint))
+
+
 def role_of(field: FormField) -> Role | Literal["newpassword"] | None:
     kind = (field.input_type or "text").lower()
     visible = getattr(field, "visible", True)
     if (
         kind in ("hidden", "submit", "button", "reset", "image", "file", "range", "color")
         or not visible
+        or _is_search(field)
     ):
         return None
+    # These controls can occur in ordinary data forms. A word such as "student"
+    # or "user" in their name must not turn them into a login or one-time code.
+    if kind in ("url", "textarea", "select"):
+        return "text"
     ac = (field.autocomplete or "").lower()
     if "new-password" in ac:
         return "newpassword"
@@ -149,7 +171,7 @@ def role_of(field: FormField) -> Role | Literal["newpassword"] | None:
         return "otp"
     if kind == "email" or _USER.search(hint):
         return "username"
-    if kind in ("text", "tel", "number", "search", "url", "textarea", "select"):
+    if kind in ("text", "tel", "number"):
         return "text"
     return None
 
@@ -206,7 +228,31 @@ def _step_id(fields: list[StepField]) -> str:
     return "-".join(roles)[:30] or "form"
 
 
-def _step_from_form(form: FormInfo, url: str) -> FormStep | UnknownPage | None:
+def _auth_context(form: FormInfo, url: str, title: str) -> bool:
+    form_hint = " ".join((form.selector, form.action or "")).replace("_", " ")
+    if _NEWSLETTER.search(form_hint):
+        return False
+    return bool(_AUTH_CONTEXT.search(" ".join((form_hint, urlsplit(url).path, title))))
+
+
+def _auth_field(field: FormField, *, context: bool) -> bool:
+    """A credential signal, rather than merely a fillable control or an e-mail address."""
+    role = role_of(field)
+    ac = (field.autocomplete or "").lower()
+    hint = " ".join(filter(None, (field.name, field.label)))
+    if role in ("password", "newpassword"):
+        return True
+    if role == "username":
+        return context or "username" in ac or bool(_LOGIN_FIELD.search(hint))
+    if role == "otp":
+        return context or "one-time-code" in ac or bool(_AUTH_CODE.search(hint))
+    return role == "text" and secretish(field.label)
+
+
+def _step_from_form(form: FormInfo, url: str, title: str = "") -> FormStep | UnknownPage | None:
+    context = _auth_context(form, url, title)
+    if not any(_auth_field(f, context=context) for f in form.fields):
+        return None
     fields: list[StepField] = []
     password_fields = 0
     for f in form.fields:
@@ -235,6 +281,8 @@ def _step_from_form(form: FormInfo, url: str) -> FormStep | UnknownPage | None:
     fillable = [f for f in fields if f.role != "checkbox"]
     if not fillable:
         return None
+    if any(f.role == "text" and not secretish(f.label) for f in fillable):
+        return UnknownPage("unrecognised extra fields in a login form")
     return FormStep(
         id=_step_id(fillable),
         form_selector=form.selector,
@@ -250,7 +298,7 @@ def best_step(snapshot: PageSnapshot) -> FormStep | UnknownPage | None:
     steps: list[tuple[int, FormStep]] = []
     problem: UnknownPage | None = None
     for form in snapshot.forms:
-        built = _step_from_form(form, snapshot.url)
+        built = _step_from_form(form, snapshot.url, snapshot.title)
         if isinstance(built, UnknownPage):
             problem = problem or built
         elif built is not None:
@@ -279,9 +327,8 @@ def detect(snapshot: PageSnapshot) -> Detection:
 def has_credential_fields(snapshot: PageSnapshot) -> bool:
     """True if the page asks for a login, password or code (so it cannot be the logged-in page)."""
     for form in snapshot.forms:
-        for f in form.fields:
-            if role_of(f) in ("username", "password", "otp", "newpassword"):
-                return True
+        if _step_from_form(form, snapshot.url, snapshot.title) is not None:
+            return True
     return False
 
 
@@ -293,6 +340,47 @@ def _present(html: str, selector: str) -> bool:
         return LexborHTMLParser(html).css_first(selector) is not None
     except Exception:  # selectolax rejects selectors it does not support
         return False
+
+
+def _replay_form(form: FormInfo, known: Sequence[LoginField], snapshot: PageSnapshot) -> bool:
+    """Validate the live form with the roles already learned for the same compatible controls."""
+    form_hint = " ".join((form.selector, form.action or ""))
+    context = _auth_context(form, snapshot.url, snapshot.title)
+    if _NEWSLETTER.search(form_hint):
+        return False
+    if not context and not any(_auth_field(f, context=False) for f in form.fields):
+        return False
+    fields: list[FormField] = []
+    hints = {"username": "username", "password": "current-password", "otp": "one-time-code"}
+    compatible = {
+        "username": {"text", "email", "tel", "number"},
+        "password": {"text", "password"},
+        "otp": {"text", "tel", "number"},
+    }
+    by_selector = {field.selector: field for field in known}
+    for current in form.fields:
+        learned = by_selector.get(current.selector)
+        if learned is not None and learned.role in hints:
+            ac = (current.autocomplete or "").lower()
+            if (
+                _is_search(current)
+                or current.input_type.lower() not in compatible[learned.role]
+                or "new-password" in ac
+            ):
+                return False
+            explicit = next((role for role, hint in hints.items() if hint in ac), None)
+            if explicit is not None and explicit != learned.role:
+                return False
+            # This is classifier-only metadata on a copy. The live DOM and its
+            # values stay untouched; arbitrary new selectors receive no hints.
+            current = current.model_copy(update={"autocomplete": hints[learned.role]})
+        elif learned is not None and learned.role == "text" and secretish(learned.label):
+            current = current.model_copy(update={"label": learned.label})
+        fields.append(current)
+    live = _step_from_form(form.model_copy(update={"fields": fields}), snapshot.url, snapshot.title)
+    return isinstance(live, FormStep) and {field.selector for field in live.fields} == {
+        field.selector for field in known if field.role != "checkbox"
+    }
 
 
 def replay(
@@ -317,6 +405,11 @@ def replay(
             continue
         if not all(f.selector in live for f in step.fields):
             continue
+        # Old presets may have learned an ordinary search box as a login step.
+        # Live search semantics override those stale roles; the detector can still
+        # choose a separate genuine login form on the same page.
+        if any(_is_search(live[f.selector]) for f in step.fields):
+            continue
         fields = tuple(
             StepField(
                 role=f.role,
@@ -332,17 +425,21 @@ def replay(
         )
         if not fields:
             continue
-        form_selector = next(
+        if not any(f.role in ("username", "password", "otp") or secretish(f.label) for f in fields):
+            continue
+        form_info = next(
             (
-                frm.selector
+                frm
                 for frm in snapshot.forms
                 if fields[0].selector in {x.selector for x in frm.fields}
             ),
-            "body",
+            None,
         )
+        if form_info is None or not _replay_form(form_info, step.fields, snapshot):
+            continue
         return FormStep(
             id=step.id,
-            form_selector=form_selector,
+            form_selector=form_info.selector,
             fields=fields,
             submit=step.submit,
             url=snapshot.url,

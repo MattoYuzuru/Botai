@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast
@@ -55,7 +56,7 @@ from botai.browser.presets import (
 from botai.browser.probe import check_session, learn_probe, probe_ok
 from botai.browser.proxy import is_ip_literal, normalize_host
 from botai.browser.session import decode_session, encode_session
-from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, WaitBlock
+from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, TextBlock, WaitBlock
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import PageSnapshot, SessionState
 from botai.core.clock import Clock, SystemClock
@@ -97,6 +98,9 @@ class ScreenLink(Protocol):
     expires_at: datetime
 
     @property
+    def human_control(self) -> bool: ...
+
+    @property
     def closed(self) -> bool: ...
 
     def idle_s(self) -> float:
@@ -115,6 +119,10 @@ class ScreenLink(Protocol):
 
 
 class LoginScreens(Protocol):
+    async def register_native(
+        self, user_id: str, connection_id: str, request: Callable[[], Coroutine[Any, Any, bool]]
+    ) -> Callable[[], None]: ...
+
     async def open(
         self, handle: PlaywrightHandle, *, user_id: str, connection_id: str
     ) -> ScreenLink: ...
@@ -129,6 +137,10 @@ class _Creds:
         self.password_from_vault = password is not None
         self.typed_username = False
         self.typed_password = False
+
+
+class _ManualRequested(Exception):
+    """An explicit control request superseded the native question, never an input value."""
 
 
 @dataclass(slots=True)
@@ -151,6 +163,11 @@ class _Run:
     verified_page: tuple[str, str, int] | None = None
     final_url: str = ""
     steps_recorded: set[Any] = field(default_factory=lambda: set[Any]())
+    manual_requested: bool = False
+    native_waiting: bool = False
+    manual_signal: asyncio.Event = field(default_factory=asyncio.Event)
+    manual_ready: asyncio.Future[bool] | None = None
+    human_confirmed: bool = False
 
 
 def _avoid_tokens(creds: _Creds) -> list[str]:
@@ -331,6 +348,7 @@ class LoginFlow:
             # a first login may follow the site to subdomains of its own domain, nothing else
             suffixes=[] if preset else [origin_host],
         )
+        run: _Run | None = None
         try:
             run = _Run(
                 job=job,
@@ -355,6 +373,8 @@ class LoginFlow:
             await self._finish(run, session)
             return session
         finally:
+            if run is not None and run.manual_ready is not None and not run.manual_ready.done():
+                run.manual_ready.set_result(False)
             await handle.close()
 
     async def _drive(self, run: _Run) -> SessionState:
@@ -378,12 +398,11 @@ class LoginFlow:
                 snap = outcome
                 continue
             if isinstance(detection, FormStep):
-                snap = await self._form(run, detection)
-                continue
-            if isinstance(detection, PushWait):
+                outcome = await self._form(run, detection)
+            elif isinstance(detection, PushWait):
                 snap = await self._push(run, snap)
                 continue
-            if isinstance(detection, CaptchaPage):
+            elif isinstance(detection, CaptchaPage):
                 outcome = await self._captcha(run, snap)
             elif isinstance(detection, UnknownPage):
                 outcome = await self._unknown(run, snap)
@@ -442,8 +461,9 @@ class LoginFlow:
             run.probe = run.learned_probe = learned
             run.final_url = snap.url
             return state
-        if run.submitted > 0 and _ordinary_page(run, snap):
-            # no probe could be learned, but a form went in and an ordinary page came back
+        if (run.submitted > 0 or force) and _ordinary_page(run, snap):
+            # An explicit Done can confirm the ordinary page after all success guards above.
+            run.human_confirmed = force
             run.final_url = snap.url
             return state
         run.verified_page = signature
@@ -461,6 +481,17 @@ class LoginFlow:
                 user, conn, SecretKind.PASSWORD, run.creds.password.get_secret_value()
             )
         await self._remember_preset(run, session)
+        await run.job.emit(
+            TextBlock(
+                id=new_id(),
+                at=self._clock.now(),
+                markdown=(
+                    "Вы завершили вход на экране. Проверяю доступ к учебным данным."
+                    if run.human_confirmed
+                    else "Вход выполнен. Продолжаю подключение к учебным данным."
+                ),
+            )
+        )
 
     async def _remember_preset(self, run: _Run, session: SessionState) -> None:
         reached = [h for h in run.handle.visited_hosts() if h not in run.handle.blocked_hosts()]
@@ -492,10 +523,13 @@ class LoginFlow:
 
     # -- mirrored form -------------------------------------------------------------------------
 
-    async def _form(self, run: _Run, step: FormStep) -> PageSnapshot:
+    async def _form(self, run: _Run, step: FormStep) -> Outcome:
         failed = await self._register(run, step)
-        await self._fill(run, step, failed=failed)
-        return await self._submit(run, step)
+        try:
+            await self._fill(run, step, failed=failed)
+            return await self._submit(run, step)
+        except _ManualRequested:
+            return await self._manual_screen(run)
 
     async def _register(self, run: _Run, step: FormStep) -> bool:
         """Count this submission; True if the page is the one we just submitted (it refused)."""
@@ -528,11 +562,64 @@ class LoginFlow:
         return failed
 
     async def _fill(self, run: _Run, step: FormStep, *, failed: bool) -> None:
-        host = urlsplit(run.info.origin).hostname or ""
+        host = urlsplit(step.url).hostname or ""
         attempt = run.attempts.get(step.signature, 1)
         for f in step.fields:
             value = await self._value_for(run, f, host=host, failed=failed, attempt=attempt)
+            if run.manual_requested:
+                raise _ManualRequested
             await run.handle.fill(f.selector, value)
+
+    async def _native_answer[T](self, run: _Run, ask: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        if self._screens is None:
+            return await ask()
+        run.manual_ready = asyncio.get_running_loop().create_future()
+        ready = run.manual_ready
+        run.native_waiting = True
+        run.manual_signal.clear()
+        answer: asyncio.Task[T] | None = None
+        manual: asyncio.Task[bool] | None = None
+        unregister: Callable[[], None] | None = None
+
+        async def request() -> bool:
+            if not run.native_waiting or run.handle.closed:
+                return False
+            run.manual_requested = True
+            run.manual_signal.set()
+            return await asyncio.shield(ready)
+
+        try:
+            unregister = await self._screens.register_native(
+                run.user_id, run.connection_id, request
+            )
+            answer = asyncio.create_task(ask())
+            manual = asyncio.create_task(run.manual_signal.wait())
+            await asyncio.wait({answer, manual}, return_when=asyncio.FIRST_COMPLETED)
+            if run.manual_requested:  # explicit manual control wins simultaneous completion
+                raise _ManualRequested
+            return answer.result()
+        finally:
+            run.native_waiting = False
+            if unregister is not None:
+                unregister()
+            tasks: list[asyncio.Task[Any]] = [task for task in (answer, manual) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if not run.manual_requested and not ready.done():
+                ready.set_result(False)
+
+    async def _manual_screen(self, run: _Run) -> Outcome:
+        # Values already typed stay in this browser. They are no longer assumed to match
+        # credentials the human may edit, and must not be persisted as a new saved password.
+        run.creds.typed_username = run.creds.typed_password = False
+        return await self._human(
+            run,
+            await run.handle.snapshot(),
+            hint="Браузер открыт по вашей просьбе. Завершите вход на сайте; "
+            "мы не будем заполнять поля или отправлять формы за вас.",
+        )
 
     async def _value_for(
         self, run: _Run, f: StepField, *, host: str, failed: bool, attempt: int
@@ -544,7 +631,9 @@ class LoginFlow:
             return creds.password.get_secret_value()
         question = self._question(f, host, failed=failed, attempt=attempt)
         if f.role in ("password", "otp"):
-            secret = await run.job.ask_secret(self._block(f, question, secret=True))
+            secret = await self._native_answer(
+                run, lambda: run.job.ask_secret(self._block(f, question, secret=True))
+            )
             if f.role == "password":
                 creds.password = secret
                 creds.password_from_vault = False
@@ -552,9 +641,13 @@ class LoginFlow:
             return secret.get_secret_value()
         if f.role == "text" and secretish(f.label):  # a security question: not plain text
             return (
-                await run.job.ask_secret(self._block(f, question, secret=True))
+                await self._native_answer(
+                    run, lambda: run.job.ask_secret(self._block(f, question, secret=True))
+                )
             ).get_secret_value()
-        answer = await run.job.ask(self._block(f, question, secret=False))
+        answer = await self._native_answer(
+            run, lambda: run.job.ask(self._block(f, question, secret=False))
+        )
         if not isinstance(answer.values, str) or not answer.values:
             raise JobCancelled("the user left a login field empty")
         if f.role == "username":
@@ -565,10 +658,10 @@ class LoginFlow:
     def _question(self, f: StepField, host: str, *, failed: bool, attempt: int) -> str:
         label = _CONTROL.sub(" ", safe_label(f.label, f.role))
         if failed and f.role == "otp":
-            return f"Вуз не принял код. Введите ещё раз: {label} (попытка {attempt} из {self._timing.max_attempts})"
+            return f"Вход в {host}. Вуз не принял код. Введите ещё раз: {label} (попытка {attempt} из {self._timing.max_attempts})"
         if failed:
             return (
-                f"Вуз не принял данные. Проверьте и введите ещё раз: {label} "
+                f"Вход в {host}. Вуз не принял данные. Проверьте и введите ещё раз: {label} "
                 f"(попытка {attempt} из {self._timing.max_attempts})"
             )
         return f"Вход в {host}. {label}"
@@ -600,6 +693,8 @@ class LoginFlow:
         )
 
     async def _submit(self, run: _Run, step: FormStep) -> PageSnapshot:
+        if run.manual_requested:
+            raise _ManualRequested
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
         if step.submit:
@@ -646,7 +741,10 @@ class LoginFlow:
         if isinstance(found, FormStep):
             # the student's fields can still be native: fill them, the human does the check
             failed = await self._register(run, found)
-            await self._fill(run, found, failed=failed)
+            try:
+                await self._fill(run, found, failed=failed)
+            except _ManualRequested:
+                return await self._manual_screen(run)
             pending = found
         return await self._human(
             run,
@@ -681,21 +779,30 @@ class LoginFlow:
                 ErrorCode.LOGIN_FAILED, "Нужен ручной шаг входа, но запасной экран не настроен"
             )
         t = self._timing
+        # Both public and private routes can race disconnection or job cancellation.
+        await self._store.connection(run.user_id, run.connection_id)
+        await run.job.status("Открываю браузер для ручного входа", state=JobState.WAITING_USER)
         run.recorder.human()
         link = await self._screens.open(
             run.handle, user_id=run.user_id, connection_id=run.connection_id
         )
-        await run.job.emit(
-            LoginBlock(
-                id=new_id(),
-                at=self._clock.now(),
-                connection_id=run.connection_id,
-                ticket=link.ticket,
-                ws_url=link.ws_url,  # type: ignore[arg-type]
-                expires_at=link.expires_at,
-                hint=hint,
+        try:
+            await run.job.emit(
+                LoginBlock(
+                    id=new_id(),
+                    at=self._clock.now(),
+                    connection_id=run.connection_id,
+                    ticket=link.ticket,
+                    ws_url=link.ws_url,  # type: ignore[arg-type]
+                    expires_at=link.expires_at,
+                    hint=hint,
+                )
             )
-        )
+        except BaseException:
+            await link.close("login no longer active")
+            raise
+        if run.manual_requested and run.manual_ready is not None and not run.manual_ready.done():
+            run.manual_ready.set_result(True)
         await run.job.status("Жду, пока вы пройдёте шаг на экране", state=JobState.WAITING_USER)
         handed_over = page_signature(snap)
         handed_path = urlsplit(snap.url).path
@@ -725,6 +832,7 @@ class LoginFlow:
             same_form = best_step(now)
             if (
                 said_done
+                and not run.manual_requested
                 and pending is not None
                 and isinstance(same_form, FormStep)
                 and same_form.signature == step_then
@@ -736,11 +844,21 @@ class LoginFlow:
                 await link.needs("input", "Вход пока не подтверждён: завершите его на экране")
             if (
                 isinstance(found, FormStep)
+                and not run.manual_requested
+                and not link.human_control
                 and page_signature(now) != handed_over
                 and (found.signature != step_then or urlsplit(now.url).path != handed_path)
                 and link.idle_s() >= t.resume_idle_s
             ):
                 await link.needs("input", "Дальше вход продолжится в обычных полях BotAI")
+                await run.job.emit(
+                    TextBlock(
+                        id=new_id(),
+                        at=self._clock.now(),
+                        markdown="На сайте появилась обычная форма входа. "
+                        "Продолжим в полях BotAI — браузер больше не нужен для этого шага.",
+                    )
+                )
                 await link.close("mirrored")  # a normal form again: back to native fields
                 run.last_signature = None  # the human acted in between: not a refusal of ours
                 return now

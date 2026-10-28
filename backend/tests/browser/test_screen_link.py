@@ -6,13 +6,16 @@ in both topologies; these are the link's own rules.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import time
 from collections.abc import Awaitable, Callable
 
 import pytest
 from websockets.asyncio.client import connect
-from websockets.exceptions import InvalidStatus
+from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from botai.browser.screen import (
     ScreenError,
@@ -22,7 +25,7 @@ from botai.browser.screen import (
     screen_secret,
     verify_ticket,
 )
-from botai.browser.screen_remote import AUTH_HEADER, authorised, sign
+from botai.browser.screen_remote import AUTH_HEADER, RemoteScreens, authorised, sign
 from botai.core.ids import new_id
 from botai.core.vault import generate_kek_b64
 from botai.settings import Settings
@@ -74,6 +77,32 @@ def test_non_ascii_credentials_are_refused_not_raised() -> None:
     assert verify_ticket(key, "é.é", now=1.0) is None
 
 
+@pytest.mark.parametrize("request_timeout_s", [0.06, 0.5], ids=["bounded", "ready"])
+async def test_manual_readiness_has_a_longer_bounded_wait_than_plain_lookup(
+    request_timeout_s: float,
+) -> None:
+    key, session_id = b"k" * 32, new_id()
+
+    async def delayed(socket: ServerConnection) -> None:
+        assert socket.request is not None
+        assert authorised(key, socket.request.headers.get(AUTH_HEADER), socket.request.path)
+        await asyncio.sleep(0.12)  # exceeds the configured ordinary lookup deadline
+        with contextlib.suppress(ConnectionClosed):
+            await socket.send(json.dumps({"sessionId": session_id}))
+            await socket.close()
+
+    async with serve(delayed, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        remote = RemoteScreens(
+            [f"http://127.0.0.1:{port}"], key, timeout_s=0.04, request_timeout_s=request_timeout_s
+        )
+        assert await remote.find(new_id(), new_id()) is None
+        started = time.perf_counter()
+        found = await remote.find(new_id(), new_id(), request_native=True)
+        assert found == (session_id if request_timeout_s > 0.12 else None)
+        assert time.perf_counter() - started < 0.5
+
+
 async def test_the_link_knows_whose_screen_it_is(
     make_relayed_screen: Callable[..., Awaitable[ScreenRig]],  # noqa: F811
 ) -> None:
@@ -90,6 +119,45 @@ async def test_the_link_knows_whose_screen_it_is(
         with pytest.raises(InvalidStatus) as exc:
             await connect(_worker_url(rig, path), additional_headers=_signed(rig, path))
         assert exc.value.response.status_code == 404
+
+
+async def test_native_control_starts_private_server_and_requires_the_signed_tenant_and_connection() -> (
+    None
+):
+    registry = ScreenRegistry(secret=SECRET, public_base_url=PUBLIC, internal_bind=("127.0.0.1", 0))
+    user, connection = new_id(), new_id()
+    called = 0
+
+    async def request() -> bool:
+        nonlocal called
+        called += 1
+        return False  # no arbitrary browser can be created by the private route
+
+    unregister = await registry.register_native(user, connection, request)
+    try:
+        assert registry.internal_port is not None
+        assert not registry._sessions
+        base = f"ws://127.0.0.1:{registry.internal_port}"
+        target = f"/internal/screens/find?user={user}&connection={connection}&request=1"
+        with pytest.raises(InvalidStatus) as error:
+            await connect(base + target)
+        assert error.value.response.status_code == 403
+        for tenant, conn in ((new_id(), connection), (user, new_id()), (user, connection)):
+            path = f"/internal/screens/find?user={tenant}&connection={conn}&request=1"
+            async with connect(
+                base + path, additional_headers={AUTH_HEADER: sign(registry._link_key, path)}
+            ) as ws:
+                assert json.loads(await ws.recv()) == {"sessionId": None}
+        assert called == 1
+        unregister()
+        async with connect(
+            base + target, additional_headers={AUTH_HEADER: sign(registry._link_key, target)}
+        ) as ws:
+            assert json.loads(await ws.recv()) == {"sessionId": None}
+        assert called == 1
+    finally:
+        unregister()
+        await registry.close_all()
 
 
 async def test_an_unreachable_worker_means_no_screen_not_an_error(

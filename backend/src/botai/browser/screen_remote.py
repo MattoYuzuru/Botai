@@ -142,8 +142,13 @@ class ScreenInternalServer:
         parts = urlsplit(socket.request.path)
         query = _query(parts.query)
         if parts.path == FIND_PATH:
-            session = self._registry.find(query.get("user", ""), query.get("connection", ""))
-            await socket.send(json.dumps({"sessionId": session.id if session else None}))
+            user, connection = query.get("user", ""), query.get("connection", "")
+            if query.get("request") == "1":
+                session_id = await self._registry.request_native(user, connection)
+            else:
+                session = self._registry.find(user, connection)
+                session_id = session.id if session else None
+            await socket.send(json.dumps({"sessionId": session_id}))
             await socket.close()
             return
         found = _WS_PATH.match(parts.path)
@@ -179,10 +184,18 @@ def _query(query: str) -> dict[str, str]:
 class RemoteScreens:
     """Asks the worker(s) at `urls` for screens and opens relay sockets to them."""
 
-    def __init__(self, urls: Sequence[str], key: bytes, *, timeout_s: float = 1.5) -> None:
+    def __init__(
+        self,
+        urls: Sequence[str],
+        key: bytes,
+        *,
+        timeout_s: float = 1.5,
+        request_timeout_s: float = 10.0,
+    ) -> None:
         self._bases = [u.rstrip("/").replace("http://", "ws://", 1) for u in urls]
         self._key = key
         self._timeout = timeout_s
+        self._request_timeout = request_timeout_s
 
     def _url(self, base: str, path: str, **query: str) -> tuple[str, str]:
         target = path + "?" + "&".join(f"{k}={quote(v, safe='')}" for k, v in query.items())
@@ -201,13 +214,21 @@ class RemoteScreens:
             self._timeout + 0.5,
         )
 
-    async def find(self, user_id: str, connection_id: str) -> str | None:
+    async def find(
+        self, user_id: str, connection_id: str, *, request_native: bool = False
+    ) -> str | None:
         """The id of the screen open for this user and connection, wherever it lives."""
         for base in self._bases:
             try:
-                socket = await self._open(base, FIND_PATH, user=user_id, connection=connection_id)
+                query = {"user": user_id, "connection": connection_id}
+                if request_native:
+                    query["request"] = "1"
+                socket = await self._open(base, FIND_PATH, **query)
                 try:
-                    reply = json.loads(await asyncio.wait_for(socket.recv(), self._timeout))
+                    # A manual request also waits for native-ask cancellation, a fresh
+                    # browser snapshot and the LoginBlock commit. A plain lookup does not.
+                    wait_s = self._request_timeout if request_native else self._timeout
+                    reply = json.loads(await asyncio.wait_for(socket.recv(), wait_s))
                 finally:
                     await socket.close()
             except (OSError, TimeoutError, InvalidHandshake, ConnectionClosed, ValueError):

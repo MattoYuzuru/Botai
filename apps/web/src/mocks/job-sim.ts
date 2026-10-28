@@ -32,6 +32,8 @@ export class JobSim {
     readonly jobId: string,
     private readonly now: () => number,
     private readonly pace: number,
+    readonly connectionId: string | null = null,
+    readonly kind = "chat",
   ) {}
 
   /** Пауза сценария; при `pace = 0` — без ожидания (тесты). */

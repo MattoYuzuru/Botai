@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import type { JobSnapshot } from "../src/features/jobs/job-state";
 import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
 
 /**
@@ -47,6 +48,8 @@ test.describe("ProgressWall", () => {
     await startHse(page);
     await expect(page.getByText("Сколько осталось — пока неизвестно")).toBeVisible();
     await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+    await expect(page.getByText("Вход через поля BotAI")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
 
     // Экран с вопросом: ничего не вылезает за край, зоны нажатия и кегль в норме.
     await expectNoHorizontalOverflow(page, "вопрос");
@@ -58,6 +61,11 @@ test.describe("ProgressWall", () => {
     const password = page.getByLabel("Ответ", { exact: true });
     await expect(password).toHaveAttribute("type", "password");
     await expect(password).toHaveAttribute("autocomplete", "current-password");
+    expect(
+      await page
+        .getByRole("button", { name: "Открыть браузер" })
+        .evaluate((button) => button.closest("form") === null),
+    ).toBe(true);
     await password.fill(SECRET);
     await page.getByRole("button", { name: "Ответить" }).click();
 
@@ -74,6 +82,7 @@ test.describe("ProgressWall", () => {
     expect(leaked).toBe(false);
 
     await page.getByRole("checkbox", { name: /Алгоритмы/ }).click();
+    await expect(page.getByRole("button", { name: "Открыть браузер" })).toHaveCount(0);
     await page.getByRole("checkbox", { name: /Базы данных/ }).click();
     await page.getByRole("button", { name: "Ответить" }).click();
 
@@ -82,6 +91,54 @@ test.describe("ProgressWall", () => {
     await page.getByRole("button", { name: "Готово" }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole("heading", { level: 1, name: "Сегодня" })).toBeVisible();
+  });
+
+  test("выбор native или browser входа читаем в обеих темах и доступен с клавиатуры", async ({
+    page,
+  }, testInfo) => {
+    await startHse(page);
+    await answerText(page, "anna");
+    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
+    await page.getByLabel("Ответ", { exact: true }).fill(SECRET);
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((next) => {
+        document.documentElement.dataset.theme = next;
+      }, theme);
+      const browser = page.getByRole("button", { name: "Открыть браузер" });
+      await page.getByRole("button", { name: "Ответить" }).focus();
+      await page.keyboard.press("Tab");
+      await expect(browser).toBeFocused();
+      await expectNoHorizontalOverflow(page, `native вход ${theme}`);
+      expect(await findSmallTapTargets(page)).toEqual([]);
+      expect(await findTinyText(page)).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath(`native-login-${theme}.png`), fullPage: true });
+    }
+    // UI-only terminal fixture: no answer is sent, so the pending password must disappear.
+    await page.evaluate(async () => {
+      const path = "/src/features/jobs/job-manager.ts";
+      const { jobManager } = (await import(/* @vite-ignore */ path)) as {
+        jobManager: { get: (id: string) => JobSnapshot | undefined; seed: (snapshot: JobSnapshot) => void };
+      };
+      const jobId = location.pathname.split("/").at(-1) ?? "";
+      const snapshot = jobManager.get(jobId);
+      if (!snapshot) throw new Error("Нет задания fixture");
+      jobManager.seed({ ...snapshot, state: "done", result: { status: "error", detail: "login_failed" } });
+      document.documentElement.style.setProperty("font-size", "200%", "important");
+    });
+    await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ответить" })).toHaveCount(0);
+    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(0);
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((next) => {
+        document.documentElement.dataset.theme = next;
+      }, theme);
+      await expectNoHorizontalOverflow(page, `terminal restart 200% ${theme}`);
+      expect(await findSmallTapTargets(page)).toEqual([]);
+      await page.screenshot({
+        path: testInfo.outputPath(`terminal-restart-200-${theme}.png`),
+        fullPage: true,
+      });
+    }
   });
 
   test("свёрнутая работа остаётся в шапке и возвращается на экран по «Открыть»", async ({ page }) => {

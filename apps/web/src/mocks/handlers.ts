@@ -250,7 +250,7 @@ export function createHandlers(
       };
       db.connections.push(connection);
       const jobId = ulid();
-      const sim = new JobSim(jobId, db.now, jobPace);
+      const sim = new JobSim(jobId, db.now, jobPace, connection.id, "connect");
       db.sims.set(jobId, sim);
       save();
       void runConnect(sim, db, connection.id, db.jobVariant).then(save);
@@ -262,6 +262,30 @@ export function createHandlers(
       if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
       const connection = db.connections.find((item) => item.id === String(params.connectionId));
       return connection ? HttpResponse.json(connection) : problem(404, "not_found", "Подключение не найдено");
+    }),
+
+    http.get("*/api/v1/jobs/:jobId", async ({ params }) => {
+      await wait();
+      if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const sim = db.sims.get(String(params.jobId));
+      if (!sim) return problem(404, "not_found", "Задание не найдено");
+      const status = sim.events.findLast((event) => event.event === "status")?.data as
+        | { stage?: string }
+        | undefined;
+      const done = sim.events.findLast((event) => event.event === "done")?.data as
+        | { result?: Record<string, unknown> }
+        | undefined;
+      return HttpResponse.json({
+        id: sim.jobId,
+        kind: sim.kind,
+        connectionId: sim.connectionId,
+        state: sim.state,
+        stage: status?.stage ?? null,
+        createdAt: new Date(sim.startedAt || db.now()).toISOString(),
+        startedAt: sim.startedAt ? new Date(sim.startedAt).toISOString() : null,
+        finishedAt: sim.terminal ? new Date(db.now()).toISOString() : null,
+        result: done?.result ?? null,
+      } satisfies S["JobOut"]);
     }),
 
     http.get("*/api/v1/jobs/:jobId/events", async ({ params, request }) => {
