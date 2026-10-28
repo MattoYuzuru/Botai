@@ -242,6 +242,7 @@ class PlaywrightHandle:
         self._samples: set[asyncio.Task[None]] = set()
         self._inflight: set[Request] = set()
         self._last_activity = monotonic()
+        self._activity_generation = 0
         self._sampled = 0
         self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
@@ -304,6 +305,7 @@ class PlaywrightHandle:
         if request.resource_type in _SETTLE_TYPES:
             self._inflight.add(request)
             self._last_activity = monotonic()
+            self._activity_generation += 1
         if request.is_navigation_request():
             # An early popup request may precede its Frame. It is not yet a known
             # main-page navigation and must not become a host-consent candidate.
@@ -411,6 +413,7 @@ class PlaywrightHandle:
         if request in self._inflight:
             self._inflight.discard(request)
             self._last_activity = monotonic()
+            self._activity_generation += 1
 
     async def network_log(self) -> list[ObservedRequest]:
         if self._samples:
@@ -540,8 +543,10 @@ class PlaywrightHandle:
         # The observer contains only a timestamp, never page text or credential values.
         monitor = await self._page.evaluate_handle(
             """() => {
-              const state = {changedAt: performance.now()};
-              state.observer = new MutationObserver(() => {state.changedAt = performance.now();});
+              const state = {changedAt: performance.now(), changed: false};
+              state.observer = new MutationObserver(() => {
+                state.changedAt = performance.now(); state.changed = true;
+              });
               state.observer.observe(document, {
                 subtree: true, childList: true, attributes: true, characterData: true
               });
@@ -549,6 +554,7 @@ class PlaywrightHandle:
             }"""
         )
         try:
+            network_before = self._activity_generation
             await self._read_view_registry.activate(self._page, ref)
             deadline = monotonic() + SETTLE_MS / 1000
             self._last_activity = monotonic()
@@ -556,8 +562,10 @@ class PlaywrightHandle:
                 quiet_ms: float = await monitor.evaluate(
                     "state => performance.now() - state.changedAt"
                 )
+                dom_changed: bool = await monitor.evaluate("state => state.changed")
                 if (
-                    not self._inflight
+                    (dom_changed or self._activity_generation > network_before)
+                    and not self._inflight
                     and quiet_ms >= READ_VIEW_QUIET_S * 1000
                     and monotonic() - self._last_activity >= READ_VIEW_QUIET_S
                 ):
