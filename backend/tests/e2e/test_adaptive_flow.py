@@ -83,10 +83,13 @@ class DeepPlanner(ScriptedLlm):
             )
         )
         schedule = ls.answer([recipes.timetable_endpoint(path="/api/deep-schedule")])
-        answers = [classification, schedule]
+        # The external-service label is observed too: the existing policy extractor checks
+        # whether it states a restriction on third-party access before recipe authoring.
+        warning = LlmResponse(content='{"warning":null}')
+        answers = [classification, warning, schedule]
         if not restricted:
             # Explorer preserves the first discovered type's order.
-            answers = [classification, ls.answer([courses_endpoint()]), schedule]
+            answers = [classification, warning, ls.answer([courses_endpoint()]), schedule]
         super().__init__(queue=answers)
         self.seen: list[dict[str, Any]] = []
         self.old_page: str | None = None
@@ -224,6 +227,11 @@ async def test_chat_connect_deep_spa_canary_persistence_and_model_free_sync(
         assert connected.result["status"] == "ok"
         assert connected.result["kinds"] == (
             ["scheduleEvents"] if restricted else ["courses", "scheduleEvents"]
+        )
+        assert [request.purpose for request in llm.requests] == (
+            ["classify", "extract", "learn"]
+            if restricted
+            else ["classify", "extract", "learn", "learn"]
         )
         assert student.sent
         assert len(llm.observation_requests) == 6
