@@ -74,6 +74,9 @@ async def fake_site(app: object, *, home_extra: str = "") -> FakeBrowserGateway:
         f"{ORIGIN}/app": FakePage(shell, "Личный кабинет", requests=xhr),
         f"{ORIGIN}/news": FakePage(news, "Новости"),
         f"{ORIGIN}/portal/deadlines": FakePage(table, "Задания"),
+        # The synthetic menu has a dead documentation link. A real Chromium navigation
+        # receives the source's 404 page; it is not a missing FakeBrowser fixture/transport.
+        f"{ORIGIN}/api/docs": FakePage("<main>Страница не найдена</main>", "Not Found"),
     }
     return FakeBrowserGateway(pages, NOW, ORIGIN)
 
