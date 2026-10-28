@@ -71,11 +71,7 @@ def test_render_contract_is_get_html_and_execution_fails_closed() -> None:
     from botai.core.errors import BotaiError, ErrorCode
     from botai.sources.adapters.recipe import RecipeAdapter
 
-    valid = next(
-        x
-        for x in _load("valid", "adapter-spec.json")
-        if isinstance(x, dict) and x.get("adapter") == "recipe"
-    )
+    valid = _load("valid", "rendered-recipe.json")[0]
     spec = cast(dict[str, Any], deepcopy(valid))
     recipe = spec["recipe"]
     endpoint = recipe["endpoints"][0]
