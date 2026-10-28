@@ -40,7 +40,7 @@ async def tabs(gateway: PlaywrightGateway) -> AsyncIterator[PlaywrightHandle]:
     )
 
     async def page(route: Route) -> None:
-        await route.fulfill(content_type="text/html", body=HTML)
+        await route.fulfill(content_type="text/html; charset=utf-8", body=HTML)
 
     await browser.context.route(ORIGIN + "/tabs", page)
     await browser.context.route(ORIGIN + "/other", page)
