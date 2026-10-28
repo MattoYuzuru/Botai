@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import SecretStr
 
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, ProxyEgress
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
@@ -25,7 +26,14 @@ from botai.browser.login import LoginFlow, LoginTiming
 from botai.browser.presets import InMemoryLoginStore
 from botai.browser.session import decode_session
 from botai.contracts import schemas
-from botai.contracts.agent_ui import AgentUiBlock, ConfirmBlock, InputBlock, LoginBlock, WaitBlock
+from botai.contracts.agent_ui import (
+    AgentUiBlock,
+    ConfirmBlock,
+    InputBlock,
+    LoginBlock,
+    TextBlock,
+    WaitBlock,
+)
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -59,6 +67,7 @@ class FakeLink:
         self.ws_url = "wss://botai.test/api/v1/login-sessions/01J0000000000000000000SESS/ws"
         self.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         self.closed = False
+        self.human_control = False
         self.idle = math.inf
         self._done = False
         self.needs_calls: list[tuple[str, str]] = []
@@ -94,6 +103,19 @@ class FakeScreens:
         self.human = human
         self.links: list[FakeLink] = []
         self._tasks: list[asyncio.Task[None]] = []
+        self.native: dict[tuple[str, str], Callable[[], Awaitable[bool]]] = {}
+
+    async def register_native(
+        self, user_id: str, connection_id: str, request: Callable[[], Awaitable[bool]]
+    ) -> Callable[[], None]:
+        key = (user_id, connection_id)
+        self.native[key] = request
+
+        def unregister() -> None:
+            if self.native.get(key) is request:
+                self.native.pop(key)
+
+        return unregister
 
     async def open(self, handle: PlaywrightHandle, *, user_id: str, connection_id: str) -> FakeLink:
         link = FakeLink()
@@ -145,6 +167,27 @@ class Student:
 
     def count(self, kind: str) -> int:
         return sum(1 for k, _ in self.asked if k == kind)
+
+
+class PendingPasswordContext(InMemoryJobContext):
+    """A real pending native question; a late fixture answer must not reach Chromium."""
+
+    def __init__(self, user: str, connection: str) -> None:
+        super().__init__(user_id=user, connection_id=connection, responder=Student())
+        self.waiting = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def ask_secret(self, block: InputBlock) -> SecretStr:
+        await self.emit(block)
+        self.secrets_requested.append(block.id)
+        self.waiting.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return SecretStr("discarded-native-fixture")
 
 
 @dataclass
@@ -719,6 +762,176 @@ async def test_after_the_captcha_a_normal_form_is_mirrored_again(
     # typed once, reused by the form that followed
     assert student.count("password") == 1
     assert len([b for b in ctx.blocks if isinstance(b, LoginBlock)]) == 1
+    assert any(isinstance(b, TextBlock) and "обычная форма" in b.markdown for b in ctx.blocks)
+
+
+async def test_interacting_with_the_screen_keeps_manual_control_after_idle(
+    make_rig: Callable[..., Rig],
+) -> None:
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
+        link.idle = math.inf  # switching tabs is not consent to automate the next form
+        await handle.page.goto(f"{ORIGIN}/plain/login")
+        await asyncio.sleep(FAST.resume_idle_s * 2)
+        assert not link.closed
+        assert await handle.page.input_value("#u") == ""
+        assert await handle.page.input_value("#p") == ""
+        await handle.page.fill("#u", data.USERNAME)
+        await handle.page.fill("#p", data.PASSWORD)
+        await handle.page.click("button[type=submit]")
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
+    session, _ = await rig.ensure(Student())
+    await rig.screens.settle()
+    assert await works(session)
+    assert rig.screens.links[0].succeeded
+
+
+@pytest.mark.parametrize("answer_simultaneously", [False, True])
+async def test_manual_request_supersedes_native_answer_without_reopening_the_page(
+    make_rig: Callable[..., Rig], answer_simultaneously: bool
+) -> None:
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        assert await handle.page.input_value("#u") == data.USERNAME
+        assert await handle.page.input_value("#p") == ""
+        assert await handle.page.evaluate("window.__handoffMarker") == "same-browser"
+        await asyncio.sleep(FAST.resume_idle_s * 2)
+        assert not link.closed
+        assert await handle.page.input_value("#p") == ""
+        await handle.page.fill("#p", data.PASSWORD)
+        await handle.page.click("button[type=submit]")
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/plain/login"))
+    ctx = PendingPasswordContext(rig.user, rig.conn)
+    opened = len(rig.gateway._handles)
+    running = asyncio.create_task(rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn))
+    request: asyncio.Task[bool] | None = None
+    try:
+        await asyncio.wait_for(ctx.waiting.wait(), 5)
+        handle = next(h for h in rig.gateway._handles if h.connection_id == rig.conn)
+        await handle.page.evaluate("window.__handoffMarker = 'same-browser'")
+        request = asyncio.create_task(rig.screens.native[(rig.user, rig.conn)]())
+        if answer_simultaneously:
+            ctx.release.set()
+        assert await asyncio.wait_for(request, 3)
+        assert len(rig.gateway._handles) == opened + 1
+        if not answer_simultaneously:
+            assert ctx.cancelled.is_set()
+            ctx.release.set()  # a late answer has no waiter left to fill or submit it
+        session = await asyncio.wait_for(running, 8)
+        await rig.screens.settle()
+        assert await works(session)
+        assert (rig.user, rig.conn) not in rig.screens.native
+        assert not await rig.vault.has(rig.user, rig.conn, SecretKind.PASSWORD)
+        assert any(isinstance(b, TextBlock) and "Вход выполнен" in b.markdown for b in ctx.blocks)
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        if request is not None:
+            await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_cancelled_native_wait_unregisters_the_manual_request(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/plain/login"))
+    ctx = PendingPasswordContext(rig.user, rig.conn)
+    running = asyncio.create_task(rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn))
+    try:
+        await asyncio.wait_for(ctx.waiting.wait(), 5)
+        late_request = rig.screens.native[(rig.user, rig.conn)]
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        assert (rig.user, rig.conn) not in rig.screens.native
+        assert await late_request() is False
+        assert not rig.screens.links
+        assert ctx.cancelled.is_set()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.parametrize("case", ["confirmed", "visible-login", "negative-known-probe"])
+async def test_manual_done_without_a_learnable_probe_respects_existing_success_guards(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        if case == "visible-login":
+            # A cookie is insufficient while the login form is still visible.
+            await handle.context.add_cookies(
+                [{"name": "fixture", "value": "not-proof", "domain": "fakeuni.test", "path": "/"}]
+            )
+        else:
+            await handle.page.fill("#p", data.PASSWORD)
+            await handle.page.click("button[type=submit]")
+        await asyncio.sleep(FAST.poll_s * 3)
+        assert not link.succeeded  # no native submit or learnable probe: wait for real Done
+        link.request_done()
+        if case != "confirmed":
+            await asyncio.sleep(FAST.poll_s * 3)
+            assert not link.succeeded
+            assert any("не подтверждён" in hint for _, hint in link.needs_calls)
+            await link.close("synthetic incomplete login")
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(
+        ORIGIN, preset_dict(f"{ORIGIN}/plain/login", probe=case == "negative-known-probe")
+    )
+    monkeypatch.setattr("botai.browser.login.learn_probe", AsyncMock(return_value=None))
+    if case == "negative-known-probe":
+        monkeypatch.setattr("botai.browser.login.probe_ok", AsyncMock(return_value=False))
+    ctx = PendingPasswordContext(rig.user, rig.conn)
+    running = asyncio.create_task(rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn))
+    request: asyncio.Task[bool] | None = None
+    try:
+        await asyncio.wait_for(ctx.waiting.wait(), 5)
+        request = asyncio.create_task(rig.screens.native[(rig.user, rig.conn)]())
+        assert await asyncio.wait_for(request, 3)
+        if case == "confirmed":
+            session = await asyncio.wait_for(running, 8)
+            assert await works(session)
+            text = [b.markdown for b in ctx.blocks if isinstance(b, TextBlock)]
+            assert text[-1] == "Вы завершили вход на экране. Проверяю доступ к учебным данным."
+        else:
+            with pytest.raises(JobCancelled):
+                await asyncio.wait_for(running, 8)
+        await rig.screens.settle()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        if request is not None:
+            await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_manual_handoff_rechecks_the_connection_before_opening_a_screen(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/plain/login"))
+    ctx = PendingPasswordContext(rig.user, rig.conn)
+    running = asyncio.create_task(rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn))
+    request: asyncio.Task[bool] | None = None
+    try:
+        await asyncio.wait_for(ctx.waiting.wait(), 5)
+        monkeypatch.setattr(
+            rig.store,
+            "connection",
+            AsyncMock(side_effect=BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")),
+        )
+        request = asyncio.create_task(rig.screens.native[(rig.user, rig.conn)]())
+        with pytest.raises(BotaiError) as error:
+            await running
+        assert error.value.code == ErrorCode.FORBIDDEN
+        assert await request is False
+        assert not rig.screens.links
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        if request is not None:
+            await asyncio.gather(request, return_exceptions=True)
 
 
 async def test_bot_protection_is_reported_without_retries_or_a_screen(
@@ -768,6 +981,7 @@ async def test_sso_second_host_listed_in_the_preset(make_rig: Callable[..., Rig]
     session, _ = await rig.ensure(student)
     assert await works(session)
     assert [k for k, _ in student.asked] == ["login", "password"]
+    assert all("Вход в id.fakeuni.test." in question for question in student.questions)
 
 
 async def test_sso_second_host_missing_from_the_preset_is_egress_blocked(

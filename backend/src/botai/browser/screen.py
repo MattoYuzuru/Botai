@@ -386,6 +386,7 @@ class ScreenSession:
         self._input_ts: float | None = None
         self._last_input = float("-inf")
         self._done = False
+        self.human_control = False
         self._last_needs: tuple[str, str] | None = None
         self._modifiers = 0
         self._buttons = 0
@@ -741,6 +742,10 @@ class ScreenSession:
             self._done = True
             self._touch()
             return
+        if isinstance(message, KeyMsg | ScrollMsg) or (
+            isinstance(message, MouseMsg) and message.kind != "move"
+        ):
+            self.human_control = True
         self._touch()
         self.stats.inputs += 1
         if isinstance(message, MouseMsg) and message.kind == "move":
@@ -960,6 +965,8 @@ class ScreenRegistry:
         self.config = config or ScreenConfig()
         self.clock = clock or SystemClock()
         self._sessions: dict[str, ScreenSession] = {}
+        self._native: dict[tuple[str, str], Callable[[], Awaitable[bool]]] = {}
+        self._internal_lock = asyncio.Lock()
         self._used: dict[str, float] = {}
         # api <-> worker link (screen_remote.py): this process serves its screens on
         # `internal_bind`, and looks for screens held by other processes at `remote_urls`
@@ -970,6 +977,34 @@ class ScreenRegistry:
         self._link_key = link_key
 
     # -- sessions ----------------------------------------------------------------------------
+
+    async def register_native(
+        self, user_id: str, connection_id: str, request: Callable[[], Awaitable[bool]]
+    ) -> Callable[[], None]:
+        """Expose only an active native auth wait, never an arbitrary browser handle."""
+        await self._serve_internal()
+        key = (user_id, connection_id)
+        self._native[key] = request
+
+        def unregister() -> None:
+            if self._native.get(key) is request:
+                self._native.pop(key, None)
+
+        return unregister
+
+    async def request_native(self, user_id: str, connection_id: str) -> str | None:
+        session = self.find(user_id, connection_id)
+        if session is not None:
+            session.human_control = True
+            return session.id
+        request = self._native.get((user_id, connection_id))
+        if request is None or not await request():
+            return None
+        session = self.find(user_id, connection_id)
+        if session is None:
+            return None
+        session.human_control = True
+        return session.id
 
     async def open(
         self, handle: PlaywrightHandle, *, user_id: str, connection_id: str
@@ -1005,27 +1040,40 @@ class ScreenRegistry:
         self._sessions.pop(session.id, None)
 
     async def _serve_internal(self) -> None:
-        if self._internal is not None or self._internal_bind is None:
-            return
-        server = ScreenInternalServer(self, self._link_key, *self._internal_bind)
-        try:
-            await server.start()
-        except OSError:
-            log.warning("internal screen server could not bind %s:%d", *self._internal_bind)
-            self._internal_bind = None
-            return
-        self._internal = server
+        async with self._internal_lock:
+            if self._internal is not None or self._internal_bind is None:
+                return
+            server = ScreenInternalServer(self, self._link_key, *self._internal_bind)
+            try:
+                await server.start()
+            except OSError:
+                log.warning("internal screen server could not bind %s:%d", *self._internal_bind)
+                self._internal_bind = None
+                return
+            self._internal = server
 
     @property
     def internal_port(self) -> int | None:
         return self._internal.port if self._internal is not None else None
 
-    async def lookup(self, user_id: str, connection_id: str) -> str | None:
+    async def lookup(
+        self, user_id: str, connection_id: str, *, request_native: bool = False
+    ) -> str | None:
         """The id of the screen this connection's login waits on: here, or in another process."""
         session = self.find(user_id, connection_id)
         if session is not None:
+            if request_native:
+                session.human_control = True
             return session.id
-        return await self.remote.find(user_id, connection_id) if self.remote else None
+        if request_native:
+            session_id = await self.request_native(user_id, connection_id)
+            if session_id is not None:
+                return session_id
+        return (
+            await self.remote.find(user_id, connection_id, request_native=request_native)
+            if self.remote
+            else None
+        )
 
     async def connect_remote(self, session_id: str, user_id: str) -> ClientConnection:
         """A socket to the process that holds `session_id`, or ScreenError(no such session)."""

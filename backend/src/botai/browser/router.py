@@ -61,7 +61,7 @@ async def open_login_session(
     Call it right before connecting and again on every reconnect: the ticket in the `login`
     block is only a fast path, it expires after a minute."""
     await store.connection(user.id, connection_id)  # 404 for somebody else's connection
-    session_id = await screens.lookup(user.id, connection_id)
+    session_id = await screens.lookup(user.id, connection_id, request_native=True)
     if session_id is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Сейчас вход не ждёт вас на экране")
     offer = screens.mint_ticket_for(session_id, user.id)

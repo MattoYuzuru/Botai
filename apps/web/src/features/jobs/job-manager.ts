@@ -2,7 +2,14 @@ import { useSyncExternalStore } from "react";
 import { api, call } from "@/api/client";
 import { humanMessage, isApiError } from "@/api/errors";
 import { fieldsHash } from "@/lib/hash";
-import { type AnswerState, applyEvent, initialJob, isTerminal, type JobSnapshot } from "./job-state";
+import {
+  type AnswerState,
+  applyEvent,
+  initialJob,
+  isTerminal,
+  type JobSnapshot,
+  supersededAuthQuestions,
+} from "./job-state";
 import { readSse, reconnectDelay, SseHttpError } from "./sse";
 
 type Listener = () => void;
@@ -36,6 +43,8 @@ export class JobManager {
   private readonly jobs = new Map<string, JobSnapshot>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly listeners = new Set<Listener>();
+  /** Только trusted connection id; чтобы поздний SSE handoff также снял локальную отметку ответа. */
+  private readonly answerConnections = new Map<string, string>();
   /** Версия для `useSyncExternalStore`: меняется при любом изменении любого задания. */
   private version = 0;
 
@@ -60,7 +69,15 @@ export class JobManager {
   private set(jobId: string, update: (job: JobSnapshot) => JobSnapshot) {
     const current = this.jobs.get(jobId);
     if (!current) return;
-    const next = update(current);
+    const updated = update(current);
+    const connectionId = this.answerConnections.get(jobId);
+    const superseded = supersededAuthQuestions(updated, connectionId);
+    const next = Object.keys(updated.answers).some((id) => superseded.has(id))
+      ? {
+          ...updated,
+          answers: Object.fromEntries(Object.entries(updated.answers).filter(([id]) => !superseded.has(id))),
+        }
+      : updated;
     if (next === current) return;
     this.jobs.set(jobId, next);
     this.version += 1;
@@ -95,6 +112,7 @@ export class JobManager {
   stop(jobId: string): void {
     this.controllers.get(jobId)?.abort();
     this.controllers.delete(jobId);
+    this.answerConnections.delete(jobId);
     if (this.jobs.delete(jobId)) {
       this.version += 1;
       for (const listener of this.listeners) listener();
@@ -211,7 +229,9 @@ export class JobManager {
     blockId: string,
     values: AnswerValues | null,
     shown: string | null,
+    connectionId?: string,
   ): Promise<void> {
+    if (connectionId && this.jobs.has(jobId)) this.answerConnections.set(jobId, connectionId);
     this.patchAnswer(jobId, blockId, { status: "sending", shown, error: null });
     try {
       await call(

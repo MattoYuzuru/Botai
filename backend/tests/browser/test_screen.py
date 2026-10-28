@@ -42,13 +42,20 @@ from botai.browser.screen import (
     mint_ticket,
     verify_ticket,
 )
-from botai.contracts.agent_ui import LoginBlock
+from botai.contracts.agent_ui import InputBlock, LoginBlock
 from botai.core.errors import BotaiError, botai_error_handler
 from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext
 from botai.core.vault import InMemoryVault
 from tests.browser.conftest import serve
-from tests.browser.test_login import FAST, ORIGIN, Student, preset_dict, works
+from tests.browser.test_login import (
+    FAST,
+    ORIGIN,
+    PendingPasswordContext,
+    Student,
+    preset_dict,
+    works,
+)
 from tests.fakeuni import data
 
 pytestmark = pytest.mark.browser
@@ -471,8 +478,17 @@ async def _size_is(page: Any, expected: tuple[int, int]) -> bool:
     return tuple(await page.evaluate("[innerWidth, innerHeight]")) == expected
 
 
-async def _values_are(page: Any, user: str, password: str) -> bool:
-    return (await page.input_value("#u"), await page.input_value("#p")) == (user, password)
+async def _values_are(
+    page: Any,
+    user: str,
+    password: str,
+    *,
+    selectors: tuple[str, str] = ("#u", "#p"),
+) -> bool:
+    return (await page.input_value(selectors[0]), await page.input_value(selectors[1])) == (
+        user,
+        password,
+    )
 
 
 async def _path_is(page: Any, expected: str) -> bool:
@@ -655,6 +671,132 @@ async def test_no_waiting_screen_means_not_found(
     async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{rig.port}") as http:
         reply = await http.post(f"/api/v1/connections/{rig.conn}/login-session")
     assert reply.status_code == 404
+
+
+@pytest.mark.parametrize("relay", [False, True], ids=["local", "relay"])
+async def test_native_login_can_handoff_the_same_browser_through_the_public_route(
+    gateway: PlaywrightGateway, egress_access: ProxyEgress, trust_fakeuni: Path, relay: bool
+) -> None:
+    user, conn = new_id(), new_id()
+    store, vault = InMemoryLoginStore(), InMemoryVault()
+    store.add_connection(user, conn, ORIGIN)
+    store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/auth/login"))
+    worker = ScreenRegistry(secret=SECRET, public_base_url=PUBLIC, internal_bind=("127.0.0.1", 0))
+    flow = LoginFlow(
+        gateway=gateway, vault=vault, store=store, egress=egress_access, screens=worker, timing=FAST
+    )
+    ctx = PendingPasswordContext(user, conn)
+    running = asyncio.create_task(flow.ensure(ctx, user_id=user, connection_id=conn))
+    client: ScreenClient | None = None
+    api = worker
+    try:
+        await asyncio.wait_for(ctx.waiting.wait(), 5)
+        assert worker.internal_port is not None  # registered native wait starts the private server
+        assert not worker._sessions
+        handle = next(h for h in gateway._handles if h.connection_id == conn)
+        page = handle.page
+        await page.evaluate("window.__handoffMarker = 'same-browser'")
+        if relay:
+            api = ScreenRegistry(
+                secret=SECRET,
+                public_base_url=PUBLIC,
+                remote_urls=[f"http://127.0.0.1:{worker.internal_port}"],
+            )
+        async with (
+            serve(build_app(api, store, user)) as port,
+            httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http,
+        ):
+            assert (
+                await http.post(f"/api/v1/connections/{new_id()}/login-session")
+            ).status_code == 404
+            reply = await http.post(f"/api/v1/connections/{conn}/login-session")
+            assert reply.status_code == 201
+            offer = reply.json()
+            assert set(offer) == {"sessionId", "wsUrl", "ticket", "expiresAt"}
+            blocks = [b for b in ctx.blocks if isinstance(b, LoginBlock)]
+            assert len(blocks) == 1
+            assert blocks[0].connection_id == conn
+            assert ctx.cancelled.is_set()
+            assert handle.page is page
+            assert await page.evaluate("window.__handoffMarker") == "same-browser"
+            assert await page.input_value("#username") == data.USERNAME
+            assert await page.input_value("#password") == ""
+            client = ScreenClient(
+                await connect(
+                    f"ws://127.0.0.1:{port}/api/v1/login-sessions/{offer['sessionId']}/ws?ticket={offer['ticket']}",
+                    origin=PUBLIC,
+                    max_size=None,
+                )
+            )
+            frame = await client.first_frame()
+            assert (frame["w"], frame["h"]) == (390, 760)
+            await client.send(t="done")
+            await client.until(lambda: bool(client.of("needs")))
+            assert (
+                await page.input_value("#password") == ""
+            )  # Done does not fill/submit manual forms
+
+            async def type_on_screen(selector: str, text: str) -> None:
+                box = await page.locator(selector).bounding_box()
+                assert box is not None
+                await client.send(t="mouse", kind="click", x=box["x"] + 5, y=box["y"] + 5)
+                await client.send(t="key", kind="char", text=text)
+
+            async def submit_on_screen() -> None:
+                box = await page.locator("button[type=submit]").bounding_box()
+                assert box is not None
+                await client.send(t="mouse", kind="click", x=box["x"] + 5, y=box["y"] + 5)
+
+            await type_on_screen("#password", data.PASSWORD)
+            await _until(
+                lambda: _values_are(
+                    page,
+                    data.USERNAME,
+                    data.PASSWORD,
+                    selectors=("#username", "#password"),
+                )
+            )
+            await submit_on_screen()
+            await page.wait_for_selector("#otp")
+            await asyncio.sleep(FAST.resume_idle_s * 2)
+            session = worker.find(user, conn)
+            assert session is not None
+            assert session.human_control
+            assert session.has_viewer
+            assert len([b for b in ctx.blocks if isinstance(b, InputBlock)]) == 2
+            await type_on_screen("#otp", data.OTP)
+            await submit_on_screen()
+            result = await asyncio.wait_for(running, 8)
+            await client.until(lambda: bool(client.of("success")))
+            assert await works(result)
+            assert (await http.post(f"/api/v1/connections/{conn}/login-session")).status_code == 404
+    finally:
+        if client is not None:
+            await client.close()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await worker.close_all()
+        if api is not worker:
+            await api.close_all()
+
+
+async def test_ack_resize_and_moves_do_not_take_human_control_but_input_does(
+    make_screen: Callable[..., Awaitable[ScreenRig]],
+) -> None:
+    rig = await make_screen()
+    client = await rig.connect()
+    await client.first_frame()
+    await client.send(t="resize", w=390, h=760)
+    await client.send(t="mouse", kind="move", x=150, y=200)
+    await rig.settle()
+    assert not rig.session.human_control
+    await client.send(t="scroll", x=150, y=200, dy=100)
+    await _until(lambda: _has_human_control(rig.session))
+    assert rig.session.human_control
+
+
+async def _has_human_control(session: ScreenSession) -> bool:
+    return session.human_control
 
 
 # ----------------------------------------------------------------------------- lifetime

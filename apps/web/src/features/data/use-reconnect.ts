@@ -15,7 +15,7 @@ export function trackJob(job: { jobId: string; title: string; spaceTitle?: strin
 
 export interface ReconnectTarget {
   connectionId: string;
-  spaceId: string;
+  spaceId?: string;
   /** «ВШЭ»: для заголовка свёрнутого задания. */
   spaceTitle: string;
 }
@@ -44,7 +44,9 @@ export function useReconnect() {
         spaceTitle: target.spaceTitle,
         connectionId: target.connectionId,
       });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.connections(target.spaceId) });
+      await queryClient.invalidateQueries({
+        queryKey: target.spaceId ? queryKeys.connections(target.spaceId) : queryKeys.spaces,
+      });
       await navigate({ to: "/connect/$jobId", params: { jobId } });
     },
     onError: (error) =>

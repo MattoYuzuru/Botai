@@ -3,7 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager, useJob } from "@/features/jobs/job-manager";
-import { isTerminal, needsHuman } from "@/features/jobs/job-state";
+import { isTerminal, jobFailed, needsHuman } from "@/features/jobs/job-state";
 
 /**
  * Свёрнутая долгая работа видна в шапке всех экранов: «Подключаю ВШЭ — Читаю список курсов», «Нужен ответ»,
@@ -22,8 +22,8 @@ export function ActiveJobBar() {
 
   if (!active || onConnect) return null;
   const terminal = job ? isTerminal(job.state) : false;
-  const attention = job ? needsHuman(job) : false;
-  const failed = job?.state === "failed" || job?.state === "cancelled";
+  const attention = job ? needsHuman(job, active.connectionId) : false;
+  const failed = job ? jobFailed(job) : false;
 
   return (
     <Banner

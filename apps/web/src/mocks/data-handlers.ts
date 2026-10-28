@@ -391,7 +391,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         return problem(409, "conflict", "Подключение ещё настраивается или отключено");
       // Вход снова — тот же сценарий, что при подключении: вопросы агента приходят блоками потока задания.
       const jobId = ulid();
-      const sim = new JobSim(jobId, db.now, jobPace);
+      const sim = new JobSim(jobId, db.now, jobPace, connection.id, "sync");
       db.sims.set(jobId, sim);
       void runConnect(sim, db, connection.id, db.jobVariant).then(save);
       return HttpResponse.json({ jobId } satisfies S["JobRef"], { status: 202 });

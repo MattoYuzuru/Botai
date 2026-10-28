@@ -43,6 +43,17 @@ export interface JobSnapshot {
   lastEventId: string | null;
 }
 
+/** Старые задания могли завершиться done с бизнес-ошибкой внутри result. */
+export function jobProblem(job: JobSnapshot): JobProblem | null {
+  if (job.problem) return job.problem;
+  if (job.state !== "done" || job.result?.status !== "error") return null;
+  return { code: job.result.detail === "login_failed" ? "login_failed" : "unknown", detail: "", extra: {} };
+}
+
+export function jobFailed(job: JobSnapshot): boolean {
+  return job.state === "failed" || job.state === "cancelled" || jobProblem(job) !== null;
+}
+
 export function initialJob(jobId: string): JobSnapshot {
   return {
     jobId,
@@ -135,9 +146,37 @@ export function applyEvent(job: JobSnapshot, event: RawEvent): JobSnapshot {
   }
 }
 
+/** Семантика поля от сервера; текст вопроса и адрес сайта не определяют способ входа. */
+export function isAuthInput(block: ParsedBlock): boolean {
+  return (
+    block.type === "input" &&
+    block.inputKind !== "url" &&
+    (block.inputKind === "password" ||
+      block.inputKind === "code" ||
+      block.autocomplete === "username" ||
+      block.autocomplete === "current-password" ||
+      block.autocomplete === "one-time-code")
+  );
+}
+
+/** Реальный экран того же подключения сменил старые поля. Ответ при этом не подставляется. */
+export function supersededAuthQuestions(job: JobSnapshot, connectionId?: string): Set<string> {
+  if (!connectionId) return new Set();
+  const screen = job.blocks.findLastIndex(
+    (block) => block.type === "login" && block.connectionId === connectionId,
+  );
+  return new Set(
+    job.blocks
+      .slice(0, Math.max(0, screen))
+      .filter(isAuthInput)
+      .map((block) => block.id),
+  );
+}
+
 /** Блоки, ждущие ответа: вопрос без ответа, пока задание не закончилось. */
-export function pendingQuestions(job: JobSnapshot): ParsedBlock[] {
+export function pendingQuestions(job: JobSnapshot, connectionId?: string): ParsedBlock[] {
   if (isTerminal(job.state)) return [];
+  const superseded = supersededAuthQuestions(job, connectionId);
   return job.blocks.filter((block) => {
     if (
       block.type !== "choice" &&
@@ -146,7 +185,7 @@ export function pendingQuestions(job: JobSnapshot): ParsedBlock[] {
       block.type !== "approval"
     )
       return false;
-    return job.answers[block.id]?.status !== "answered";
+    return job.answers[block.id]?.status !== "answered" && !superseded.has(block.id);
   });
 }
 
@@ -166,9 +205,13 @@ export function activeAttention(job: JobSnapshot): ParsedBlock[] {
 }
 
 /** Требует ли задание человека прямо сейчас (для «Нужен ответ» в шапке). */
-export function needsHuman(job: JobSnapshot): boolean {
+export function needsHuman(job: JobSnapshot, connectionId?: string): boolean {
   if (isTerminal(job.state)) return false;
-  return job.state === "waiting_user" || pendingQuestions(job).length > 0 || activeAttention(job).length > 0;
+  return (
+    job.state === "waiting_user" ||
+    pendingQuestions(job, connectionId).length > 0 ||
+    activeAttention(job).length > 0
+  );
 }
 
 export interface StepSummary {

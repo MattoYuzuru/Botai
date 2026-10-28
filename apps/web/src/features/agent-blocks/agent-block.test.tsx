@@ -11,7 +11,7 @@ const AT = "2026-10-27T10:00:00Z";
 const ID = (n: number) => `01JAAAAAAAAAAAAAAAAAAAAA${String(n).padStart(2, "0")}`;
 const NOW = Date.parse("2026-10-27T11:05:00Z");
 
-function setup(raw: unknown, answers: Record<string, AnswerState> = {}) {
+function setup(raw: unknown, answers: Record<string, AnswerState> = {}, extra: Partial<BlockContext> = {}) {
   const ctx: BlockContext = {
     jobId: "J",
     answers,
@@ -21,6 +21,7 @@ function setup(raw: unknown, answers: Record<string, AnswerState> = {}) {
     onAnswer: vi.fn(),
     onApprove: vi.fn(),
     onReject: vi.fn(),
+    ...extra,
   };
   const block = parseBlock(raw);
   if (!block) throw new Error("не блок");
@@ -103,6 +104,79 @@ const input = (extra: object = {}) => ({
 });
 
 describe("input", () => {
+  it.each([
+    { autocomplete: "username" },
+    { autocomplete: "current-password" },
+    { autocomplete: "one-time-code" },
+    { inputKind: "password" },
+    { inputKind: "code" },
+  ])("ручной браузер доступен для auth marker %j с trusted connection context", async (marker) => {
+    const onOpen = vi.fn();
+    const ctx = setup(
+      input(marker),
+      {},
+      {
+        manualLogin: { connectionId: ID(9), onOpen, busy: false, error: null },
+      },
+    );
+    expect(screen.getByText("Вход через поля BotAI")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Открыть браузер" });
+    expect(button.closest("form")).toBeNull();
+    await userEvent.click(button);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(ID(2));
+    expect(ctx.onAnswer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { question: "Какой сайт подключить?", inputKind: "url" },
+    { question: "Вход. Логин" },
+    { question: "Поиск курсов" },
+    { inputKind: "url", autocomplete: "username" },
+  ])("browser option не угадывается по тексту и не появляется у generic поля %j", (extra) => {
+    setup(
+      input(extra),
+      {},
+      {
+        manualLogin: { connectionId: ID(9), onOpen: vi.fn(), busy: false, error: null },
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Открыть браузер" })).toBeNull();
+  });
+
+  it("без connection callback auth question остаётся обычным полем", () => {
+    setup(input({ autocomplete: "username" }));
+    expect(screen.queryByRole("button", { name: "Открыть браузер" })).toBeNull();
+  });
+
+  it("переход в браузер не отправляет введённый пароль как ответ", async () => {
+    const onOpen = vi.fn();
+    const ctx = setup(
+      input({ inputKind: "password", secret: true }),
+      {},
+      {
+        manualLogin: { connectionId: ID(9), onOpen, busy: false, error: null },
+      },
+    );
+    await userEvent.type(screen.getByLabelText("Ответ"), "manual-only-secret");
+    await userEvent.click(screen.getByRole("button", { name: "Открыть браузер" }));
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(ID(2));
+    expect(ctx.onAnswer).not.toHaveBeenCalled();
+    expect(document.body.innerHTML).not.toContain("manual-only-secret");
+  });
+
+  it.each(["answer", "browser"])("busy %s блокирует ответ и переход в браузер", (source) => {
+    setup(
+      input({ inputKind: "password", secret: true }),
+      source === "answer" ? { [ID(2)]: { status: "sending", shown: null, error: null } } : {},
+      {
+        manualLogin: { connectionId: ID(9), onOpen: vi.fn(), busy: source === "browser", error: null },
+      },
+    );
+    expect(screen.getByLabelText("Ответ")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Ответить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Открыть браузер" })).toBeDisabled();
+  });
+
   it("обычное поле: подпись, 16 px, autocomplete из блока, пустое значение не уходит", async () => {
     const ctx = setup(input({ autocomplete: "username", placeholder: "student@fakeuni.test" }));
     const field = screen.getByLabelText("Ответ");

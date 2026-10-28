@@ -61,6 +61,12 @@ def form(*fields: RichField, submit: str | None = "#go", selector: str = "#form"
         ({"input_type": "hidden"}, None),
         ({"input_type": "text", "visible": False}, None),
         ({"input_type": "file"}, None),
+        ({"input_type": "search", "name": "username"}, None),
+        ({"input_type": "text", "name": "user_search", "label": "Поиск курсов"}, None),
+        ({"input_type": "email", "label": "Поиск студента"}, None),
+        ({"input_type": "text", "autocomplete": "username", "label": "Search users"}, None),
+        ({"input_type": "url", "name": "username"}, "text"),
+        ({"input_type": "select", "name": "student_code"}, "text"),
     ],
 )
 def test_role_of(kw: dict[str, object], role: str | None) -> None:
@@ -100,6 +106,83 @@ def test_best_of_several_forms_prefers_the_credentials() -> None:
 def test_a_search_box_alone_is_not_a_credential() -> None:
     snap = page(form(field("#q", input_type="search", name="q")))
     assert not has_credential_fields(snap)
+    assert best_step(snap) is None
+    assert isinstance(detect(snap), UnknownPage)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"input_type": "text", "label": "Группа"},
+        {"input_type": "text", "name": "student"},
+        {"input_type": "text", "name": "user_id", "label": "Студент"},
+        {"input_type": "email", "name": "email", "autocomplete": "email"},
+        {"input_type": "url", "name": "username"},
+        {"input_type": "select", "name": "student_code"},
+        {"input_type": "number", "inputmode": "numeric", "maxlength": 4},
+        {"input_type": "text", "name": "course_code"},
+    ],
+)
+def test_ordinary_data_forms_have_no_authentication_evidence(kw: dict[str, object]) -> None:
+    snap = page(form(field(**kw)), url="https://uni.test/dashboard", title="Учебные материалы")
+    assert best_step(snap) is None
+    assert not has_credential_fields(snap)
+    assert isinstance(detect(snap), UnknownPage)
+
+
+def test_newsletter_email_is_not_a_login_even_on_a_page_with_login_context() -> None:
+    snap = page(
+        form(field(input_type="email", name="email", autocomplete="email"), selector="#newsletter"),
+        title="Вход",
+    )
+    assert best_step(snap) is None
+    assert not has_credential_fields(snap)
+
+
+@pytest.mark.parametrize(
+    ("kw", "url", "title"),
+    [
+        ({"autocomplete": "username"}, "https://uni.test/continue", ""),
+        ({"name": "username"}, "https://uni.test/continue", ""),
+        ({"input_type": "email"}, "https://uni.test/auth/start", ""),
+        ({"input_type": "email"}, "https://uni.test/continue", "Вход в кабинет"),
+    ],
+)
+def test_username_only_sso_requires_explicit_authentication_hints(
+    kw: dict[str, object], url: str, title: str
+) -> None:
+    snap = page(form(field(**kw)), url=url, title=title)
+    step = detect(snap)
+    assert isinstance(step, FormStep)
+    assert [f.role for f in step.fields] == ["username"]
+    assert has_credential_fields(snap)
+
+
+def test_a_search_control_inside_a_login_form_is_never_filled() -> None:
+    snap = page(
+        form(
+            field("#u", autocomplete="username"),
+            field("#p", input_type="password"),
+            field("#search", input_type="search", name="user_search"),
+        )
+    )
+    step = detect(snap)
+    assert isinstance(step, FormStep)
+    assert [f.selector for f in step.fields] == ["#u", "#p"]
+
+
+def test_uncertain_extra_fields_in_an_auth_form_are_left_for_the_human() -> None:
+    snap = page(form(field("#p", input_type="password"), field("#extra", label="Группа")))
+    assert isinstance(detect(snap), UnknownPage)
+    assert has_credential_fields(snap)
+
+
+def test_a_security_answer_stays_an_authentication_step_and_a_secret() -> None:
+    snap = page(form(field(label="Ответ на секретный вопрос")), url="https://uni.test/continue")
+    step = detect(snap)
+    assert isinstance(step, FormStep)
+    assert secretish(step.fields[0].label)
+    assert has_credential_fields(snap)
 
 
 @pytest.mark.parametrize(
@@ -314,6 +397,94 @@ def test_replay_uses_the_learned_roles_even_when_the_page_gives_no_hints() -> No
     assert step.form_selector == "#form"
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        field("#consent", input_type="checkbox", label="Согласие", required=True),
+        field("#unknown", input_type="text", label="Группа"),
+        field("#new", input_type="password", autocomplete="new-password"),
+    ],
+)
+def test_a_preset_cannot_override_live_fields_that_require_a_human(extra: RichField) -> None:
+    snap = page(
+        form(
+            field("#u", autocomplete="username"),
+            field("#p", input_type="password"),
+            extra,
+        )
+    )
+    learned = [
+        LoginStep(
+            id="known",
+            match={"urlPathPrefix": "/login"},
+            fields=[
+                LoginField(role="username", selector="#u", label="Логин"),
+                LoginField(role="password", selector="#p", label="Пароль"),
+            ],
+            submit="#go",
+        )
+    ]
+    assert isinstance(detect(snap), UnknownPage)
+    assert has_credential_fields(snap)
+    # No executable native form step: the old submit button cannot be replayed,
+    # and consent/extra data must be handled on the human screen.
+    assert replay(learned, snap) is None
+
+
+def test_learned_roles_do_not_override_a_new_opaque_live_login_field() -> None:
+    snap = page(form(field("#u"), field("#p", input_type="password"), field("#new")))
+    learned = [
+        LoginStep(
+            id="known",
+            match={"urlPathPrefix": "/login"},
+            fields=[
+                LoginField(role="username", selector="#u", label="Логин"),
+                LoginField(role="password", selector="#p", label="Пароль"),
+            ],
+        )
+    ]
+    assert isinstance(detect(snap), UnknownPage)
+    assert replay(learned, snap) is None
+
+
+@pytest.mark.parametrize("kind", ["search", "url", "select", "textarea"])
+def test_a_known_username_selector_cannot_upgrade_an_incompatible_live_control(kind: str) -> None:
+    snap = page(form(field("#u", input_type=kind), field("#p", input_type="password")))
+    learned = [
+        LoginStep(
+            id="known",
+            match={"urlPathPrefix": "/login"},
+            fields=[
+                LoginField(role="username", selector="#u", label="Логин"),
+                LoginField(role="password", selector="#p", label="Пароль"),
+            ],
+        )
+    ]
+    assert replay(learned, snap) is None
+
+
+def test_a_new_recognisable_auth_field_is_not_silently_skipped_by_an_old_preset() -> None:
+    snap = page(
+        form(
+            field("#u", autocomplete="username"),
+            field("#p", input_type="password"),
+            field("#otp", autocomplete="one-time-code"),
+        )
+    )
+    learned = [
+        LoginStep(
+            id="known",
+            match={"urlPathPrefix": "/login"},
+            fields=[
+                LoginField(role="username", selector="#u", label="Логин"),
+                LoginField(role="password", selector="#p", label="Пароль"),
+            ],
+        )
+    ]
+    assert isinstance(detect(snap), FormStep)
+    assert replay(learned, snap) is None
+
+
 def test_replay_skips_a_step_whose_selectors_are_gone_or_whose_match_differs() -> None:
     learned = [
         LoginStep(
@@ -328,6 +499,39 @@ def test_replay_skips_a_step_whose_selectors_are_gone_or_whose_match_differs() -
         ),
     ]
     snap = page(form(field("#p", input_type="password")))
+    assert replay(learned, snap) is None
+
+
+@pytest.mark.parametrize("role", ["username", "text"])
+def test_an_old_search_preset_cannot_override_the_live_search_semantics(role: str) -> None:
+    snap = page(
+        form(field("#q", input_type="text", name="user_search", label="Поиск курсов")),
+        url="https://uni.test/dashboard",
+        html='<form id="form"><input id="q"></form>',
+    )
+    learned = [
+        LoginStep(
+            id="old-search",
+            match={"urlPathPrefix": "/dashboard"},
+            fields=[LoginField.model_validate({"role": role, "selector": "#q", "label": "Поиск"})],
+        )
+    ]
+    assert replay(learned, snap) is None
+    assert not has_credential_fields(snap)
+
+
+def test_a_stale_username_preset_cannot_turn_a_newsletter_into_login() -> None:
+    snap = page(
+        form(field("#mail", input_type="email", name="email"), selector="#newsletter"),
+        url="https://uni.test/dashboard",
+    )
+    learned = [
+        LoginStep(
+            id="old-mail",
+            match={"urlPathPrefix": "/dashboard"},
+            fields=[LoginField(role="username", selector="#mail", label="Почта")],
+        )
+    ]
     assert replay(learned, snap) is None
 
 

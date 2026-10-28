@@ -183,7 +183,18 @@ async def enqueue_for_connection(
 ) -> str:
     """Manual `sync` / `repair`. Deduplicated: a job already queued or running is returned."""
     conn = await repo.get_connection(session, user_id, connection_id)
-    if conn.status in _NOT_READY:
+    if conn.status == "disabled":
+        raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
+    if (
+        kind == JobKind.SYNC
+        and conn.status in {"draft", "learning", "error"}
+        and conn.adapter is None
+        and conn.spec_id is None
+    ):
+        # «Войти снова» must resume setup if the first login never produced an adapter.
+        # CONNECT deduplication also brings an existing waiting setup back into view.
+        kind = JobKind.CONNECT
+    elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
     await session.commit()  # the queue works in its own transaction
     return await queue.enqueue(kind, user_id=user_id, connection_id=conn.id, dedupe=True)

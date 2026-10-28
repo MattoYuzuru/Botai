@@ -18,16 +18,24 @@ import type { JobProblem } from "@/features/jobs/job-state";
 import {
   activeAttention,
   isTerminal,
+  jobFailed,
+  jobProblem,
   needsHuman,
   pendingQuestions,
+  supersededAuthQuestions,
   thinkingSteps,
 } from "@/features/jobs/job-state";
+import { useManualLogin } from "./use-manual-login";
 
 export interface ProgressWallProps {
   jobId: string;
   /** «Подключаю ВШЭ». */
   title: string;
   spaceTitle?: string;
+  /** Проверенное подключение этого задания; из active metadata или GET /jobs/{id}. */
+  connectionId?: string;
+  /** Просит ручной вход, не возвращая билеты и не отправляя ответы на вопросы. */
+  onOpenBrowser?: (signal: AbortSignal) => Promise<void>;
   timeZone?: string;
   /** Свернуть: работа продолжается в фоне, её состояние видно в шапке экранов. */
   onMinimize: () => void;
@@ -37,6 +45,9 @@ export interface ProgressWallProps {
   onCancel?: () => void;
   /** Открыть чат с вопросом по сбою. Без обработчика кнопки нет: виджет не знает про маршруты. */
   onAskInChat?: () => void;
+  /** Новый вход — отдельное бизнес-действие для завершившегося login_failed. */
+  onLoginAgain?: () => void;
+  restarting?: boolean;
   /** Уровень заголовка с названием: на своём экране 1, в витрине ниже по иерархии. Заголовок стадии — на уровень глубже. */
   headingLevel?: 1 | 3;
   /** Менеджер потоков; по умолчанию общий. Витрина и тесты подставляют свой. */
@@ -77,6 +88,10 @@ export function describeProblem(problem: JobProblem): { text: string; chat: bool
         chat: true,
       };
     case "login_failed":
+      return {
+        text: problem.detail || "Вход не завершён. Можно начать вход заново и открыть браузер.",
+        chat: false,
+      };
     case "source_bot_protection":
       return {
         text:
@@ -104,16 +119,21 @@ export function ProgressWall({
   jobId,
   title,
   spaceTitle,
+  connectionId,
+  onOpenBrowser,
   timeZone = "Europe/Moscow",
   onMinimize,
   onFinish,
   onCancel,
   onAskInChat,
+  onLoginAgain,
+  restarting = false,
   headingLevel = 1,
   manager = defaultManager,
   renderMascot,
 }: ProgressWallProps) {
   const job = useJob(jobId, manager);
+  const manualLogin = useManualLogin(jobId, job, connectionId, onOpenBrowser);
   const nowMs = useNow(1000);
   const Title = headingLevel === 1 ? "h1" : "h3";
   const StageTitle = headingLevel === 1 ? "h2" : "h4";
@@ -135,7 +155,7 @@ export function ProgressWall({
 
   const steps = thinkingSteps(job);
   const doneSteps = steps.filter((step) => step.state === "done").length;
-  const pending = pendingQuestions(job);
+  const pending = pendingQuestions(job, connectionId);
   const startedAt = job.startedAt ?? steps[0]?.at ?? nowMs;
   const elapsed = Math.max(0, (frozenAt ?? nowMs) - startedAt);
   const stage =
@@ -150,7 +170,8 @@ export function ProgressWall({
     nowMs,
     timeZone,
     spaceTitle,
-    onAnswer: (blockId, values, shown) => void manager.answer(jobId, blockId, values, shown),
+    manualLogin: !terminal && connectionId && onOpenBrowser ? { ...manualLogin, connectionId } : undefined,
+    onAnswer: (blockId, values, shown) => void manager.answer(jobId, blockId, values, shown, connectionId),
     onApprove: (blockId, proposalId, fields) => void manager.approve(jobId, blockId, proposalId, fields),
     onReject: (blockId, proposalId) => void manager.reject(jobId, blockId, proposalId),
   };
@@ -160,6 +181,7 @@ export function ProgressWall({
   const attentionIds = new Set(activeAttention(job).map((block) => block.id));
   const elevated = job.blocks.filter((block) => pendingIds.has(block.id) || attentionIds.has(block.id));
   const elevatedIds = new Set(elevated.map((block) => block.id));
+  const superseded = supersededAuthQuestions(job, connectionId);
   // В истории только вопросы и ответы: закрытое ожидание и пройденный экран входа уже ничего не просят.
   const history = job.blocks.filter(
     (block) =>
@@ -167,14 +189,21 @@ export function ProgressWall({
       block.type !== "summary" &&
       block.type !== "wait" &&
       block.type !== "login" &&
+      (!superseded.has(block.id) || job.answers[block.id]?.status === "answered") &&
+      (!terminal ||
+        !["input", "choice", "confirm", "approval"].includes(block.type) ||
+        job.answers[block.id]?.status === "answered") &&
       !elevatedIds.has(block.id),
   );
-  const attention = needsHuman(job);
-  const problem = job.problem ? describeProblem(job.problem) : null;
+  const attention = needsHuman(job, connectionId);
+  const failure = jobProblem(job);
+  const failed = jobFailed(job);
+  const problem = failure ? describeProblem(failure) : null;
+  const canRestart = terminal && failure?.code === "login_failed" && connectionId && onLoginAgain;
   const mascotState: WallMascotState = terminal
-    ? job.state === "done"
-      ? "done"
-      : "failed"
+    ? failed
+      ? "failed"
+      : "done"
     : attention
       ? "waiting"
       : "running";
@@ -218,7 +247,7 @@ export function ProgressWall({
         {attention
           ? "Агенту нужен ваш ответ"
           : terminal
-            ? job.state === "done"
+            ? !failed
               ? "Подключение завершено"
               : "Подключение не завершено"
             : ""}
@@ -250,7 +279,7 @@ export function ProgressWall({
         </section>
       )}
 
-      {job.state === "done" && summary && <AgentBlockView block={summary} ctx={ctx} />}
+      {job.state === "done" && !failed && summary && <AgentBlockView block={summary} ctx={ctx} />}
 
       {problem && (
         <Banner
@@ -278,9 +307,16 @@ export function ProgressWall({
 
       <div className="flex flex-col gap-2 pb-safe-4 xs:flex-row xs:items-center">
         {terminal ? (
-          <Button variant="primary" onClick={onFinish} className="xs:min-w-40">
-            Готово
-          </Button>
+          <>
+            {canRestart && (
+              <Button variant="primary" loading={restarting} disabled={restarting} onClick={onLoginAgain}>
+                Войти заново
+              </Button>
+            )}
+            <Button variant={canRestart ? "secondary" : "primary"} onClick={onFinish} className="xs:min-w-40">
+              Готово
+            </Button>
+          </>
         ) : (
           onCancel && (
             <Button variant="ghost" tone="danger" onClick={() => setCancelOpen(true)}>
