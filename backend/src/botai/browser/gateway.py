@@ -631,7 +631,7 @@ class PlaywrightHandle:
         entries: dict[str, SessionOriginStorage] = {}
         try:
             state = await self.context.storage_state()
-            for item in state["origins"]:
+            for item in state.get("origins", []):
                 origin = storage_origin(item["origin"], self.allow_hosts)
                 if origin is None:
                     continue
