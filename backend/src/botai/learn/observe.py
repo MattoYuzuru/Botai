@@ -261,9 +261,26 @@ async def observe(
     snapshots: list[tuple[str, PageSnapshot]] = []
     visited: set[str] = set()
     queue = list(start_urls)
+    failed_count = 0
+    stop_reason = ""
+
+    async def network() -> list[ObservedRequest] | None:
+        nonlocal stop_reason
+        try:
+            return await handle.network_log()
+        except Exception:
+            stop_reason = "network_log_failed"
+            diagnostic_event("observe.network_failed", reason=stop_reason)
+            return None
+
     while queue and len(snapshots) < max_pages:
-        if max_requests is not None and len(await handle.network_log()) >= max_requests:
-            break
+        if max_requests is not None:
+            current_log = await network()
+            if current_log is None:
+                break
+            if len(current_log) >= max_requests:
+                stop_reason = "request_budget"
+                break
         url = queue.pop(0)
         if url in visited:
             continue
@@ -272,6 +289,7 @@ async def observe(
         diagnostic_event("observe.page", phase="requested", page_index=page_index, **url_facts(url))
         snap = await _visit(handle, url)
         if snap is None:
+            failed_count += 1
             continue
         diagnostic_event(
             "observe.page",
@@ -288,27 +306,35 @@ async def observe(
         snapshots.append((url, snap))
         if requires_authentication(snap) or snap.captcha_suspected:
             break
-        if max_requests is not None and len(await handle.network_log()) >= max_requests:
-            break
+        if max_requests is not None:
+            current_log = await network()
+            if current_log is None:
+                break
+            if len(current_log) >= max_requests:
+                stop_reason = "request_budget"
+                break
         if len(snapshots) == 1 or len(queue) < max_pages:
             for _, link in menu_links(snap.html, snap.url or url, origin):
                 if link not in visited and link not in queue:
                     queue.append(link)
-    try:
-        log_entries = await handle.network_log()
-    except Exception:
-        diagnostic_event("observe.network_failed", reason="network_log_failed")
-        log_entries = []
-
-    return observations_of(
+    log_entries = await network()
+    obs = observations_of(
         origin,
         redactor,
         snapshots,
-        log_entries,
+        log_entries or [],
         visited_count=len(visited),
         queued_count=len(queue),
         started=started,
     )
+    if not obs.auth_required and not obs.bot_protection:
+        if not stop_reason and failed_count:
+            stop_reason = "navigation_failed"
+        if not stop_reason and queue and len(snapshots) >= max_pages:
+            stop_reason = "page_budget"
+        obs.limited = bool(stop_reason)
+        obs.stop_reason = stop_reason
+    return obs
 
 
 def observations_of(

@@ -14,11 +14,12 @@ from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
 )
-from botai.core.errors import ErrorCode
+from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import LlmMessage, LlmRequest, LlmResponse, ScriptedLlm
 from botai.db import models as m
 from botai.learn.discovery import DiscoveryBudget, ObservationSession, adaptive_observe
 from botai.learn.intent import LearningIntent, apply_intent, prepare_turn
+from botai.learn.observe import observe
 from botai.learn.redact import Redactor
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
@@ -573,3 +574,127 @@ async def test_unchanged_cumulative_network_history_is_not_new_progress() -> Non
     assert "r0" in state.inspected
     assert "r0" not in state.delta
     assert "Новая запись" in state.details["r0"]
+
+
+async def test_deep_entry_can_return_to_known_home_without_a_back_link() -> None:
+    home = ORIGIN + "/"
+    entry = ORIGIN + "/courses?view=actual"
+    schedule = ORIGIN + "/schedule"
+    handle = TrackingHandle(
+        {
+            entry: FakePage("<main>Курсы</main>"),
+            home: FakePage('<nav><a href="/schedule">Расписание</a></nav>'),
+            schedule: FakePage("<main>Занятия</main>"),
+        }
+    )
+    llm = ScriptedLlm(
+        discovery_queue=[
+            plan(1, "navigate", "l0"),
+            plan(2, "navigate", "l1"),
+            plan(3, "finish", kinds=["scheduleEvents"], evidence=["p2"]),
+        ]
+    )
+    obs = await adaptive_observe(
+        handle,
+        ORIGIN,
+        Redactor(),
+        start_urls=[entry, home],
+        intent=LearningIntent(),
+        llm=llm,
+    )
+    assert handle.visits == [entry, home, schedule]
+    assert obs.discovered_kinds == ()  # requested mode does not let the planner broaden scope
+    assert not obs.limited
+    first = json.loads(llm.observation_requests[0].messages[1].content)
+    assert first["observation"]["links"] == [
+        {"ref": "l0", "label": "Стартовая страница", "url": "/"}
+    ]
+
+
+@pytest.mark.parametrize("adaptive", [True, False])
+async def test_failed_navigation_is_incomplete_instead_of_confirmed_absence(adaptive: bool) -> None:
+    class Unavailable(TrackingHandle):
+        async def goto(self, url: str) -> PageSnapshot:
+            raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "synthetic transport failure")
+
+    handle = Unavailable({})
+    if adaptive:
+        obs = await adaptive_observe(
+            handle,
+            ORIGIN,
+            Redactor(),
+            start_urls=[ORIGIN + "/"],
+            intent=LearningIntent(),
+            llm=ScriptedLlm(),
+        )
+    else:
+        obs = await observe(handle, ORIGIN, Redactor(), start_urls=[ORIGIN + "/"])
+    assert obs.empty
+    assert obs.limited
+    assert obs.stop_reason == "navigation_failed"
+
+
+@pytest.mark.parametrize("adaptive", [True, False])
+async def test_failed_network_capture_is_incomplete_even_when_the_planner_finishes(
+    adaptive: bool,
+) -> None:
+    class BrokenNetwork(TrackingHandle):
+        async def network_log(self) -> list[ObservedRequest]:
+            raise RuntimeError("synthetic capture failure")
+
+    handle = BrokenNetwork({ORIGIN + "/": FakePage("<main>Курсы</main>")})
+    if adaptive:
+        obs = await adaptive_observe(
+            handle,
+            ORIGIN,
+            Redactor(),
+            start_urls=[ORIGIN + "/"],
+            intent=LearningIntent(),
+            llm=ScriptedLlm(discovery_queue=[plan(1, "finish")]),
+        )
+    else:
+        obs = await observe(handle, ORIGIN, Redactor(), start_urls=[ORIGIN + "/"])
+    assert obs.pages
+    assert obs.limited
+    assert obs.stop_reason == "network_log_failed"
+
+
+async def test_injected_seed_address_is_not_offered_to_the_planner() -> None:
+    handle = TrackingHandle({ORIGIN + "/": FakePage("<main>Курсы</main>")})
+    state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
+    await state.visit(ORIGIN + "/")
+    state.offer_entries(
+        ["https://other.test/", ORIGIN + "/?token=private", ORIGIN + "/courses?view=actual"]
+    )
+    assert list(state.links.values()) == [("Стартовая страница", ORIGIN + "/courses?view=actual")]
+
+
+async def test_pending_repeat_does_not_erase_the_last_completed_network_evidence() -> None:
+    completed = ObservedRequest(
+        method="GET",
+        url=ORIGIN + "/api/data",
+        status=200,
+        resource_type="xhr",
+        response_content_type="application/json",
+        response_sample='{"items":[{"title":"Подтверждённая запись"}]}',
+    )
+
+    class PendingRepeat(TrackingHandle):
+        pending = False
+
+        async def network_log(self) -> list[ObservedRequest]:
+            return [completed] + (
+                [completed.model_copy(update={"status": None, "response_sample": None})]
+                if self.pending
+                else []
+            )
+
+    handle = PendingRepeat({ORIGIN + "/": FakePage("<main>Курс</main>")})
+    state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
+    await state.visit(ORIGIN + "/")
+    await state.apply(state.decision({"stateRef": 1, "action": "inspect", "ref": "r0"}))
+    handle.pending = True
+    assert not await state.capture(PageSnapshot(url=ORIGIN + "/", html="<main>Курс</main>"))
+    assert "r0" not in state.delta
+    assert "Подтверждённая запись" in state.details["r0"]
+    assert state.calls["r0"].status == 200

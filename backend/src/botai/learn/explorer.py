@@ -71,6 +71,7 @@ from botai.sources.runner import (
     set_connection,
     sync_connection,
 )
+from botai.sources.scope import scoped_spec
 from botai.sources.vocab import KIND_LABELS, VOCAB
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,10 @@ class Explorer:
         self._reauth_attempted = False
         self._observed_session: SessionState | None = None
         self._observation_limited = False
+        self._verification_failed = False
+        self._scope_connection_id: str | None = None
+        self._scope_base: tuple[Kind, ...] = ()
+        self._scope_replaced = False
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -190,8 +195,29 @@ class Explorer:
             await self._turn(self.intent.user_note, redactor)
 
     async def _checkpoint(self) -> None:
+        if self._scope_connection_id is not None:
+            scope = self._data_scope()
+            await self._set(
+                self._scope_connection_id, data_scope=list(scope) if scope is not None else None
+            )
         if isinstance(self.ctx, DialogueContext):
             await self.ctx.checkpoint_learning(self.intent.checkpoint())
+
+    def _data_scope(self) -> tuple[Kind, ...] | None:
+        if self.intent.discovery_mode == "auto":
+            if not self.intent.absent_kinds:
+                return None
+            return tuple(kind for kind in KIND_LABELS if kind not in self.intent.absent_kinds)
+        return tuple(
+            kind
+            for kind in dict.fromkeys(
+                (
+                    *(() if self._scope_replaced else self._scope_base),
+                    *self.intent.requested_kinds,
+                )
+            )
+            if kind not in self.intent.absent_kinds
+        )
 
     async def _turn(self, text: str, redactor: Redactor, *, checkpoint: bool = True) -> None:
         # A plain link needs no classifier and costs no model call.
@@ -211,7 +237,10 @@ class Explorer:
             usage = response.usage
             self.tokens += usage.input_cache_miss + usage.input_cache_hit + usage.output
             try:
-                self.intent = apply_intent(self.intent, turn, parse_json(response.content))
+                classified = parse_json(response.content)
+                self.intent = apply_intent(self.intent, turn, classified)
+                if isinstance(classified, dict) and classified.get("replaceKinds") is True:
+                    self._scope_replaced = True
             except ValueError:
                 # Retain the actual user's clarification and validated links, not an invented
                 # classifier answer. A failed classifier must not erase a delivered chat turn.
@@ -267,6 +296,7 @@ class Explorer:
         return {"status": "continued", **result}
 
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._scope_connection_id = connection_id
         self._start_intent(payload)
         info = await self._info(connection_id)
         if info.status == "disabled":
@@ -305,7 +335,16 @@ class Explorer:
             snap = await load_snapshot(db, self.ctx.user_id, connection_id)
         if snap.adapter != "recipe":
             return {"status": "skipped", "detail": "adapter"}
+        self._scope_connection_id = connection_id
+        self._scope_base = (
+            snap.data_scope
+            if snap.data_scope is not None
+            else tuple(
+                dict.fromkeys(endpoint["kind"] for endpoint in snap.spec["recipe"]["endpoints"])
+            )
+        )
         try:
+            await self._checkpoint()
             return await self._explore(snap, wanted_kinds(payload), base_spec=snap.spec)
         except BotaiError as err:
             await self.ui.say(err.detail or "Не удалось выучить новые данные.")
@@ -361,7 +400,13 @@ class Explorer:
         if row is None:
             return None
         available = {e["kind"] for e in row.spec["recipe"]["endpoints"]}
-        if not set(self.intent.requested_kinds) <= available:
+        if (
+            self.intent.discovery_mode == "requested"
+            and not set(self.intent.requested_kinds) <= available
+        ):
+            return None
+        scope = self._data_scope()
+        if scope is not None and not available.intersection(scope):
             return None
         stage = await self.ui.stage(
             "Для этого сайта описание уже есть",
@@ -435,7 +480,7 @@ class Explorer:
             continued = await self._continue_foreign(info)
             if continued is not None:
                 return continued
-            chosen = {k: value for k, value in chosen.items() if k not in self.intent.absent_kinds}
+            chosen = self._scoped_selection(chosen)
             pending = [k for k in self.intent.requested_kinds if k not in chosen]
             diagnostic_event(
                 "learn.round",
@@ -513,14 +558,14 @@ class Explorer:
         continued = await self._continue_foreign(info)
         if continued is not None:
             return continued
-        chosen = {k: value for k, value in chosen.items() if k not in self.intent.absent_kinds}
+        chosen = self._scoped_selection(chosen)
         pending = [k for k in self.intent.requested_kinds if k not in chosen]
 
         if not chosen:
             await ui.say(
                 (
                     "Пока не удалось проверить "
-                    if self._observation_limited
+                    if self._observation_limited or self._verification_failed
                     else "Не нашла в кабинете "
                 )
                 + (", ".join(KIND_LABELS[k].lower() for k in pending) or "запрошенные данные")
@@ -530,13 +575,24 @@ class Explorer:
             return await self._fail(
                 info,
                 "Не удалось проверить запрошенные данные"
-                if self._observation_limited
+                if self._observation_limited or self._verification_failed
                 else "В кабинете не найдены нужные данные",
-                ErrorCode.SOURCE_UNAVAILABLE if self._observation_limited else ErrorCode.NOT_FOUND,
+                ErrorCode.RECIPE_REJECTED
+                if self._verification_failed
+                else ErrorCode.SOURCE_UNAVAILABLE
+                if self._observation_limited
+                else ErrorCode.NOT_FOUND,
                 say=False,
             )
 
-        built = await self._assemble(info, chosen, base_spec, revision, digest, sctx, lint_ctx)
+        assembly_base = base_spec
+        if assembly_base is None:
+            async with svc.db() as db:
+                shared = await revisions.active_row(db, info.origin, "recipe")
+            assembly_base = shared.spec if shared is not None else None
+        # Preserve previously validated kinds for other students. Only this connection's
+        # effective scope is canaried/read; narrowing one user cannot shrink the shared recipe.
+        built = await self._assemble(info, chosen, assembly_base, revision, digest, sctx, lint_ctx)
         if built is None:
             return await self._fail(
                 info, "Собранное описание не прошло проверку", ErrorCode.RECIPE_REJECTED
@@ -544,7 +600,11 @@ class Explorer:
         spec, report = built
         if pending:
             await ui.say(
-                ("Не удалось проверить: " if self._observation_limited else "Не нашла: ")
+                (
+                    "Не удалось проверить: "
+                    if self._observation_limited or self._verification_failed
+                    else "Не нашла: "
+                )
                 + ", ".join(KIND_LABELS[k].lower() for k in pending)
                 + ". Остальное подключаю, к этому можно вернуться позже."
             )
@@ -573,6 +633,14 @@ class Explorer:
                 )
             return await self._explore(info, list(self.intent.requested_kinds), base_spec=base_spec)
         return await self._activate(info, spec, chosen, warning, digest, base_spec is not None)
+
+    def _scoped_selection(self, chosen: dict[Kind, Chosen]) -> dict[Kind, Chosen]:
+        return {
+            kind: value
+            for kind, value in chosen.items()
+            if kind not in self.intent.absent_kinds
+            and (self.intent.discovery_mode == "auto" or kind in self.intent.requested_kinds)
+        }
 
     async def _observe(
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
@@ -679,10 +747,12 @@ class Explorer:
                 problem=problem,
             )
         except AuthorError:
+            self._verification_failed = True
             await stage.finish("failed", "Модель не вернула пригодный ответ")
             return None
         self.tokens += authored.tokens
         if not authored.candidates:
+            self._verification_failed = self._verification_failed or bool(authored.rejected)
             reason = (
                 "Проверка отклонила все варианты"
                 if authored.rejected
@@ -721,6 +791,7 @@ class Explorer:
                 )
                 verified.append(Chosen(kind, cand, report, comparison))
         if not verified:
+            self._verification_failed = True
             await stage.finish("failed", "Проверка на вашей сессии не прошла")
             diagnostic_event(
                 "learn.selection",
@@ -783,7 +854,12 @@ class Explorer:
         labels = ", ".join(KIND_LABELS[k].lower() for k in pending)
         if have_some:
             choice = await self.ui.choose(
-                f"Не нашла: {labels}. Можно дать ссылку на страницу, где это видно.",
+                (
+                    "Не удалось проверить: "
+                    if self._observation_limited or self._verification_failed
+                    else "Не нашла: "
+                )
+                + f"{labels}. Можно дать ссылку на страницу, где это видно.",
                 [("link", "Дать ссылку", None), ("skip", "Пропустить", "Это можно добавить позже")],
             )
             if choice != "link":
@@ -791,7 +867,7 @@ class Explorer:
         answer = await self.ui.ask_learning_turn(
             (
                 f"Пока не удалось проверить: {labels}. "
-                if self._observation_limited
+                if self._observation_limited or self._verification_failed
                 else f"Не вижу: {labels}. "
             )
             + "Пришлите ссылку или поясните, что здесь есть и что подключить."
@@ -858,7 +934,11 @@ class Explorer:
             await stage.finish("failed", "; ".join(verdict.reasons()[:3]))
             return None
         try:
-            report = await run_canary(spec, sctx, require=[k for k in require if k in chosen])
+            report = await run_canary(
+                scoped_spec(spec, self._data_scope()),
+                sctx,
+                require=[k for k in require if k in chosen],
+            )
         except SessionExpired:
             await stage.finish("failed", "Сайт не принял сессию")
             return None

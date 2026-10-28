@@ -70,6 +70,11 @@ async def test_reader_timeout_closes_acquired_background_handle(
     [
         PageSnapshot(url="https://id.fakeuni.test/login"),
         PageSnapshot(url=URL, html='<form><input type="password"></form>'),
+        PageSnapshot(
+            url=URL,
+            html="<main><h2>Вы не вошли в аккаунт</h2><p>Для продолжения войдите</p></main>",
+        ),
+        PageSnapshot(url=URL, text="You are not signed in"),
     ],
 )
 async def test_reader_auth_transition_requires_normal_login(page: PageSnapshot) -> None:

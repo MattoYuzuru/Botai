@@ -162,6 +162,8 @@ class Connection(Base):
         String(26), ForeignKey("login_presets.id", ondelete="SET NULL")
     )
     allow_hosts: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    # None keeps legacy/automatic discovery; an explicit list limits this connection's reads.
+    data_scope: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     error_code: Mapped[str | None] = mapped_column(String(40))

@@ -80,6 +80,20 @@ class ObservationSession:
     delta: list[str] = field(default_factory=list)
     views: dict[str, ReadView] = field(default_factory=dict, repr=False)
     current_links: list[str] = field(default_factory=list)
+    failures: set[str] = field(default_factory=set)
+
+    def offer_entries(self, urls: list[str]) -> None:
+        """Keep explicit entry pages and the source home available without inventing routes."""
+        known = {target for _, target in self.links.values()}
+        for url in urls:
+            if (
+                navigation_url(url) is not None
+                and url_origin(url) == self.origin
+                and url not in self.visited
+                and url not in known
+            ):
+                self.links[f"l{len(self.links)}"] = ("Стартовая страница", url)
+                known.add(url)
 
     async def visit(self, url: str) -> bool:
         # Revalidate raw executor-owned addresses, even though they were checked when captured.
@@ -91,9 +105,11 @@ class ObservationSession:
         except BotaiError as exc:
             if exc.code in {ErrorCode.SOURCE_AUTH_REQUIRED, ErrorCode.SOURCE_BOT_PROTECTION}:
                 raise
+            self.failures.add("navigation_failed")
             diagnostic_event("observe.visit_failed", reason="navigation_failed")
             return False
         except (KeyError, TimeoutError):
+            self.failures.add("navigation_failed")
             diagnostic_event("observe.visit_failed", reason="navigation_failed")
             return False
         return await self.capture(snap)
@@ -129,6 +145,7 @@ class ObservationSession:
         try:
             log = await self.handle.network_log()
         except Exception:
+            self.failures.add("network_log_failed")
             diagnostic_event("observe.network_failed", reason="network_log_failed")
             log = []
         self.network_count = len(log)
@@ -138,7 +155,7 @@ class ObservationSession:
         # previous capture once; replaying its older history is not new evidence.
         latest_calls: dict[tuple[str, str], ObservedRequest] = {}
         for call in log[: self.budget.requests]:
-            if not interesting_call(call, self.origin):
+            if call.status is None or not interesting_call(call, self.origin):
                 continue
             latest_calls[(call.method, call.url)] = call
         for key, call in latest_calls.items():
@@ -271,6 +288,7 @@ class ObservationSession:
             try:
                 snap = await self.handle.activate_read_view(self.views[ref].ref)
             except BotaiError:
+                self.failures.add("navigation_failed")
                 diagnostic_event("observe.plan", outcome="rejected", reason="navigation_failed")
                 return False
             return await self.capture(snap)
@@ -341,6 +359,9 @@ async def adaptive_observe(
             for url in start_urls:
                 if await state.visit(url):
                     break
+            # A deep user URL need not link back to the home page or to the other explicit
+            # entries. These are known destinations, not model-authored endpoint guesses.
+            state.offer_entries(start_urls)
             for step in range(budget.steps):
                 if state.auth_required or state.bot_protection:
                     stopped = "authentication"
@@ -447,7 +468,7 @@ async def adaptive_observe(
                         tuple(discovered),
                         stopped,
                         started,
-                        limited=stopped != "planner_unavailable" or fallback_limited,
+                        limited=stopped != "planner_unavailable" or fallback_limited or obs.limited,
                         additional_pages=added_pages,
                     )
             except TimeoutError:
@@ -478,15 +499,21 @@ def finish_observation(
 ) -> Observations:
     obs.discovered_kinds = discovered
     obs.planner_tokens = tokens
-    obs.limited = limited
-    obs.stop_reason = stopped
+    obs.limited = limited or bool(state.failures)
+    obs.stop_reason = (
+        sorted(state.failures)[0]
+        if state.failures and stopped in {"finished", "empty", "planner_unavailable"}
+        else obs.stop_reason
+        if obs.stop_reason and stopped == "planner_unavailable"
+        else stopped
+    )
     diagnostic_event(
         "observe.discovery",
         page_count=len(state.pages) + additional_pages,
         call_count=len(obs.calls),
         token_count=tokens,
-        limited=limited,
-        stop_reason=stopped,
+        limited=obs.limited,
+        stop_reason=obs.stop_reason,
         elapsed_ms=round((time.monotonic() - started) * 1000),
     )
     return obs

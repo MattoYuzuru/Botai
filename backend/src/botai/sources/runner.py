@@ -17,7 +17,7 @@ A transport failure re-raises after recording the state, so the job runner appli
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -39,12 +39,14 @@ from botai.learn import revisions
 from botai.sources import normalize, schedule
 from botai.sources.adapter import (
     AdapterResult,
+    EndpointOutcome,
     ExpiredRules,
     NeedsUserInput,
     SessionExpired,
     SyncContext,
 )
 from botai.sources.factory import AdapterFactory
+from botai.sources.scope import read_scope, scoped_spec
 from botai.sources.session import load_session
 from botai.sources.vocab import REQUIRED
 
@@ -75,6 +77,7 @@ class ConnInfo:
     expired: ExpiredRules
     last_sync_at: datetime | None
     university_id: str | None
+    data_scope: tuple[Kind, ...] | None
 
 
 @dataclass(slots=True)
@@ -177,6 +180,7 @@ async def _load_conn(
         expired=_expired_rules(preset),
         last_sync_at=conn.last_sync_at,
         university_id=space.university_id,
+        data_scope=read_scope(conn.data_scope),
     )
     return info, conn
 
@@ -205,6 +209,7 @@ def _snapshot(info: ConnInfo, spec_row: m.AdapterSpecRow) -> Snapshot:
         expired=info.expired,
         last_sync_at=info.last_sync_at,
         university_id=info.university_id,
+        data_scope=info.data_scope,
         spec_id=spec_row.id,
         spec_revision=spec_row.revision,
         spec=spec_row.spec,
@@ -415,7 +420,17 @@ async def fetch_with_reauth(
     sctx: SyncContext,
 ) -> AdapterResult | SyncOutcome:
     """Fetch; on a dead session log in again once. Returns an outcome when the user must act."""
-    adapter = AdapterFactory().create(snap.spec)
+    effective = scoped_spec(snap.spec, snap.data_scope)
+    if snap.adapter == "recipe" and not effective["recipe"]["endpoints"]:
+        return AdapterResult(
+            records=[],
+            fetched_at=sctx.now,
+            outcomes=[
+                EndpointOutcome("scope", kind, ok=False, problem="not_found")
+                for kind in snap.data_scope or ()
+            ],
+        )
+    adapter = AdapterFactory().create(effective)
     reauthed = False
     while True:
         try:
@@ -478,6 +493,9 @@ async def sync_connection(
         snap = await load_snapshot(db, user_id, connection_id)
     if snap.status in {"disabled", "learning", "draft", "repairing"}:
         return SyncOutcome("skipped", detail=snap.status)
+    if snap.data_scope == ():
+        await set_connection(services, connection_id, user_id, next_sync_at=None)
+        return SyncOutcome("skipped", detail="scope_empty")
     if snap.adapter == "document" and snap.spec.get("source", {}).get("kind") == "upload":
         return SyncOutcome("skipped", detail="upload")  # nothing to fetch again: no source address
     previous_status = snap.status
@@ -567,12 +585,21 @@ async def commit_result(
         ).scalar_one_or_none()
         if current is None or current.status == "disabled":
             return SyncOutcome("skipped", detail="disabled")
+        current_scope = read_scope(current.data_scope)
+        if snap.adapter == "recipe" and current_scope is not None:
+            # A clarification can narrow the connection while an older fetch is in flight.
+            # Recheck the durable scope before persisting any records or absence markers.
+            result = replace(
+                result,
+                records=[record for record in result.records if record.kind in current_scope],
+                outcomes=[outcome for outcome in result.outcomes if outcome.kind in current_scope],
+            )
         baseline = (
             {}
             if accept_empty
             else await baseline_counts(db, snap.connection_id, current.last_sync_at)
         )
-        verdict = assess(snap.spec, result, baseline)
+        verdict = assess(scoped_spec(snap.spec, current_scope), result, baseline)
         spec_row = await db.get(m.AdapterSpecRow, snap.spec_id) if queue_repair else None
         stats = await normalize.apply_result(
             db,

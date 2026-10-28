@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -15,6 +16,7 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
 from botai.core.llm import LlmResponse
 from botai.db import models as m
+from botai.learn import revisions
 from tests.fakeuni import data
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
@@ -319,6 +321,87 @@ async def test_a_second_student_reuses_the_learned_spec_without_the_model(
     assert conn.spec_revision == 1
     assert await second.count(m.ScheduleEvent) == 4
     assert [type(b).__name__ for b in second.asked] == []  # nothing to confirm or answer
+
+
+async def test_shared_recipe_cannot_import_kinds_outside_the_explicit_request(
+    make_env: EnvFactory,
+) -> None:
+    first = await make_env([ls.timetable_answer(), ls.deadlines_answer()])
+    await first.run()
+    second = await make_env([])
+    result = await second.run(payload={"kinds": ["scheduleEvents"]})
+    assert result["status"] == "ok"
+    assert result["reused"]
+    assert await second.count(m.ScheduleEvent) == 4
+    assert await second.count(m.Deadline) == 0
+    assert second.llm.requests == []
+    assert (await second.conn()).data_scope == ["scheduleEvents"]
+    original = await first.spec(1)
+    assert {endpoint["kind"] for endpoint in original["recipe"]["endpoints"]} == {
+        "scheduleEvents",
+        "deadlines",
+    }
+
+    # A later broader global revision and a fresh sync handler cannot restore excluded kinds.
+    broader = copy.deepcopy(original)
+    broader["recipe"]["endpoints"].append(recipes.news_endpoint())
+    broader["recipe"]["validation"]["requireKinds"].append("news")
+    async with first.services.db() as db, db.begin():
+        row = await revisions.add_revision(db, origin=data.ORIGIN, adapter="recipe", spec=broader)
+        await revisions.activate(db, row, now=NOW)
+    requested: list[str] = []
+    original_transport = second.transport
+
+    class TracedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            requested.append(request.url.path)
+            return await original_transport.handle_async_request(request)
+
+    second.transport = TracedTransport()
+    await second.login()
+    assert (await second.sync())["status"] == "ok"
+    assert requested == ["/api/v2/timetable"]
+    assert await second.count(m.Deadline) == 0
+    assert await second.count(m.NewsItem) == 0
+    assert (await second.conn()).spec_revision == 2
+    assert await first.spec(1) == original
+    assert (await first.sync())["status"] == "ok"
+    assert await first.count(m.Deadline) == 2
+
+
+async def test_scoped_discovery_preserves_other_users_shared_recipe_kinds(
+    make_env: EnvFactory,
+) -> None:
+    first = await make_env([ls.timetable_answer(), ls.deadlines_answer()])
+    await first.run()
+    second = await make_env([ls.timetable_answer()])
+    # A specific page must be inspected instead of silently using the old global recipe.
+    result = await second.run(payload={"kinds": ["scheduleEvents"], "url": f"{data.ORIGIN}/app"})
+    assert result["status"] == "ok"
+    assert not result.get("reused")
+    assert (await second.conn()).data_scope == ["scheduleEvents"]
+    shared = await second.spec(2)
+    assert {endpoint["kind"] for endpoint in shared["recipe"]["endpoints"]} == {
+        "scheduleEvents",
+        "deadlines",
+    }
+    assert await second.count(m.Deadline) == 0
+    assert (await first.sync())["status"] == "ok"
+    assert await first.count(m.Deadline) == 2
+
+
+async def test_canary_rejection_is_not_reported_as_missing_data(make_env: EnvFactory) -> None:
+    wrong = recipes.timetable_endpoint(path="/api/missing-timetable")
+    env = await make_env([ls.answer([wrong]), ls.answer([wrong])])
+    result = await env.run(
+        payload={"kinds": ["scheduleEvents"]},
+        links=[f"{data.ORIGIN}/news", f"{data.ORIGIN}/news"],
+    )
+    assert result["detail"] == "recipe_rejected"
+    assert await env.specs() == []
+    text = "\n".join(b.markdown for b in ls.blocks_of(env.ctx, "text"))
+    assert "Пока не удалось проверить" in text
+    assert "Не нашла в кабинете" not in text
 
 
 async def test_the_registry_gets_the_origin_and_the_third_party_warning(
