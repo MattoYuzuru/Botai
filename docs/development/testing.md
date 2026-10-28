@@ -93,6 +93,7 @@ compose), Explorer, sync, repair, домен и чат. Студента игр�
 |---|---|
 | Общая просьба и явное ограничение видов | `tests/e2e/test_adaptive_flow.py`: сообщение CONNECT с глубокой ссылкой, automatic-kinds / explicit-schedule |
 | Раздел после первых ссылок, SPA без смены URL | Тот же E2E: десятая ссылка → курс → проверенная вкладка; настоящий DOM и сетевые ответы после действия |
+| Отложенные данные вкладки и ошибки API | `tests/browser/test_read_views.py`: смена aria/class до отложенного GET; `tests/learn/test_network_health.py`: 401/503, восстановление 200 и незавершённый повтор в обоих наблюдателях |
 | Старый расширенный DOM и обновлённый ответ | E2E и `tests/learn/test_discovery.py`: ссылки на снимки не смешиваются, новый ответ инвалидирует старое раскрытие; неизменённая история не даёт прогресса |
 | Сессия браузера после рестарта | E2E: cookies + localStorage/sessionStorage → настоящий Vault → новый Chromium; API-проба 200 без storage не подтверждает страницу браузера |
 | Отражённые секреты сессии | `tests/learn/test_session_redaction.py`: cookies, bearer и вложенные storage-значения не попадают в planner/author, в том числе после refresh/reauth; ошибка экспорта останавливает наблюдение до модели |
