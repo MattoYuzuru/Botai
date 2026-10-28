@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urljoin, urlsplit
@@ -54,6 +55,7 @@ class PageView:
     title: str
     links: list[tuple[str, str]]
     html: str
+    reference: str | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -63,6 +65,7 @@ class CallView:
     status: int | None
     content_type: str
     body: str
+    reference: str | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -317,6 +320,8 @@ def observations_of(
     visited_count: int = 0,
     queued_count: int = 0,
     started: float | None = None,
+    page_refs: tuple[str, ...] = (),
+    call_refs: Mapping[tuple[str, str], str] | None = None,
 ) -> Observations:
     """Build the same redacted bundle from legacy crawling or adaptive browser actions."""
     started = time.monotonic() if started is None else started
@@ -348,7 +353,7 @@ def observations_of(
             break
 
     texts: list[str] = []
-    for _, snap in snapshots:
+    for index, (_, snap) in enumerate(snapshots):
         links = [
             (redactor.text(label, 60) or "", redactor.url(link, origin))
             for label, link in menu_links(snap.html, snap.url, origin)
@@ -360,6 +365,7 @@ def observations_of(
                 title=title,
                 links=links,
                 html=redactor.html(snap.html),
+                reference=page_refs[index] if index < len(page_refs) else None,
             )
         )
         texts.append(redactor.text(snap.text or _plain(snap.html), 1500) or "")
@@ -385,6 +391,7 @@ def observations_of(
                 status=call.status,
                 content_type=(call.response_content_type or "").split(";")[0],
                 body=body,
+                reference=call_refs.get((call.method, call.url)) if call_refs is not None else None,
             )
         )
     obs.observed = set(redactor.observed)

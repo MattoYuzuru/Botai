@@ -134,16 +134,20 @@ class ObservationSession:
         self.network_count = len(log)
         by_request = {(call.method, call.url): ref for ref, call in self.calls.items()}
         changed_response = False
+        # network_log is cumulative. Compare the newest response of each request with the
+        # previous capture once; replaying its older history is not new evidence.
+        latest_calls: dict[tuple[str, str], ObservedRequest] = {}
         for call in log[: self.budget.requests]:
             if not interesting_call(call, self.origin):
                 continue
-            key = (call.method, call.url)
+            latest_calls[(call.method, call.url)] = call
+        for key, call in latest_calls.items():
             call_ref = by_request.get(key)
             previous = self.calls.get(call_ref) if call_ref is not None else None
             if call_ref is None:
                 call_ref = f"r{len(self.calls)}"
                 by_request[key] = call_ref
-            self.calls[call_ref] = call
+            self.calls[call_ref] = call.model_copy()
             if (
                 previous is None
                 or previous.response_sample != call.response_sample
@@ -294,20 +298,20 @@ class ObservationSession:
             [(self.pages[ref].url, self.pages[ref]) for ref in ordered_pages],
             [self.calls[ref] for ref in ordered_calls],
             visited_count=len(self.visited),
+            page_refs=tuple(ordered_pages),
+            call_refs={(self.calls[ref].method, self.calls[ref].url): ref for ref in ordered_calls},
         )
         # Auth/refusal evidence is a stop condition, never an optional planner-selected page.
         obs.auth_required = self.auth_required
         obs.bot_protection = self.bot_protection
         for ref, detail in self.details.items():
             if ref in self.pages:
-                url = self.redactor.url(self.pages[ref].url, self.origin)
                 for page in obs.pages:
-                    if page.url == url:
+                    if page.reference == ref:
                         page.html = detail
             elif ref in self.calls:
-                url = self.redactor.url(self.calls[ref].url, self.origin)
                 for call in obs.calls:
-                    if call.url == url:
+                    if call.reference == ref:
                         call.body = detail
         return obs
 

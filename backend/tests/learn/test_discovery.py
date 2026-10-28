@@ -452,3 +452,124 @@ async def test_malformed_plan_fallback_shares_remaining_budget_and_keeps_evidenc
     assert obs.limited
     assert obs.stop_reason == "invalid_plan"
     assert any("Сохранённое доказательство" in page.html for page in obs.pages)
+
+
+@pytest.mark.parametrize("inspect_after_activation", [False, True])
+async def test_expanded_old_page_cannot_replace_new_tab_at_the_same_url(
+    inspect_after_activation: bool,
+) -> None:
+    class SameUrlTab(TrackingHandle):
+        def __init__(self) -> None:
+            super().__init__(
+                {ORIGIN + "/": FakePage("<main><article>Старое содержимое</article></main>")}
+            )
+            self.activated = False
+
+        async def read_views(self) -> list[ReadView]:
+            return [] if self.activated else [ReadView("server-tab", "Занятия")]
+
+        async def activate_read_view(self, ref: str) -> PageSnapshot:
+            assert ref == "server-tab"
+            self.activated = True
+            return PageSnapshot(
+                url=ORIGIN + "/", html="<main><article>Новое содержимое</article></main>"
+            )
+
+    actions = (
+        [plan(1, "activate", "t1-0"), plan(2, "inspect", "p0")]
+        if inspect_after_activation
+        else [plan(1, "inspect", "p0"), plan(2, "activate", "t1-0")]
+    )
+    obs = await adaptive_observe(
+        SameUrlTab(),
+        ORIGIN,
+        Redactor(),
+        start_urls=[ORIGIN + "/"],
+        intent=LearningIntent(),
+        llm=ScriptedLlm(discovery_queue=[*actions, plan(3, "finish", evidence=["p0", "p1"])]),
+    )
+    by_reference = {page.reference: page for page in obs.pages}
+    assert "Старое содержимое" in by_reference["p0"].html
+    assert "Новое содержимое" in by_reference["p1"].html
+    assert "Старое содержимое" not in by_reference["p1"].html
+
+
+@pytest.mark.parametrize("collision", ["method", "redacted_query"])
+async def test_expanded_response_uses_exact_reference_despite_redacted_url_collision(
+    collision: str,
+) -> None:
+    first_url = (
+        ORIGIN + "/api/data?token=first-private"
+        if collision == "redacted_query"
+        else ORIGIN + "/api/data"
+    )
+    second_url = (
+        ORIGIN + "/api/data?token=second-private" if collision == "redacted_query" else first_url
+    )
+    requests = [
+        ObservedRequest(
+            method="GET",
+            url=first_url,
+            status=200,
+            resource_type="xhr",
+            response_content_type="application/json",
+            response_sample='{"items":[{"title":"Первая запись"}]}',
+        ),
+        ObservedRequest(
+            method="POST" if collision == "method" else "GET",
+            url=second_url,
+            status=200,
+            resource_type="xhr",
+            response_content_type="application/json",
+            response_sample='{"items":[{"title":"Вторая запись"}]}',
+        ),
+    ]
+    state = ObservationSession(
+        TrackingHandle({ORIGIN + "/": FakePage("<main>Курс</main>", requests=requests)}),
+        ORIGIN,
+        Redactor(),
+        DiscoveryBudget(),
+    )
+    await state.visit(ORIGIN + "/")
+    await state.apply(state.decision({"stateRef": 1, "action": "inspect", "ref": "r0"}))
+    obs = state.bundle(("r0", "r1"))
+    by_reference = {call.reference: call for call in obs.calls}
+    assert by_reference["r0"].url == by_reference["r1"].url
+    assert "Первая запись" in by_reference["r0"].body
+    assert "Вторая запись" in by_reference["r1"].body
+    assert "Первая запись" not in by_reference["r1"].body
+
+
+async def test_unchanged_cumulative_network_history_is_not_new_progress() -> None:
+    class CumulativeHandle(TrackingHandle):
+        def __init__(self) -> None:
+            super().__init__({ORIGIN + "/": FakePage("<main>Курс</main>")})
+            self.history = [
+                ObservedRequest(
+                    method="GET",
+                    url=ORIGIN + "/api/data",
+                    status=200,
+                    resource_type="xhr",
+                    response_content_type="application/json",
+                    response_sample='{"items":[{"title":"Старая запись"}]}',
+                )
+            ]
+
+        async def network_log(self) -> list[ObservedRequest]:
+            return self.history
+
+    handle = CumulativeHandle()
+    state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
+    await state.visit(ORIGIN + "/")
+    handle.history.append(
+        handle.history[0].model_copy(
+            update={"response_sample": '{"items":[{"title":"Новая запись"}]}'}
+        )
+    )
+    page = PageSnapshot(url=ORIGIN + "/", html="<main>Курс</main>")
+    assert await state.capture(page)
+    await state.apply(state.decision({"stateRef": 2, "action": "inspect", "ref": "r0"}))
+    assert not await state.capture(page)
+    assert "r0" in state.inspected
+    assert "r0" not in state.delta
+    assert "Новая запись" in state.details["r0"]
