@@ -88,6 +88,8 @@ export async function trimSnapshots(cache: Cache, nowMs: number, max = MAX_SNAPS
  * Со снимком — снимок при сбое сети, ответе 5xx и молчании сети дольше `snapshotAfterMs`.
  */
 export async function networkFirstSnapshot(request: Request, deps: Deps): Promise<Response> {
+  // Проверка сессии перед исходящим действием должна получить живой ответ сервера.
+  if (request.cache === "no-store") return deps.fetch(request);
   const cache = await deps.caches.open(API_CACHE);
   const live = deps.fetch(request).then((response) => {
     if (response.status === 401) {

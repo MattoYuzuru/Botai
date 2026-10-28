@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { observeDataReset, onDataReset } from "./data-reset";
+import { observeDataReset, onDataReset, onQueueReset } from "./data-reset";
 
 const RESET_AT = 1_793_225_000_000;
 const response = (id: string, resetAt = RESET_AT) =>
@@ -14,6 +14,24 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("сброс данных аккаунта", () => {
+  it("уведомляет очередь соседней вкладки и повторно проверяет её при уже сохранённой отметке", async () => {
+    const listener = vi.fn();
+    const remove = onQueueReset(listener);
+    try {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "botai.data-reset.other-tab-owner",
+          newValue: String(RESET_AT),
+        }),
+      );
+      expect(listener).toHaveBeenCalledWith({ userId: "other-tab-owner", resetAt: RESET_AT });
+      localStorage.setItem("botai.data-reset.other-tab-owner", String(RESET_AT));
+      await observeDataReset(response("other-tab-owner"));
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      remove();
+    }
+  });
   it("удаляет старую очередь и снимки владельца; сохраняет новые сообщения, чужую очередь и настройки", async () => {
     localStorage.setItem("botai.snapshot-owner", "reset-owner");
     localStorage.setItem("botai.theme", "dark");

@@ -7,11 +7,27 @@ export interface DataReset {
 
 const seen = new Map<string, number>();
 const listeners = new Set<(reset: DataReset) => void>();
+const queueListeners = new Set<(reset: DataReset) => void>();
 const pending = new Map<string, Promise<void>>();
 
 export function onDataReset(listener: (reset: DataReset) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Очередь очищается и в уже открытых соседних вкладках этого origin. */
+export function onQueueReset(listener: (reset: DataReset) => void): () => void {
+  queueListeners.add(listener);
+  return () => queueListeners.delete(listener);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    const prefix = "botai.data-reset.";
+    if (!event.key?.startsWith(prefix) || !event.newValue || !/^\d{13}$/.test(event.newValue)) return;
+    const reset = { userId: event.key.slice(prefix.length), resetAt: Number(event.newValue) };
+    for (const listener of queueListeners) listener(reset);
+  });
 }
 
 /** Проверяется до возобновления очереди. Cookie входа и настройки оформления сохраняются. */
@@ -24,6 +40,8 @@ export async function observeDataReset(response: Response): Promise<void> {
   const user = body.user;
   if (typeof user !== "object" || user === null || !("id" in user) || typeof user.id !== "string") return;
   const userId = user.id;
+  // Вкладка могла пропустить storage event или уже видеть отметку другой вкладки.
+  for (const listener of queueListeners) listener({ userId, resetAt });
   const key = `botai.data-reset.${userId}`;
   if ((seen.get(userId) ?? 0) >= resetAt) return;
   try {

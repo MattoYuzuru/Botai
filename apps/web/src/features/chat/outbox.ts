@@ -267,12 +267,14 @@ export class Outbox {
     try {
       if (!threadId) {
         const thread = await this.deps.createThread(item.spaceId);
+        if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
         threadId = thread.id;
         this.patch(item.id, { threadId });
         this.emit({ type: "thread", item: { ...item, threadId }, thread });
       } else if (item.maybeSent) {
         // Прошлая отправка оборвалась на ответе: возможно, сообщение уже дошло. Дубль не нужен.
         const found = await this.findSent(threadId, item);
+        if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
         if (found) {
           this.remove(item.id);
           this.emit({ type: "sent", item, threadId, message: found, jobId: null });
@@ -281,10 +283,12 @@ export class Outbox {
       }
       this.patch(item.id, { maybeSent: true });
       const accepted = await this.deps.postMessage(threadId, item.text);
+      if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
       this.remove(item.id);
       this.emit({ type: "sent", item, threadId, message: accepted.message, jobId: accepted.jobId });
       return "sent";
     } catch (error) {
+      if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
       if (isNetworkError(error)) {
         this.retry(this.current(item), "queued");
         return "retry";

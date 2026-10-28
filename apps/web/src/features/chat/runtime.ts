@@ -6,7 +6,7 @@
 import { useSyncExternalStore } from "react";
 import { api, call } from "@/api/client";
 import { isUnauthorized } from "@/api/errors";
-import { onDataReset } from "@/features/auth/data-reset";
+import { onDataReset, onQueueReset } from "@/features/auth/data-reset";
 import { jobManager } from "@/features/jobs/job-manager";
 import { useChatJobs } from "./chat-jobs";
 import { Outbox, type OutboxDeps, type OutboxItem } from "./outbox";
@@ -17,7 +17,8 @@ const ME_TTL_MS = 30_000;
 async function currentUserId(): Promise<string | null> {
   if (meCache && Date.now() - meCache.at < ME_TTL_MS) return meCache.id;
   try {
-    const me = await call(api.GET("/api/v1/me"));
+    // Offline-снимок личности подходит для просмотра, но не разрешает отправку очереди.
+    const me = await call(api.GET("/api/v1/me", { cache: "no-store" }));
     meCache = { id: me.user.id, at: Date.now() };
   } catch (error) {
     if (!isUnauthorized(error)) throw error;
@@ -61,6 +62,10 @@ export function createChatDeps(): OutboxDeps {
 }
 
 export const outbox = new Outbox(createChatDeps());
+onQueueReset(({ userId, resetAt }) => {
+  outbox.discardBefore(userId, resetAt);
+  if (meCache?.id === userId) meCache = null;
+});
 onDataReset(({ userId, resetAt }) => {
   outbox.discardBefore(userId, resetAt);
   useChatJobs.getState().clearAll();
