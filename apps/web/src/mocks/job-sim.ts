@@ -27,12 +27,14 @@ export class JobSim {
   /** Значения секретных ответов хранятся только здесь (имитация Vault) и в журнал не пишутся. */
   readonly sealed = new Map<string, unknown>();
   cancelled = false;
+  /** Fixture projection is written before SSE listeners see the event, like durable server turns. */
+  onEvent?: (event: SimEvent) => void;
 
   constructor(
     readonly jobId: string,
     private readonly now: () => number,
     private readonly pace: number,
-    readonly connectionId: string | null = null,
+    public connectionId: string | null = null,
     readonly kind = "chat",
   ) {}
 
@@ -47,7 +49,9 @@ export class JobSim {
     // Конец задания фиксируется вместе с событием: поток закрывается только после его доставки.
     if (event === "done") this.state = "done";
     if (event === "error") this.state = "failed";
-    this.events.push({ id: this.nextId++, event, data });
+    const next = { id: this.nextId++, event, data };
+    this.events.push(next);
+    this.onEvent?.(next);
     for (const listener of this.listeners) listener();
   }
 
@@ -109,6 +113,13 @@ export class JobSim {
 
   get terminal(): boolean {
     return this.state === "done" || this.state === "failed" || this.state === "cancelled";
+  }
+
+  get pendingIds(): readonly string[] {
+    return [...this.waiting.keys()];
+  }
+  get answeredIds(): readonly string[] {
+    return [...this.answered];
   }
 
   /** Поток SSE: события после `lastEventId`, затем новые, пока задание не закончится. */

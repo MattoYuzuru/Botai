@@ -17,7 +17,7 @@ export function ConfirmCard({ block, ctx }: { block: Confirm; ctx: BlockContext 
   const answer = ctx.answers[block.id];
   const busy = answer?.status === "sending";
   return (
-    <QuestionFrame question={block.question} required answer={answer}>
+    <QuestionFrame question={block.question} required answer={answer} editorOnly={ctx.editorOnly}>
       <div className="flex flex-col gap-2 xs:flex-row xs:flex-wrap">
         <Button
           variant="primary"

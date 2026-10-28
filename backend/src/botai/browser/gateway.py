@@ -30,6 +30,7 @@ from playwright.async_api import (
     Request,
     Response,
     Route,
+    WebSocketRoute,
     async_playwright,
 )
 from playwright.async_api import Error as PlaywrightError
@@ -114,6 +115,17 @@ def map_navigation_error(exc: PlaywrightError, requested: str) -> BotaiError:
     return BotaiError(ErrorCode.SOURCE_UNAVAILABLE, f"Сайт {host} не отвечает")
 
 
+async def _read_only_request(route: Route) -> None:
+    if route.request.method in {"GET", "HEAD", "OPTIONS"}:
+        await route.fallback()
+    else:
+        await route.abort("blockedbyclient")
+
+
+async def _read_only_socket(socket: WebSocketRoute) -> None:
+    await socket.close(code=1008, reason="read-only browser")
+
+
 def _host_matches(domain: str, hosts: Iterable[str]) -> bool:
     """Would a browser send a cookie with this `domain` attribute to one of `hosts`?
 
@@ -140,6 +152,7 @@ class PlaywrightHandle:
         origin: str,
         capture: CaptureConfig,
         clock: Clock,
+        read_only: bool = False,
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -150,6 +163,7 @@ class PlaywrightHandle:
         self.origin = origin
         self._capture = capture
         self._clock = clock
+        self.read_only = read_only
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
@@ -299,7 +313,14 @@ class PlaywrightHandle:
             await asyncio.sleep(0.1)  # let the `requestfailed` event for the refused tunnel land
             raise self._navigation_error or map_navigation_error(exc, url) from exc
         await self._settle()
-        return await self.snapshot()
+        snap = await self.snapshot()
+        if self.read_only and (
+            self._navigation_error is not None or snap.url.startswith("chrome-error:")
+        ):
+            raise self._navigation_error or BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Страница источника недоступна для чтения"
+            )
+        return snap
 
     async def snapshot(self) -> PageSnapshot:
         last: PlaywrightError | None = None
@@ -317,6 +338,8 @@ class PlaywrightHandle:
         ) from last
 
     async def fill(self, selector: str, value: str) -> None:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.fill(selector, value, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -326,6 +349,8 @@ class PlaywrightHandle:
             ) from None
 
     async def click(self, selector: str) -> PageSnapshot:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.click(selector, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -336,6 +361,8 @@ class PlaywrightHandle:
         return await self.snapshot()
 
     async def press(self, selector: str, key: str) -> PageSnapshot:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.press(selector, key, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -471,6 +498,7 @@ class PlaywrightGateway:
         self._browser: Browser | None = None
         self._launch_lock = asyncio.Lock()
         self._by_user: dict[str, PlaywrightHandle] = {}
+        self._user_locks: dict[str, asyncio.Lock] = {}
         self._handles: set[PlaywrightHandle] = set()
         self._background: set[asyncio.Task[None]] = set()
 
@@ -565,11 +593,44 @@ class PlaywrightGateway:
         origin: str | None = None,
         capture: CaptureConfig | None = None,
         suffixes: Sequence[str] = (),
+        read_only: bool = False,
+        background: bool = False,
+    ) -> PlaywrightHandle:
+        async with self._user_locks.setdefault(user_id, asyncio.Lock()):
+            return await self._open_for_user(
+                user_id=user_id,
+                connection_id=connection_id,
+                allow_hosts=allow_hosts,
+                session=session,
+                origin=origin,
+                capture=capture,
+                suffixes=suffixes,
+                read_only=read_only,
+                background=background,
+            )
+
+    async def _open_for_user(
+        self,
+        *,
+        user_id: str,
+        connection_id: str,
+        allow_hosts: Iterable[str],
+        session: SessionState | None = None,
+        origin: str | None = None,
+        capture: CaptureConfig | None = None,
+        suffixes: Sequence[str] = (),
+        read_only: bool = False,
+        background: bool = False,
     ) -> PlaywrightHandle:
         hosts = tuple(dict.fromkeys(h.lower() for h in allow_hosts))
         if not hosts and not suffixes:
             raise ValueError("a browser context needs at least one allowed host")
         previous = self._by_user.get(user_id)
+        if background and previous is not None and not previous.closed:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                "Браузер занят другим действием; чтение продолжится позже",
+            )
         if previous is not None:
             await previous.close()  # one live context per user
         try:
@@ -603,6 +664,10 @@ class PlaywrightGateway:
             primary = origin or f"https://{hosts[0]}"
             if session is not None:
                 await self._restore(context, session)
+            if read_only:
+                # Install after restore so this guard runs before bearer injection.
+                await context.route("**/*", _read_only_request)
+                await context.route_web_socket("**/*", _read_only_socket)
             page = await context.new_page()
         except BaseException:
             if context is not None:  # a half-built context would live on with its cookies
@@ -620,6 +685,7 @@ class PlaywrightGateway:
             origin=primary,
             capture=capture or CaptureConfig(),
             clock=self._clock,
+            read_only=read_only,
         )
         self._handles.add(handle)
         self._by_user[user_id] = handle

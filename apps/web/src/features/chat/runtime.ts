@@ -38,7 +38,8 @@ export function createChatDeps(): OutboxDeps {
     now: () => Date.now(),
     online: () => navigator.onLine,
     currentUserId,
-    createThread: (spaceId) => call(api.POST("/api/v1/chat/threads", { body: { spaceId, title: null } })),
+    createThread: (spaceId) =>
+      call(api.POST("/api/v1/chat/threads", { body: { spaceId, title: null, purpose: "chat" } })),
     postMessage: (threadId, text) =>
       call(
         api.POST("/api/v1/chat/threads/{thread_id}/messages", {

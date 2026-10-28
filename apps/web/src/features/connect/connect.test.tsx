@@ -1,6 +1,7 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { outbox } from "@/features/chat/runtime";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
 import type { JobVariant } from "@/mocks/connect-script";
@@ -15,255 +16,224 @@ function switchScenario(scenario: Scenario, variant: JobVariant = "basic", jobPa
   current.db.jobVariant = variant;
   current.server.listen({ onUnhandledRequest: "error" });
 }
-
 beforeAll(() => current.server.listen({ onUnhandledRequest: "error" }));
 afterAll(() => current.server.close());
 beforeEach(() => {
   jobManager.stopAll();
   useActiveJob.setState({ job: null });
   window.sessionStorage.clear();
+  window.localStorage.clear();
+  outbox.clear();
   switchScenario("empty");
 });
-afterEach(() => current.server.resetHandlers());
-
-const choose = async (name: RegExp | string) => {
-  await userEvent.click(await screen.findByRole("combobox", { name: "Вуз" }));
-  await userEvent.click(await screen.findByRole("option", { name }));
-};
-
-describe("выбор вуза", () => {
-  it("список из учебного реестра пула и «Другой вуз»; без выбора начать нельзя", async () => {
-    renderApp("/connect");
-    await userEvent.click(await screen.findByRole("combobox", { name: "Вуз" }));
-    expect(await screen.findByRole("option", { name: /Высшая школа экономики/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Центральный университет/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Другой вуз/ })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-    expect(await screen.findByText("Выберите вуз из списка или укажите свой")).toBeInTheDocument();
-  });
-
-  it("поиск сужает список по названию и сокращению", async () => {
-    renderApp("/connect");
-    await userEvent.type(await screen.findByLabelText("Вуз"), "ЦУ");
-    await waitFor(() => expect(screen.queryByRole("option", { name: /Высшая школа экономики/ })).toBeNull());
-    expect(await screen.findByRole("option", { name: /Центральный университет/ })).toBeInTheDocument();
-  });
-
-  it("предупреждение вуза о стороннем доступе показано до начала (Q12)", async () => {
-    renderApp("/connect");
-    await choose(/Центральный университет/);
-    expect(await screen.findByText(/ограничивают сторонний доступ/)).toBeInTheDocument();
-  });
-
-  it("адрес кабинета проверяется; свой вуз требует названия", async () => {
-    renderApp("/connect");
-    await choose(/Другой вуз/);
-    await userEvent.type(screen.getByLabelText(/Адрес личного кабинета/), "javascript:alert(1)");
-    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-    expect(await screen.findByText("Нужна ссылка вида https://lk.example.ru")).toBeInTheDocument();
-    expect(screen.getByText("Как называется вуз?")).toBeInTheDocument();
-  });
-
-  it("предупреждает, что ввод проходит через сервер и пароль хранится зашифрованным", async () => {
-    renderApp("/connect");
-    expect(await screen.findByText(/пароль хранится зашифрованным/)).toBeInTheDocument();
-    expect(screen.getByText(/Ввод при входе проходит через сервер BotAI/)).toBeInTheDocument();
-  });
-
-  it("выбор сохраняется после нового ответа поиска и поддерживает клавиатуру", async () => {
-    renderApp("/connect");
-    const input = await screen.findByRole("combobox", { name: "Вуз" });
-    await userEvent.type(input, "ЦУ");
-    await screen.findByRole("option", { name: /Центральный университет/ });
-    await userEvent.keyboard("{ArrowDown}{Enter}");
-    expect(input).toHaveValue("ЦУ");
-    expect(input).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Подключаю ЦУ" })).toBeInTheDocument();
-  });
-
-  it("повторный вход использует прежнее подключение без создания нового", async () => {
-    switchScenario("connected");
-    renderApp("/connect");
-    const count = current.db.connections.length;
-    const buttons = await screen.findAllByRole("button", { name: "Войти снова" });
-    const first = buttons[0];
-    if (!first) throw new Error("Нет подключения для повторного входа");
-    await userEvent.click(first);
-    expect(await screen.findByRole("heading", { level: 1, name: "Вхожу в ВШЭ" })).toBeInTheDocument();
-    expect(current.db.connections).toHaveLength(count);
-  });
+afterEach(() => {
+  current.server.resetHandlers();
+  act(() => jobManager.stopAll());
 });
+const WAIT = { timeout: 5000 };
+const URL_QUESTION = "Пришлите ссылку на источник, который хотите подключить.";
 
-async function startHse() {
-  const utils = renderApp("/connect");
-  await choose(/Высшая школа экономики/);
-  await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-  return utils;
+async function send(text: string) {
+  const composer = await screen.findByRole("textbox", { name: "Сообщение агенту" });
+  await waitFor(() => expect(composer).toBeEnabled(), WAIT);
+  await userEvent.type(composer, text);
+  await userEvent.click(screen.getByRole("button", { name: "Отправить" }));
+}
+async function start(variant: JobVariant = "basic") {
+  current.db.jobVariant = variant;
+  const app = renderApp("/connect?university=u-hse");
+  await screen.findByText(URL_QUESTION, undefined, WAIT);
+  await send("https://lk.fakeuni.test/");
+  await screen.findByText("Вход в lk.fakeuni.test. Логин", undefined, WAIT);
+  return app;
+}
+async function answer(text: string) {
+  await waitFor(() => expect(screen.getByLabelText("Ответ")).toBeEnabled(), WAIT);
+  await userEvent.type(screen.getByLabelText("Ответ"), text);
+  await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+}
+async function courses(variant: JobVariant = "basic") {
+  const app = await start(variant);
+  await answer("anna");
+  await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, WAIT);
+  await answer("fixture-password");
+  await screen.findByRole("checkbox", { name: /Алгоритмы/ }, WAIT);
+  return app;
+}
+async function finishCourses() {
+  await userEvent.click(await screen.findByRole("checkbox", { name: /Алгоритмы/ }, WAIT));
+  await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
 }
 
-describe("ProgressWall: подключение вуза", () => {
-  it("весь путь: логин, пароль, предметы, итог, «Готово»", async () => {
-    const { router } = await startHse();
-    expect(await screen.findByRole("heading", { level: 1, name: "Подключаю ВШЭ" })).toBeInTheDocument();
-    expect(router.state.location.pathname).toMatch(/^\/connect\/01J/);
-    // Рельс без процентов; остаток неизвестен — и это сказано.
-    expect(await screen.findByText("Сколько осталось — пока неизвестно")).toBeInTheDocument();
-    expect(document.body.textContent).not.toMatch(/\d\s*%/);
+describe("подключение в обычном чате", () => {
+  it("сразу открывает canonical chat с одним вопросом о ссылке, без отдельного конфигуратора", async () => {
+    const { router } = renderApp("/connect");
+    expect(await screen.findByText(URL_QUESTION, undefined, WAIT)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/chat");
+    expect(router.state.location.search.thread).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Чат" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать подключение" })).toBeNull();
+    expect(current.db.spaces).toHaveLength(0);
+    expect(outbox.snapshot).toHaveLength(0);
+  });
 
-    // Логин — обычное поле с подсказкой для менеджера паролей.
-    const login = await screen.findByText("Вход в lk.fakeuni.test. Логин");
-    expect(login).toBeInTheDocument();
-    expect(screen.getByText("Жду ответа")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Ответ"), "anna");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+  it("вопрос остаётся тем же DOM turn до и после принятого ответа, хронология идёт вниз", async () => {
+    renderApp("/connect");
+    const question = await screen.findByText(URL_QUESTION, undefined, WAIT);
+    const turn = question.closest("[data-conversation-turn]");
+    await send("https://lk.fakeuni.test/");
+    await screen.findByText("Вход в lk.fakeuni.test. Логин", undefined, WAIT);
+    expect(screen.getByText(URL_QUESTION).closest("[data-conversation-turn]")).toBe(turn);
+    const history = screen.getByRole("list", { name: "Сообщения" }).textContent ?? "";
+    expect(history.indexOf(URL_QUESTION)).toBeLessThan(history.indexOf("https://lk.fakeuni.test/"));
+    expect(history.indexOf("https://lk.fakeuni.test/")).toBeLessThan(
+      history.indexOf("Вход в lk.fakeuni.test. Логин"),
+    );
+    expect(outbox.snapshot).toHaveLength(0);
+  });
 
-    // Пароль — секретное поле: значение не остаётся ни в поле, ни в истории.
-    await screen.findByText("Вход в lk.fakeuni.test. Пароль");
-    const password = await screen.findByLabelText("Ответ");
-    expect(password).toHaveAttribute("type", "password");
+  it("native username/secret идут защищёнными блоками, composer блокируется; секрет не попадает в историю/хранилища", async () => {
+    await start();
+    expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeDisabled();
+    expect(screen.getByText("Вход через поля BotAI")).toBeInTheDocument();
+    await answer("anna");
+    await waitFor(() => expect(screen.getByLabelText("Ответ")).toHaveAttribute("type", "password"), WAIT);
+    const password = screen.getByLabelText("Ответ");
     expect(password).toHaveAttribute("autocomplete", "current-password");
-    await userEvent.type(password, "correct-horse");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await waitFor(() => expect(document.body.textContent).not.toContain("correct-horse"));
-    expect(await screen.findByText("Введено")).toBeInTheDocument();
-    expect(screen.getByText("anna")).toBeInTheDocument();
-
-    // Выбор предметов.
-    await userEvent.click(await screen.findByRole("checkbox", { name: /Алгоритмы/ }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /Базы данных/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-
-    // Итог: что подключено, что нет, «Готово» — экран не исчезает сам.
-    expect(await screen.findByRole("heading", { level: 3, name: "Что подключено" })).toBeInTheDocument();
-    expect(screen.getByText("Предположение")).toBeInTheDocument();
-    expect(screen.getByText("Оценки")).toBeInTheDocument();
-    expect(screen.getByRole("status", { hidden: true })).toBeInTheDocument();
-    const stream = screen.getByRole("button", { name: /^Думал/ });
-    expect(stream).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-    // Вуз появился: на «Сегодня» уже не онбординг.
-    expect(await screen.findByRole("region", { name: "Пары" })).toBeInTheDocument();
-    expect(screen.queryByText("Вузов пока нет")).toBeNull();
-    expect(useActiveJob.getState().job).toBeNull();
-    expect(current.db.connections.at(-1)).toMatchObject({ status: "active", hasPassword: true });
+    expect(screen.getByRole("button", { name: "Открыть браузер" }).closest("form")).toBeNull();
+    await answer("never-persist-this-secret");
+    await screen.findByRole("checkbox", { name: /Алгоритмы/ }, WAIT);
+    expect(document.body.textContent).not.toContain("never-persist-this-secret");
+    for (const storage of [window.localStorage, window.sessionStorage])
+      for (const key of Object.keys(storage))
+        expect(storage.getItem(key)).not.toContain("never-persist-this-secret");
+    expect(outbox.snapshot).toHaveLength(0);
+    expect(screen.getAllByText("Ответ отправлен").length).toBeGreaterThan(0);
   });
 
-  it("вуз не принял пароль: вопрос повторяется с понятным текстом и счётчиком попыток", async () => {
-    switchScenario("empty", "wrong-password");
-    await startHse();
-    await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await userEvent.type(await screen.findByLabelText("Ответ"), "wrong");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    expect(
-      await screen.findByText(
-        /Вуз не принял данные\. Проверьте и введите ещё раз: Пароль \(попытка 2 из 3\)/,
-      ),
-    ).toBeInTheDocument();
-    // Упавший шаг — текстом danger-fg с причиной.
-    expect(screen.getByText("Проверьте раскладку и язык ввода")).toBeInTheDocument();
+  it("после завершения источника обычный вопрос идёт в том же чате без CONNECT target", async () => {
+    const { router } = await courses();
+    const thread = router.state.location.search.thread;
+    await finishCourses();
+    await screen.findByRole("heading", { level: 3, name: "Что подключено" }, WAIT);
+    await send("Что сегодня по расписанию?");
+    await screen.findByText(/Следующая пара|На сегодня пары закончились/, undefined, WAIT);
+    expect(router.state.location.search.thread).toBe(thread);
+    expect(outbox.snapshot).toHaveLength(0);
+    expect(current.db.connections).toHaveLength(1);
   });
 
-  it("вход по push: карточка ожидания без кнопок, работа продолжается сама", async () => {
-    // Ожидание на телефоне — пауза сценария: ей нужно время, иначе карточка исчезнет раньше, чем её найдёт тест.
-    switchScenario("empty", "push", 0.5);
-    await startHse();
-    await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await userEvent.type(await screen.findByLabelText("Ответ"), "pw");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    expect(
-      await screen.findByText(/Подтвердите вход на телефоне|Подтвердите вход в приложении/),
-    ).toBeInTheDocument();
-    // Подтверждение прошло, работа пошла дальше: карточка ожидания не остаётся рядом с новым вопросом.
-    expect(
-      await screen.findByText("Это ваши предметы в этом семестре?", {}, { timeout: 4000 }),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText(/Подтвердите вход в приложении/)).toBeNull());
+  it("вуз не принял пароль: новый вопрос остаётся в хронологии, прежнее поле не активно", async () => {
+    await start("wrong-password");
+    await answer("anna");
+    await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, WAIT);
+    await answer("wrong-fixture");
+    expect(await screen.findByText(/попытка 2 из 3/, undefined, WAIT)).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Ответ")).toHaveLength(1);
+    expect(screen.getByLabelText("Ответ")).toHaveValue("");
   });
 
-  it("сбой источника: человеческий текст и «Спросить в чате», кнопки повтора нет", async () => {
-    switchScenario("empty", "failure");
-    const { router } = await startHse();
-    await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await userEvent.type(await screen.findByLabelText("Ответ"), "pw");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    expect(await screen.findByText("Подключение не завершено.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Спросить в чате" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(screen.queryByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toBeNull();
-    // В тексте нет технических кодов.
-    expect(document.body.textContent).not.toMatch(/source_unavailable|502|traceId/);
+  it("push ждёт человека без подставной кнопки ответа, затем продолжает", async () => {
+    switchScenario("empty", "push", 0.1);
+    await start("push");
+    await answer("anna");
+    await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, WAIT);
+    await answer("fixture-password");
+    expect(await screen.findByText(/Подтвердите вход в приложении/, undefined, WAIT)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ответить" })).toBeNull();
+    await screen.findByRole("checkbox", { name: /Алгоритмы/ }, WAIT);
   });
 
-  it("свёрнутая работа остаётся в шапке: «Нужен ответ», «Открыть» возвращает на экран", async () => {
-    const { router } = await startHse();
-    await screen.findByText("Вход в lk.fakeuni.test. Логин");
-    await userEvent.click(screen.getByRole("button", { name: "Свернуть" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-    const bar = await screen.findByText("Подключаю ВШЭ");
-    expect(bar).toBeInTheDocument();
-    expect(await screen.findAllByText("Нужен ответ")).not.toHaveLength(0);
+  it("сбой источника показан словами и предлагает бизнес-действие нового входа", async () => {
+    await start("failure");
+    await answer("anna");
+    await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, WAIT);
+    await answer("fixture-password");
+    expect(await screen.findByText(/Сайт вуза не ответил/, undefined, WAIT)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Войти заново" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ответ")).toBeNull();
+    expect(document.body.textContent).not.toContain("source_unavailable");
+  });
+
+  it("работа остаётся в фоне, Открыть возвращает canonical thread", async () => {
+    const { router } = await start();
+    const thread = router.state.location.search.thread;
+    await act(() => router.navigate({ to: "/" }));
+    expect(await screen.findByText("Нужен ответ", undefined, WAIT)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Открыть" }));
-    expect(await screen.findByText("Вход в lk.fakeuni.test. Логин")).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.search.thread).toBe(thread), WAIT);
+    expect(await screen.findByRole("button", { name: "Открыть браузер" }, WAIT)).toBeInTheDocument();
   });
 
-  async function reachApproval() {
-    switchScenario("empty", "approval");
-    await startHse();
-    await userEvent.type(await screen.findByLabelText("Ответ"), "anna");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await userEvent.type(await screen.findByLabelText("Ответ"), "pw");
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    await userEvent.click(await screen.findByRole("checkbox", { name: /Алгоритмы/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
-    return screen.findByLabelText("Комментарий");
-  }
-
-  it("запись от имени студента: правка поля, хеш показанного, работа идёт дальше", async () => {
-    await userEvent.type(await reachApproval(), "Очно");
+  it("write approval сохраняет метод/поля/одноразовое подтверждение внутри чата", async () => {
+    await courses("approval");
+    await finishCourses();
+    await screen.findByText("Записаться на консультацию по базам данных", undefined, WAIT);
+    expect(screen.getByText("POST")).toBeInTheDocument();
+    expect(screen.getByText("lk.fakeuni.test")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
-    expect(await screen.findByRole("heading", { level: 3, name: "Что подключено" })).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).toBeNull();
+    await screen.findByRole("heading", { level: 3, name: "Что подключено" }, WAIT);
+    expect(screen.queryByRole("button", { name: "Подтвердить" })).toBeNull();
   });
 
-  it("«Не делать» отклоняет предложение, работа идёт дальше", async () => {
-    await reachApproval();
-    await userEvent.click(screen.getByRole("button", { name: "Не делать" }));
-    expect(await screen.findByRole("heading", { level: 3, name: "Что подключено" })).toBeInTheDocument();
+  it("отклонение write approval продолжает безопасное чтение", async () => {
+    await courses("approval");
+    await finishCourses();
+    await userEvent.click(await screen.findByRole("button", { name: "Не делать" }, WAIT));
+    await screen.findByRole("heading", { level: 3, name: "Что подключено" }, WAIT);
   });
 
-  it("отмена: подтверждение в Dialog, затем «Подключение отменено»", async () => {
-    await startHse();
-    await screen.findByText("Вход в lk.fakeuni.test. Логин");
+  it("отмена требует подтверждения, безопасный Продолжить получает фокус", async () => {
+    await start();
+    await userEvent.click(screen.getByRole("button", { name: "Источник и подключения" }));
     await userEvent.click(screen.getByRole("button", { name: "Отменить подключение" }));
     const dialog = await screen.findByRole("alertdialog", { name: "Отменить подключение?" });
     expect(within(dialog).getByRole("button", { name: "Продолжить" })).toHaveFocus();
     await userEvent.click(within(dialog).getByRole("button", { name: "Отменить подключение" }));
-    expect(await screen.findByText(/Подключение отменено/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Готово" })).toBeInTheDocument();
+    expect(await screen.findByText(/Подключение отменено/, undefined, WAIT)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ответ")).toBeNull();
+  });
+});
+
+describe("необязательный каталог в контексте чата", () => {
+  it("поиск/выбор с клавиатуры сохраняются, предупреждение каталога видно до уточнения", async () => {
+    renderApp("/connect");
+    await screen.findByText(URL_QUESTION, undefined, WAIT);
+    await userEvent.click(screen.getByRole("button", { name: "Источник и подключения" }));
+    const input = await screen.findByRole("combobox", { name: "Вуз" });
+    await userEvent.type(input, "ЦУ");
+    await screen.findByRole("option", { name: /Центральный университет/ }, WAIT);
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+    expect(input).toHaveValue("ЦУ");
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText(/Правила вуза ограничивают сторонний доступ/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Указать вуз в чате" })).toBeEnabled();
   });
 
-  it("уже добавленный вуз предлагает управление подключением без дубликата", async () => {
+  it("существующий источник открывает прежний разговор, Новый источник — отдельное подключение", async () => {
     switchScenario("connected");
+    const count = current.db.connections.length;
     renderApp("/connect");
-    await choose(/Высшая школа экономики/);
-    expect(await screen.findByText(/Этот вуз уже добавлен/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Начать подключение" })).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: "Войти снова" }).length).toBeGreaterThan(0);
-    expect(current.db.spaces.filter((space) => space.universityId === "u-hse")).toHaveLength(1);
+    await screen.findByText(URL_QUESTION, undefined, WAIT);
+    await userEvent.click(screen.getByRole("button", { name: "Источник и подключения" }));
+    const links = await screen.findAllByRole("button", { name: "Открыть разговор" });
+    await userEvent.click(links[0] as HTMLElement);
+    await waitFor(
+      () => expect(screen.queryByRole("dialog", { name: "Источник и подключения" })).toBeNull(),
+      WAIT,
+    );
+    expect(current.db.connections).toHaveLength(count);
+    expect(screen.queryByRole("button", { name: "Начать подключение" })).toBeNull();
   });
 
-  it("свой вуз: пространство создаётся с названием студента", async () => {
-    renderApp("/connect");
-    await choose(/Другой вуз/);
-    await userEvent.type(screen.getByLabelText("Название вуза"), "Политех");
-    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-    await screen.findByRole("heading", { level: 1, name: "Подключаю Политех" });
-    expect(current.db.spaces.map((space) => space.title)).toContain("Политех");
+  it("известное пространство передаётся при создании нового источника", async () => {
+    switchScenario("connected");
+    const space = current.db.spaces[0];
+    if (!space) throw new Error("missing fixture space");
+    renderApp(`/connect?space=${space.id}`);
+    await screen.findByText(URL_QUESTION, undefined, WAIT);
+    await send("https://lk.fakeuni.test/second");
+    await screen.findByText("Вход в lk.fakeuni.test. Логин", undefined, WAIT);
+    expect(current.db.connections.at(-1)?.spaceId).toBe(space.id);
   });
 });

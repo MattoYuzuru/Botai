@@ -179,6 +179,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/threads/{thread_id}/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Thread Runtime */
+        get: operations["thread_runtime_api_v1_chat_threads__thread_id__runtime_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections/{connection_id}": {
         parameters: {
             query?: never;
@@ -192,6 +209,23 @@ export interface paths {
         post?: never;
         /** Delete Connection */
         delete: operations["delete_connection_api_v1_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{connection_id}/conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connection Conversation */
+        post: operations["connection_conversation_api_v1_connections__connection_id__conversation_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -752,6 +786,26 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** ConnectContext */
+        ConnectContext: {
+            /** Absentkinds */
+            absentKinds?: ("courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news")[];
+            /** Entryurls */
+            entryUrls?: string[];
+            /** Kind */
+            kind?: ("lms" | "schedule" | "portal" | "sheet" | "document" | "mail" | "other") | null;
+            /** Requestedkinds */
+            requestedKinds?: ("courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news")[];
+            /** Title */
+            title?: string | null;
+            /** Universityid */
+            universityId?: string | null;
+            /**
+             * Usernote
+             * @default
+             */
+            userNote: string;
+        };
         /** ConnectionCreate */
         ConnectionCreate: {
             /** Kind */
@@ -837,6 +891,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** ConversationIn */
+        ConversationIn: {
+            /** Jobid */
+            jobId?: string | null;
+        };
         /** CourseOut */
         CourseOut: {
             /** Code */
@@ -873,6 +932,25 @@ export interface components {
             title: string;
             /** Url */
             url: string | null;
+        };
+        /** DialogueReceipt */
+        DialogueReceipt: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Blockid */
+            blockId: string | null;
+            /** Jobid */
+            jobId: string;
+            /** Messageid */
+            messageId: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "applied" | "superseded" | "rejected";
         };
         /** DocumentFromUrl */
         DocumentFromUrl: {
@@ -1034,6 +1112,10 @@ export interface components {
         };
         /** MessageIn */
         MessageIn: {
+            /** Clientmessageid */
+            clientMessageId?: string | null;
+            /** Targetjobid */
+            targetJobId?: string | null;
             /** Text */
             text: string;
         };
@@ -1074,6 +1156,20 @@ export interface components {
             title: string;
             /** Url */
             url: string | null;
+        };
+        /** PendingRef */
+        PendingRef: {
+            /** Blockid */
+            blockId: string;
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "native" | "dialogue" | "manual" | "approval";
+            /** Jobid */
+            jobId: string;
+            /** Secret */
+            secret: boolean;
         };
         /** PersonOut */
         PersonOut: {
@@ -1266,6 +1362,15 @@ export interface components {
         };
         /** ThreadCreate */
         ThreadCreate: {
+            /** Clientrequestid */
+            clientRequestId?: string | null;
+            connectContext?: components["schemas"]["ConnectContext"] | null;
+            /**
+             * Purpose
+             * @default chat
+             * @enum {string}
+             */
+            purpose: "chat" | "connect";
             /** Spaceid */
             spaceId?: string | null;
             /** Title */
@@ -1289,6 +1394,20 @@ export interface components {
              * Format: date-time
              */
             updatedAt: string;
+        };
+        /** ThreadRuntime */
+        ThreadRuntime: {
+            activeJob: components["schemas"]["JobOut"] | null;
+            connection: components["schemas"]["ConnectionOut"] | null;
+            /** Pending */
+            pending: components["schemas"]["PendingRef"][];
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "chat" | "connect";
+            /** Receipts */
+            receipts: components["schemas"]["DialogueReceipt"][];
         };
         /**
          * TodayOut
@@ -1715,6 +1834,37 @@ export interface operations {
             };
         };
     };
+    thread_runtime_api_v1_chat_threads__thread_id__runtime_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadRuntime"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_connection_api_v1_connections__connection_id__get: {
         parameters: {
             query?: never;
@@ -1763,6 +1913,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connection_conversation_api_v1_connections__connection_id__conversation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadOut"];
+                };
             };
             /** @description Validation Error */
             422: {

@@ -180,7 +180,7 @@ async def test_nothing_found_asks_for_a_link_then_uses_it(make_env: EnvFactory) 
     assert result["status"] == "ok"
     asked = [type(b) for b in env.asked]
     assert asked == [ChoiceBlock, InputBlock, ConfirmBlock]
-    assert env.asked[1].input_kind == "url"
+    assert env.asked[1].input_kind == "text"
     spec = (await env.db.execute(select(m.AdapterSpecRow.spec))).scalars().one()
     deadlines = next(e for e in spec["recipe"]["endpoints"] if e["kind"] == "deadlines")
     assert deadlines["response"]["format"] == "html"
@@ -202,10 +202,52 @@ async def test_nothing_at_all_is_an_honest_question_and_then_an_honest_no(
     assert conn.error_code == "not_found"
 
 
-async def test_a_link_to_another_site_is_refused(make_env: EnvFactory) -> None:
+async def test_a_link_to_another_site_continues_as_a_separate_source(
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     env = await make_env([ls.nothing(), ls.nothing()])
-    await env.run(links=["https://evil.test/page"])
-    assert "только страницы того же сайта" in ls.all_text(env.ctx)
+    received: list[tuple[str, str]] = []
+
+    async def continue_source(ctx, services, parent_connection_id, url, intent):
+        received.append((parent_connection_id, url))
+        assert intent["entry_urls"] == ["https://schedule.fakeuni.test/page"]
+        return {"connectionId": "child-fixture", "jobId": "job-fixture"}
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+    result = await env.run(links=["https://schedule.fakeuni.test/page"])
+    assert result == {
+        "status": "continued",
+        "connectionId": "child-fixture",
+        "jobId": "job-fixture",
+    }
+    assert received == [(env.seeded.connection_id, "https://schedule.fakeuni.test/page")]
+    conn = await env.conn()
+    assert conn.origin == data.ORIGIN
+    assert conn.allow_hosts == [data.HOST]
+    assert conn.status == "draft"
+    assert await env.specs() == []
+
+
+async def test_initial_foreign_url_preserves_a_configured_parent_source(
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = await make_env([], with_spec=True)
+    parent = await env.conn()
+    old_spec_id = parent.spec_id
+
+    async def continue_source(ctx, services, parent_connection_id, url, intent):
+        assert parent_connection_id == env.seeded.connection_id
+        assert url == "https://schedule.fakeuni.test/page?week=2026-10-26"
+        return {"connectionId": "child-fixture", "jobId": "job-fixture"}
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+    result = await env.run(payload={"url": "https://schedule.fakeuni.test/page?week=2026-10-26"})
+    assert result["status"] == "continued"
+    parent = await env.conn()
+    assert (parent.origin, parent.status, parent.spec_id) == (data.ORIGIN, "active", old_spec_id)
+    assert parent.allow_hosts == [data.HOST]
+    assert await env.specs() == [(1, "active")]
+    assert env.llm.requests == []
 
 
 async def test_declined_summary_stores_nothing(make_env: EnvFactory) -> None:

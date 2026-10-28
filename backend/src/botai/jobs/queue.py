@@ -35,49 +35,73 @@ class PgJobQueue:
         """Returns the job id. With `dedupe`, a job of the same kind for the same connection that
         is queued, running or waiting for the student is returned instead of a second one. A queued
         one that is only waiting for a later `run_after` (a retry) is pulled forward."""
-        now = self._clock.now()
-        due = run_after or now
         async with self._db() as session:
-            if dedupe and connection_id:
-                # Serialises racing enqueues of the same (kind, connection); released on commit.
-                await session.execute(
-                    select(
-                        func.pg_advisory_xact_lock(
-                            func.hashtextextended(f"{kind.value}:{connection_id}", 0)
-                        )
-                    )
-                )
-                existing = await session.scalar(
-                    select(Job)
-                    .where(
-                        Job.kind == kind.value,
-                        Job.connection_id == connection_id,
-                        Job.state.in_(sorted(IN_FLIGHT)),
-                    )
-                    .order_by(Job.created_at, Job.id)
-                    .limit(1)
-                    .with_for_update()
-                )
-                if existing is not None:
-                    if existing.state == "queued" and existing.run_after > due:
-                        existing.run_after = due
-                        await session.execute(select(func.pg_notify(CHANNEL_JOBS, existing.id)))
-                    await session.commit()
-                    return existing.id
-
-            job = Job(
-                id=new_id(),
+            job = await enqueue_in_session(
+                session,
+                kind,
                 user_id=user_id,
-                kind=kind.value,
-                state="queued",
                 connection_id=connection_id,
                 thread_id=thread_id,
-                payload=payload or {},
-                run_after=due,
+                payload=payload,
+                run_after=run_after,
+                dedupe=dedupe,
+                now=self._clock.now(),
             )
-            session.add(job)
-            await session.flush()
-            await append_event(session, job.id, "status", status_data(job, now))
-            await session.execute(select(func.pg_notify(CHANNEL_JOBS, job.id)))
             await session.commit()
             return job.id
+
+
+async def enqueue_in_session(
+    session: AsyncSession,
+    kind: JobKind,
+    *,
+    user_id: str,
+    now: datetime,
+    connection_id: str | None = None,
+    thread_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+    run_after: datetime | None = None,
+    dedupe: bool = True,
+) -> Job:
+    """The same queue semantics in the caller's transaction; NOTIFY is delivered on its commit."""
+    due = run_after or now
+    if dedupe and connection_id:
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"{kind.value}:{connection_id}", 0)
+                )
+            )
+        )
+        existing = await session.scalar(
+            select(Job)
+            .where(
+                Job.user_id == user_id,
+                Job.kind == kind.value,
+                Job.connection_id == connection_id,
+                Job.state.in_(sorted(IN_FLIGHT)),
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(1)
+            .with_for_update()
+        )
+        if existing is not None:
+            if existing.state == "queued" and existing.run_after > due:
+                existing.run_after = due
+                await session.execute(select(func.pg_notify(CHANNEL_JOBS, existing.id)))
+            return existing
+    job = Job(
+        id=new_id(),
+        user_id=user_id,
+        kind=kind.value,
+        state="queued",
+        connection_id=connection_id,
+        thread_id=thread_id,
+        payload=payload or {},
+        run_after=due,
+    )
+    session.add(job)
+    await session.flush()
+    await append_event(session, job.id, "status", status_data(job, now))
+    await session.execute(select(func.pg_notify(CHANNEL_JOBS, job.id)))
+    return job

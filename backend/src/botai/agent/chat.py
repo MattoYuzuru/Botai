@@ -37,6 +37,7 @@ from botai.core.jobs import JobContext
 from botai.core.llm import LlmMessage
 from botai.core.services import Services
 from botai.db.models import ChatMessage, ChatThread, Space
+from botai.jobs.dialogue import message_time
 
 log = logging.getLogger("botai.agent.chat")
 
@@ -330,7 +331,9 @@ async def _store_reply(
                 role="agent",
                 blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
                 job_id=ctx.job_id,
-                created_at=services.clock.now(),
+                created_at=await message_time(
+                    session, ctx.user_id, thread.id, services.clock.now()
+                ),
             )
         )
         row = (

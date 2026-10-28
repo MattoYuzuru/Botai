@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -419,12 +420,24 @@ class JobAnswer(Base):
 
 class ChatThread(Base):
     __tablename__ = "chat_threads"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "client_request_id", name="uq_chat_threads_user_id_client_request_id"
+        ),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     space_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("spaces.id", ondelete="SET NULL")
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="Новый чат")
+    purpose: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="chat", server_default="chat"
+    )
+    connect_context: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    client_request_id: Mapped[str | None] = mapped_column(String(26))
     summary: Mapped[str | None] = mapped_column(
         Text
     )  # rolling summary of old turns (agent-harness §3)
@@ -434,6 +447,12 @@ class ChatThread(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "thread_id", "client_message_id", name="uq_chat_messages_thread_id_client_message_id"
+        ),
+        Index("ix_chat_messages_user_job", "user_id", "job_id"),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     thread_id: Mapped[str] = mapped_column(
@@ -444,6 +463,7 @@ class ChatMessage(Base):
         JSONB, nullable=False
     )  # AgentUiBlock[] (by_alias)
     job_id: Mapped[str | None] = mapped_column(String(26))
+    client_message_id: Mapped[str | None] = mapped_column(String(26))
     created_at: Mapped[datetime] = ts_now()
 
 

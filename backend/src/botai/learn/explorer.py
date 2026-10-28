@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ import httpx
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
+from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy
 from botai.core.jobs import JobCancelled, JobContext
@@ -39,6 +41,7 @@ from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db import models as m
 from botai.learn import revisions
+from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import (
     AuthorError,
     Candidate,
@@ -47,8 +50,10 @@ from botai.learn.author import (
     build_spec,
     candidate_spec,
     merge_bootstrap,
+    parse_json,
 )
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
+from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.observe import Observations, observe
 from botai.learn.redact import Redactor
@@ -68,7 +73,7 @@ from botai.sources.vocab import KIND_LABELS, VOCAB
 
 log = logging.getLogger(__name__)
 
-DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents", "deadlines")
+DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents",)
 TOKEN_BUDGET = 1_500_000
 MAX_LINK_ROUNDS = 2
 
@@ -83,14 +88,8 @@ class Chosen:
 
 def origin_from(url: str) -> str | None:
     """`https://host` of a link, or None: only plain https origins can be connected."""
-    raw = url.strip()
-    if "://" not in raw:
-        raw = "https://" + raw
-    parts = urlsplit(raw)
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host or parts.username or parts.port not in (None, 443):
-        return None
-    return f"https://{host}"
+    validated = navigation_url(url)
+    return url_origin(validated) if validated else None
 
 
 def wanted_kinds(payload: dict[str, Any]) -> list[Kind]:
@@ -118,6 +117,11 @@ class Explorer:
         self.transport = transport
         self.retry = retry
         self.tokens = 0
+        self.intent = LearningIntent()
+        self._learning = False
+        self._confirmation_revisions = 0
+        self._initial_note_pending = False
+        self._previous_status: str | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -146,10 +150,96 @@ class Explorer:
 
     # --- entry points ------------------------------------------------------------------------
 
+    def _start_intent(self, payload: dict[str, Any]) -> None:
+        self._learning = True
+        if "learning_intent" in payload:
+            self.intent = LearningIntent.restore(payload["learning_intent"])
+        else:
+            entry = navigation_url(payload.get("url"))
+            self.intent = LearningIntent(
+                entry_urls=(entry,) if entry else (),
+                requested_kinds=tuple(wanted_kinds(payload)),
+            )
+        self._initial_note_pending = bool(self.intent.user_note)
+
+    async def _initial_note(self, redactor: Redactor) -> None:
+        if self._initial_note_pending:
+            self._initial_note_pending = False
+            await self._turn(self.intent.user_note, redactor)
+
+    async def _checkpoint(self) -> None:
+        if isinstance(self.ctx, DialogueContext):
+            await self.ctx.checkpoint_learning(self.intent.checkpoint())
+
+    async def _turn(self, text: str, redactor: Redactor, *, checkpoint: bool = True) -> None:
+        # A plain link needs no classifier and costs no model call.
+        plain = navigation_url(text)
+        turn = prepare_turn(plain or text, redactor)
+        if turn.rejected_links:
+            await self.ui.say(
+                "Ссылка с данными входа скрыта. Пришлите обычный адрес страницы без токена или кода входа."
+            )
+        if plain:
+            self.intent = apply_intent(
+                self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
+            )
+        elif turn.text:
+            response = await self.services.llm.complete(intent_request(turn, self.intent))
+            usage = response.usage
+            self.tokens += usage.input_cache_miss + usage.input_cache_hit + usage.output
+            try:
+                self.intent = apply_intent(self.intent, turn, parse_json(response.content))
+            except ValueError:
+                # Retain the actual user's clarification and validated links, not an invented
+                # classifier answer. A failed classifier must not erase a delivered chat turn.
+                self.intent = apply_intent(
+                    self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
+                )
+        if checkpoint:
+            await self._checkpoint()
+
+    async def _drain(self, redactor: Redactor) -> bool:
+        before = self.intent
+        if self._learning and isinstance(self.ctx, DialogueContext):
+            turns = await self.ctx.drain_dialogue()
+            for turn in turns:
+                await self._turn(turn.text, redactor, checkpoint=False)
+            if turns:
+                # drain delivers a batch. Ack it only after every turn has been applied.
+                await self._checkpoint()
+        return self.intent != before
+
+    async def _continue_foreign(self, info: ConnInfo) -> dict[str, Any] | None:
+        foreign = [url for url in self.intent.entry_urls if url_origin(url) != info.origin]
+        if not foreign:
+            return None
+        # A recipe still has exactly one origin. A student's link creates a sibling source;
+        # credentials and bearer values are not copied between the two connections.
+        from botai.spaces.conversations import continue_source
+
+        url = foreign[-1]
+        child_intent = LearningIntent(
+            (url,), self.intent.requested_kinds, self.intent.absent_kinds, self.intent.user_note
+        )
+        result = await continue_source(
+            self.ctx, self.services, info.connection_id, url, child_intent.checkpoint()
+        )
+        status = self._previous_status
+        if status in (None, "learning", "syncing"):
+            status = "active" if info.adapter else "draft"
+        await self._set(info.connection_id, status=status)
+        await self.ui.say(
+            "Эта страница находится на другом сайте. Подключаю её отдельным источником "
+            "в том же пространстве; при необходимости попрошу войти."
+        )
+        return {"status": "continued", **result}
+
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._start_intent(payload)
         info = await self._info(connection_id)
         if info.status == "disabled":
             return {"status": "skipped", "detail": "disabled"}
+        self._previous_status = info.status
         await self._set(connection_id, status="learning", clear_error=True)
         try:
             origin = await self._resolve_origin(info, payload)
@@ -158,6 +248,12 @@ class Explorer:
                     info, "Не получилось определить адрес сайта", ErrorCode.VALIDATION
                 )
             info = await self._info(connection_id)
+            await self._initial_note(await self._redactor(info))
+            await self._checkpoint()
+            await self._drain(await self._redactor(info))
+            continued = await self._continue_foreign(info)
+            if continued is not None:
+                return continued
             reused = await self._reuse(info)
             if reused is not None:
                 return reused
@@ -172,6 +268,7 @@ class Explorer:
 
     async def learn(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Teach an existing connection more kinds of data; the other endpoints are kept."""
+        self._start_intent(payload)
         async with self.services.db() as db:
             snap = await load_snapshot(db, self.ctx.user_id, connection_id)
         if snap.adapter != "recipe":
@@ -185,11 +282,10 @@ class Explorer:
     # --- origin ------------------------------------------------------------------------------
 
     async def _resolve_origin(self, info: ConnInfo, payload: dict[str, Any]) -> str | None:
-        origin: str | None = None
-        link = payload.get("url")
-        if isinstance(link, str) and link.strip():
+        origin: str | None = info.origin or None
+        link = self.intent.entry_urls[0] if self.intent.entry_urls else payload.get("url")
+        if origin is None and isinstance(link, str) and link.strip():
             origin = origin_from(link)
-        origin = origin or (info.origin or None)
         if origin is None and info.university_id:
             async with self.services.db() as db:
                 uni = await db.get(m.University, info.university_id)
@@ -199,10 +295,12 @@ class Explorer:
         for _ in range(2):
             if origin is not None:
                 break
-            answer = await self.ui.ask_url(
+            answer = await self.ui.ask_learning_turn(
                 "Какой сайт подключить? Нужна ссылка на личный кабинет, расписание или LMS."
             )
-            origin = origin_from(answer) if answer else None
+            if answer:
+                await self._turn(answer, await self._redactor(info))
+            origin = url_origin(self.intent.entry_urls[0]) if self.intent.entry_urls else None
             if origin is None:
                 await self.ui.say("Подойдёт только адрес вида https://example.org без порта.")
         if origin is None:
@@ -217,9 +315,21 @@ class Explorer:
     # --- reuse (FR-009) ----------------------------------------------------------------------
 
     async def _reuse(self, info: ConnInfo) -> dict[str, Any] | None:
+        if (
+            self.intent.user_note
+            or self.intent.absent_kinds
+            or any(
+                urlsplit(url).path not in ("", "/") or urlsplit(url).query or urlsplit(url).fragment
+                for url in self.intent.entry_urls
+            )
+        ):
+            return None  # An explicit view/page must be observed before choosing an old recipe.
         async with self.services.db() as db:
             row = await revisions.active_row(db, info.origin, "recipe")
         if row is None:
+            return None
+        available = {e["kind"] for e in row.spec["recipe"]["endpoints"]}
+        if not set(self.intent.requested_kinds) <= available:
             return None
         stage = await self.ui.stage(
             "Для этого сайта описание уже есть",
@@ -273,17 +383,31 @@ class Explorer:
             raise
         await stage.finish()
         redactor = await self._redactor(info)
+        await self._initial_note(redactor)
+        await self._drain(redactor)
+        continued = await self._continue_foreign(info)
+        if continued is not None:
+            return continued
         sctx = self._sync_context(info, session)
         digest = author_digest(info.user_id)
         async with svc.db() as db:
             revision = await revisions.latest_revision(db, info.origin, "recipe") + 1
 
         chosen: dict[Kind, Chosen] = {}
-        pending = list(kinds)
+        pending: list[Kind] = list(kinds)
         extra: list[str] = []
         warning: str | None = None
         lint_ctx = LintContext(allowed_hosts=info.allow_hosts, expected_origin=info.origin)
         for round_no in range(MAX_LINK_ROUNDS + 1):
+            await self._drain(redactor)
+            continued = await self._continue_foreign(info)
+            if continued is not None:
+                return continued
+            chosen = {k: value for k, value in chosen.items() if k not in self.intent.absent_kinds}
+            pending = [k for k in self.intent.requested_kinds if k not in chosen]
+            if not pending:
+                break
+            round_intent = self.intent
             obs = await self._observe(info, session, redactor, extra)
             if round_no == 0 and not obs.empty:
                 warning, spent = await find_warning(svc.llm, obs.plain_text)
@@ -295,26 +419,46 @@ class Explorer:
                     observed=obs.observed,
                 )
                 text = obs.render()
+                if self.intent.user_note:
+                    text += (
+                        "\n<user-clarification>"
+                        + json.dumps(self.intent.user_note, ensure_ascii=False)
+                        + "</user-clarification>"
+                    )
                 for kind in list(pending):
+                    if await self._drain(redactor):
+                        break  # Re-observe a changed entry/view before authoring another kind.
                     if self.tokens > TOKEN_BUDGET:
                         break
                     found = await self._author_and_verify(
                         kind, text, lint_ctx, sctx, info, revision, digest
                     )
+                    if await self._drain(redactor):
+                        break  # A clarification during a canary must affect the final selection.
                     if found is not None:
                         chosen[kind] = found
                         pending.remove(kind)
+            if self.intent != round_intent:
+                continue
             if not pending or round_no == MAX_LINK_ROUNDS:
                 break
-            link = await self._ask_page(info, pending, have_some=bool(chosen))
-            if link is None:
+            continued = await self._continue_foreign(info)
+            if continued is not None:
+                return continued
+            if not await self._ask_page(info, pending, have_some=bool(chosen)):
                 break
-            extra.append(link)
+
+        await self._drain(redactor)
+        continued = await self._continue_foreign(info)
+        if continued is not None:
+            return continued
+        chosen = {k: value for k, value in chosen.items() if k not in self.intent.absent_kinds}
+        pending = [k for k in self.intent.requested_kinds if k not in chosen]
 
         if not chosen:
             await ui.say(
                 "Не нашла в кабинете "
-                + ", ".join(KIND_LABELS[k].lower() for k in pending)
+                + (", ".join(KIND_LABELS[k].lower() for k in pending) or "запрошенные данные")
                 + ". Ничего не сохраняю. Если пришлёте ссылку на страницу, где это видно, "
                 "попробую ещё раз."
             )
@@ -345,6 +489,18 @@ class Explorer:
             return await self._fail(
                 info, "Собранное не подтверждено", ErrorCode.RECIPE_REJECTED, say=False
             )
+        before = self.intent
+        await self._drain(redactor)
+        if self.intent != before:
+            # Never activate a description the user changed while its confirmation was pending.
+            self._confirmation_revisions += 1
+            if self._confirmation_revisions > MAX_LINK_ROUNDS:
+                return await self._fail(
+                    info,
+                    "Задача изменилась. Продолжите подключение новым сообщением.",
+                    ErrorCode.VALIDATION,
+                )
+            return await self._explore(info, list(self.intent.requested_kinds), base_spec=base_spec)
         return await self._activate(info, spec, chosen, warning, digest, base_spec is not None)
 
     async def _observe(
@@ -356,11 +512,13 @@ class Explorer:
             connection_id=info.connection_id,
             allow_hosts=info.allow_hosts,
             session=session,
+            read_only=True,
+            background=True,
         )
         try:
-            obs = await observe(
-                handle, info.origin, redactor, start_urls=[info.origin + "/", *extra]
-            )
+            entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
+            start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
+            obs = await observe(handle, info.origin, redactor, start_urls=start_urls)
         finally:
             await handle.close()
         await stage.finish(
@@ -497,9 +655,7 @@ class Explorer:
             idx = 0
         return verified[idx if 0 <= idx < len(verified) else 0]
 
-    async def _ask_page(
-        self, info: ConnInfo, pending: list[Kind], *, have_some: bool
-    ) -> str | None:
+    async def _ask_page(self, info: ConnInfo, pending: list[Kind], *, have_some: bool) -> bool:
         labels = ", ".join(KIND_LABELS[k].lower() for k in pending)
         if have_some:
             choice = await self.ui.choose(
@@ -507,18 +663,15 @@ class Explorer:
                 [("link", "Дать ссылку", None), ("skip", "Пропустить", "Это можно добавить позже")],
             )
             if choice != "link":
-                return None
-        answer = await self.ui.ask_url(f"Дайте ссылку на страницу, где видно: {labels}.")
+                return False
+        answer = await self.ui.ask_learning_turn(
+            f"Не вижу: {labels}. Пришлите ссылку или поясните, что здесь есть и что подключить."
+        )
         if not answer:
-            return None
-        parts = urlsplit(answer if "://" in answer else "https://" + answer)
-        if f"https://{(parts.hostname or '').lower()}" != info.origin:
-            await self.ui.say(
-                "Пока можно подключать только страницы того же сайта, что и кабинет. "
-                f"Адрес {parts.hostname or '—'} не подходит."
-            )
-            return None
-        return f"{info.origin}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
+            return False
+        before = self.intent
+        await self._turn(answer, await self._redactor(info))
+        return self.intent != before
 
     # --- the final spec ----------------------------------------------------------------------
 

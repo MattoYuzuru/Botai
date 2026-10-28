@@ -32,6 +32,7 @@ from botai.core.jobs import JobCancelled, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db.models import Connection, Job, JobAnswer, User
+from botai.jobs import dialogue
 from botai.jobs.context import ASK_TTL, PgJobContext
 from botai.jobs.events import (
     TERMINAL,
@@ -260,6 +261,7 @@ class Worker:
                 row.locked_by = None
                 if state == "cancelled" and row.stage is None:
                     row.stage = "Остановлено"
+                await dialogue.project_terminal(session, row, now)
                 await append_event(session, job.id, "status", status_data(row, now))
                 if state == "done":
                     await append_event(session, job.id, "done", {"result": result})
@@ -289,6 +291,7 @@ class Worker:
                 row.error = stored
                 row.finished_at = now
                 row.locked_by = None
+                await dialogue.project_terminal(session, row, now)
                 await append_event(session, job.id, "status", status_data(row, now))
                 await append_event(session, job.id, "error", body)
                 await session.commit()
@@ -472,6 +475,7 @@ class Worker:
                     job.error = {"code": "internal_error", "detail": detail, "status": 500}
                     job.finished_at = now
                     job.locked_by = None
+                    await dialogue.project_terminal(session, job, now)
                     await append_event(session, job.id, "status", status_data(job, now))
                     await append_event(
                         session,

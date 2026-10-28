@@ -34,6 +34,7 @@ const noop = () => {};
 function historyContext(base: Pick<BlockContext, "nowMs" | "timeZone" | "internalLink">): BlockContext {
   return {
     jobId: "",
+    readOnly: true,
     answers: {},
     nowMs: base.nowMs,
     timeZone: base.timeZone,

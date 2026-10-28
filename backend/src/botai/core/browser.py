@@ -13,6 +13,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, SecretStr
 
+from botai.core.errors import BotaiError, ErrorCode
+
 
 class FormField(BaseModel):
     selector: str
@@ -87,6 +89,8 @@ class BrowserGateway(Protocol):
         connection_id: str,
         allow_hosts: Iterable[str],
         session: SessionState | None = None,
+        read_only: bool = False,
+        background: bool = False,
     ) -> BrowserHandle: ...
 
 
@@ -100,7 +104,10 @@ class FakePage:
 
 
 class FakeBrowserHandle:
-    def __init__(self, pages: Mapping[str, FakePage], now: datetime, origin: str) -> None:
+    def __init__(
+        self, pages: Mapping[str, FakePage], now: datetime, origin: str, *, read_only: bool = False
+    ) -> None:
+        self.read_only = read_only
         self._pages = pages
         self._now = now
         self._origin = origin
@@ -128,6 +135,8 @@ class FakeBrowserHandle:
         return list(self._log)
 
     async def fill(self, selector: str, value: str) -> None:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         self.filled[selector] = value
 
     async def click(self, selector: str) -> PageSnapshot:
@@ -150,6 +159,7 @@ class FakeBrowserGateway:
         self._now = now
         self._origin = origin
         self.handles: list[FakeBrowserHandle] = []
+        self._users: dict[str, FakeBrowserHandle] = {}
 
     async def open(
         self,
@@ -158,8 +168,14 @@ class FakeBrowserGateway:
         connection_id: str,
         allow_hosts: Iterable[str],
         session: SessionState | None = None,
+        read_only: bool = False,
+        background: bool = False,
     ) -> FakeBrowserHandle:
-        handle = FakeBrowserHandle(self._pages, self._now, self._origin)
+        previous = self._users.get(user_id)
+        if background and previous is not None and not previous.closed:
+            raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Браузер занят другим действием")
+        handle = FakeBrowserHandle(self._pages, self._now, self._origin, read_only=read_only)
+        self._users[user_id] = handle
         self.handles.append(handle)
         return handle
 

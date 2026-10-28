@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -12,7 +13,7 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import Connection, Space
+from botai.db.models import Connection, Job, Space
 from botai.spaces import repo, universities
 from botai.spaces.schemas import (
     ConnectionCreate,
@@ -123,7 +124,10 @@ async def create_connection(
 ) -> tuple[Connection, str]:
     """Creates a `draft` connection and enqueues its `connect` job (login + learn)."""
     space = await repo.get_space(session, user_id, space_id)
-    origin = universities.origin_of(body.url) if body.url else ""
+    from botai.spaces.conversations import safe_url
+
+    url = safe_url(body.url) if body.url else None
+    origin = universities.origin_of(url) if url else ""
     if len(origin) > _ORIGIN_MAX:
         raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
     kind = body.kind or "other"
@@ -160,7 +164,7 @@ async def create_connection(
             JobKind.CONNECT,
             user_id=user_id,
             connection_id=conn.id,
-            payload={"url": body.url, "kind": body.kind} if body.url or body.kind else {},
+            payload={"url": url, "kind": body.kind} if url or body.kind else {},
             dedupe=True,
         )
     except Exception:
@@ -179,14 +183,21 @@ async def delete_connection(session: AsyncSession, user_id: str, connection_id: 
 
 
 async def enqueue_for_connection(
-    session: AsyncSession, queue: JobQueue, user_id: str, connection_id: str, kind: JobKind
+    session: AsyncSession,
+    queue: JobQueue,
+    user_id: str,
+    connection_id: str,
+    kind: JobKind,
+    *,
+    thread_id: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     """Manual `sync` / `repair`. Deduplicated: a job already queued or running is returned."""
     conn = await repo.get_connection(session, user_id, connection_id)
     if conn.status == "disabled":
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
     if (
-        kind == JobKind.SYNC
+        kind in {JobKind.SYNC, JobKind.REPAIR}
         and conn.status in {"draft", "learning", "error"}
         and conn.adapter is None
         and conn.spec_id is None
@@ -196,8 +207,31 @@ async def enqueue_for_connection(
         kind = JobKind.CONNECT
     elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
+    from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
+
+    thread = await canonical_thread(session, user_id, conn.id)
+    if thread is None and thread_id is not None:
+        thread = await owned_thread(session, user_id, thread_id)
+        bind_thread(thread, conn.id)
+    target_thread = thread.id if thread is not None else None
     await session.commit()  # the queue works in its own transaction
-    return await queue.enqueue(kind, user_id=user_id, connection_id=conn.id, dedupe=True)
+    job_id = await queue.enqueue(
+        kind,
+        user_id=user_id,
+        connection_id=conn.id,
+        thread_id=target_thread,
+        payload=payload,
+        dedupe=True,
+    )
+    # An existing deduplicated legacy job can predate its conversation.
+    if target_thread is not None:
+        job = await session.scalar(
+            select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
+        )
+        if job is not None and job.thread_id is None:
+            job.thread_id = target_thread
+            await session.commit()
+    return job_id
 
 
 async def put_secret(

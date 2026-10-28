@@ -540,31 +540,57 @@ async def request_repair(env: ChatEnv, args: dict[str, Any]) -> str:
             f"Починка «{conn.title}» не запущена: {NO_REPAIR_STATUSES[conn.status]}. "
             "Это действие студента, а не автоматическая починка."
         )
+    from botai.spaces import repo, service
+
     async with env.services.db() as session:
-        running = (
-            await session.execute(
-                select(Job.id).where(
-                    Job.user_id == env.user_id,
-                    Job.connection_id == connection_id,
-                    Job.kind == JobKind.REPAIR.value,
-                    Job.state.in_(ACTIVE_JOB_STATES),
-                )
+        row = await repo.get_connection(session, env.user_id, connection_id)
+        setup = (
+            row.adapter is None
+            and row.spec_id is None
+            and row.status in {"draft", "learning", "error"}
+        )
+        expected = JobKind.CONNECT if setup else JobKind.REPAIR
+        running = await session.scalar(
+            select(Job.id)
+            .where(
+                Job.user_id == env.user_id,
+                Job.connection_id == connection_id,
+                Job.kind == expected.value,
+                Job.state.in_(ACTIVE_JOB_STATES),
             )
-        ).first()
-    if running is not None:
-        env.repairs.append(conn.title)
-        return f"Починка «{conn.title}» уже идёт; вторую запускать не нужно."
-    job_id = await env.services.queue.enqueue(
-        JobKind.REPAIR,
-        user_id=env.user_id,
-        connection_id=connection_id,
-        thread_id=env.thread_id,
-        payload={"reason": reason, "source": "chat"},
-    )
+            .limit(1)
+        )
+        if running is not None:
+            from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
+
+            target = await canonical_thread(session, env.user_id, connection_id)
+            if target is None:
+                target = await owned_thread(session, env.user_id, env.thread_id)
+                bind_thread(target, connection_id)
+            existing = await session.scalar(
+                select(Job).where(Job.id == running, Job.user_id == env.user_id).with_for_update()
+            )
+            if existing is not None and existing.thread_id is None:
+                existing.thread_id = target.id
+            await session.commit()
+            env.repairs.append(conn.title)
+            action = "Подключение" if setup else "Починка"
+            return f"{action} «{conn.title}» уже идёт; вторую запускать не нужно."
+        job_id = await service.enqueue_for_connection(
+            session,
+            env.services.queue,
+            env.user_id,
+            connection_id,
+            JobKind.REPAIR,
+            thread_id=env.thread_id,
+            payload={"reason": reason, "source": "chat"},
+        )
     env.repairs.append(conn.title)
-    return (
-        f"Починка «{conn.title}» поставлена в очередь (задание {job_id}). Результат придёт в чат."
-    )
+    action = "Подключение" if setup else "Починка"
+    if running is not None:
+        return f"{action} «{conn.title}» уже идёт; вторую запускать не нужно."
+    queued = "поставлено" if setup else "поставлена"
+    return f"{action} «{conn.title}» {queued} в очередь (задание {job_id}). Ход работы и результат сохранятся в разговоре подключения."
 
 
 # --- specs --------------------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from botai.contracts.specs import Kind
-from botai.core.browser import SessionState
+from botai.core.browser import BrowserGateway, SessionState
 from botai.core.http import RetryPolicy
 from botai.core.vault import Vault
 
@@ -87,6 +87,7 @@ class SyncContext:
     content: bytes | None = field(default=None, repr=False)  # uploaded document bytes
     filename: str | None = None
     known_hash: str | None = None  # hash of the previously ingested document
+    browser: BrowserGateway | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

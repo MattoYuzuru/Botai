@@ -13,6 +13,7 @@ function readScenario(): Scenario | null {
     if (fromUrl && (SCENARIOS as readonly string[]).includes(fromUrl)) {
       window.sessionStorage.setItem("botai.mock.scenario", fromUrl);
       window.sessionStorage.removeItem("botai.mock.db");
+      window.sessionStorage.removeItem("botai.mock.chat");
       return fromUrl as Scenario;
     }
     return (window.sessionStorage.getItem("botai.mock.scenario") as Scenario | null) ?? null;

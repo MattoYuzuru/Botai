@@ -22,6 +22,13 @@ MSK = ZoneInfo("Europe/Moscow")
 NOW = datetime(2026, 10, 27, 21, 30, tzinfo=UTC)  # already Oct 28 in Moscow
 
 
+def test_week_start_is_local_monday_and_advances_without_a_frozen_literal() -> None:
+    sunday_utc = datetime(2026, 11, 1, 21, 30, tzinfo=UTC)
+    assert render("{weekStart}", now=NOW, tz=MSK, params={}) == "2026-10-26"
+    assert render("{weekStart}", now=sunday_utc, tz=MSK, params={}) == "2026-11-02"
+    assert render("{weekStart}", now=sunday_utc, tz=ZoneInfo("UTC"), params={}) == "2026-10-26"
+
+
 # --- JSON Pointer ---------------------------------------------------------------------------
 
 

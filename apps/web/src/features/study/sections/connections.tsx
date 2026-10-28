@@ -37,7 +37,7 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
       actions={
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" asChild>
-            <Link to="/connect">
+            <Link to="/connect" search={{ space: ctx.scope.spaceId ?? undefined }}>
               <Icon name="plus" size={20} />
               Подключить источник
             </Link>

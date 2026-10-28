@@ -29,7 +29,7 @@ test("шапка, предупреждение и пустые данные на
   await expect(title).toBeVisible();
   const notice = page.getByRole("list", { name: "Состояние источников" });
   await expect(notice.getByText(/Вуз отклонил вход/)).toBeVisible();
-  const action = notice.getByRole("link", { name: "Спросить в чате" });
+  const action = notice.getByRole("button", { name: "Спросить в чате" });
   const text = notice.locator("[data-source-state]");
   const a = await action.boundingBox();
   const t = await text.boundingBox();
@@ -87,6 +87,9 @@ test("подключение: поиск с клавиатуры, отдельн
   const width = info.project.name === "phone" ? 400 : 1512;
   await page.setViewportSize({ width, height: 982 });
   await open(page, "/connect", "connected");
+  await expect(page).toHaveURL(/\/chat\?thread=/);
+  await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
+  await page.getByRole("button", { name: "Источник и подключения" }).click();
   await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
   const input = page.getByRole("combobox", { name: "Вуз" });
   await input.fill("ВШЭ");
@@ -94,7 +97,11 @@ test("подключение: поиск с клавиатуры, отдельн
   await input.press("ArrowDown");
   await input.press("Enter");
   await expect(page.getByText(/Этот вуз уже добавлен/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Начать подключение" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Начать подключение" })).toHaveCount(0);
+  expect(await page.getByRole("button", { name: "Открыть разговор", exact: true }).count()).toBeGreaterThan(
+    0,
+  );
+  await expect(page.getByRole("link", { name: "Новый источник", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => {
       document.documentElement.dataset.theme = value;

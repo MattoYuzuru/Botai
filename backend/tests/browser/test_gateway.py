@@ -438,3 +438,62 @@ async def test_no_secrets_in_logs(open_browser: Opener, caplog: pytest.LogCaptur
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert data.PASSWORD not in text
     assert data.OTP not in text
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_readonly_renderer_blocks_writes_and_websockets_at_the_server(
+    open_browser: Opener, read_only: bool
+) -> None:
+    from tests.fakeuni import login
+
+    login.READ_ONLY_WRITES = login.READ_ONLY_SOCKETS = 0
+    handle = await open_browser(read_only=read_only, background=read_only)
+    await handle.goto("https://fakeuni.test/readonly/page")
+    await handle.page.wait_for_function(
+        "document.body.dataset.read === 'ok' && document.body.dataset.write && document.body.dataset.socket === 'closed'"
+    )
+    assert (0 if read_only else 1) == login.READ_ONLY_WRITES
+    assert (0 if read_only else 1) == login.READ_ONLY_SOCKETS
+    assert await handle.page.get_attribute("body", "data-write") == (
+        "blocked" if read_only else "sent"
+    )
+    if read_only:
+        with pytest.raises(BotaiError):
+            await handle.fill("h1", "must-not-be-typed")
+        with pytest.raises(BotaiError):
+            await handle.click("h1")
+        with pytest.raises(BotaiError):
+            await handle.press("h1", "Enter")
+
+
+async def test_background_renderer_preserves_a_foreground_login(open_browser: Opener) -> None:
+    user = new_id()
+    foreground = await open_browser(user_id=user)
+    await foreground.goto("https://fakeuni.test/auth/login")
+    await foreground.fill("#username", "unfinished-human-input")
+    with pytest.raises(BotaiError) as exc:
+        await open_browser(user_id=user, read_only=True, background=True)
+    assert exc.value.code == ErrorCode.SOURCE_UNAVAILABLE
+    assert not foreground.closed
+    assert await foreground.page.input_value("#username") == "unfinished-human-input"
+
+
+async def test_foreground_open_wins_a_race_with_background_rendering(
+    open_browser: Opener, gateway: PlaywrightGateway
+) -> None:
+    import asyncio
+
+    user = new_id()
+    results = await asyncio.gather(
+        open_browser(user_id=user, read_only=True, background=True),
+        open_browser(user_id=user),
+        return_exceptions=True,
+    )
+    foreground = results[1]
+    assert isinstance(foreground, PlaywrightHandle)
+    assert not foreground.closed
+    assert gateway.active_for(user) is foreground
+    background = results[0]
+    assert isinstance(background, BotaiError) or (
+        isinstance(background, PlaywrightHandle) and background.closed
+    )

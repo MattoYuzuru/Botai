@@ -63,7 +63,12 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
   if (secret) {
     const kind: SecretKind = block.inputKind === "code" ? "code" : "password";
     return (
-      <QuestionFrame question={block.question} required={block.required} answer={answer}>
+      <QuestionFrame
+        question={block.question}
+        required={block.required}
+        answer={answer}
+        editorOnly={ctx.editorOnly}
+      >
         {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
         <SecretField
           label="Ответ"
@@ -107,7 +112,12 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
   };
 
   return (
-    <QuestionFrame question={block.question} required={block.required} answer={answer}>
+    <QuestionFrame
+      question={block.question}
+      required={block.required}
+      answer={answer}
+      editorOnly={ctx.editorOnly}
+    >
       {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <Field label="Ответ" error={error ?? undefined}>

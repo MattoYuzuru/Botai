@@ -37,7 +37,12 @@ export function ChoiceCard({ block, ctx }: { block: Choice; ctx: BlockContext })
     setMulti((current) => (checked ? [...current, value] : current.filter((item) => item !== value)));
 
   return (
-    <QuestionFrame question={block.question} required={block.required} answer={answer}>
+    <QuestionFrame
+      question={block.question}
+      required={block.required}
+      answer={answer}
+      editorOnly={ctx.editorOnly}
+    >
       {block.mode === "single" ? (
         <RadioGroup aria-label={block.question} value={single} onValueChange={setSingle} disabled={busy}>
           {block.options.map((option) => (

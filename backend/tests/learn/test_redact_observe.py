@@ -187,9 +187,49 @@ def test_html_skeleton_keeps_structure_and_drops_the_rest() -> None:
     assert out.count('class="news-item"') == 3
     assert "+3 similar" in out
     assert 'datetime="2026-10-21"' in out
-    assert 'href="/news/<v' in out  # the numeric id in the link is pseudonymised, the path stays
+    assert 'href="/news/&lt;v' in out  # identifiers are escaped inside HTML attributes
     assert "1234" not in out
     assert "None" not in out
+
+
+def test_deep_spa_content_survives_navigation_noise_within_a_balanced_budget() -> None:
+    nav = (
+        "<nav>"
+        + "".join(f'<a class="item-{i}" href="/menu/{i}">Раздел {i}</a>' for i in range(250))
+        + "</nav>"
+    )
+    card = (
+        '<article class="event"><h4 class="event-title">Курс о графах</h4>'
+        '<time datetime="2026-10-26T09:00:00+03:00">09:00</time>'
+        '<time datetime="2026-10-26T10:20:00+03:00">10:20</time></article>'
+    )
+    # Title is deeper than 19 levels; no university classes or endpoints are involved.
+    html = "<body>" + nav + "<main>" + "<div>" * 24 + card + "</div>" * 24 + "</main></body>"
+    result = Redactor().html(html)
+    assert len(result) <= 6000
+    assert "Курс о графах" in result
+    assert 'class="event-title"' in result
+    assert 'datetime="2026-10-26T09:00:00+03:00"' in result
+    assert result.index("<main>") < result.index("<nav>")
+    assert result.endswith("</body>")
+
+
+def test_json_budget_keeps_records_after_metadata_and_remains_valid_json() -> None:
+    doc = {
+        "metadata": {f"field{i}": "Длинное описание " * 20 for i in range(40)},
+        "records": [
+            {
+                "title": "Курс о графах",
+                "startsAt": "2026-10-26T09:00:00+03:00",
+                "endsAt": "2026-10-26T10:20:00+03:00",
+            }
+        ],
+    }
+    result = Redactor().json_text(doc, 2500)
+    assert len(result) <= 2500
+    parsed = json.loads(result)
+    assert parsed["records"][0]["title"] == "Курс о графах"
+    assert parsed["records"][0]["startsAt"] == "2026-10-26T09:00:00+03:00"
 
 
 # --- menu links and the observer ------------------------------------------------------------
@@ -209,6 +249,17 @@ def test_menu_links_prefer_the_menu_and_skip_the_dangerous_and_foreign() -> None
         f"{ORIGIN}/portal/deadlines",
         f"{ORIGIN}/news",
         f"{ORIGIN}/archive",
+    ]
+
+
+def test_menu_links_keep_distinct_query_views_without_authentication_links() -> None:
+    html = (
+        '<nav><a href="/schedule?week=2026-10-26">Эта неделя</a>'
+        '<a href="/schedule?week=2026-11-02">Следующая</a>'
+        '<a href="/callback?code=fixture-secret">Вход</a></nav>'
+    )
+    assert menu_links(html, f"{ORIGIN}/schedule?week=2026-10-26", ORIGIN) == [
+        ("Следующая", f"{ORIGIN}/schedule?week=2026-11-02")
     ]
 
 
@@ -276,6 +327,53 @@ async def test_observer_respects_the_page_limit() -> None:
     handle = await browser.open(user_id="u", connection_id="c", allow_hosts=["fakeuni.test"])
     obs = await observe(handle, ORIGIN, Redactor(), start_urls=[f"{ORIGIN}/"], max_pages=4)
     assert len(obs.pages) == 4
+
+
+async def test_observer_keeps_selected_entry_query_and_distinct_xhr_weeks() -> None:
+    entry = f"{ORIGIN}/schedule?week=2026-10-26"
+    next_week = f"{ORIGIN}/schedule?week=2026-11-02"
+    browser = FakeBrowserGateway(
+        {
+            entry: FakePage(
+                f'<main><h1>Расписание</h1><a href="{next_week}">Следующая</a></main>',
+                "Расписание",
+                requests=[
+                    call("/api/events?week=2026-10-26", '{"items":[{"title":"Первый курс"}]}'),
+                    call("/api/events?week=2026-11-02", '{"items":[{"title":"Другой курс"}]}'),
+                ],
+            ),
+            next_week: FakePage("<main>Следующая неделя</main>", "Расписание"),
+        },
+        NOW,
+        ORIGIN,
+    )
+    handle = await browser.open(user_id="u", connection_id="c", allow_hosts=["fakeuni.test"])
+    obs = await observe(handle, ORIGIN, Redactor(), start_urls=[entry])
+    assert [p.url for p in obs.pages] == ["/schedule?week=2026-10-26", "/schedule?week=2026-11-02"]
+    assert [c.url for c in obs.calls] == [
+        "/api/events?week=2026-10-26",
+        "/api/events?week=2026-11-02",
+    ]
+    assert "Первый курс" in obs.render()
+    assert "Другой курс" in obs.render()
+
+
+async def test_observer_prioritizes_successful_record_xhr_before_call_budget() -> None:
+    calls = [call(f"/background?p={i}", '{"enabled":true}') for i in range(40)]
+    calls.append(
+        call(
+            "/api/events?week=2026-10-26",
+            '{"items":[{"title":"Курс о графах","startsAt":"2026-10-26T09:00:00+03:00"}]}',
+        )
+    )
+    browser = FakeBrowserGateway(
+        {f"{ORIGIN}/": FakePage("<main>Расписание</main>", requests=calls)}, NOW, ORIGIN
+    )
+    handle = await browser.open(user_id="u", connection_id="c", allow_hosts=["fakeuni.test"])
+    obs = await observe(handle, ORIGIN, Redactor(), start_urls=[f"{ORIGIN}/"])
+    assert len(obs.calls) == 30
+    assert obs.calls[0].url == "/api/events?week=2026-10-26"
+    assert "Курс о графах" in obs.render()
 
 
 async def test_nothing_observed_is_empty() -> None:

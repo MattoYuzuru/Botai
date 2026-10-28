@@ -8,7 +8,7 @@ always finds the secret.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
@@ -23,12 +23,14 @@ from botai.contracts.agent_ui import (
     ConfirmBlock,
     InputBlock,
     LoginBlock,
+    TextBlock,
 )
 from botai.core.clock import Clock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import Job, JobAnswer, JobEvent
+from botai.db.models import ChatMessage, Job, JobAnswer, JobEvent
+from botai.jobs import dialogue
 from botai.jobs.events import TERMINAL, append_event, status_data
 from botai.jobs.notify import CHANNEL_ANSWERS, CHANNEL_CANCEL
 from botai.jobs.schemas import AnswerIn
@@ -125,6 +127,13 @@ async def record_answer(
         raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
     if job.state in TERMINAL:
         raise BotaiError(ErrorCode.CONFLICT, "Задание уже завершено")
+    previous = (dialogue.state_of(job).get("receipts") or {}).get(f"block:{body.block_id}")
+    if isinstance(previous, dict) and previous.get("status") in {
+        "applied",
+        "superseded",
+        "rejected",
+    }:
+        raise BotaiError(ErrorCode.BLOCK_ANSWERED, "Этот вопрос уже закрыт")
     block, asked_at = await _asked_block(session, job_id, body.block_id)
     if (
         isinstance(block, InputBlock)
@@ -152,6 +161,16 @@ async def record_answer(
             )
     _check_values(block, body.values)
     secret = isinstance(block, InputBlock) and block.secret
+    values = body.values
+    pending = dialogue.state_of(job).get("pending")
+    if (
+        isinstance(pending, dict)
+        and pending.get("channel") == "dialogue"
+        and isinstance(values, str)
+    ):
+        from botai.spaces.conversations import safe_text
+
+        values = safe_text(values)
 
     # Claim the answer slot first (the unique key makes a second answer lose), but commit it only
     # after the secret is in the Vault.
@@ -161,7 +180,7 @@ async def record_answer(
             id=new_id(),
             job_id=job_id,
             block_id=body.block_id,
-            values=None if secret else body.values,
+            values=None if secret else values,
             is_secret=secret,
         )
         .on_conflict_do_nothing(index_elements=[JobAnswer.job_id, JobAnswer.block_id])
@@ -174,6 +193,57 @@ async def record_answer(
         if secret:
             assert isinstance(body.values, str)
             await vault.put(user_id, body.block_id, SecretKind.TRANSIENT, body.values)
+        accepted_at = datetime.now(UTC)
+        if (
+            isinstance(pending, dict)
+            and pending.get("channel") == "dialogue"
+            and isinstance(values, str)
+            and job.thread_id is not None
+        ):
+            at = await dialogue.message_time(session, user_id, job.thread_id, accepted_at)
+            message_id = new_id()
+            text = TextBlock(id=new_id(), at=at, markdown=values)
+            session.add(
+                ChatMessage(
+                    id=message_id,
+                    user_id=user_id,
+                    thread_id=job.thread_id,
+                    job_id=job.id,
+                    role="user",
+                    blocks=[text.model_dump(by_alias=True, mode="json", exclude_none=True)],
+                    created_at=at,
+                )
+            )
+            state = dialogue.state_of(job)
+            state["inbox"] = [
+                *(state.get("inbox") or []),
+                {"message_id": message_id, "reply_to_block_id": body.block_id},
+            ]
+            dialogue.save_state(job, state)
+            dialogue.receipt(job, now=accepted_at, status="accepted", message_id=message_id)
+        elif job.thread_id is not None:
+            # A durable acknowledgement is not the native answer and never joins the LLM inbox.
+            label = "Ответ передан"
+            if isinstance(block, InputBlock) and block.input_kind == "password":
+                label = "Пароль передан"
+            elif isinstance(block, InputBlock) and block.input_kind == "code":
+                label = "Код передан"
+            at = await dialogue.message_time(session, user_id, job.thread_id, accepted_at)
+            acknowledgement = TextBlock(id=new_id(), at=at, markdown=label)
+            session.add(
+                ChatMessage(
+                    id=new_id(),
+                    user_id=user_id,
+                    thread_id=job.thread_id,
+                    job_id=job.id,
+                    role="user",
+                    blocks=[
+                        acknowledgement.model_dump(by_alias=True, mode="json", exclude_none=True)
+                    ],
+                    created_at=at,
+                )
+            )
+        dialogue.receipt(job, now=accepted_at, status="accepted", block_id=body.block_id)
         await session.execute(select(func.pg_notify(CHANNEL_ANSWERS, job_id)))
         await session.commit()
     except BaseException:
@@ -200,6 +270,7 @@ async def cancel_job(
     job.stage = "Остановлено"
     job.finished_at = now
     job.locked_by = None
+    await dialogue.project_terminal(session, job, now)
     await append_event(session, job.id, "status", status_data(job, now))
     await session.execute(select(func.pg_notify(CHANNEL_CANCEL, job.id)))
     secrets = (

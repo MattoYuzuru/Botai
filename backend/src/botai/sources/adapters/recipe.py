@@ -6,6 +6,7 @@ matches reports a structural `Problem`; the Runner turns it into a repair job.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
@@ -42,6 +43,7 @@ from botai.sources.extract import (
 )
 from botai.sources.fetch import SourceClient, origin_host
 from botai.sources.readonly import is_read_only_post
+from botai.sources.rendered import MAX_RENDERED_SECONDS, RenderedPageError, RenderedPageReader
 from botai.sources.templates import MAX_PARAM_VALUE, TemplateError, render
 from botai.sources.vocab import VOCAB
 
@@ -55,13 +57,20 @@ class RecipeAdapter:
 
     def __init__(self, spec: RecipeSpec) -> None:
         self.recipe: Recipe = spec.recipe
-        if any(endpoint.request.render for endpoint in self.recipe.endpoints):
-            raise BotaiError(
-                ErrorCode.RECIPE_REJECTED,
-                "Чтение отрисованного HTML ещё не включено в этом исполнителе",
-            )
 
     async def fetch(self, ctx: SyncContext) -> AdapterResult:
+        if any(endpoint.request.render for endpoint in self.recipe.endpoints):
+            try:
+                # Reserve one second for the owned background handle's bounded cleanup.
+                async with asyncio.timeout(MAX_RENDERED_SECONDS - 1.0):
+                    return await self._fetch(ctx)
+            except TimeoutError:
+                raise BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Источник не успел загрузиться"
+                ) from None
+        return await self._fetch(ctx)
+
+    async def _fetch(self, ctx: SyncContext) -> AdapterResult:
         recipe = self.recipe
         host = origin_host(recipe.origin)
         if host not in {h.lower() for h in ctx.allow_hosts}:
@@ -72,13 +81,14 @@ class RecipeAdapter:
             )
         records: dict[tuple[str, str], Record] = {}
         outcomes: list[EndpointOutcome] = []
+        reader = RenderedPageReader(ctx)
         async with SourceClient(
             ctx, auth_type=recipe.auth.type, header_name=recipe.auth.header_name
         ) as client:
             params, bootstrap_problems = await self._bootstrap(client, ctx)
             for endpoint in recipe.endpoints:
                 outcome, found = await self._endpoint(
-                    client, ctx, endpoint, params, bootstrap_problems
+                    client, ctx, endpoint, params, bootstrap_problems, reader
                 )
                 outcomes.append(outcome)
                 for rec in found:
@@ -132,6 +142,7 @@ class RecipeAdapter:
         endpoint: Endpoint,
         params: Mapping[str, str],
         bootstrap_failed: set[str],
+        reader: RenderedPageReader,
     ) -> tuple[EndpointOutcome, list[Record]]:
         outcome = EndpointOutcome(endpoint_id=endpoint.id, kind=endpoint.kind, ok=True)
 
@@ -142,6 +153,10 @@ class RecipeAdapter:
             return outcome, []
 
         req = endpoint.request
+        if req.render and (
+            req.method != "GET" or not isinstance(endpoint.response, HtmlResponse) or req.body
+        ):
+            return fail("format")  # Defense in depth in addition to schema/Endpoint validation.
         try:
             url = self._url(req.path, ctx, params)
             query = {
@@ -171,9 +186,23 @@ class RecipeAdapter:
         outcome.source_url = url
         for page_index in range(pages):
             page_query = {**query, **self._page_params(pagination, page_index, offset, cursor)}
-            response = await client.request(
-                req.method, url, params=page_query, json=body if req.method == "POST" else None
-            )
+            if req.render:
+                assert isinstance(endpoint.response, HtmlResponse)
+                request = httpx.Request("GET", url, params=page_query)
+                try:
+                    snapshot = await reader.read(str(request.url), endpoint.response.items_selector)
+                except RenderedPageError as exc:
+                    return fail(exc.problem, str(request.url))
+                response = httpx.Response(
+                    200,
+                    text=snapshot.html,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                    request=httpx.Request("GET", snapshot.url),
+                )
+            else:
+                response = await client.request(
+                    req.method, url, params=page_query, json=body if req.method == "POST" else None
+                )
             if response.status_code in (404, 410):
                 return fail("not_found", str(response.url))
             if response.status_code >= 400:

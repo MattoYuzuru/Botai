@@ -12,7 +12,9 @@
 import { delay, HttpResponse, http } from "msw";
 import type { AgentUiBlock } from "@/api/agent-ui.gen";
 import type { components } from "@/api/schema.gen";
+import type { ConnectContext, ThreadRuntime } from "@/features/chat/connection-api";
 import { addDays, startOfDay } from "@/features/data/dates";
+import { runConnect } from "./connect-script";
 import { dueOf, MOCK_ZONE, seedDeadlines, seedDocuments, seedEvents } from "./data-seed";
 import { findUser, type MockDb, ulid } from "./db";
 import { JobCancelledError, JobSim } from "./job-sim";
@@ -40,6 +42,9 @@ interface ChatState {
   busy: Record<string, string>;
   /** Что записало последнее завершённое задание чата: для шкалы контекста. */
   last: Record<string, { data: number; documents: number; sources: Source[] }>;
+  connections: Record<string, { connectionId: string | null; jobs: string[] }>;
+  requests: Record<string, string>;
+  accepted: Record<string, S["MessageAccepted"]>;
 }
 
 function problem(status: number, code: string, detail: string) {
@@ -61,7 +66,15 @@ const textBlock = (markdown: string, at: string, sources?: Source[]): AgentUiBlo
 
 /** Тред с готовой перепиской: показывает историю и внутренние ссылки источников. */
 function seedState(db: MockDb): ChatState {
-  const state: ChatState = { threads: [], messages: {}, busy: {}, last: {} };
+  const state: ChatState = {
+    threads: [],
+    messages: {},
+    busy: {},
+    last: {},
+    connections: {},
+    requests: {},
+    accepted: {},
+  };
   const connection = db.connections.find((item) => item.kind === "portal") ?? db.connections[0];
   if (!connection) return state;
   const at = (minutesAgo: number) => new Date(db.now() - minutesAgo * 60_000).toISOString();
@@ -116,6 +129,9 @@ function loadState(db: MockDb, persist: boolean): ChatState {
     }
   }
   state ??= seedState(db);
+  state.connections ??= {};
+  state.requests ??= {};
+  state.accepted ??= {};
   states.set(db, state);
   return state;
 }
@@ -167,6 +183,185 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
   };
   const iso = (ms = db.now()) => new Date(ms).toISOString();
   const find = (threadId: string) => state().threads.find((item) => item.id === threadId);
+
+  const observe = (sim: JobSim, threadId: string) => {
+    const project = (event: (typeof sim.events)[number]) => {
+      const messages = state().messages[threadId] ?? [];
+      if (event.event === "block") {
+        const raw = event.data as AgentUiBlock;
+        const block =
+          raw.type === "login"
+            ? { type: "text", id: raw.id, at: raw.at, markdown: "Вход через браузер" }
+            : raw;
+        if (
+          !messages.some(
+            (message) => message.jobId === sim.jobId && message.blocks.some((item) => item.id === block.id),
+          )
+        ) {
+          messages.push({
+            id: ulid(),
+            role: "agent",
+            jobId: sim.jobId,
+            blocks: [block as never],
+            createdAt: block.at,
+          });
+        }
+      } else if (event.event === "block_update") {
+        const update = event.data as { id: string; patch: Record<string, unknown> };
+        for (const message of messages)
+          if (message.jobId === sim.jobId)
+            message.blocks = message.blocks.map((block) =>
+              block.id === update.id ? { ...block, ...update.patch } : block,
+            );
+      }
+      state().messages[threadId] = messages;
+      const thread = find(threadId);
+      if (thread) thread.updatedAt = iso();
+      save();
+    };
+    for (const event of sim.events) project(event);
+    sim.onEvent = project;
+  };
+
+  const runtimeFor = (threadId: string): ThreadRuntime => {
+    const linked = state().connections[threadId];
+    const connected = linked?.connectionId
+      ? (db.connections.find((item) => item.id === linked.connectionId) ?? null)
+      : null;
+    const sims = linked
+      ? linked.jobs.map((id) => db.sims.get(id)).filter((item): item is JobSim => Boolean(item))
+      : [];
+    const ordinary = db.sims.get(state().busy[threadId] ?? "");
+    const sim =
+      sims.findLast((item) => !item.terminal) ?? (ordinary && !ordinary.terminal ? ordinary : sims.at(-1));
+    const status = sim?.events.findLast((event) => event.event === "status")?.data as
+      | { stage?: string }
+      | undefined;
+    const done = sim?.events.findLast((event) => event.event === "done")?.data as
+      | { result?: Record<string, unknown> }
+      | undefined;
+    const error = sim?.events.findLast((event) => event.event === "error")?.data as
+      | Record<string, unknown>
+      | undefined;
+    const refs: ThreadRuntime["pending"] = [];
+    if (sim && !sim.terminal)
+      for (const id of sim.pendingIds) {
+        const block = sim.events.find(
+          (event) => event.event === "block" && (event.data as AgentUiBlock).id === id,
+        )?.data as AgentUiBlock | undefined;
+        if (!block) continue;
+        const secret = block.type === "input" && (block.secret || block.inputKind === "password");
+        const dialogue =
+          block.type === "input" && !secret && !block.autocomplete && block.inputKind !== "code";
+        refs.push({
+          jobId: sim.jobId,
+          blockId: id,
+          secret,
+          channel:
+            block.type === "login"
+              ? "manual"
+              : block.type === "approval"
+                ? "approval"
+                : dialogue
+                  ? "dialogue"
+                  : "native",
+        });
+      }
+    if (sim?.state === "waiting_user" && refs.length === 0) {
+      const block = sim.events.findLast((event) => event.event === "block")?.data as AgentUiBlock | undefined;
+      if (block?.type === "wait")
+        refs.push({ jobId: sim.jobId, blockId: block.id, channel: "native", secret: false });
+    }
+    return {
+      purpose: linked ? "connect" : "chat",
+      connection: connected,
+      activeJob: sim
+        ? {
+            id: sim.jobId,
+            kind: sim.kind,
+            connectionId: sim.connectionId,
+            state: sim.state,
+            stage: status?.stage ?? null,
+            createdAt: iso(sim.startedAt || db.now()),
+            startedAt: sim.startedAt ? iso(sim.startedAt) : null,
+            finishedAt: sim.terminal ? iso() : null,
+            result: done?.result ?? null,
+            error: error ?? null,
+          }
+        : null,
+      pending: refs,
+      receipts: sims.flatMap((item) =>
+        item.answeredIds.map((blockId) => ({
+          jobId: item.jobId,
+          blockId,
+          messageId: null,
+          status: "applied" as const,
+          at: iso(),
+        })),
+      ),
+    };
+  };
+
+  async function bootstrap(sim: JobSim, threadId: string, context?: ConnectContext, spaceId?: string | null) {
+    try {
+      const url =
+        context?.entryUrls?.[0] ??
+        (await sim.ask(
+          {
+            type: "input",
+            id: ulid(),
+            at: iso(),
+            question: "Пришлите ссылку на источник, который хотите подключить.",
+            inputKind: "url",
+            secret: false,
+            required: true,
+            maxLength: 1000,
+          },
+          "Жду ссылку на источник",
+        ));
+      const university = context?.universityId
+        ? db.universities.find((item) => item.id === context.universityId)
+        : undefined;
+      let space = db.spaces.find((item) => item.id === spaceId);
+      if (!space) {
+        space = {
+          id: ulid(),
+          universityId: university?.id ?? null,
+          title: university?.title ?? "Мой вуз",
+          accentHue: university?.accentHue ?? 325,
+          timeZone: "Europe/Moscow",
+          createdAt: iso(),
+        };
+        db.spaces.push(space);
+      }
+      const connection: S["ConnectionOut"] = {
+        id: ulid(),
+        spaceId: space.id,
+        title: context?.title ?? "Личный кабинет",
+        origin: typeof url === "string" ? url : "https://lk.fakeuni.test",
+        kind: context?.kind ?? "portal",
+        adapter: null,
+        status: "learning",
+        hasPassword: false,
+        lastSyncAt: null,
+        nextSyncAt: null,
+        errorCode: null,
+        errorDetail: null,
+      };
+      db.connections.push(connection);
+      sim.connectionId = connection.id;
+      const link = state().connections[threadId];
+      if (link) link.connectionId = connection.id;
+      const thread = find(threadId);
+      if (thread) thread.spaceId = space.id;
+      await runConnect(sim, db, connection.id, db.jobVariant);
+    } catch (error) {
+      if (!(error instanceof JobCancelledError)) throw error;
+    } finally {
+      delete state().busy[threadId];
+      save();
+    }
+  }
 
   async function runReply(sim: JobSim, threadId: string, question: string): Promise<void> {
     const at = () => iso();
@@ -351,7 +546,10 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
         createdAt: at(),
       };
       const chat = state();
-      chat.messages[threadId] = [...(chat.messages[threadId] ?? []), message];
+      if (
+        !chat.messages[threadId]?.some((item) => item.blocks.some((candidate) => candidate.id === block.id))
+      )
+        chat.messages[threadId] = [...(chat.messages[threadId] ?? []), message];
       chat.last[threadId] = { ...usage, sources };
       const thread = find(threadId);
       if (thread) {
@@ -395,21 +593,84 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
     http.post("*/api/v1/chat/threads", async ({ request }) => {
       await wait();
       if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
-      const body = (await request.json().catch(() => ({}))) as S["ThreadCreate"];
+      const body = (await request.json().catch(() => ({}))) as S["ThreadCreate"] & {
+        purpose?: "chat" | "connect";
+        clientRequestId?: string;
+        connectContext?: ConnectContext;
+      };
+      const previous = body.clientRequestId ? state().requests[body.clientRequestId] : undefined;
+      if (previous) return HttpResponse.json(find(previous), { status: 201 });
       if (body.spaceId && !db.spaces.some((space) => space.id === body.spaceId))
         return problem(404, "not_found", "Пространство не найдено");
       const now = iso();
       const thread: Thread = {
         id: ulid(),
         spaceId: body.spaceId ?? null,
-        title: (body.title ?? DEFAULT_TITLE).trim() || DEFAULT_TITLE,
+        title:
+          (body.title ?? (body.purpose === "connect" ? "Подключение источника" : DEFAULT_TITLE)).trim() ||
+          DEFAULT_TITLE,
         createdAt: now,
         updatedAt: now,
       };
       state().threads.push(thread);
       state().messages[thread.id] = [];
+      if (body.clientRequestId) state().requests[body.clientRequestId] = thread.id;
+      if (body.purpose === "connect") {
+        const sim = new JobSim(ulid(), db.now, jobPace, null, "connect");
+        db.sims.set(sim.jobId, sim);
+        state().connections[thread.id] = { connectionId: null, jobs: [sim.jobId] };
+        state().busy[thread.id] = sim.jobId;
+        observe(sim, thread.id);
+        void bootstrap(sim, thread.id, body.connectContext, body.spaceId);
+      }
       save();
       return HttpResponse.json(thread, { status: 201 });
+    }),
+
+    http.get("*/api/v1/chat/threads/:threadId/runtime", async ({ params }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      return HttpResponse.json(runtimeFor(id));
+    }),
+
+    http.post("*/api/v1/connections/:connectionId/conversation", async ({ params, request }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const connectionId = String(params.connectionId);
+      const connection = db.connections.find((item) => item.id === connectionId);
+      if (!connection) return problem(404, "not_found", "Подключение не найдено");
+      const { jobId } = (await request.json().catch(() => ({}))) as { jobId?: string };
+      const sim = jobId
+        ? db.sims.get(jobId)
+        : [...db.sims.values()].findLast((item) => item.connectionId === connectionId);
+      if (jobId && (!sim || sim.connectionId !== connectionId))
+        return problem(404, "not_found", "Задание не найдено");
+      const existing = Object.entries(state().connections).find(
+        ([, item]) => item.connectionId === connectionId,
+      )?.[0];
+      const thread: Thread = existing
+        ? (find(existing) as Thread)
+        : {
+            id: ulid(),
+            spaceId: connection.spaceId,
+            title: connection.title,
+            createdAt: iso(),
+            updatedAt: iso(),
+          };
+      if (!existing) {
+        state().threads.push(thread);
+        state().messages[thread.id] = [];
+        state().connections[thread.id] = { connectionId, jobs: [] };
+      }
+      const link = state().connections[thread.id];
+      if (sim && link && !link.jobs.includes(sim.jobId)) {
+        link.jobs.push(sim.jobId);
+        observe(sim, thread.id);
+      }
+      save();
+      return HttpResponse.json(thread);
     }),
 
     http.get("*/api/v1/chat/threads/:threadId/messages", async ({ params }) => {
@@ -426,11 +687,30 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       const id = String(params.threadId);
       const thread = find(id);
       if (!thread) return problem(404, "not_found", "Чат не найден");
-      const body = (await request.json().catch(() => ({}))) as Partial<S["MessageIn"]>;
+      const body = (await request.json().catch(() => ({}))) as Partial<S["MessageIn"]> & {
+        targetJobId?: string;
+        clientMessageId?: string;
+      };
       const text = typeof body.text === "string" ? body.text : "";
       if (text.length < 1 || text.length > 8000)
         return problem(422, "validation", "Сообщение пустое или слишком длинное");
-      if (state().busy[id]) return problem(409, "conflict", "Ассистент ещё отвечает на прошлое сообщение");
+      const acceptedKey = body.clientMessageId ? `${id}:${body.clientMessageId}` : null;
+      if (acceptedKey && state().accepted[acceptedKey])
+        return HttpResponse.json(state().accepted[acceptedKey], { status: 202 });
+      const runtime = runtimeFor(id);
+      const source =
+        runtime.purpose === "connect" &&
+        runtime.activeJob &&
+        runtime.activeJob.kind !== "chat" &&
+        !["done", "failed", "cancelled"].includes(runtime.activeJob.state)
+          ? db.sims.get(runtime.activeJob.id)
+          : undefined;
+      if (body.targetJobId && body.targetJobId !== source?.jobId)
+        return problem(409, "conflict", "Этот вопрос уже закрыт");
+      if (source && runtime.pending.some((item) => item.channel !== "dialogue" || item.secret))
+        return problem(409, "conflict", "Ответьте в защищённом блоке");
+      if (!source && state().busy[id])
+        return problem(409, "conflict", "Ассистент ещё отвечает на прошлое сообщение");
       const now = iso();
       const message: Message = {
         id: ulid(),
@@ -441,13 +721,31 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       };
       state().messages[id] = [...(state().messages[id] ?? []), message];
       thread.updatedAt = now;
+      if (source) {
+        const accepted = { message, jobId: source.jobId } satisfies S["MessageAccepted"];
+        if (acceptedKey) state().accepted[acceptedKey] = accepted;
+        const request = runtime.pending.find((item) => item.channel === "dialogue");
+        if (request) {
+          const block = source.events.find(
+            (event) => event.event === "block" && (event.data as AgentUiBlock).id === request.blockId,
+          )?.data as AgentUiBlock | undefined;
+          if (block?.type === "input" && block.inputKind === "url" && !/^https?:\/\//.test(text))
+            source.block(textBlock("Уточнение получено. Пришлите ссылку, когда будете готовы.", now));
+          else source.answer(request.blockId, text, false);
+        }
+        save();
+        return HttpResponse.json(accepted, { status: 202 });
+      }
       const jobId = ulid();
       const sim = new JobSim(jobId, db.now, jobPace);
       db.sims.set(jobId, sim);
+      if (state().connections[id]) observe(sim, id);
       state().busy[id] = jobId;
       save();
       void runReply(sim, id, text);
-      return HttpResponse.json({ message, jobId } satisfies S["MessageAccepted"], { status: 202 });
+      const accepted = { message, jobId } satisfies S["MessageAccepted"];
+      if (acceptedKey) state().accepted[acceptedKey] = accepted;
+      return HttpResponse.json(accepted, { status: 202 });
     }),
 
     http.get("*/api/v1/chat/threads/:threadId/context", async ({ params }) => {

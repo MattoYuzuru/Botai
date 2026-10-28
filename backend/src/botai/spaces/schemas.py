@@ -91,6 +91,10 @@ class JobRef(ApiModel):
     job_id: str
 
 
+class ConversationIn(ApiModel):
+    job_id: str | None = Field(default=None, pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+
 class SectionOut(ApiModel):
     """Dynamic sections (FR-014): only kinds that have data appear."""
 

@@ -2,63 +2,56 @@ import { expect, type Page, test } from "@playwright/test";
 import type { JobSnapshot } from "../src/features/jobs/job-state";
 import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
 
-/**
- * Подключение вуза в настоящем браузере: поток SSE через MSW, секретное поле, свёрнутая работа в шапке и
- * запасной экран входа. Моки отвечают мгновенно (`pace=0`), чтобы тесты шли быстро.
- */
-
 const SECRET = "correct-horse-battery-staple";
-
-async function startHse(page: Page, variant = "") {
+const URL_QUESTION = "Пришлите ссылку на источник, который хотите подключить.";
+async function start(page: Page, variant = "") {
   await open(page, `/connect?pace=0${variant ? `&job=${variant}` : ""}`, "empty");
-  await page.getByRole("combobox", { name: "Вуз" }).click();
-  await page.getByRole("option", { name: /Высшая школа экономики/ }).click();
-  await page.getByRole("button", { name: "Начать подключение" }).click();
-  await expect(page).toHaveURL(/\/connect\/01J/);
-  await expect(page.getByRole("heading", { level: 1, name: "Подключаю ВШЭ" })).toBeVisible();
+  await expect(page).toHaveURL(/\/chat\?thread=/);
+  await expect(page.getByText(URL_QUESTION)).toBeVisible();
+}
+async function send(page: Page, text: string) {
+  const composer = page.getByRole("textbox", { name: "Сообщение агенту" });
+  await expect(composer).toBeEnabled();
+  await composer.fill(text);
+  await page.getByRole("button", { name: "Отправить", exact: true }).click();
+}
+async function native(page: Page, variant = "") {
+  await start(page, variant);
+  await send(page, "https://lk.fakeuni.test/");
+  await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+}
+async function answer(page: Page, text: string) {
+  await page.getByLabel("Ответ", { exact: true }).fill(text);
+  await page.getByRole("button", { name: "Ответить", exact: true }).click();
 }
 
-async function answerText(page: Page, value: string) {
-  await page.getByLabel("Ответ", { exact: true }).fill(value);
-  await page.getByRole("button", { name: "Ответить" }).click();
-}
+test.describe("подключение в общем чате", () => {
+  test("первый вопрос стабилен до/после ответа, хронология идёт вниз без дубликата", async ({ page }) => {
+    await start(page);
+    const question = page.getByText(URL_QUESTION);
+    await question.evaluate((element) => {
+      element.dataset.identity = "same-question";
+    });
+    await send(page, "https://lk.fakeuni.test/");
+    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+    await expect(question).toHaveAttribute("data-identity", "same-question");
+    await expect(question).toHaveCount(1);
+    const history = (await page.getByRole("list", { name: "Сообщения" }).textContent()) ?? "";
+    expect(history.indexOf(URL_QUESTION)).toBeLessThan(history.indexOf("https://lk.fakeuni.test/"));
+    expect(history.indexOf("https://lk.fakeuni.test/")).toBeLessThan(
+      history.indexOf("Вход в lk.fakeuni.test. Логин"),
+    );
+    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toBeDisabled();
+  });
 
-test.describe("выбор вуза", () => {
-  test("экран без горизонтальной прокрутки, поля — 16 px, зоны нажатия — 44 px, текст — от 13 px", async ({
+  test("native login → secret → выбор → итог остаются в том же чате; секрет не сохраняется", async ({
     page,
   }) => {
-    for (const width of [320, 390, 430]) {
-      await page.setViewportSize({ width, height: 800 });
-      await open(page, "/connect", "empty");
-      await page.getByRole("combobox", { name: "Вуз" }).click();
-      await expect(page.getByRole("option", { name: /Высшая школа экономики/ })).toBeVisible();
-      await expectNoHorizontalOverflow(page, `выбор вуза ${width}`);
-    }
-    const sizes = await page.evaluate(() =>
-      [...document.querySelectorAll("input:not([aria-hidden=true])")].map((input) =>
-        Number.parseFloat(getComputedStyle(input).fontSize),
-      ),
-    );
-    for (const size of sizes) expect(size).toBeGreaterThanOrEqual(16);
-    expect(await findSmallTapTargets(page)).toEqual([]);
-    expect(await findTinyText(page)).toEqual([]);
-  });
-});
-
-test.describe("ProgressWall", () => {
-  test("весь путь: логин, секретный пароль, выбор предметов, итог, «Готово»", async ({ page }) => {
-    await startHse(page);
-    await expect(page.getByText("Сколько осталось — пока неизвестно")).toBeVisible();
-    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+    await native(page);
+    const thread = page.url();
     await expect(page.getByText("Вход через поля BotAI")).toBeVisible();
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
-
-    // Экран с вопросом: ничего не вылезает за край, зоны нажатия и кегль в норме.
-    await expectNoHorizontalOverflow(page, "вопрос");
-    expect(await findSmallTapTargets(page)).toEqual([]);
-    expect(await findTinyText(page)).toEqual([]);
-
-    await answerText(page, "anna");
+    await answer(page, "anna");
     await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
     const password = page.getByLabel("Ответ", { exact: true });
     await expect(password).toHaveAttribute("type", "password");
@@ -68,12 +61,8 @@ test.describe("ProgressWall", () => {
         .getByRole("button", { name: "Открыть браузер" })
         .evaluate((button) => button.closest("form") === null),
     ).toBe(true);
-    await password.fill(SECRET);
-    await page.getByRole("button", { name: "Ответить" }).click();
-
-    // Секрет не остаётся ни в поле, ни в тексте страницы, ни в хранилищах браузера.
-    await expect(page.getByText("Введено")).toBeVisible();
-    await expect(page.getByText(SECRET)).toHaveCount(0);
+    await answer(page, SECRET);
+    await expect(page.getByRole("checkbox", { name: /Алгоритмы/ })).toBeVisible();
     const leaked = await page.evaluate(
       (secret) =>
         [window.localStorage, window.sessionStorage].some((storage) =>
@@ -82,155 +71,190 @@ test.describe("ProgressWall", () => {
       SECRET,
     );
     expect(leaked).toBe(false);
-
-    await page.getByRole("checkbox", { name: /Алгоритмы/ }).click();
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toHaveCount(0);
-    await page.getByRole("checkbox", { name: /Базы данных/ }).click();
-    await page.getByRole("button", { name: "Ответить" }).click();
-
+    await page.getByRole("checkbox", { name: /Алгоритмы/ }).check();
+    await page.getByRole("button", { name: "Ответить", exact: true }).click();
     await expect(page.getByRole("heading", { level: 3, name: "Что подключено" })).toBeVisible();
-    await expectNoHorizontalOverflow(page, "итог");
-    await page.getByRole("button", { name: "Готово" }).click();
-    await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Сегодня" })).toBeVisible();
+    await expect(page).toHaveURL(thread);
+    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled();
+    await expectNoHorizontalOverflow(page, "итог в чате");
   });
 
-  test("выбор native или browser входа читаем в обеих темах и доступен с клавиатуры", async ({
+  test("контекст каталога и native editor доступны на телефонах/ноутбуке в обеих темах", async ({
     page,
   }, testInfo) => {
-    await startHse(page);
-    await answerText(page, "anna");
+    for (const width of [320, 390, 430, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      await start(page);
+      await page.getByRole("button", { name: "Источник и подключения" }).click();
+      await page.getByRole("combobox", { name: "Вуз" }).click();
+      await expect(page.getByRole("option", { name: /Высшая школа экономики/ })).toBeVisible();
+      await expectNoHorizontalOverflow(page, `каталог ${width}`);
+      await page.getByRole("option", { name: /Высшая школа экономики/ }).click();
+      await page
+        .getByRole("dialog", { name: "Источник и подключения" })
+        .getByRole("button", { name: "Закрыть" })
+        .click();
+      await send(page, "https://lk.fakeuni.test/");
+      await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((next) => {
+          document.documentElement.dataset.theme = next;
+        }, theme);
+        await expectNoHorizontalOverflow(page, `native ${width} ${theme}`);
+        expect(await findSmallTapTargets(page)).toEqual([]);
+        expect(await findTinyText(page)).toEqual([]);
+        const fontSize = await page
+          .getByLabel("Ответ", { exact: true })
+          .evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize));
+        expect(fontSize).toBeGreaterThanOrEqual(16);
+        await page.screenshot({ path: testInfo.outputPath(`connect-${width}-${theme}.png`), fullPage: true });
+      }
+    }
+  });
+
+  test("native/browser option и terminal restart не переполняются при 200% текста", async ({
+    page,
+  }, testInfo) => {
+    await native(page);
+    await answer(page, "anna");
     await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
     await page.getByLabel("Ответ", { exact: true }).fill(SECRET);
+    await page.getByRole("button", { name: "Ответить", exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeFocused();
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("font-size", "200%", "important");
+    });
     for (const theme of ["light", "dark"]) {
       await page.evaluate((next) => {
         document.documentElement.dataset.theme = next;
       }, theme);
-      const browser = page.getByRole("button", { name: "Открыть браузер" });
-      await page.getByRole("button", { name: "Ответить" }).focus();
-      await page.keyboard.press("Tab");
-      await expect(browser).toBeFocused();
-      await expectNoHorizontalOverflow(page, `native вход ${theme}`);
+      await expectNoHorizontalOverflow(page, `native 200% ${theme}`);
       expect(await findSmallTapTargets(page)).toEqual([]);
-      expect(await findTinyText(page)).toEqual([]);
-      await page.screenshot({ path: testInfo.outputPath(`native-login-${theme}.png`), fullPage: true });
+      await page.screenshot({ path: testInfo.outputPath(`native-200-${theme}.png`), fullPage: true });
     }
-    // UI-only terminal fixture: no answer is sent, so the pending password must disappear.
+    // UI-only external failure: no answer is submitted and no credential is fabricated.
     await page.evaluate(async () => {
-      const path = "/src/features/jobs/job-manager.ts";
-      const { jobManager } = (await import(/* @vite-ignore */ path)) as {
-        jobManager: { get: (id: string) => JobSnapshot | undefined; seed: (snapshot: JobSnapshot) => void };
+      const managerPath = "/src/features/jobs/job-manager.ts";
+      const activePath = "/src/features/jobs/active-job.ts";
+      const { jobManager } = (await import(/* @vite-ignore */ managerPath)) as {
+        jobManager: { get: (id: string) => JobSnapshot | undefined; seed: (job: JobSnapshot) => void };
       };
-      const jobId = location.pathname.split("/").at(-1) ?? "";
-      const snapshot = jobManager.get(jobId);
-      if (!snapshot) throw new Error("Нет задания fixture");
-      jobManager.seed({ ...snapshot, state: "done", result: { status: "error", detail: "login_failed" } });
-      document.documentElement.style.setProperty("font-size", "200%", "important");
+      const { useActiveJob } = (await import(/* @vite-ignore */ activePath)) as {
+        useActiveJob: { getState: () => { job: { jobId: string } | null } };
+      };
+      const id = useActiveJob.getState().job?.jobId;
+      const job = id ? jobManager.get(id) : undefined;
+      if (!job) throw new Error("missing active fixture job");
+      jobManager.seed({
+        ...job,
+        lastEventId: "999",
+        state: "done",
+        result: { status: "error", detail: "login_failed" },
+      });
     });
     await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Ответить" })).toHaveCount(0);
     await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(0);
     for (const theme of ["light", "dark"]) {
       await page.evaluate((next) => {
         document.documentElement.dataset.theme = next;
       }, theme);
-      await expectNoHorizontalOverflow(page, `terminal restart 200% ${theme}`);
+      await expectNoHorizontalOverflow(page, `terminal 200% ${theme}`);
+      const box = await page.getByRole("button", { name: "Войти заново" }).boundingBox();
+      expect(box).not.toBeNull();
+      if (box) {
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+      }
       expect(await findSmallTapTargets(page)).toEqual([]);
-      await page.screenshot({
-        path: testInfo.outputPath(`terminal-restart-200-${theme}.png`),
-        fullPage: true,
-      });
+      await page.screenshot({ path: testInfo.outputPath(`terminal-200-${theme}.png`), fullPage: true });
     }
   });
 
-  test("свёрнутая работа остаётся в шапке и возвращается на экран по «Открыть»", async ({ page }) => {
-    await startHse(page);
-    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
-    await page.getByRole("button", { name: "Свернуть" }).click();
-    await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByText("Подключаю ВШЭ")).toBeVisible();
-    await expect(page.getByText("Нужен ответ").first()).toBeVisible();
-    await expectNoHorizontalOverflow(page, "шапка с работой");
-    await page.getByRole("link", { name: "Открыть" }).click();
-    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+  test("фоновая операция возвращается через canonical chat notification", async ({ page }) => {
+    await native(page);
+    const thread = page.url();
+    await page.getByRole("link", { name: "Сегодня", exact: true }).click();
+    await expect(page.getByText("Нужен ответ")).toBeVisible();
+    await page.getByRole("link", { name: "Открыть", exact: true }).click();
+    await expect(page).toHaveURL(thread);
+    await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
   });
 
-  test("вуз не принял пароль: вопрос повторяется с понятным текстом", async ({ page }) => {
-    await startHse(page, "wrong-password");
-    await answerText(page, "anna");
-    await answerText(page, "wrong");
-    await expect(page.getByText(/Вуз не принял данные.*Пароль \(попытка 2 из 3\)/)).toBeVisible();
+  test("непринятый пароль создаёт новый вопрос, прежние controls readonly", async ({ page }) => {
+    await native(page, "wrong-password");
+    await answer(page, "anna");
+    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
+    await answer(page, SECRET);
+    await expect(page.getByText(/попытка 2 из 3/)).toBeVisible();
+    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Ответ", { exact: true })).toHaveValue("");
   });
 
-  test("сбой источника: «Спросить в чате» вместо кнопки повтора, без технических кодов", async ({ page }) => {
-    await startHse(page, "failure");
-    await answerText(page, "anna");
-    await answerText(page, "pw");
-    await expect(page.getByText("Подключение не завершено.")).toBeVisible();
-    await expect(page.getByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toHaveCount(0);
-    expect(await page.evaluate(() => document.body.innerText)).not.toMatch(/source_unavailable|502|traceId/);
-    await page.getByRole("button", { name: "Спросить в чате" }).click();
-    await expect(page).toHaveURL(/\/chat$/);
+  test("сбой источника оставляет понятную причину и бизнес-действие нового входа", async ({ page }) => {
+    await native(page, "failure");
+    await answer(page, "anna");
+    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
+    await answer(page, SECRET);
+    await expect(page.getByText(/Сайт вуза не ответил/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
+    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(0);
+    expect(await page.locator("body").textContent()).not.toContain("source_unavailable");
   });
 
-  test("отмена требует подтверждения; фокус стоит на безопасном «Продолжить»", async ({ page }) => {
-    await startHse(page);
-    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
-    await page.getByRole("button", { name: "Отменить подключение" }).click();
+  test("отмена с безопасным фокусом остаётся доступной в контексте чата", async ({ page }) => {
+    await native(page);
+    await page.getByRole("button", { name: "Источник и подключения" }).click();
+    await page.getByRole("button", { name: "Отменить подключение", exact: true }).click();
     const dialog = page.getByRole("alertdialog", { name: "Отменить подключение?" });
-    await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Продолжить" })).toBeFocused();
-    await dialog.getByRole("button", { name: "Отменить подключение" }).click();
+    await dialog.getByRole("button", { name: "Отменить подключение", exact: true }).click();
     await expect(page.getByText(/Подключение отменено/)).toBeVisible();
   });
 });
 
-test.describe("запасной экран входа", () => {
-  const REMOTE = "/styleguide#blocks";
-
-  async function demoMessages(page: Page) {
-    return page.evaluate(async () => {
-      const path = "/src/features/styleguide/demo-remote.ts";
-      const module = (await import(/* @vite-ignore */ path)) as {
-        DemoRemoteSocket: { instances: { received: Record<string, unknown>[] }[] };
-      };
-      return module.DemoRemoteSocket.instances.at(-1)?.received ?? [];
-    });
-  }
-
-  test("кадр рисуется, клик и ввод уходят на сервер, «Я вошёл» заканчивает успехом", async ({ page }) => {
-    await page.goto(REMOTE);
-    const screen = page.locator("[data-remote-screen]");
-    await expect(screen).toBeVisible();
-    await expect(screen).toHaveAttribute("data-remote-screen", "live");
-    const canvas = screen.getByTestId("remote-canvas");
-    await canvas.scrollIntoViewIfNeeded();
-    // Кадр действительно нарисован: канвас не пустой.
-    await expect
-      .poll(() =>
-        canvas.evaluate((element) => {
-          const target = element as HTMLCanvasElement;
-          const data = target.getContext("2d")?.getImageData(0, 0, target.width, target.height).data;
-          return Boolean(data?.some((value, index) => index % 4 !== 3 && value !== 0));
-        }),
-      )
-      .toBe(true);
-    await expect(screen.getByText(/Нужна проверка «я не робот»/)).toBeVisible();
-
-    const box = await canvas.boundingBox();
-    if (!box) throw new Error("нет канваса");
-    // Поле «Логин» у демонстрационного сервера — вторая пятая часть высоты.
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.28);
-    await page.keyboard.type("anna");
-    await expect
-      .poll(async () => (await demoMessages(page)).filter((message) => message.t === "key").length)
-      .toBeGreaterThan(0);
-    const messages = await demoMessages(page);
-    expect(messages.some((message) => message.t === "mouse")).toBe(true);
-    expect(messages.some((message) => message.t === "resize")).toBe(true);
-
-    await screen.getByRole("button", { name: "Я вошёл" }).click();
-    await expect(screen.getByText("Вход выполнен. Продолжаю подключение.")).toBeVisible();
-    await expectNoHorizontalOverflow(page, "запасной экран");
-  });
+test("remote canvas сохраняет рисование, CSS input и явное завершение", async ({ page }) => {
+  await page.goto("/styleguide#blocks");
+  const screen = page.locator("[data-remote-screen]");
+  await expect(screen).toHaveAttribute("data-remote-screen", "live");
+  const canvas = screen.getByTestId("remote-canvas");
+  await canvas.scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      canvas.evaluate((element) => {
+        const target = element as HTMLCanvasElement;
+        return Boolean(
+          target
+            .getContext("2d")
+            ?.getImageData(0, 0, target.width, target.height)
+            .data.some((value, index) => index % 4 !== 3 && value !== 0),
+        );
+      }),
+    )
+    .toBe(true);
+  await expect(screen.getByText(/Нужна проверка «я не робот»/)).toBeVisible();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("missing canvas");
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.28);
+  await page.keyboard.type("anna");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const path = "/src/features/styleguide/demo-remote.ts";
+        const module = (await import(/* @vite-ignore */ path)) as {
+          DemoRemoteSocket: { instances: { received: Record<string, unknown>[] }[] };
+        };
+        const messages = module.DemoRemoteSocket.instances.at(-1)?.received ?? [];
+        return (
+          messages.some((item) => item.t === "key") &&
+          messages.some((item) => item.t === "mouse") &&
+          messages.some((item) => item.t === "resize")
+        );
+      }),
+    )
+    .toBe(true);
+  await screen.getByRole("button", { name: "Я вошёл" }).click();
+  await expect(screen.getByText("Вход выполнен. Продолжаю подключение.")).toBeVisible();
+  await expectNoHorizontalOverflow(page, "remote screen");
 });

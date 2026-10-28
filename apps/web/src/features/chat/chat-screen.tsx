@@ -1,4 +1,6 @@
 import {
+  Banner,
+  Button,
   ChatComposer,
   ChatLayout,
   IconButton,
@@ -12,17 +14,24 @@ import {
 } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { humanMessage } from "@/api/errors";
-import { meQuery } from "@/api/queries";
+import { meQuery, queryKeys } from "@/api/queries";
 import type { Message } from "@/api/types";
 import { useComposerKeyboard } from "@/app/keyboard";
 import { documentsQuery, todayQuery } from "@/features/data/queries";
+import { useReconnect } from "@/features/data/use-reconnect";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
+import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager, useJob } from "@/features/jobs/job-manager";
 import { isTerminal, needsHuman } from "@/features/jobs/job-state";
 import { toDeadlineView } from "@/features/tasks/deadlines";
 import { JOB_REF_TTL_MS, useChatJobs } from "./chat-jobs";
+import { startConnectThread, threadRuntimeKey, threadRuntimeQuery } from "./connection-api";
+import { ConnectionComposer, SOURCE_JOBS } from "./connection-composer";
+import { ConnectionContext } from "./connection-context";
+import { connectionSnapshot, connectionTurns } from "./connection-timeline";
+import { ConnectTimeline } from "./connection-timeline-view";
 import { ContextButton } from "./context-meter-view";
 import { EmptyChat } from "./empty-chat";
 import { chatKeys, messagesQuery, threadsQuery } from "./queries";
@@ -43,7 +52,12 @@ const POLL_WHILE_AWAITING_MS = 4_000;
  * шаги, вопросы агента (общие блоки `AgentUiBlock`) и текст с источниками.
  */
 export function ChatScreen() {
-  const { thread: param } = useSearch({ from: "/_app/chat" });
+  const {
+    thread: param,
+    connect: connectRequestId,
+    space: connectSpace,
+    university: connectUniversity,
+  } = useSearch({ from: "/_app/chat" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const me = useQuery(meQuery);
@@ -52,6 +66,24 @@ export function ChatScreen() {
   const keyboardOpen = useComposerKeyboard();
   const pendingAll = useOutbox();
   const [draft, setDraft] = useState("");
+  const [connectTyping, setConnectTyping] = useState(false);
+  const reconnect = useReconnect();
+  const creatingConnection = useQuery({
+    queryKey: ["chat", "connect-intent", connectRequestId],
+    enabled: Boolean(connectRequestId),
+    staleTime: Number.POSITIVE_INFINITY,
+    queryFn: () =>
+      startConnectThread({
+        clientRequestId: connectRequestId ?? "",
+        spaceId: connectSpace,
+        connectContext: connectUniversity ? { universityId: connectUniversity, userNote: "" } : undefined,
+      }),
+  });
+  useEffect(() => {
+    if (!creatingConnection.data || !connectRequestId) return;
+    void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
+    void navigate({ to: "/chat", search: { thread: creatingConnection.data.id }, replace: true });
+  }, [creatingConnection.data, connectRequestId, queryClient, navigate]);
   // Сохраняем принадлежность черновику, пока очередь получает threadId раньше маршрута.
   const [draftMessages, setDraftMessages] = useState<
     readonly { id: string; ownerId: string; threadId: string | null }[]
@@ -64,8 +96,8 @@ export function ChatScreen() {
 
   // Какой чат открыт: явный `?thread=`, иначе последний, иначе пустой новый.
   const latestId = threads.data?.[0]?.id ?? null;
-  const activeId = param === NEW_THREAD ? null : (param ?? latestId);
-  const resolving = param === undefined && threads.isPending;
+  const activeId = connectRequestId || param === NEW_THREAD ? null : (param ?? latestId);
+  const resolving = Boolean(connectRequestId) || (param === undefined && threads.isPending);
   const activeThread = threads.data?.find((thread) => thread.id === activeId) ?? null;
 
   const pending = useMemo(
@@ -86,12 +118,22 @@ export function ChatScreen() {
     (message) => message.ownerId === me.data?.user.id && message.threadId !== null,
   )?.threadId;
   useEffect(() => {
-    if (activeId === null && assignedThreadId) {
+    if (!connectRequestId && activeId === null && assignedThreadId) {
       void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true });
     }
-  }, [activeId, assignedThreadId, navigate]);
+  }, [connectRequestId, activeId, assignedThreadId, navigate]);
   const jobRef = useChatJobs((state) => (activeId ? state.byThread[activeId] : undefined));
-  const job = useJob(jobRef?.jobId) ?? null;
+  const runtimeResult = useQuery({ ...threadRuntimeQuery(activeId ?? ""), enabled: activeId !== null });
+  const runtime = runtimeResult.data;
+  const connectionMode =
+    Boolean(connectRequestId) ||
+    runtime?.purpose === "connect" ||
+    SOURCE_JOBS.has(runtime?.activeJob?.kind ?? "");
+  const streamedJob = useJob(connectionMode ? runtime?.activeJob?.id : jobRef?.jobId);
+  const job = useMemo(
+    () => (connectionMode ? connectionSnapshot(runtime, streamedJob) : (streamedJob ?? null)),
+    [connectionMode, runtime, streamedJob],
+  );
 
   const messagesResult = useQuery({
     ...messagesQuery(activeId ?? ""),
@@ -102,15 +144,15 @@ export function ChatScreen() {
   });
   const messages = useMemo<readonly Message[]>(() => messagesResult.data ?? [], [messagesResult.data]);
 
-  const awaiting = !job && awaitingReply(messages, pending, Date.now());
+  const awaiting = !connectionMode && !job && awaitingReply(messages, pending, Date.now());
   const replying = isReplying(job, awaiting);
-  const waitingForHuman = job ? needsHuman(job) : false;
+  const waitingForHuman = connectionMode ? (runtime?.pending.length ?? 0) > 0 : job ? needsHuman(job) : false;
   const nowMs = useNow(replying ? 1_000 : 30_000);
   const timeZone = directory.homeZone;
 
   // Поток ответа: после перезагрузки привязка к заданию поднимает его заново; устаревшая — снимается.
   useEffect(() => {
-    if (!activeId || !jobRef) return;
+    if (connectionMode || !activeId || !jobRef) return;
     const answered = messages.some((message) => message.role === "agent" && message.jobId === jobRef.jobId);
     const expired = Date.now() - jobRef.at > JOB_REF_TTL_MS;
     const kept = job ? keptBlocks(job).length > 0 : false;
@@ -120,7 +162,32 @@ export function ChatScreen() {
       return;
     }
     jobManager.start(jobRef.jobId);
-  }, [activeId, jobRef, messages, job]);
+  }, [connectionMode, activeId, jobRef, messages, job]);
+
+  // CONNECT восстанавливается по серверному runtime, без срока жизни локальной ссылки на job.
+  const sourceJobId = connectionMode ? runtime?.activeJob?.id : undefined;
+  useEffect(() => {
+    if (!activeId || !sourceJobId || !runtime?.activeJob) return;
+    if (!isTerminal(runtime.activeJob.state)) {
+      jobManager.start(sourceJobId);
+      useActiveJob.getState().set({
+        jobId: sourceJobId,
+        title: runtime.connection?.title ?? "Подключаю источник",
+        connectionId: runtime.connection?.id,
+        threadId: activeId,
+      });
+    }
+  }, [activeId, sourceJobId, runtime?.activeJob, runtime?.connection]);
+
+  const refreshConnection = useCallback(() => {
+    if (!activeId) return;
+    void queryClient.invalidateQueries({ queryKey: chatKeys.messages(activeId) });
+    void queryClient.invalidateQueries({ queryKey: threadRuntimeKey(activeId) });
+    void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
+  }, [activeId, queryClient]);
+  useEffect(() => {
+    if (connectionMode && streamedJob?.lastEventId) refreshConnection();
+  }, [connectionMode, streamedJob?.lastEventId, refreshConnection]);
 
   // Задание закончилось: подтягиваем историю и шкалу; успешное — отпускаем, сбой остаётся в ленте до следующего вопроса.
   const finishedJobId = job && isTerminal(job.state) ? job.jobId : null;
@@ -136,6 +203,11 @@ export function ChatScreen() {
         queryClient.invalidateQueries({ queryKey: chatKeys.threads }),
       ]);
       // Сбой и готовый текст для ручной отправки остаются в ленте до следующего вопроса.
+      if (connectionMode) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.spaces });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.today });
+        return;
+      }
       if (cancelled || finishedState !== "done" || finishedKeeps) return;
       jobManager.stop(finishedJobId);
       useChatJobs.getState().clear(activeId);
@@ -143,7 +215,7 @@ export function ChatScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activeId, finishedJobId, finishedState, finishedKeeps, queryClient]);
+  }, [connectionMode, activeId, finishedJobId, finishedState, finishedKeeps, queryClient]);
 
   // Очередь отправки: новый чат появляется в списке, отправленное сообщение — в ленте, отказ возвращает текст в поле.
   const latest = useLatest({ activeId, param, draftMessages, ownerId: me.data?.user.id });
@@ -188,10 +260,18 @@ export function ChatScreen() {
     () => buildTimeline({ messages, pending, job, nowMs }),
     [messages, pending, job, nowMs],
   );
+  const connectTimeline = useMemo(
+    () => (runtime ? connectionTurns(messages, job, runtime) : []),
+    [messages, job, runtime],
+  );
   const startingThread =
     activeId === null && draftMessages.some((message) => message.ownerId === me.data?.user.id);
   const showEmpty =
-    !startingThread && !resolving && !(activeId && messagesResult.isPending) && timeline.length === 0;
+    !connectionMode &&
+    !startingThread &&
+    !resolving &&
+    !(activeId && (messagesResult.isPending || runtimeResult.isPending || runtimeResult.isError)) &&
+    timeline.length === 0;
 
   const suggestions = useSuggestions(showEmpty, nowMs);
 
@@ -212,20 +292,28 @@ export function ChatScreen() {
 
   // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.
   const mascot = useChatMascot({
-    mode: showEmpty || (activeId === null && !startingThread && timeline.length === 0) ? "floor" : "perch",
+    mode:
+      !connectionMode && (showEmpty || (activeId === null && !startingThread && timeline.length === 0))
+        ? "floor"
+        : "perch",
     replying,
     waitingForHuman,
     stage: job && !isTerminal(job.state) ? job.stage : null,
-    typing: draft.trim().length > 0,
+    typing: connectionMode ? connectTyping : draft.trim().length > 0,
     keyboardOpen,
     replyCount: timeline.filter(
       (item) =>
         item.kind === "agent" || (item.kind === "live" && item.blocks.some((block) => block.type === "text")),
     ).length,
-    threadKey: activeId ?? NEW_THREAD,
+    threadKey: activeId ?? connectRequestId ?? NEW_THREAD,
   });
 
-  const scroll = useStickToBottom(timeline.length + (job?.blocks.length ?? 0) + (job?.state ?? ""), activeId);
+  const scroll = useStickToBottom(
+    (connectionMode ? connectTimeline.length : timeline.length) +
+      (job?.blocks.length ?? 0) +
+      (job?.state ?? ""),
+    activeId,
+  );
   // Название экрана — «Чат», как у остальных вкладок; тема открытого чата — подзаголовок.
   const subtitle = activeThread && activeThread.title !== "Новый чат" ? activeThread.title : undefined;
 
@@ -240,7 +328,16 @@ export function ChatScreen() {
           subtitle={subtitle}
           trailing={
             <>
-              <ContextButton threadId={activeId} nowMs={nowMs} />
+              {connectionMode ? (
+                <ConnectionContext
+                  key={activeId ?? connectRequestId}
+                  threadId={activeId}
+                  runtime={runtime}
+                  job={job}
+                />
+              ) : (
+                <ContextButton threadId={activeId} nowMs={nowMs} />
+              )}
               <IconButton icon="stale" label="История чатов" onClick={() => setHistoryOpen(true)} />
               <IconButton icon="plus" label="Новый чат" onClick={startNewChat} />
             </>
@@ -250,19 +347,29 @@ export function ChatScreen() {
       composer={
         // Насест — верхняя кромка поля: слой Вари стоит в той же обёртке и едет вместе с полем над клавиатурой.
         <div className="relative">
-          <ChatComposer
-            value={draft}
-            onValueChange={setDraft}
-            onSend={send}
-            disabled={replying}
-            placeholder={
-              waitingForHuman
-                ? "Ответьте на вопрос выше"
-                : replying
-                  ? "Агент отвечает…"
-                  : "Спросите про пары и сроки"
-            }
-          />
+          {connectionMode ? (
+            <ConnectionComposer
+              key={activeId ?? connectRequestId}
+              threadId={activeId}
+              runtime={runtime}
+              job={job}
+              onTyping={setConnectTyping}
+            />
+          ) : (
+            <ChatComposer
+              value={draft}
+              onValueChange={setDraft}
+              onSend={send}
+              disabled={replying || Boolean(activeId && (runtimeResult.isPending || runtimeResult.isError))}
+              placeholder={
+                waitingForHuman
+                  ? "Ответьте на вопрос выше"
+                  : replying
+                    ? "Агент отвечает…"
+                    : "Спросите про пары и сроки"
+              }
+            />
+          )}
           <MascotDock {...mascot} />
         </div>
       }
@@ -276,13 +383,48 @@ export function ChatScreen() {
         <div
           className={`mx-auto flex min-h-full w-full max-w-col flex-col justify-end pt-4 ${showEmpty ? "pb-4" : "pb-10"}`}
         >
-          {resolving || (activeId && messagesResult.isPending && timeline.length === 0) ? (
+          {creatingConnection.isError && connectRequestId ? (
+            <div className="flex flex-col items-start gap-3">
+              <Banner tone="danger" icon="warning">
+                {humanMessage(creatingConnection.error)}
+              </Banner>
+              <Button
+                variant="secondary"
+                loading={creatingConnection.isFetching}
+                onClick={() => void creatingConnection.refetch()}
+              >
+                Открыть разговор
+              </Button>
+            </div>
+          ) : activeId && runtimeResult.isError ? (
+            <Banner tone="danger" icon="warning">
+              Не удалось открыть чат. {humanMessage(runtimeResult.error)}
+            </Banner>
+          ) : resolving ||
+            (activeId && (runtimeResult.isPending || messagesResult.isPending) && timeline.length === 0) ? (
             <SkeletonText lines={4} label="Загрузка чата" />
           ) : showEmpty ? (
             <EmptyChat
               suggestions={suggestions}
               noSpaces={directory.loaded && directory.none}
               onPick={send}
+            />
+          ) : connectionMode && runtime ? (
+            <ConnectTimeline
+              turns={connectTimeline}
+              runtime={runtime}
+              job={job}
+              nowMs={nowMs}
+              timeZone={timeZone}
+              onChanged={refreshConnection}
+              restarting={reconnect.isPending}
+              onRestart={() => {
+                if (runtime.connection)
+                  reconnect.mutate({
+                    connectionId: runtime.connection.id,
+                    spaceTitle: runtime.connection.title,
+                  });
+              }}
             />
           ) : (
             <TimelineView items={timeline} job={job} nowMs={nowMs} timeZone={timeZone} />
