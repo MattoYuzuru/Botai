@@ -21,6 +21,7 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from botai.browser.probe import requires_authentication
+from botai.browser.session import ObservationSecretBrowser
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
 from botai.core.diagnostics import diagnostic_event, url_facts
@@ -204,8 +205,12 @@ async def protect_observation(handle: BrowserHandle, redactor: Redactor) -> None
     """Refresh the in-memory secret deny-set before any DOM/response is shaped for a prompt."""
     try:
         async with asyncio.timeout(SESSION_CAPTURE_SECONDS):
-            state = await handle.export_session()
-        redactor.protect_session(state)
+            if isinstance(handle, ObservationSecretBrowser):
+                values = await handle.observation_secrets()
+                redactor.protect_values(value.get_secret_value() for value in values)
+            else:
+                state = await handle.export_session()
+                redactor.protect_session(state)
     except Exception:
         diagnostic_event("observe.network_failed", reason="network_log_failed")
         raise BotaiError(

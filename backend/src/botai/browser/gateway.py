@@ -43,7 +43,16 @@ from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
 from botai.browser.read_views import ReadView, ReadViewRegistry
-from botai.browser.session import bounded_browser_storage, jwt_expiry, storage_origin
+from botai.browser.session import (
+    MAX_STORAGE_BYTES,
+    MAX_STORAGE_ENTRIES,
+    MAX_STORAGE_KEY_CHARS,
+    MAX_STORAGE_ORIGINS,
+    MAX_STORAGE_VALUE_CHARS,
+    bounded_browser_storage,
+    jwt_expiry,
+    storage_origin,
+)
 from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
@@ -88,18 +97,21 @@ _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
 }
 _SESSION_STORAGE_JS = """() => {
   const items = [];
-  let size = 0;
+  let size = 0, complete = true;
   try {
+    if (sessionStorage.length > 64) complete = false;
     for (let i = 0; i < sessionStorage.length && items.length < 64; i++) {
       const name = sessionStorage.key(i);
-      if (!name || name.length > 256) continue;
+      if (!name || name.length > 256) { complete = false; continue; }
       const value = sessionStorage.getItem(name);
-      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) continue;
+      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) {
+        complete = false; continue;
+      }
       items.push({name, value});
       size += name.length + value.length;
     }
-  } catch (_) {}
-  return {origin: location.origin, items};
+  } catch (_) { complete = false; }
+  return {origin: location.origin, items, complete};
 }"""
 _RESTORE_SESSION_STORAGE_JS = """(() => {
   const origins = JSON.parse(__BOTAI_STORAGE_DATA__);
@@ -246,6 +258,9 @@ class PlaywrightHandle:
         self._sampled = 0
         self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
+        self._observation_bearers: set[str] = set()
+        self._observation_bearer_bytes = 0
+        self._secret_inventory_failed = False
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
         self._navigation_request: Request | None = None
@@ -318,7 +333,22 @@ class PlaywrightHandle:
             self._visited.setdefault(host.lower(), None)
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("bearer ") and host.lower() in self.allow_hosts:
-                self._bearer[host.lower()] = auth[7:].strip()
+                token = auth[7:].strip()
+                self._bearer[host.lower()] = token
+                if token not in self._observation_bearers:
+                    try:
+                        size = len(token.encode("utf-8"))
+                    except UnicodeError:
+                        self._secret_inventory_failed = True
+                    else:
+                        if (
+                            len(self._observation_bearers) >= 4096
+                            or self._observation_bearer_bytes + size > 1_048_576
+                        ):
+                            self._secret_inventory_failed = True
+                        else:
+                            self._observation_bearers.add(token)
+                            self._observation_bearer_bytes += size
         if request.resource_type not in _OBSERVED_TYPES or len(self._log) >= MAX_LOG:
             return
         entry = ObservedRequest(
@@ -625,6 +655,76 @@ class PlaywrightHandle:
                 if isinstance(value, str) and value:
                     return value
         return None
+
+    async def observation_secrets(self) -> tuple[SecretStr, ...]:
+        """Complete in-memory inventory for prompt redaction, never a restorable session.
+
+        Vault exports remain bounded and can omit unsupported entries. Observation instead
+        refuses any incomplete inventory, and includes every tab store and bearer rotation.
+        The caller applies its two-second deadline and the cumulative redaction byte bound.
+        """
+        try:
+            if self._secret_inventory_failed:
+                raise ValueError("incomplete bearer inventory")
+            values = [SecretStr(value) for value in self._observation_bearers]
+            for cookie in await self.context.cookies():
+                domain, value = cookie.get("domain"), cookie.get("value")
+                if not isinstance(domain, str) or not isinstance(value, str):
+                    raise ValueError("incomplete cookie inventory")
+                if _host_matches(domain, self.allow_hosts):
+                    values.append(SecretStr(value))
+            origins: set[str] = set()
+            storage_bytes = 0
+
+            def record(rows: Any, origin: str) -> None:
+                nonlocal storage_bytes
+                if not isinstance(rows, list) or len(rows) > MAX_STORAGE_ENTRIES:
+                    raise ValueError("incomplete storage inventory")
+                if rows:
+                    origins.add(origin)
+                    if len(origins) > MAX_STORAGE_ORIGINS:
+                        raise ValueError("storage origin budget")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError("invalid storage inventory")
+                    key, value = row.get("name"), row.get("value")
+                    if (
+                        not isinstance(key, str)
+                        or not key
+                        or len(key) > MAX_STORAGE_KEY_CHARS
+                        or not isinstance(value, str)
+                        or len(value) > MAX_STORAGE_VALUE_CHARS
+                    ):
+                        raise ValueError("unsupported storage entry")
+                    storage_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+                    if storage_bytes > MAX_STORAGE_BYTES:
+                        raise ValueError("storage byte budget")
+                    values.append(SecretStr(value))
+
+            state = await self.context.storage_state()
+            for item in state.get("origins", []):
+                origin = storage_origin(item["origin"], self.allow_hosts)
+                if origin is not None:
+                    record(item["localStorage"], origin)
+            for page in self.context.pages:
+                origin = storage_origin(page.url, self.allow_hosts)
+                if origin is None:
+                    continue
+                raw: Any = await page.evaluate(_SESSION_STORAGE_JS)
+                if (
+                    not isinstance(raw, dict)
+                    or raw.get("complete") is not True
+                    or raw.get("origin") != origin
+                ):
+                    raise ValueError("incomplete tab storage inventory")
+                # Session storage belongs to a tab, so two stores at one origin must both
+                # be protected instead of overwriting one another in a SessionState map.
+                record(raw.get("items"), origin)
+            return tuple(values)
+        except Exception:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Не удалось полностью защитить состояние браузера"
+            ) from None
 
     async def export_session(self) -> SessionState:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single

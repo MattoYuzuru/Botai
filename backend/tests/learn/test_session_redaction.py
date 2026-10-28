@@ -33,6 +33,91 @@ from tests.sources.support import FakeSessions
 ORIGIN = "https://fakeuni.test"
 
 
+def protected_shapes() -> Redactor:
+    state = SessionState(
+        origin=ORIGIN,
+        captured_at=NOW,
+        cookies=[
+            SessionCookie(name="sid", domain="fakeuni.test", value=SecretStr("opaqueprivatecookie"))
+        ],
+        browser_storage=[
+            SessionOriginStorage(
+                origin=ORIGIN,
+                local_storage={
+                    "neutral": SecretStr(
+                        json.dumps(
+                            {
+                                "neutral": 4321,
+                                "when": "2026-10-29",
+                                "timestamp": 1_800_000_000,
+                            }
+                        )
+                    )
+                },
+            )
+        ],
+    )
+    redactor = Redactor()
+    redactor.protect_session(state)
+    return redactor
+
+
+@pytest.mark.parametrize("value", [4321, 1_800_000_000, "2026-10-29"])
+def test_protected_json_scalar_overrides_numeric_date_and_timestamp_shapes(value: object) -> None:
+    redactor = protected_shapes()
+    assert str(value) not in redactor.json_text({"neutral": value}, 1000)
+
+
+@pytest.mark.parametrize(
+    "encoded", ["opaqueprivatecookie", "%6fpaqueprivatecookie", "%256fpaqueprivatecookie"]
+)
+def test_protected_values_in_url_paths_query_keys_and_json_keys_are_removed(encoded: str) -> None:
+    redactor = protected_shapes()
+    assert encoded not in redactor.url(ORIGIN + "/data/" + encoded, ORIGIN)
+    assert encoded not in redactor.url(ORIGIN + "/data?" + encoded + "=ordinary", ORIGIN)
+    assert encoded not in redactor.json_text({encoded: "ordinary"}, 1000)
+    assert encoded not in (redactor.text(encoded) or "")
+    for rendered in (
+        redactor.url(ORIGIN + "/data/" + encoded, ORIGIN),
+        redactor.json_text({encoded: "ordinary"}, 1000),
+    ):
+        assert "opaqueprivatecookie" not in rendered
+        assert "<secret>" in rendered
+
+
+@pytest.mark.parametrize("value", ["4321", "%34%33%32%31", "2026-10-29", "1800000000"])
+def test_protected_query_values_are_checked_before_public_number_or_date_fast_paths(
+    value: str,
+) -> None:
+    shown = protected_shapes().url(ORIGIN + "/data?neutral=" + value, ORIGIN)
+    assert value not in shown
+    assert "<secret>" in shown
+
+
+def test_protected_html_date_and_relative_href_are_checked_before_truncation() -> None:
+    shown = protected_shapes().html(
+        '<main><time datetime="2026-10-29">Дата</time>'
+        '<a href="relative/opaqueprivatecookie">Ссылка</a></main>'
+    )
+    assert "2026-10-29" not in shown
+    assert "opaqueprivatecookie" not in shown
+
+
+def test_plain_and_encoded_credentials_in_one_value_are_both_removed() -> None:
+    redactor = protected_shapes()
+    value = "opaqueprivatecookie-%34%33%32%31"
+    assert redactor.text(value) == "<secret>"
+    assert redactor.url(ORIGIN + "/data?neutral=" + value, ORIGIN) == "/data?neutral=<secret>"
+
+
+def test_session_redaction_budget_counts_utf8_bytes() -> None:
+    state = session("small")
+    state.browser_storage[0].local_storage = {"neutral": SecretStr("я" * 524_289)}
+    with pytest.raises(BotaiError) as error:
+        Redactor().protect_session(state)
+    assert error.value.code == ErrorCode.SOURCE_UNAVAILABLE
+
+
 def markers(generation: str) -> tuple[str, ...]:
     return tuple(f"opaque-{kind}-{generation}" for kind in ("cookie", "bearer", "local", "session"))
 
