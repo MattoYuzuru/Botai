@@ -101,7 +101,7 @@ compose), Explorer, sync, repair, домен и чат. Студента игр�
 | Персональная область общей спецификации | `tests/learn/test_explorer.py`, `tests/sources/test_scope.py`: shared recipe, новый более широкий рецепт, ограниченный fetch/canary, повторная проверка при записи |
 | Миграция и откат схемы | `tests/db/test_data_scope_migration.py`: существующие строки, nullable scope, downgrade/re-upgrade только во временной БД |
 | Exa → DeepSeek, 429, кредиты, timeout, оба отказали | `tests/search/test_search.py`: транспорт мокается, ключи не нужны; retries/cooldown/deadline и лимиты проверяются отдельно |
-| Поиск в настоящем цикле и недоверенная выдача | `tests/agent/test_public_search_flow.py`: харнес, цитаты, затраты и injection audit; CONNECT-кандидаты — `tests/jobs/test_conversations.py` |
+| Поиск в настоящем цикле и недоверенная выдача | `tests/agent/test_public_search_flow.py`: харнес, цитаты, затраты и injection audit; CONNECT-кандидаты — `tests/learn/test_public_search.py` |
 | Сброс аккаунта и старая очередь клиента | `tests/auth/test_data_reset.py`, frontend `data-reset.test.ts`, `outbox.test.ts`, `sw/core.test.ts`: owner scope, live identity, in-flight ответы, соседние вкладки |
 | Диагностика и выпуск | `tests/ops/test_deploy_diagnostics.py` и `tests/*/test_diagnostics.py`: keep/on/off, отказ/откат, identity образа и шифрованная точка восстановления |
 
@@ -110,9 +110,12 @@ compose), Explorer, sync, repair, домен и чат. Студента игр�
 Chromium, web lint/types/tests/build, PWA Playwright, генерация контрактов и guards.
 L2 без явного опт-ина пропускается с причиной; эти skips не являются проверкой живой модели.
 
-**Приёмка текущего выпуска:** итоговый SHA, ссылка на полный CI, фактическая версия
-production и результаты production-smoke заполняются лидом после интеграции. Пока эти
-поля не заполнены, новая версия не считается подтверждённой этим документом.
+Для конкретного выпуска доказательствами служат зелёный run `ci` того же полного SHA,
+run `deploy` и операторская сверка `org.opencontainers.image.revision` всех трёх сервисов.
+Ссылки на эти runs, результаты production-smoke и адресной очистки сохраняются в описании
+PR и отчёте выпуска. [Текущие запуски CI](https://github.com/MattoYuzuru/Botai/actions/workflows/ci.yml)
+и [выкладки](https://github.com/MattoYuzuru/Botai/actions/workflows/deploy.yml) не заменяют
+сверку SHA: новый commit или старый зелёный run сами по себе production не подтверждают.
 
 Живой проход настоящего вуза остаётся **не проверен** разработчиком. Подготовка для
 владельца: включить `diagnostics=on`, открыть пустой аккаунт на новом выпуске, написать
