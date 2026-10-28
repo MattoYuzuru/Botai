@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from tests.fakeuni import api, login, pages
+from tests.fakeuni import api, deep, login, pages
 
 
 def create_fakeuni() -> FastAPI:
     app = FastAPI(title="fakeuni")
-    for r in (login.router, api.router, pages.router):
+    for r in (login.router, api.router, pages.router, deep.router):
         app.include_router(r)
     return app

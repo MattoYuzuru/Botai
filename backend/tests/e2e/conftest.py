@@ -35,6 +35,7 @@ from tests.browser.conftest import (  # noqa: F401  (fixtures)
 from tests.browser.test_login import FAST
 from tests.e2e.support import PROXY_MASTER, ProxyProcess, Stack, WireTap
 from tests.fakeuni import api as fakeuni_api
+from tests.fakeuni import deep as deep_fakeuni
 from tests.fakeuni import login as fakeuni_login
 from tests.jobs.env import Env, env  # noqa: F401  (fixture)
 
@@ -43,11 +44,13 @@ from tests.jobs.env import Env, env  # noqa: F401  (fixture)
 def _fresh_fakeuni(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test meets the university as it starts: nobody logged in, the code is asked."""
     fakeuni_api.reset()
+    deep_fakeuni.reset()
     fakeuni_login.SESSIONS.clear()
     fakeuni_login.ATTEMPTS.clear()
     monkeypatch.setattr(fakeuni_login, "OTP_REQUIRED", True)
     yield
     fakeuni_api.reset()
+    deep_fakeuni.reset()
     fakeuni_login.SESSIONS.clear()
     fakeuni_login.ATTEMPTS.clear()
 
