@@ -169,6 +169,20 @@ describe("какие запросы service worker трогает", () => {
 });
 
 describe("«сеть, затем снимок»", () => {
+  it("no-store проверяет живую сессию и не разрешает отправку очереди по offline-снимку", async () => {
+    let online = true;
+    const { deps, settle } = setup(async () => {
+      if (!online) throw new TypeError("Failed to fetch");
+      return json({ user: { id: "old-owner" } });
+    });
+    await networkFirstSnapshot(get("/api/v1/me"), deps);
+    await settle();
+    online = false;
+    const request = new Request(`${ORIGIN}/api/v1/me`, { cache: "no-store" });
+    await expect(networkFirstSnapshot(request, deps)).rejects.toThrow("Failed to fetch");
+    const offline = await networkFirstSnapshot(get("/api/v1/me"), deps);
+    expect(offline.headers.get(SNAPSHOT_HEADER)).not.toBeNull();
+  });
   it("живой ответ идёт на страницу как есть и ложится в кэш с отметкой времени", async () => {
     const { deps, caches, settle } = setup(async () => json({ date: "2026-10-27" }));
     const response = await networkFirstSnapshot(get("/api/v1/today"), deps);

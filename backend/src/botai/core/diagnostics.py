@@ -30,7 +30,7 @@ _IDS = {"job_id", "connection_id", "thread_id", "message_id", "block_id", "reque
 _ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}\Z")
 _HEX = re.compile(r"[0-9a-f]{16}\Z")
 _EVENT = re.compile(
-    r"(?:diagnostics|http|job|dialogue|chat|llm|browser|auth|learn|observe|canary|egress)\.[a-z_.]{1,64}\Z"
+    r"(?:diagnostics|http|job|dialogue|chat|llm|browser|auth|learn|observe|canary|egress|search)\.[a-z_.]{1,64}\Z"
 )
 _NUMBERS = set(
     [
@@ -181,6 +181,8 @@ _BOOLEANS = set(
 )
 _CODES: dict[str, set[str]] = {
     "stop_reason": {
+        "navigation_failed",
+        "network_log_failed",
         "finished",
         "authentication",
         "empty",
@@ -232,6 +234,19 @@ _CODES: dict[str, set[str]] = {
         "answer",
     },
     "reason": {
+        "missing_key",
+        "invalid_key",
+        "invalid_config",
+        "invalid_response",
+        "credits_exhausted",
+        "rate_limited",
+        "unavailable",
+        "cooldown",
+        "deadline",
+        "call_budget",
+        "cost_budget",
+        "unsafe_query",
+        "disabled",
         "navigation_failed",
         "network_log_failed",
         "invalid_json",
@@ -287,6 +302,7 @@ _CODES: dict[str, set[str]] = {
         "warning",
     },
     "purpose": {"classify", "chat", "learn", "repair", "extract"},
+    "provider": {"exa", "deepseek"},
     "error_code": {code.value for code in ErrorCode},
     "lint_code": set(
         [

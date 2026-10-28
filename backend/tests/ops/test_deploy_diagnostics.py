@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,12 @@ if args[0] == 'login':
     sys.stdin.read()
 elif args[0] == 'compose':
     failure = os.environ.get('FAIL_AT')
+    if 'ps' in args and os.environ.get('HAS_POSTGRES'):
+        print('fixture-postgres-id')
+    if 'pg_dump' in args:
+        if failure == 'backup':
+            sys.exit(1)
+        sys.stdout.buffer.write(b'fixture-database-recovery-point')
     if 'pull' in args and failure == 'pull':
         sys.exit(1)
     if 'migrate' in args and failure == 'migration':
@@ -38,6 +45,8 @@ elif args[0] == 'compose':
             sys.exit(1)
 elif args[:2] == ['image', 'ls']:
     print('0123456789ab 2026-10-28 00:00:00')
+elif args[:2] == ['image', 'inspect']:
+    print(os.environ.get('IMAGE_REVISION', ''))
 """
 CURL = """#!/usr/bin/env python3
 import os, sys
@@ -59,7 +68,7 @@ class Deployment:
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(  # noqa: S603 - controlled script and fake subprocess environment
             ["/bin/bash", str(self.script), *args],
-            input="fixture-user\nfixture-registry-secret\nfixture-model-secret\n",
+            input="fixture-user\nfixture-registry-secret\nfixture-model-secret\nfixture-search-secret\n",
             env=self.env,
             capture_output=True,
             text=True,
@@ -72,7 +81,12 @@ class Deployment:
 def deployment(tmp_path: Path) -> Deployment:
     commands = tmp_path / "bin"
     commands.mkdir()
-    for name, script in {"docker": DOCKER, "curl": CURL, "sleep": "#!/bin/sh\nexit 0\n"}.items():
+    for name, script in {
+        "docker": DOCKER,
+        "curl": CURL,
+        "sleep": "#!/bin/sh\nexit 0\n",
+        "flock": "#!/bin/sh\nexit 0\n",
+    }.items():
         path = commands / name
         path.write_text(script)
         path.chmod(0o700)
@@ -115,7 +129,73 @@ def test_toggle_preserves_or_changes_server_mode(
     assert "POSTGRES_PASSWORD=fixture-db-secret\n" in variables
     assert "fixture-registry-secret" not in result.stdout + result.stderr
     assert "fixture-model-secret" not in result.stdout + result.stderr
+    assert "fixture-search-secret" not in result.stdout + result.stderr
     assert not list(deployment.root.glob(".compose.vars.rollback.*"))
+
+
+def test_search_key_is_delivered_without_overwriting_vault_or_duplicate_keys(
+    deployment: Deployment,
+) -> None:
+    secrets = deployment.root / "app.secrets"
+    secrets.write_text("BOTAI_KEK=fixture-key\nEXA_API_KEY=old-search-secret\n")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    assert secrets.read_text() == (
+        "BOTAI_KEK=fixture-key\nDEEPSEEK_API_KEY=fixture-model-secret\n"
+        "EXA_API_KEY=fixture-search-secret\n"
+    )
+    assert secrets.stat().st_mode & 0o777 == 0o600
+    assert "fixture-search-secret" not in result.stdout + result.stderr
+
+
+def test_image_revision_must_match_checked_source_before_migration(deployment: Deployment) -> None:
+    revision = NEW_TAG + "0" * 28
+    deployment.env["IMAGE_REVISION"] = "f" * 40
+    result = deployment.run(NEW_TAG, "keep", revision)
+    assert result.returncode == 1
+    assert "image revision mismatch" in result.stderr
+    commands = (deployment.root / "commands.jsonl").read_text()
+    assert '"migrate"' not in commands
+    assert (deployment.root / "compose.vars").read_text() == deployment.original
+
+
+def test_database_recovery_point_is_encrypted_and_key_is_separate(deployment: Deployment) -> None:
+    deployment.env["HAS_POSTGRES"] = "1"
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    backup = next((deployment.root / "backups").glob("*.dump.enc"))
+    key = next((deployment.root / ".rollback-keys").glob("*.key"))
+    assert len(key.read_text().strip()) == 64
+    assert b"fixture-database-recovery-point" not in backup.read_bytes()
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    restored = subprocess.run(  # noqa: S603 - fixed executable and test-generated paths
+        [
+            openssl,
+            "enc",
+            "-d",
+            "-aes-256-cbc",
+            "-pbkdf2",
+            "-pass",
+            f"file:{key}",
+            "-in",
+            str(backup),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    assert restored.stdout == b"fixture-database-recovery-point"
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert backup.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_database_backup_blocks_migration(deployment: Deployment) -> None:
+    deployment.env.update(HAS_POSTGRES="1", FAIL_AT="backup")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 1
+    assert "database backup" in result.stderr
+    assert '"migrate"' not in (deployment.root / "commands.jsonl").read_text()
+    assert (deployment.root / "compose.vars").read_text() == deployment.original
 
 
 def test_omitted_mode_defaults_to_keep(deployment: Deployment) -> None:

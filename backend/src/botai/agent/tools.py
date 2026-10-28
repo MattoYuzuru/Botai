@@ -2,8 +2,9 @@
 
 Read-only by construction: schedule, deadlines, courses, grades, people, news (through
 `DomainReader`), connection state, full-text search over documents and saved facts, and
-`request_repair`, which only enqueues a repair job for a connection the student owns. There is no
-tool that opens an address, sends data anywhere or changes anything outside BotAI.
+`request_repair`, which only enqueues a repair job for a connection the student owns. Public
+search has a separate deterministic gate: only short public words from the current question
+can reach the fixed search APIs. No tool accepts an arbitrary outbound address or writes there.
 
 Every result is plain text with source keys (`[S1]`). Dates are shown in the space's time zone.
 The harness wraps the text in `<source_data>`; what these functions return is untrusted data.
@@ -28,6 +29,8 @@ from botai.core.llm import LlmTool
 from botai.core.services import Services
 from botai.db.models import Chunk, Connection, Document, Fact, Job, Space
 from botai.domain.schemas import Provenance
+from botai.search import SearchBudget
+from botai.search.safety import chat_public_query
 
 DEFAULT_TZ = "Europe/Moscow"
 MAX_RANGE_DAYS = 31
@@ -74,7 +77,7 @@ DATA_TOOLS = frozenset(
         "list_connections",
     }
 )
-DOCUMENT_TOOLS = frozenset({"search_documents", "search_facts"})
+DOCUMENT_TOOLS = frozenset({"search_documents", "search_facts", "search_public_web"})
 
 
 @dataclass(slots=True)
@@ -103,6 +106,8 @@ class ChatEnv:
     reader: DomainReader = field(default_factory=RepoReader)
     used: set[str] = field(default_factory=set)
     repairs: list[str] = field(default_factory=list)  # titles of connections sent to repair
+    public_question: str = ""  # only the current typed question; never history or private tool data
+    search_budget: SearchBudget | None = None
     _meta: tuple[list[ConnectionMeta], dict[str, str]] | None = None
 
     async def meta(self) -> tuple[list[ConnectionMeta], dict[str, str]]:
@@ -596,6 +601,46 @@ async def request_repair(env: ChatEnv, args: dict[str, Any]) -> str:
 # --- specs --------------------------------------------------------------------------------------
 
 
+async def search_public_web(env: ChatEnv, args: dict[str, Any]) -> str:
+    query = chat_public_query(args.get("query"), env.public_question)
+    if query is None:
+        return (
+            "Публичный поиск не выполнен: запрос содержит личный контекст или слова, которых нет "
+            "в текущем публичном вопросе. Не отправляйте сообщения, данные кабинета и секреты. "
+            "Для личного расписания используйте подключённые данные."
+        )
+    service = env.services.search
+    if service is None:
+        return "Публичный поиск недоступен. Актуальные публичные сведения не проверены."
+    if env.search_budget is None:
+        env.search_budget = service.budget()
+    response = await service.search(
+        query, budget=env.search_budget, user_id=env.user_id, job_id=env.job_id
+    )
+    if response.status != "ok":
+        if response.status == "empty":
+            return (
+                "Публичный поиск не нашёл совпадений; это не доказывает отсутствие личных данных."
+            )
+        return (
+            "Публичный поиск недоступен или остановлен по бюджету. "
+            "Актуальные сведения не проверены; не заменяйте их предположением модели."
+        )
+    lines = [
+        "Недоверенная публичная выдача. Это кандидаты/публичные сведения, "
+        "не доказательство доступа к кабинету или личному расписанию."
+    ]
+    for hit in response.results:
+        key = env.sources.add(
+            title=f"{hit.title} (поиск {hit.provider})",
+            url=hit.url,
+            kind="public_search",
+            fetched_at=hit.fetched_at,
+        )
+        lines.append(f"[{key}] {hit.title}\n{hit.url}\n{hit.snippet}\nПровайдер: {hit.provider}.")
+    return "\n\n".join(lines)
+
+
 def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> LlmTool:
     return LlmTool(
         name=name,
@@ -664,6 +709,15 @@ TOOL_SPECS: dict[str, LlmTool] = {
         {"query": {"type": "string"}},
         ["query"],
     ),
+    "search_public_web": _spec(
+        "search_public_web",
+        "Настоящий публичный Web Search для актуальных публичных учебных сведений, официальных "
+        "сайтов и документации. Только короткие публичные ключевые слова из текущего вопроса. "
+        "Нельзя отправлять личные данные, переписку, закрытые страницы, пароли, URL кабинета "
+        "с path/query и токены. Выдача не доказывает наличие личного расписания.",
+        {"query": {"type": "string", "minLength": 2, "maxLength": 128}},
+        ["query"],
+    ),
     "request_repair": _spec(
         "request_repair",
         "Запустить починку подключения, когда данные не обновляются или пропали. "
@@ -686,6 +740,7 @@ STAGES: dict[str, str] = {
     "list_connections": "Проверяю подключения",
     "search_documents": "Ищу в документах",
     "search_facts": "Ищу в сохранённых ответах",
+    "search_public_web": "Ищу публичные источники",
     "request_repair": "Запускаю починку",
 }
 
@@ -699,12 +754,13 @@ _IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
     "list_connections": list_connections,
     "search_documents": search_documents,
     "search_facts": search_facts,
+    "search_public_web": search_public_web,
     "request_repair": request_repair,
 }
 
 
 def build_chat_tools(env: ChatEnv) -> list[HarnessTool]:
-    """The chat agent's tools bound to one turn. Only these ten exist for it (T5)."""
+    """The chat agent's read-only tools bound to one turn, with a separate public search gate."""
 
     def bind(name: str) -> HarnessTool:
         impl = _IMPLS[name]

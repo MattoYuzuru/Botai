@@ -9,7 +9,7 @@ Three small, deterministic defences used by the harness around every tool result
 * `scrub_secrets` - password/cookie/token shaped strings never reach the model (NFR-004).
 
 These are defence in depth. The structural guarantees are elsewhere: the chat agent has read-only
-tools and no tool that sends data anywhere (security.md T5).
+tools, no arbitrary outbound address, and a separate public-query gate before search (T5).
 """
 
 from __future__ import annotations

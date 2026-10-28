@@ -19,10 +19,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
+from botai.core.browser import SessionState
+from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.extract import clean_text, collapse
 
 MAX_STRING = 120
@@ -92,6 +94,63 @@ class Redactor:
     pseudonyms: dict[str, str] = field(default_factory=dict, repr=False)
     injections: int = 0
     observed: set[str] = field(default_factory=set, repr=False)  # raw values, for the lint
+    secrets: set[str] = field(default_factory=set, repr=False)
+
+    def protect_session(self, state: SessionState) -> None:
+        """Remember exact session values, including structured storage, only for redaction.
+
+        The cumulative bound covers refreshes during this observation. Exceeding it fails
+        closed; no partially protected observation may be handed to the model.
+        """
+        values = [cookie.value.get_secret_value() for cookie in state.cookies]
+        if state.bearer is not None:
+            values.append(state.bearer.get_secret_value())
+        for origin in state.browser_storage:
+            for store in (origin.local_storage, origin.session_storage):
+                values.extend(value.get_secret_value() for value in store.values())
+        self.protect_values(values)
+
+    def protect_values(self, values: Iterable[str]) -> None:
+        """The private browser inventory can include several tab stores and bearer rotations."""
+        pending: list[Any] = list(values)
+        examined = 0
+        secret_bytes = sum(self._secret_bytes(secret) for secret in self.secrets)
+        while pending:
+            examined += 1
+            if examined > 100_000:
+                raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Состояние сессии слишком сложное")
+            value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                pending.append(str(value))
+            elif isinstance(value, str) and value:
+                added = {value, collapse(value)} - {""} - self.secrets
+                self.secrets.update(added)
+                secret_bytes += sum(self._secret_bytes(secret) for secret in added)
+                self.observed.add(value)
+                if value.lstrip().startswith(("{", "[")):
+                    try:
+                        pending.append(json.loads(value))
+                    except (ValueError, RecursionError):
+                        # The complete opaque value remains protected; malformed structured
+                        # state cannot safely expose arbitrary decoded fragments.
+                        raise BotaiError(
+                            ErrorCode.SOURCE_UNAVAILABLE, "Не удалось защитить состояние сессии"
+                        ) from None
+            if len(self.secrets) > 4096 or secret_bytes > 1_048_576:
+                raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Состояние сессии слишком большое")
+
+    @staticmethod
+    def _secret_bytes(value: str) -> int:
+        try:
+            return len(value.encode("utf-8"))
+        except UnicodeError:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Не удалось защитить состояние сессии"
+            ) from None
 
     # --- setup -------------------------------------------------------------------------------
 
@@ -127,7 +186,25 @@ class Redactor:
         value = self._scrub(value)
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
+    def _secret_text(self, value: str) -> str | None:
+        """Protect exact values before shape/type fast paths, including percent encodings."""
+        candidate = value
+        for _ in range(4):
+            for secret in sorted(self.secrets, key=len, reverse=True):
+                if len(secret) >= 3:
+                    if secret in candidate:
+                        return "<secret>"
+                elif re.search(r"(?<!\w)" + re.escape(secret) + r"(?!\w)", candidate):
+                    return "<secret>"
+            decoded = unquote(candidate)
+            if decoded == candidate:
+                return None
+            candidate = decoded
+        # More layers than the bounded decoder can inspect are not safe prompt material.
+        return "<encoded>"
+
     def _scrub(self, value: str) -> str:
+        value = self._secret_text(value) or value
         for known in sorted(self.known, key=len, reverse=True):
             if known in value:
                 self.observed.add(known)
@@ -156,6 +233,9 @@ class Redactor:
 
     def _digits(self, match: re.Match[str]) -> str:
         raw = match.group(0)
+        protected = self._secret_text(raw)
+        if protected is not None:
+            return protected
         self.observed.add(raw)
         if len(raw) in (10, 13) and UNIX_RANGE[0] <= int(raw[:10]) <= UNIX_RANGE[1]:
             return raw  # a timestamp: the model needs its format, it identifies nobody
@@ -170,7 +250,10 @@ class Redactor:
         same = not parts.netloc or f"{parts.scheme}://{parts.netloc}" == origin
         segments = []
         for seg in parts.path.split("/"):
-            if seg and ID_SEGMENT.match(seg):
+            protected = self._secret_text(seg)
+            if protected is not None:
+                segments.append(protected)
+            elif seg and ID_SEGMENT.match(seg):
                 segments.append(self.pseudonym(seg))
             else:
                 segments.append(seg)
@@ -181,12 +264,17 @@ class Redactor:
             for key, value in parse_qsl(parts.query, keep_blank_values=True):
                 self.observed.add(value)
                 shown = self._query_value(key, value)
-                pairs.append(f"{key}={shown}")
+                pairs.append(f"{self._secret_text(key) or key}={shown}")
             query = "?" + "&".join(pairs)
         scheme = f"{parts.scheme}:" if parts.scheme else ""  # `//cdn.other.test/x` has none
-        return (path if same else f"{scheme}//{parts.hostname}{path}") + query
+        hostname = parts.hostname or ""
+        hostname = self._secret_text(hostname) or hostname
+        return (path if same else f"{scheme}//{hostname}{path}") + query
 
     def _query_value(self, key: str, value: str) -> str:
+        protected = self._secret_text(value)
+        if protected is not None:
+            return protected
         if secret_query_key(key):
             return "<personal>"
         if value in self.pseudonyms:
@@ -202,7 +290,8 @@ class Redactor:
             return "<deep>"
         if isinstance(node, dict):
             return {
-                str(k)[:60]: self.json(v, depth + 1, str(k)) for k, v in list(node.items())[:40]
+                (self._secret_text(str(k)) or str(k))[:60]: self.json(v, depth + 1, str(k))
+                for k, v in list(node.items())[:40]
             }
         if isinstance(node, list):
             kept = [self.json(v, depth + 1, key) for v in node[:MAX_ITEMS]]
@@ -210,12 +299,21 @@ class Redactor:
                 kept.append(f"<+{len(node) - MAX_ITEMS} more>")
             return kept
         if isinstance(node, bool) or node is None:
+            protected = self._secret_text(json.dumps(node))
+            if protected is not None:
+                return protected
             return node
         if isinstance(node, (int, float)):
+            protected = self._secret_text(str(node))
+            if protected is not None:
+                return protected
             if ID_KEY.search(key) and not PERSONAL_KEYS.search(key):
                 return self.pseudonym(str(node))
             return self._number(node, key)
         if isinstance(node, str):
+            protected = self._secret_text(node)
+            if protected is not None:
+                return protected
             if PERSONAL_KEYS.search(key):
                 self.observed.add(node)
                 return "<personal>"
@@ -226,6 +324,9 @@ class Redactor:
         return None
 
     def _number(self, value: int | float, key: str) -> Any:
+        protected = self._secret_text(str(value))
+        if protected is not None:
+            return protected
         self.observed.add(str(value))
         if PERSONAL_KEYS.search(key):
             return "<personal>"
@@ -342,6 +443,8 @@ class Redactor:
             return ""
         if tag in {"-comment", "#comment", "-undef"}:
             return ""
+        if self._secret_text(tag) is not None:
+            tag = "redacted"
         children = list(node.iter(include_text=True))
         elements = [child for child in children if child.tag not in {"-text", "#text"}]
         # Pure layout wrappers carry neither a selector nor useful text. Skip them rather than
@@ -360,7 +463,10 @@ class Redactor:
             value = node.attributes.get(name)
             if value is None:
                 continue
-            if name == "href":
+            protected = self._secret_text(value)
+            if protected is not None:
+                value = protected
+            elif name == "href":
                 value = self.url(value, "") if value.startswith(("/", "http")) else value[:40]
             elif name in {"datetime"}:
                 value = value[:30]
@@ -372,7 +478,8 @@ class Redactor:
         for name, value in node.attributes.items():
             if name.startswith("data-") and name != "data-id" and value:
                 shown = self.pseudonym(value) if ID_LIKE.match(value) else self._scrub(value)[:30]
-                attrs.append(f'{name}="{escape(shown, quote=True)}"')
+                safe_name = self._secret_text(name) or name
+                attrs.append(f'{escape(safe_name, quote=True)}="{escape(shown, quote=True)}"')
         opening = f"<{tag}{' ' + ' '.join(attrs) if attrs else ''}>"
         closing = f"</{tag}>"
         remaining = budget - len(opening) - len(closing)

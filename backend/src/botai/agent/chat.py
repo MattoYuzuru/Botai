@@ -222,6 +222,7 @@ async def handle_chat(
         thread_id=thread_id,
         job_id=ctx.job_id,
         space_id=thread.space_id,
+        public_question=question.text,
     )
     if reader is not None:
         env.reader = reader

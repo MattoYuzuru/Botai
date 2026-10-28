@@ -1,6 +1,6 @@
 # Навигатор по документации
 
-Состояние проекта: реализация MVP, 2026-10-27.
+Состояние проекта: код MVP существует, текущая интеграция проходит приёмку, 2026-10-29.
 Первая точка входа — [README](../README.md), первое действие владельца —
 [вопросы](../QUESTIONS.md).
 
@@ -19,6 +19,9 @@
 | Харнес агента, профили рассуждения | [agent-harness.md](architecture/agent-harness.md), [бенчмарк](plan/benchmark.md) |
 | Деплой на сервер | [deployment.md](plan/deployment.md) |
 | Написать тест, использовать ключ модели | [Тесты и ключ модели](development/testing.md) |
+| Публичный Web Search, провайдеры и ключи | [Публичный поиск](development/public-search.md) |
+| Исследование кабинета, DOM, сеть и виды данных | [Адаптивное исследование](research/adaptive-observation.md) |
+| Включить диагностику или прочитать проход по ID | [Диагностика](development/diagnostics.md) |
 | Узнать, почему решено именно так | [Решения (ADR)](#решения) |
 
 ## Решения
@@ -32,6 +35,9 @@
 | [0005](adr/0005-source-adapter-factory.md) | Фабрика источников и самопочинка | accepted |
 | [0006](adr/0006-retrieval-mvp.md) | Поиск в MVP: SQL + полнотекстовый Postgres | accepted |
 | [0007](adr/0007-agent-harness.md) | Свой тонкий харнес агента над DeepSeek | accepted |
+| [0008](adr/0008-conversational-connections.md) | Подключение источника в обычном чате | accepted |
+| [0009](adr/0009-rendered-html-recipes.md) | Отрисованные HTML-рецепты для SPA | accepted |
+| [0010](adr/0010-adaptive-source-discovery.md) | Ограниченный цикл исследования и состояние браузера в Vault | accepted |
 
 Решения владельца — [QUESTIONS.md](../QUESTIONS.md).
 

@@ -38,6 +38,7 @@ from botai.learn import revisions
 from botai.learn.author import author_digest, iso_z, merge_bootstrap
 from botai.learn.canary import CanaryReport, load_baseline, run_canary
 from botai.learn.explorer import TOKEN_BUDGET, Chosen, Explorer, kinds_text
+from botai.learn.intent import LearningIntent
 from botai.learn.lint import LintContext, lint_spec
 from botai.sources import schedule
 from botai.sources.adapter import SessionExpired
@@ -52,6 +53,7 @@ from botai.sources.runner import (
     load_snapshot,
     sync_connection,
 )
+from botai.sources.scope import scoped_spec
 from botai.sources.session import load_session
 from botai.sources.vocab import KIND_LABELS
 
@@ -103,6 +105,11 @@ class Repairer(Explorer):
             snap = await load_snapshot(db, self.ctx.user_id, connection_id)
         if snap.adapter != "recipe" or snap.status in {"disabled", "learning", "draft"}:
             return {"status": "skipped", "detail": snap.status}
+        self.intent = LearningIntent(
+            requested_kinds=snap.data_scope
+            if snap.data_scope is not None
+            else tuple(dict.fromkeys(e["kind"] for e in snap.spec["recipe"]["endpoints"]))
+        )
         try:
             return await self._repair(snap, mode, reason)
         except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
@@ -136,7 +143,7 @@ class Repairer(Explorer):
         async with svc.db() as db:
             counts = await baseline_counts(db, snap.connection_id, snap.last_sync_at)
             keys = await load_baseline(db, snap.connection_id, snap.last_sync_at, now)
-        verdict = assess(snap.spec, fetched, counts)
+        verdict = assess(scoped_spec(snap.spec, snap.data_scope), fetched, counts)
         if not verdict.drift:
             return await self._healthy(snap, mode, reason)
         return await self._fix(snap, sctx, verdict.drift, keys, reason)
@@ -251,7 +258,9 @@ class Repairer(Explorer):
             )
             return await self._without_new_revision(snap, empty, [*unresolved, *fixed])
         try:
-            report = await run_canary(new_spec, sctx, require=list(fixed))
+            report = await run_canary(
+                scoped_spec(new_spec, snap.data_scope), sctx, require=list(fixed)
+            )
         except SessionExpired:
             raise BotaiError(ErrorCode.SOURCE_AUTH_REQUIRED, "Сайт не принял сессию") from None
         if not _fixed_ok(report, fixed, new_spec):

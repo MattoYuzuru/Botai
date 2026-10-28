@@ -12,6 +12,7 @@ import contextlib
 from urllib.parse import urlsplit
 
 from botai.browser.forms import CaptchaPage, ErrorPage, HardBlock, detect, has_credential_fields
+from botai.browser.probe import requires_authentication
 from botai.core.browser import BrowserHandle, PageSnapshot
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import Problem, SessionExpired, SyncContext
@@ -113,5 +114,9 @@ class RenderedPageReader:
                 ErrorCode.SOURCE_BOT_PROTECTION, "Источник просит пройти проверку в обычном входе"
             )
         tree = parse_html(snapshot.html)
-        if has_credential_fields(snapshot) or tree.css_first("input[type=password]") is not None:
+        if (
+            requires_authentication(snapshot)
+            or has_credential_fields(snapshot)
+            or tree.css_first("input[type=password]") is not None
+        ):
             raise SessionExpired("rendered page requires login")

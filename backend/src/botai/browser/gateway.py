@@ -43,7 +43,16 @@ from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
 from botai.browser.read_views import ReadView, ReadViewRegistry
-from botai.browser.session import bounded_browser_storage, jwt_expiry, storage_origin
+from botai.browser.session import (
+    MAX_STORAGE_BYTES,
+    MAX_STORAGE_ENTRIES,
+    MAX_STORAGE_KEY_CHARS,
+    MAX_STORAGE_ORIGINS,
+    MAX_STORAGE_VALUE_CHARS,
+    bounded_browser_storage,
+    jwt_expiry,
+    storage_origin,
+)
 from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
@@ -60,6 +69,7 @@ log = logging.getLogger(__name__)
 NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 10_000
 SETTLE_MS = 3_000
+READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
 SAMPLE_CHARS = 64_000  # a whole timetable or marks page as JSON, so the learner can parse it
 SAMPLE_BUDGET = 4_000_000  # characters of samples one browser context may hold
@@ -75,6 +85,7 @@ _TOKEN_KEYS = re.compile(
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _NAV_URL = re.compile(r"\bat (https?://[^\s]+)")
 _OBSERVED_TYPES = frozenset({"xhr", "fetch", "document"})
+_SETTLE_TYPES = _OBSERVED_TYPES | {"script"}
 _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
     "job_id": None,
     "thread_id": None,
@@ -86,18 +97,21 @@ _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
 }
 _SESSION_STORAGE_JS = """() => {
   const items = [];
-  let size = 0;
+  let size = 0, complete = true;
   try {
+    if (sessionStorage.length > 64) complete = false;
     for (let i = 0; i < sessionStorage.length && items.length < 64; i++) {
       const name = sessionStorage.key(i);
-      if (!name || name.length > 256) continue;
+      if (!name || name.length > 256) { complete = false; continue; }
       const value = sessionStorage.getItem(name);
-      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) continue;
+      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) {
+        complete = false; continue;
+      }
       items.push({name, value});
       size += name.length + value.length;
     }
-  } catch (_) {}
-  return {origin: location.origin, items};
+  } catch (_) { complete = false; }
+  return {origin: location.origin, items, complete};
 }"""
 _RESTORE_SESSION_STORAGE_JS = """(() => {
   const origins = JSON.parse(__BOTAI_STORAGE_DATA__);
@@ -238,9 +252,15 @@ class PlaywrightHandle:
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
+        self._inflight: set[Request] = set()
+        self._last_activity = monotonic()
+        self._activity_generation = 0
         self._sampled = 0
         self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
+        self._observation_bearers: set[str] = set()
+        self._observation_bearer_bytes = 0
+        self._secret_inventory_failed = False
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
         self._navigation_request: Request | None = None
@@ -254,6 +274,7 @@ class PlaywrightHandle:
         context.on("request", self._on_request)
         context.on("response", self._on_response)
         context.on("requestfailed", self._on_failed)
+        context.on("requestfinished", self._on_finished)
 
     def _diagnostic(self, event: str, **facts: object) -> None:
         diagnostic_event(event, **{**facts, **self._diagnostic_facts})
@@ -296,6 +317,10 @@ class PlaywrightHandle:
             callback()
 
     def _on_request(self, request: Request) -> None:
+        if request.resource_type in _SETTLE_TYPES:
+            self._inflight.add(request)
+            self._last_activity = monotonic()
+            self._activity_generation += 1
         if request.is_navigation_request():
             # An early popup request may precede its Frame. It is not yet a known
             # main-page navigation and must not become a host-consent candidate.
@@ -308,7 +333,22 @@ class PlaywrightHandle:
             self._visited.setdefault(host.lower(), None)
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("bearer ") and host.lower() in self.allow_hosts:
-                self._bearer[host.lower()] = auth[7:].strip()
+                token = auth[7:].strip()
+                self._bearer[host.lower()] = token
+                if token not in self._observation_bearers:
+                    try:
+                        size = len(token.encode("utf-8"))
+                    except UnicodeError:
+                        self._secret_inventory_failed = True
+                    else:
+                        if (
+                            len(self._observation_bearers) >= 4096
+                            or self._observation_bearer_bytes + size > 1_048_576
+                        ):
+                            self._secret_inventory_failed = True
+                        else:
+                            self._observation_bearers.add(token)
+                            self._observation_bearer_bytes += size
         if request.resource_type not in _OBSERVED_TYPES or len(self._log) >= MAX_LOG:
             return
         entry = ObservedRequest(
@@ -380,6 +420,7 @@ class PlaywrightHandle:
             )
 
     def _on_failed(self, request: Request) -> None:
+        self._on_finished(request)
         failure = request.failure or ""
         if self._failed_diagnostics < MAX_LOG:
             self._failed_diagnostics += 1
@@ -397,6 +438,12 @@ class PlaywrightHandle:
             host = urlsplit(request.url).hostname
             if host:
                 self._blocked.append(host.lower())
+
+    def _on_finished(self, request: Request) -> None:
+        if request in self._inflight:
+            self._inflight.discard(request)
+            self._last_activity = monotonic()
+            self._activity_generation += 1
 
     async def network_log(self) -> list[ObservedRequest]:
         if self._samples:
@@ -521,9 +568,50 @@ class PlaywrightHandle:
     async def activate_read_view(self, ref: str) -> PageSnapshot:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
-        await self._read_view_registry.activate(self._page, ref)
-        await self._settle()
-        return await self.snapshot()
+        # A SPA's earlier `networkidle` lifecycle may already be satisfied. Observe *new*
+        # DOM mutations and in-flight read requests instead of reusing that old load state.
+        # The observer contains only a timestamp, never page text or credential values.
+        monitor = await self._page.evaluate_handle(
+            """() => {
+              const state = {changedAt: performance.now(), changed: false};
+              state.observer = new MutationObserver(() => {
+                state.changedAt = performance.now(); state.changed = true;
+              });
+              state.observer.observe(document, {
+                subtree: true, childList: true, attributes: true, characterData: true
+              });
+              return state;
+            }"""
+        )
+        try:
+            network_before = self._activity_generation
+            await self._read_view_registry.activate(self._page, ref)
+            deadline = monotonic() + SETTLE_MS / 1000
+            self._last_activity = monotonic()
+            while monotonic() < deadline:
+                quiet_ms: float = await monitor.evaluate(
+                    "state => performance.now() - state.changedAt"
+                )
+                dom_changed: bool = await monitor.evaluate("state => state.changed")
+                if (
+                    (dom_changed or self._activity_generation > network_before)
+                    and not self._inflight
+                    and quiet_ms >= READ_VIEW_QUIET_S * 1000
+                    and monotonic() - self._last_activity >= READ_VIEW_QUIET_S
+                ):
+                    return await self.snapshot()
+                await asyncio.sleep(min(0.05, max(0, deadline - monotonic())))
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Представление источника не завершило загрузку"
+            )
+        except PlaywrightError:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Представление страницы недоступно для чтения"
+            ) from None
+        finally:
+            with contextlib.suppress(PlaywrightError):
+                await monitor.evaluate("state => state.observer.disconnect()")
+                await monitor.dispose()
 
     async def click(self, selector: str) -> PageSnapshot:
         if self.read_only:
@@ -567,6 +655,76 @@ class PlaywrightHandle:
                 if isinstance(value, str) and value:
                     return value
         return None
+
+    async def observation_secrets(self) -> tuple[SecretStr, ...]:
+        """Complete in-memory inventory for prompt redaction, never a restorable session.
+
+        Vault exports remain bounded and can omit unsupported entries. Observation instead
+        refuses any incomplete inventory, and includes every tab store and bearer rotation.
+        The caller applies its two-second deadline and the cumulative redaction byte bound.
+        """
+        try:
+            if self._secret_inventory_failed:
+                raise ValueError("incomplete bearer inventory")
+            values = [SecretStr(value) for value in self._observation_bearers]
+            for cookie in await self.context.cookies():
+                domain, value = cookie.get("domain"), cookie.get("value")
+                if not isinstance(domain, str) or not isinstance(value, str):
+                    raise ValueError("incomplete cookie inventory")
+                if _host_matches(domain, self.allow_hosts):
+                    values.append(SecretStr(value))
+            origins: set[str] = set()
+            storage_bytes = 0
+
+            def record(rows: Any, origin: str) -> None:
+                nonlocal storage_bytes
+                if not isinstance(rows, list) or len(rows) > MAX_STORAGE_ENTRIES:
+                    raise ValueError("incomplete storage inventory")
+                if rows:
+                    origins.add(origin)
+                    if len(origins) > MAX_STORAGE_ORIGINS:
+                        raise ValueError("storage origin budget")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError("invalid storage inventory")
+                    key, value = row.get("name"), row.get("value")
+                    if (
+                        not isinstance(key, str)
+                        or not key
+                        or len(key) > MAX_STORAGE_KEY_CHARS
+                        or not isinstance(value, str)
+                        or len(value) > MAX_STORAGE_VALUE_CHARS
+                    ):
+                        raise ValueError("unsupported storage entry")
+                    storage_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+                    if storage_bytes > MAX_STORAGE_BYTES:
+                        raise ValueError("storage byte budget")
+                    values.append(SecretStr(value))
+
+            state = await self.context.storage_state()
+            for item in state.get("origins", []):
+                origin = storage_origin(item["origin"], self.allow_hosts)
+                if origin is not None:
+                    record(item["localStorage"], origin)
+            for page in self.context.pages:
+                origin = storage_origin(page.url, self.allow_hosts)
+                if origin is None:
+                    continue
+                raw: Any = await page.evaluate(_SESSION_STORAGE_JS)
+                if (
+                    not isinstance(raw, dict)
+                    or raw.get("complete") is not True
+                    or raw.get("origin") != origin
+                ):
+                    raise ValueError("incomplete tab storage inventory")
+                # Session storage belongs to a tab, so two stores at one origin must both
+                # be protected instead of overwriting one another in a SessionState map.
+                record(raw.get("items"), origin)
+            return tuple(values)
+        except Exception:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Не удалось полностью защитить состояние браузера"
+            ) from None
 
     async def export_session(self) -> SessionState:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single

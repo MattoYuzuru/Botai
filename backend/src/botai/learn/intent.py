@@ -136,6 +136,7 @@ def intent_request(turn: PreparedTurn, current: LearningIntent) -> LlmRequest:
                 "uniqueItems": True,
             },
             "note": {"type": "string", "maxLength": 600},
+            "replaceKinds": {"type": "boolean"},
         },
     }
     return LlmRequest(
@@ -148,6 +149,8 @@ def intent_request(turn: PreparedTurn, current: LearningIntent) -> LlmRequest:
                     "не создавай URL. kinds — только явно запрошенные сейчас виды, absentKinds — "
                     "виды, которых по словам пользователя здесь нет или которые он не хочет. "
                     "Пустые kinds сохраняют текущий выбор. Расписание не подразумевает дедлайны. "
+                    "Если пользователь ограничил выбор («только расписание», «вместо курсов "
+                    "подключи задания»), укажи replaceKinds=true: текущие виды заменятся kinds. "
                     "Ссылка может быть самим расписанием, не проси её ещё раз. note — краткое "
                     "уточнение задачи без персональных значений и URL. Верни JSON по схеме."
                 ),
@@ -177,7 +180,13 @@ def intent_request(turn: PreparedTurn, current: LearningIntent) -> LlmRequest:
 
 def apply_intent(current: LearningIntent, turn: PreparedTurn, data: object) -> LearningIntent:
     """Apply only validated updates; an invented URL/key/index cannot become a destination."""
-    if not isinstance(data, dict) or set(data) - {"linkIndices", "kinds", "absentKinds", "note"}:
+    if not isinstance(data, dict) or set(data) - {
+        "linkIndices",
+        "kinds",
+        "absentKinds",
+        "note",
+        "replaceKinds",
+    }:
         raise ValueError("invalid learning intent")
     data = cast(dict[str, Any], data)
     indices = data.get("linkIndices", [])
@@ -188,6 +197,9 @@ def apply_intent(current: LearningIntent, turn: PreparedTurn, data: object) -> L
     ):
         raise ValueError("invalid learning link index")
     requested = _kinds(data.get("kinds"))
+    replace_kinds = data.get("replaceKinds", False)
+    if not isinstance(replace_kinds, bool):
+        raise ValueError("invalid learning kind replacement")
     removed = _kinds(data.get("absentKinds"))
     if set(requested) & set(removed):
         raise ValueError("conflicting learning kinds")
@@ -197,7 +209,9 @@ def apply_intent(current: LearningIntent, turn: PreparedTurn, data: object) -> L
         if k not in requested
     )
     previous_kinds = (
-        () if current.discovery_mode == "auto" and requested else current.requested_kinds
+        ()
+        if requested and (current.discovery_mode == "auto" or replace_kinds)
+        else current.requested_kinds
     )
     wanted: tuple[Kind, ...] = tuple(
         k for k in dict[Kind, None].fromkeys((*previous_kinds, *requested)) if k not in absent

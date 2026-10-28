@@ -94,6 +94,7 @@ def test_later_message_can_reenable_a_kind_and_add_another_real_link() -> None:
         {"linkIndices": [True]},
         {"kinds": ["unknownKind"]},
         {"kinds": ["deadlines"], "absentKinds": ["deadlines"]},
+        {"kinds": ["scheduleEvents"], "replaceKinds": "yes"},
     ],
 )
 def test_untrusted_classifier_cannot_invent_a_link_or_kind(answer: object) -> None:
@@ -195,3 +196,14 @@ def test_email_is_not_misidentified_as_a_bare_dns_navigation_link() -> None:
     assert turn.links == ()
     assert turn.rejected_links == 0
     assert "<email>" in turn.text
+
+
+def test_only_requested_kinds_replace_an_earlier_explicit_choice() -> None:
+    result = apply_intent(
+        LearningIntent(requested_kinds=("courses", "scheduleEvents", "deadlines")),
+        prepare_turn("Оставь только расписание"),
+        {"kinds": ["scheduleEvents"], "replaceKinds": True},
+    )
+    assert result.requested_kinds == ("scheduleEvents",)
+    assert result.discovery_mode == "requested"
+    assert LearningIntent.restore(result.checkpoint()) == result

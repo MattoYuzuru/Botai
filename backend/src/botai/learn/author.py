@@ -242,7 +242,13 @@ async def author_kind(
             raise
         out.calls += 1
         out.tokens += spent
-        if data is None:
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("found"), bool)
+            or not isinstance(data.get("endpoints"), list)
+            or (data.get("found") is True and not data["endpoints"])
+            or (data.get("found") is False and bool(data["endpoints"]))
+        ):
             diagnostic_event(
                 "learn.author",
                 kind=kind,
@@ -265,9 +271,12 @@ async def author_kind(
             found=found,
             candidate_count=len(candidates),
             doubt_count=len(doubts),
-            outcome="accepted" if found and candidates else "not_found",
+            outcome="accepted" if found and candidates else "rejected" if found else "not_found",
         )
-        if not found or not candidates:
+        if found and not candidates:
+            feedback = ["найденные данные не имеют пригодного описания эндпоинта"]
+            continue
+        if not found:
             return out  # an honest "nothing here" is a result, not a failure
         good: list[Candidate] = []
         findings: list[str] = []

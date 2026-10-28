@@ -192,6 +192,20 @@ async def _send_capped(
     return full
 
 
+async def request_once_capped(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    budget_s: float,
+    max_bytes: int = MAX_BODY_BYTES,
+    **kwargs: object,
+) -> httpx.Response:
+    """Bound one complete response without hiding status/Retry-After from a provider policy."""
+    async with asyncio.timeout(budget_s):
+        return await _send_capped(client, method, url, max_bytes, kwargs)
+
+
 def _too_big(request: httpx.Request) -> BotaiError:
     return BotaiError(
         ErrorCode.SOURCE_UNAVAILABLE,

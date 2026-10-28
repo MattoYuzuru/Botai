@@ -71,6 +71,26 @@ async def test_named_tab_changes_view_but_does_not_enable_network_writes(
     assert exc.value.code == ErrorCode.CONFLICT
 
 
+@pytest.mark.parametrize("spinner", [True, False])
+async def test_tab_observation_waits_for_fresh_dom_after_an_already_idle_spa(
+    tabs: PlaywrightHandle,
+    spinner: bool,
+) -> None:
+    await tabs.page.wait_for_load_state("networkidle")
+    await tabs.page.evaluate(
+        "spinner => { document.getElementById('schedule').onclick = () => {"
+        "if (spinner) document.getElementById('panel-schedule').textContent = 'Загрузка';"
+        "setTimeout(() => { document.getElementById('panel-schedule').textContent = 'Свежие пары'; }, spinner ? 80 : 400);"
+        "}; }",
+        spinner,
+    )
+    view = next(view for view in await tabs.read_views() if view.label == "Расписание")
+    snapshot = await tabs.activate_read_view(view.ref)
+    assert snapshot.url == ORIGIN + "/tabs"
+    assert "Свежие пары" in snapshot.text
+    assert "Пары скрыты" not in snapshot.text
+
+
 @pytest.mark.parametrize("action", ["invalid_ref", "snapshot", "navigation", "replacement"])
 async def test_stale_or_replaced_targets_cannot_be_activated(
     tabs: PlaywrightHandle, action: str

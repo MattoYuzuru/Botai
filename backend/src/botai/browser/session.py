@@ -11,7 +11,7 @@ import base64
 import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 import httpx
@@ -24,6 +24,13 @@ MAX_STORAGE_ENTRIES = 64
 MAX_STORAGE_KEY_CHARS = 256
 MAX_STORAGE_VALUE_CHARS = 32_768
 MAX_STORAGE_BYTES = 256 * 1024
+
+
+@runtime_checkable
+class ObservationSecretBrowser(Protocol):
+    """Optional internal complete inventory; it is never a public session or model input."""
+
+    async def observation_secrets(self) -> tuple[SecretStr, ...]: ...
 
 
 def storage_origin(url: str, allow_hosts: Iterable[str]) -> str | None:
