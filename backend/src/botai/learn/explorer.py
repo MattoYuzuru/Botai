@@ -646,6 +646,8 @@ class Explorer:
                 + ", ".join(KIND_LABELS[k].lower() for k in pending)
                 + ". Остальное подключаю, к этому можно вернуться позже."
             )
+        if warning:
+            await ui.say(f"**Важно.** {warning} Учитывайте это перед подтверждением подключения.")
         await self._show_summary(info, chosen, report)
         confirmed = await ui.confirm(
             "Всё верно? После подтверждения данные будут обновляться автоматически.",
@@ -1037,8 +1039,6 @@ class Explorer:
             await update_university(db, info.university_id, info.origin, warning)
             revision = row.revision
         await stage.finish("ok", f"Версия описания: {revision}")
-        if warning:
-            await self.ui.say(f"**Важно.** {warning} Подключение работает, но имейте это в виду.")
         outcome = await sync_connection(
             self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
         )

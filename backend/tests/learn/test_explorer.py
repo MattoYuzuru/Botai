@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock
+from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock, SummaryBlock, TextBlock
 from botai.core.browser import FakeBrowserGateway, FakePage
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
@@ -433,9 +433,28 @@ async def test_the_registry_gets_the_origin_and_the_third_party_warning(
     uni = (await env.db.execute(select(m.University))).scalars().one()
     assert uni.origins == [data.ORIGIN]
     assert uni.third_party_warning == "Сайт просит не использовать сторонние приложения."
-    assert (
-        "сторонние приложения" in ls.blocks_of(env.ctx, "text")[0].markdown
-    )  # warned, connected anyway
+    warnings = [
+        index
+        for index, block in enumerate(env.ctx.blocks)
+        if isinstance(block, TextBlock)
+        and "Сайт просит не использовать сторонние приложения." in block.markdown
+    ]
+    incomplete = [
+        index
+        for index, block in enumerate(env.ctx.blocks)
+        if isinstance(block, TextBlock)
+        and "Пока не удалось полностью проверить источник" in block.markdown
+    ]
+    summaries = [
+        index for index, block in enumerate(env.ctx.blocks) if isinstance(block, SummaryBlock)
+    ]
+    confirmations = [
+        index for index, block in enumerate(env.ctx.blocks) if isinstance(block, ConfirmBlock)
+    ]
+    assert len(warnings) == len(incomplete) == len(summaries) == len(confirmations) == 1
+    # Partial discovery remains visible; the user sees the source warning and verified
+    # summary before deciding whether these specific collected data should be imported.
+    assert incomplete[0] < warnings[0] < summaries[0] < confirmations[0]
     assert (await env.conn()).status == "active"
 
 
