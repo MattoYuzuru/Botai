@@ -8,18 +8,21 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
+from selectolax.lexbor import LexborHTMLParser
 
 from botai.browser.egress import Egress
-from botai.browser.forms import looks_personal, safe_path
+from botai.browser.forms import has_credential_fields, looks_personal, safe_path
 from botai.browser.session import httpx_cookies, request_headers
 from botai.contracts.specs import LoginPreset
-from botai.core.browser import ObservedRequest, SessionState
+from botai.core.browser import ObservedRequest, PageSnapshot, SessionState
+from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy, build_client, request_with_retries
 
@@ -27,6 +30,40 @@ POLICY = RetryPolicy(attempts=2, backoff_s=(0.4,), max_retry_after_s=5.0, jitter
 BUDGET_S = 20.0
 MAX_CANDIDATES = 6
 _REFUSALS = frozenset({301, 302, 303, 307, 308, 401, 403})
+_AUTH_REQUIRED_TEXT = re.compile(
+    r"вы не вошли|для продолжения[^.\n]{0,60}войдите|необходимо авторизоваться|"
+    r"you are not (?:logged|signed) in|please (?:log|sign) in|authentication required",
+    re.IGNORECASE,
+)
+
+
+def requires_authentication(snapshot: PageSnapshot) -> bool:
+    """A generic restored-page refusal, independent of the successful HTTP probe."""
+    if has_credential_fields(snapshot):
+        return True
+    try:
+        if any(
+            value in {"login_required", "interaction_required", "consent_required"}
+            for value in parse_qs(urlsplit(snapshot.url).query).get("error", [])
+        ):
+            return True
+    except ValueError:
+        pass
+    text = snapshot.text
+    if snapshot.html:
+        tree = LexborHTMLParser(snapshot.html)
+        if not snapshot.forms and tree.css_first("input[type=password]") is not None:
+            return True
+        for node in tree.css("script,style,template,nav,header,aside,footer"):
+            node.decompose()
+        content = tree.css_first("main,[role=main]") or tree.body or tree.root
+        if content is not None:
+            # An explanatory paragraph in a long authenticated page is not an expired session.
+            for heading in content.css("h1,h2,[role=heading]")[:2]:
+                if _AUTH_REQUIRED_TEXT.search(heading.text()[:300]):
+                    return True
+            text = content.text(separator=" ", strip=True)
+    return len(text) <= 1800 and bool(_AUTH_REQUIRED_TEXT.search(text[:1000]))
 
 
 async def _status(
@@ -54,7 +91,17 @@ async def probe_ok(
 ) -> bool:
     """Does the learned probe answer what it answered at login?"""
     response = await _status(egress, hosts, str(probe["url"]), state=state)
-    return response.status_code == int(probe["expectStatus"])
+    passed = response.status_code == int(probe["expectStatus"])
+    diagnostic_event(
+        "auth.probe",
+        status=response.status_code,
+        expected_status=int(probe["expectStatus"]),
+        passed=passed,
+        bearer_present=state.bearer is not None,
+        cookie_count=len(state.cookies),
+        **url_facts(str(probe["url"])),
+    )
+    return passed
 
 
 def _areas(preset: LoginPreset) -> list[str]:
@@ -72,8 +119,10 @@ async def check_session(
 ) -> bool | None:
     """True: works. False: expired. None: nothing to check it with."""
     if state.expires_hint is not None and state.expires_hint <= now:
+        diagnostic_event("auth.check_session", expired_hint=True, passed=False)
         return False
     if preset is None:
+        diagnostic_event("auth.check_session", preset_present=False)
         return None
     probe: Any = preset.success.get("probe")
     try:
@@ -81,15 +130,28 @@ async def check_session(
             return await probe_ok(state, probe, hosts, egress=egress)
         areas = _areas(preset)
         if not areas:
+            diagnostic_event(
+                "auth.check_session", probe_present=False, redirect_check_present=False
+            )
             return None
         response = await _status(egress, hosts, preset.start["url"], state=state, follow=True)
     except BotaiError as exc:
         if exc.code == ErrorCode.EGRESS_BLOCKED:  # the site sent us to a host we never learned
+            diagnostic_event("auth.check_session", egress_blocked=True, passed=False)
             return False
         raise
     if response.status_code in (401, 403):
+        diagnostic_event("auth.check_session", status=response.status_code, passed=False)
         return False
-    return not any(response.url.path.startswith(a) for a in areas)
+    passed = not any(response.url.path.startswith(a) for a in areas)
+    diagnostic_event(
+        "auth.check_session",
+        status=response.status_code,
+        passed=passed,
+        redirect_check_present=True,
+        **url_facts(str(response.url)),
+    )
+    return passed
 
 
 def candidates(
@@ -159,5 +221,11 @@ async def learn_probe(
                 continue
             raise
         if anonymous.status_code in _REFUSALS:
+            diagnostic_event(
+                "auth.probe_learned",
+                status=with_session.status_code,
+                anonymous_status=anonymous.status_code,
+                **url_facts(url),
+            )
             return {"method": "GET", "url": url, "expectStatus": with_session.status_code}
     return None

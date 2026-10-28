@@ -34,62 +34,73 @@ async function answer(page: Page, text: string) {
 async function expectChatReflow(page: Page) {
   const expectedWidth = page.viewportSize()?.width;
   if (!expectedWidth) throw new Error("Нет viewport");
-  const layout = await page.evaluate(() => {
-    const rect = (element: Element) => {
-      const box = element.getBoundingClientRect();
-      return {
-        left: box.left,
-        right: box.right,
-        width: box.width,
-        height: box.height,
-        scrollWidth: element.scrollWidth,
-        clientWidth: element.clientWidth,
+  // ResizeObserver и авто-рост composer завершают перерасчёт после события resize.
+  // Повторяем те же строгие границы, без допуска на переполнение и без фиксированного sleep.
+  await expect(async () => {
+    const layout = await page.evaluate(() => {
+      const rect = (element: Element) => {
+        const box = element.getBoundingClientRect();
+        const label = element.getAttribute("aria-label");
+        const role = element.getAttribute("data-role");
+        const text = element.matches("button") ? element.textContent?.trim() : null;
+        return {
+          name: `${element.tagName.toLowerCase()}${role ? `[data-role=${role}]` : ""} ${label ?? text ?? element.getAttribute("class") ?? ""}`,
+          left: box.left,
+          right: box.right,
+          width: box.width,
+          height: box.height,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
       };
-    };
-    const viewport = document.querySelector("[data-chat-transcript] [data-radix-scroll-area-viewport]");
-    const heading = document.querySelector("header h1");
-    if (!viewport || !heading) throw new Error("Нет chat layout");
-    const box = viewport.getBoundingClientRect();
-    const style = getComputedStyle(viewport);
-    return {
-      width: innerWidth,
-      visualWidth: visualViewport?.width ?? innerWidth,
-      viewport: rect(viewport),
-      contentLeft: box.left + Number.parseFloat(style.paddingLeft),
-      contentRight: box.right - Number.parseFloat(style.paddingRight),
-      chain: [
-        ...viewport.querySelectorAll(
-          ":scope > div, [data-timeline], [data-timeline] > li, [data-role], [data-role] > div:first-child",
-        ),
-      ].map(rect),
-      controls: [
-        ...viewport.querySelectorAll(
-          "[data-chat-input] button, [data-chat-input] input, [data-connection-failure] button",
-        ),
-      ].map(rect),
-      heading: rect(heading),
-      headerControls: [...document.querySelectorAll("header button")].map(rect),
-      nav: [...document.querySelectorAll('nav[aria-label="Основная навигация"] a')].map(rect),
-    };
-  });
-  expect(layout.width).toBe(expectedWidth);
-  expect(layout.visualWidth).toBe(expectedWidth);
-  expect(layout.viewport.left).toBeGreaterThanOrEqual(0);
-  expect(layout.viewport.right).toBeLessThanOrEqual(expectedWidth);
-  expect(layout.viewport.scrollWidth).toBeLessThanOrEqual(layout.viewport.clientWidth);
-  for (const box of [...layout.chain, ...layout.controls]) {
-    expect(box.left).toBeGreaterThanOrEqual(layout.contentLeft);
-    expect(box.right).toBeLessThanOrEqual(layout.contentRight);
-  }
-  for (const box of layout.chain) expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth);
-  expect(layout.heading.scrollWidth).toBeLessThanOrEqual(layout.heading.clientWidth);
-  expect(layout.nav).toHaveLength(5);
-  for (const box of [...layout.headerControls, ...layout.nav]) {
-    expect(box.left).toBeGreaterThanOrEqual(0);
-    expect(box.right).toBeLessThanOrEqual(expectedWidth);
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
-  }
+      const viewport = document.querySelector("[data-chat-transcript] [data-radix-scroll-area-viewport]");
+      const heading = document.querySelector("header h1");
+      if (!viewport || !heading) throw new Error("Нет chat layout");
+      const box = viewport.getBoundingClientRect();
+      const style = getComputedStyle(viewport);
+      return {
+        width: innerWidth,
+        visualWidth: visualViewport?.width ?? innerWidth,
+        viewport: rect(viewport),
+        contentLeft: box.left + Number.parseFloat(style.paddingLeft),
+        contentRight: box.right - Number.parseFloat(style.paddingRight),
+        chain: [
+          ...viewport.querySelectorAll(
+            ":scope > div, [data-timeline], [data-timeline] > li, [data-role], [data-role] > div:first-child",
+          ),
+        ].map(rect),
+        controls: [
+          ...viewport.querySelectorAll(
+            "[data-chat-input] button, [data-chat-input] input, [data-connection-failure] button",
+          ),
+        ].map(rect),
+        heading: rect(heading),
+        headerControls: [...document.querySelectorAll("header button")].map(rect),
+        nav: [...document.querySelectorAll('nav[aria-label="Основная навигация"] a')].map(rect),
+      };
+    });
+    expect(layout.width).toBe(expectedWidth);
+    expect(layout.visualWidth).toBe(expectedWidth);
+    expect(layout.viewport.left).toBeGreaterThanOrEqual(0);
+    expect(layout.viewport.right).toBeLessThanOrEqual(expectedWidth);
+    expect(layout.viewport.scrollWidth).toBeLessThanOrEqual(layout.viewport.clientWidth);
+    for (const box of [...layout.chain, ...layout.controls]) {
+      expect(box.left, `${box.name}: left at ${expectedWidth}px`).toBeGreaterThanOrEqual(layout.contentLeft);
+      expect(box.right, `${box.name}: right at ${expectedWidth}px`).toBeLessThanOrEqual(layout.contentRight);
+    }
+    for (const box of layout.chain)
+      expect(box.scrollWidth, `${box.name}: scroll width at ${expectedWidth}px`).toBeLessThanOrEqual(
+        box.clientWidth,
+      );
+    expect(layout.heading.scrollWidth).toBeLessThanOrEqual(layout.heading.clientWidth);
+    expect(layout.nav).toHaveLength(5);
+    for (const box of [...layout.headerControls, ...layout.nav]) {
+      expect(box.left, `${box.name}: left`).toBeGreaterThanOrEqual(0);
+      expect(box.right, `${box.name}: right`).toBeLessThanOrEqual(expectedWidth);
+      expect(box.width, `${box.name}: tap width`).toBeGreaterThanOrEqual(44);
+      expect(box.height, `${box.name}: tap height`).toBeGreaterThanOrEqual(44);
+    }
+  }).toPass({ timeout: 10_000 });
 }
 
 test.describe("подключение в общем чате", () => {

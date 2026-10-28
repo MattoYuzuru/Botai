@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from botai.contracts.specs import Kind
 from botai.core.llm import LlmMessage, LlmRequest
@@ -37,14 +37,18 @@ class LearningIntent:
     requested_kinds: tuple[Kind, ...] = ("scheduleEvents",)
     absent_kinds: tuple[Kind, ...] = ()
     user_note: str = ""
+    discovery_mode: Literal["auto", "requested"] = "requested"
 
     def checkpoint(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "entry_urls": list(self.entry_urls),
             "requested_kinds": list(self.requested_kinds),
             "absent_kinds": list(self.absent_kinds),
             "user_note": self.user_note,
         }
+        if self.discovery_mode == "auto":
+            result["discovery_mode"] = "auto"
+        return result
 
     @classmethod
     def restore(cls, data: object) -> LearningIntent:
@@ -69,7 +73,11 @@ class LearningIntent:
             else ("scheduleEvents",)
         )
         return cls(
-            urls, tuple(k for k in kinds if k not in absent), absent, _note(data.get("user_note"))
+            urls,
+            tuple(k for k in kinds if k not in absent),
+            absent,
+            _note(data.get("user_note")),
+            "auto" if data.get("discovery_mode") == "auto" else "requested",
         )
 
 
@@ -188,16 +196,21 @@ def apply_intent(current: LearningIntent, turn: PreparedTurn, data: object) -> L
         for k in dict[Kind, None].fromkeys((*current.absent_kinds, *removed))
         if k not in requested
     )
+    previous_kinds = (
+        () if current.discovery_mode == "auto" and requested else current.requested_kinds
+    )
     wanted: tuple[Kind, ...] = tuple(
-        k
-        for k in dict[Kind, None].fromkeys((*current.requested_kinds, *requested))
-        if k not in absent
+        k for k in dict[Kind, None].fromkeys((*previous_kinds, *requested)) if k not in absent
     )
     urls = tuple(dict.fromkeys((*current.entry_urls, *(turn.links[i] for i in indices))))[
         -MAX_LINKS:
     ]
     return LearningIntent(
-        urls, wanted, absent, _note(data.get("note"), 600) or turn.text[:MAX_TURN]
+        urls,
+        wanted,
+        absent,
+        _note(data.get("note"), 600) or turn.text[:MAX_TURN],
+        "requested" if requested else current.discovery_mode,
     )
 
 

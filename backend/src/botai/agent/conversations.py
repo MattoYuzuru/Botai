@@ -20,6 +20,7 @@ from botai.agent.schemas import (
     ThreadRuntime,
 )
 from botai.contracts.agent_ui import AgentUiBlock, TextBlock
+from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -66,7 +67,7 @@ async def create_thread(
         raise BotaiError(ErrorCode.VALIDATION, "Контекст подключения относится к чату подключения")
     context = (
         normalize_context(
-            body.connect_context.model_dump(mode="json", exclude_none=True)
+            body.connect_context.model_dump(mode="json", exclude_none=True, exclude_unset=True)
             if body.connect_context
             else {}
         )
@@ -113,7 +114,24 @@ async def create_thread(
             )
         )
         if existing is not None:
-            if existing.connect_context.get("_start_hash") != fingerprint:
+            previous_context = {
+                key: value for key, value in context.items() if key != "discovery_mode"
+            }
+            legacy_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "space_id": body.space_id,
+                        "title": body.title,
+                        "purpose": body.purpose,
+                        "context": previous_context,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            accepted_hashes = {fingerprint}
+            if context.get("discovery_mode") == "auto":
+                accepted_hashes.add(legacy_fingerprint)
+            if existing.connect_context.get("_start_hash") not in accepted_hashes:
                 raise BotaiError(
                     ErrorCode.CONFLICT, "Этот запрос уже использован для другого разговора"
                 )
@@ -164,6 +182,7 @@ async def create_thread(
             )
         )
     await session.commit()
+    diagnostic_event("chat.created", thread_id=thread.id, source=body.purpose == "connect")
     return thread
 
 
@@ -434,6 +453,14 @@ async def post_message(
             )
             message.job_id = queued.id
             await session.commit()
+            diagnostic_event(
+                "chat.message",
+                thread_id=thread.id,
+                job_id=queued.id,
+                message_id=message.id,
+                source=False,
+                input_chars=len(text),
+            )
             return MessageAccepted(message=message_out(message), job_id=queued.id)
         # Non-transactional queue implementations retain the legacy protocol and compensation.
         await session.commit()
@@ -451,4 +478,13 @@ async def post_message(
             raise
         message.job_id = job_id
     await session.commit()
+    diagnostic_event(
+        "chat.message",
+        thread_id=thread.id,
+        job_id=job_id,
+        message_id=message.id,
+        source=source,
+        input_chars=len(text),
+        connection_id=target.connection_id if target else None,
+    )
     return MessageAccepted(message=message_out(message), job_id=job_id)

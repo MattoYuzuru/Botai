@@ -361,8 +361,7 @@ async def run(
                     cache_share=u.input_cache_hit / denom if denom else 0.0,
                 )
             )
-            if services.settings.llm_debug_traces and response.reasoning_content:
-                log.debug("step %d reasoning: %s", step + 1, response.reasoning_content)
+            # Even debug mode must not retain model reasoning, which may quote private input.
 
             if not response.tool_calls:
                 result.content = response.content

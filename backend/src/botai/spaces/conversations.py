@@ -53,6 +53,14 @@ def safe_text(text: str) -> str:
 
 def normalize_context(data: dict[str, Any]) -> dict[str, Any]:
     context = dict(data)
+    if "discovery_mode" in context:
+        if not isinstance(context["discovery_mode"], str) or context["discovery_mode"] not in {
+            "auto",
+            "requested",
+        }:
+            raise BotaiError(ErrorCode.VALIDATION, "Неверный режим исследования источника")
+    elif "requested_kinds" not in context:
+        context["discovery_mode"] = "auto"
     urls = context.get("entry_urls") or []
     if not isinstance(urls, list) or len(urls) > 6:
         raise BotaiError(ErrorCode.VALIDATION, "Можно указать до шести адресов источника")
@@ -85,7 +93,7 @@ def normalize_context(data: dict[str, Any]) -> dict[str, Any]:
 def intent_of(context: dict[str, Any]) -> dict[str, Any]:
     return {
         key: context[key]
-        for key in ("entry_urls", "requested_kinds", "absent_kinds", "user_note")
+        for key in ("entry_urls", "requested_kinds", "absent_kinds", "user_note", "discovery_mode")
         if key in context
     }
 

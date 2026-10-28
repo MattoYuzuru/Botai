@@ -12,12 +12,14 @@ import copy
 import json
 import logging
 import re
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from botai.contracts.specs import Kind
+from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import LlmProvider, LlmRequest, LlmResponse
 from botai.learn import prompting
@@ -213,17 +215,58 @@ async def author_kind(
     out = Authored(kind)
     feedback: list[str] | None = None
     for attempt in range(2):
+        started = time.monotonic()
+        diagnostic_event(
+            "learn.author",
+            kind=kind,
+            phase="request",
+            attempt=attempt + 1,
+            input_chars=len(observation),
+            repair=previous is not None,
+        )
         request = prompting.author_request(
             kind, observation, feedback, previous=previous, problem=problem
         )
-        data, spent = await _ask(llm, request)
+        try:
+            data, spent = await _ask(llm, request)
+        except Exception:
+            diagnostic_event(
+                "learn.author",
+                kind=kind,
+                phase="response",
+                attempt=attempt + 1,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                outcome="failed",
+                reason="provider_failed",
+            )
+            raise
         out.calls += 1
         out.tokens += spent
         if data is None:
+            diagnostic_event(
+                "learn.author",
+                kind=kind,
+                phase="parse",
+                attempt=attempt + 1,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                outcome="rejected",
+                reason="invalid_json",
+            )
             feedback = ["ответ не является JSON-объектом по схеме"]
             continue
         candidates, found, reasoning, doubts = candidates_from(kind, data)
         out.found, out.reasoning, out.doubts = found, reasoning, doubts
+        diagnostic_event(
+            "learn.author",
+            kind=kind,
+            phase="response",
+            attempt=attempt + 1,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            found=found,
+            candidate_count=len(candidates),
+            doubt_count=len(doubts),
+            outcome="accepted" if found and candidates else "not_found",
+        )
         if not found or not candidates:
             return out  # an honest "nothing here" is a result, not a failure
         good: list[Candidate] = []
@@ -233,6 +276,18 @@ async def author_kind(
                 cand, origin=origin, revision=revision, now=now, digest=digest, index=i
             )
             result = lint_spec(spec, lint_ctx)
+            diagnostic_event(
+                "learn.lint",
+                kind=kind,
+                attempt=attempt + 1,
+                candidate_index=i,
+                problem_count=len(result.issues),
+                outcome="accepted" if result.ok else "rejected",
+            )
+            for code in sorted(result.codes()):
+                diagnostic_event(
+                    "learn.lint", kind=kind, candidate_index=i, lint_code=code, outcome="rejected"
+                )
             if result.ok:
                 good.append(cand)
             else:

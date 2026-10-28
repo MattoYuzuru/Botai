@@ -388,7 +388,7 @@ async def test_trace_has_names_and_sizes_but_not_content_or_reasoning(
     assert res.trace[0].cache_share == 0.0
 
 
-async def test_reasoning_reaches_debug_logs_only_when_traces_are_enabled(
+async def test_legacy_debug_toggle_cannot_log_private_reasoning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG, logger="botai.agent.harness")
@@ -397,4 +397,4 @@ async def test_reasoning_reaches_debug_logs_only_when_traces_are_enabled(
         llm, settings=make_settings(llm_provider="mock", llm_debug_traces=True)
     )
     await run_chat(llm, [tool("t")], services=services)
-    assert "видимая-в-dev" in "\n".join(r.getMessage() for r in caplog.records)
+    assert "видимая-в-dev" not in "\n".join(r.getMessage() for r in caplog.records)

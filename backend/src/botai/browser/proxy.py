@@ -40,6 +40,9 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from botai.core.diagnostics import diagnostic_event, url_facts
+from botai.core.logging import configure_logging
+
 log = logging.getLogger("botai.browser.proxy")
 
 ALLOWED_PORT = 443
@@ -545,6 +548,8 @@ class EgressProxy:
         status = 500
         up = down = 0
         usage: _Usage | None = None
+        grant: Grant | None = None
+        diagnostic_host: str | None = None
         try:
             try:
                 request_line, headers = await self._read_head(reader)
@@ -577,6 +582,7 @@ class EgressProxy:
                 await self._reply(writer, status, [("Allow", "CONNECT")])
                 return
             host, denial = self.check_target(grant, authority)
+            diagnostic_host = host
             host_for_log = _LOG_UNSAFE.sub("?", host)[:100]
             usage = self._usage_for(grant)
             if denial is None:
@@ -632,6 +638,31 @@ class EgressProxy:
                 await self._reply(writer, status)
         finally:
             self.stats[f"{decision}:{reason}"] += 1
+            facts: dict[str, object] = {}
+            if grant is not None:
+                facts["grant_hash"] = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
+            if diagnostic_host is not None:
+                host_hash = url_facts("https://" + diagnostic_host).get("host_hash")
+                if host_hash is not None:
+                    facts["host_hash"] = host_hash
+            diagnostic_event(
+                "egress.decision",
+                # An embedded server may inherit the starter job's context. A tunnel belongs
+                # to its verified grant, never to that old task; the reader joins the digest.
+                job_id=None,
+                thread_id=None,
+                connection_id=None,
+                request_id=None,
+                message_id=None,
+                block_id=None,
+                job_kind=None,
+                decision=decision,
+                reason=reason,
+                status=status,
+                up_bytes=up,
+                down_bytes=down,
+                **facts,
+            )
             log.info(
                 "egress host=%s decision=%s reason=%s status=%d up=%d down=%d",
                 host_for_log,
@@ -720,7 +751,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="map NAME:443 to a loopback address (tests and local fixtures only)",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging()
     master = os.environ.get("BOTAI_PROXY_SECRET", "")
     if len(master) < 32:
         print("BOTAI_PROXY_SECRET must be set to at least 32 characters", file=sys.stderr)

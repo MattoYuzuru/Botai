@@ -196,7 +196,13 @@ describe("чат: ответ агента", () => {
     expect(screen.getByText("POST")).toBeInTheDocument();
     expect(screen.getAllByText("О стипендии").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Подтвердить" }));
-    expect(await screen.findByText(/Заявка отправлена/, undefined, wait)).toBeInTheDocument();
+    // Поток заменяется сообщением истории: проверяем текущее дерево, а не уже снятый live-узел.
+    await waitFor(() => {
+      const result = screen.getByText(/Заявка отправлена/);
+      expect(result).toBeInTheDocument();
+      expect(result.closest("[data-live-reply]")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled();
+    }, wait);
   });
 
   it("отказ от записи: «Не делать» — ничего не отправлено", async () => {

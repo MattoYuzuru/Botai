@@ -34,3 +34,18 @@ def test_fingerprint_ignores_purpose_but_not_effort() -> None:
     b = LlmRequest(messages=[LlmMessage(role="user", content="x")], purpose="learn")
     c = LlmRequest(messages=[LlmMessage(role="user", content="x")], effort="max")
     assert a.fingerprint() == b.fingerprint() != c.fingerprint()
+
+
+async def test_discovery_script_never_consumes_an_author_reply() -> None:
+    request = LlmRequest(messages=[LlmMessage(role="user", content="fixture")])
+    author = LlmResponse(content="author")
+    llm = ScriptedLlm(queue=[author])
+    with pytest.raises(LlmFixtureMissing):
+        await llm.complete_observation(request)
+    assert not llm.requests
+    assert not llm.observation_requests
+    assert await llm.complete(request) == author
+    scripted = ScriptedLlm(queue=[author], discovery_queue=[LlmResponse(content="plan")])
+    assert (await scripted.complete_observation(request)).content == "plan"
+    assert len(scripted.observation_requests) == 1
+    assert not scripted.requests

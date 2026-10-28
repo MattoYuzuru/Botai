@@ -136,7 +136,13 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
           />
         </Field>
         <div className="flex flex-col gap-2 xs:flex-row xs:flex-wrap">
-          <Button type="submit" variant="primary" loading={busy} disabled={busy} className="xs:min-w-40">
+          <Button
+            type="submit"
+            variant="primary"
+            loading={busy}
+            disabled={busy}
+            className="max-w-full xs:w-40"
+          >
             Ответить
           </Button>
           {!block.required && (

@@ -12,13 +12,13 @@ from unittest.mock import Mock, PropertyMock
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Request
+from playwright.async_api import Request, Route
 from pydantic import SecretStr
 
 from botai.browser.gateway import SAMPLE_CHARS, CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.proxy import EgressProxy
 from botai.browser.session import decode_session, encode_session
-from botai.core.browser import SessionCookie, SessionState
+from botai.core.browser import SessionCookie, SessionOriginStorage, SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from tests.fakeuni import data
@@ -169,6 +169,77 @@ async def test_restoring_a_session_skips_the_login(open_browser: Opener) -> None
     assert "Иванова Анна" in snap.text
     anonymous = await open_browser()
     assert "Иванова Анна" not in (await anonymous.goto("https://fakeuni.test/api/v2/me")).text
+
+
+async def test_origin_storage_is_restored_before_application_scripts(open_browser: Opener) -> None:
+    first = await open_browser()
+    await first.goto("https://fakeuni.test/auth/login")
+    marker = "storage-authentication-fixture"
+    await first.page.evaluate(
+        "value => { localStorage.setItem('access_token', value);"
+        "localStorage.setItem('auth_ready', 'true');"
+        "sessionStorage.setItem('transient_token', value); }",
+        marker,
+    )
+    state = decode_session(encode_session(await first.export_session()))
+    assert state.browser_storage
+    assert marker not in repr(state)
+    await first.close()
+    second = await open_browser(session=state, read_only=True)
+
+    async def application(route: Route) -> None:
+        await route.fulfill(
+            status=200,
+            content_type="text/html",
+            body=(
+                "<body><p id='out'></p><script>"
+                "const ready = localStorage.getItem('access_token') === 'storage-authentication-fixture'"
+                " && localStorage.getItem('auth_ready') === 'true'"
+                " && sessionStorage.getItem('transient_token') === 'storage-authentication-fixture';"
+                "document.getElementById('out').textContent = ready ? 'ready' : 'missing';"
+                "</script></body>"
+            ),
+        )
+
+    await second.context.route("https://fakeuni.test/storage-application", application)
+    snap = await second.goto("https://fakeuni.test/storage-application")
+    assert "ready" in snap.text
+    assert "missing" not in snap.text
+
+
+async def test_restoration_does_not_extend_storage_to_another_origin(open_browser: Opener) -> None:
+    marker = "origin-private-storage-fixture"
+    state = SessionState(
+        origin="https://fakeuni.test",
+        captured_at=datetime.now(UTC),
+        browser_storage=[
+            SessionOriginStorage(
+                origin="https://fakeuni.test",
+                local_storage={"token": SecretStr(marker)},
+                session_storage={"token": SecretStr(marker)},
+            ),
+            SessionOriginStorage(
+                origin="https://evil.test", local_storage={"token": SecretStr(marker)}
+            ),
+        ],
+    )
+    browser = await open_browser(session=state)
+
+    async def other_origin(route: Route) -> None:
+        await route.fulfill(
+            content_type="text/html",
+            body=(
+                "<body><script>document.body.textContent = "
+                "localStorage.getItem('token') === null && sessionStorage.getItem('token') === null"
+                " ? 'isolated' : 'leaked';</script></body>"
+            ),
+        )
+
+    await browser.context.route("https://id.fakeuni.test/storage-application", other_origin)
+    snap = await browser.goto("https://id.fakeuni.test/storage-application")
+    assert "isolated" in snap.text
+    restored = await browser.context.storage_state()
+    assert all(entry["origin"] != "https://evil.test" for entry in restored["origins"])
 
 
 # ----------------------------------------------------------------------------------- bearer
