@@ -115,6 +115,7 @@ test("подключение: поиск с клавиатуры, отдельн
     );
     await expect(input.locator("..")).toHaveCSS("background-color", background);
     await expectFitsWidth(page, width);
+    await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`connect-${theme}.png`), fullPage: true });
   }
   await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
@@ -124,6 +125,7 @@ test("подключение: поиск с клавиатуры, отдельн
     })
     .toBeLessThanOrEqual(width);
   await expect(input).toBeVisible();
+  await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("connect-200.png"), fullPage: true });
 });
 

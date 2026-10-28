@@ -33,7 +33,9 @@ export function connectionSnapshot(
   const saved = runtime?.activeJob;
   if (!saved) return null;
   const current = live?.jobId === saved.id ? live : undefined;
-  const events = current?.lastEventId !== null && current?.lastEventId !== undefined;
+  const events = Boolean(
+    current && (current.lastEventId !== null || (isTerminal(current.state) && current.problem !== null)),
+  );
   const savedTerminal = isTerminal(saved.state);
   const error = saved.error;
   const problem =

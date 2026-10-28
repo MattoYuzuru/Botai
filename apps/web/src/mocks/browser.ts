@@ -1,4 +1,6 @@
 import { setupWorker } from "msw/browser";
+import { useChatJobs } from "@/features/chat/chat-jobs";
+import { useActiveJob } from "@/features/jobs/active-job";
 import { JOB_VARIANTS, type JobVariant } from "./connect-script";
 import { createDb, restoreDb, type Scenario } from "./db";
 import { createHandlers } from "./handlers";
@@ -14,6 +16,9 @@ function readScenario(): Scenario | null {
       window.sessionStorage.setItem("botai.mock.scenario", fromUrl);
       window.sessionStorage.removeItem("botai.mock.db");
       window.sessionStorage.removeItem("botai.mock.chat");
+      // Stores may already be hydrated by route imports; reset them together with the synthetic DB.
+      useActiveJob.getState().clear();
+      useChatJobs.getState().clearAll();
       return fromUrl as Scenario;
     }
     return (window.sessionStorage.getItem("botai.mock.scenario") as Scenario | null) ?? null;

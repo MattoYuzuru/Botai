@@ -108,6 +108,7 @@ test.describe("подключение в общем чате", () => {
           .getByLabel("Ответ", { exact: true })
           .evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize));
         expect(fontSize).toBeGreaterThanOrEqual(16);
+        await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
         await page.screenshot({ path: testInfo.outputPath(`connect-${width}-${theme}.png`), fullPage: true });
       }
     }

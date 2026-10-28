@@ -136,6 +136,31 @@ describe("плоская source timeline", () => {
     expect(connectionSnapshot(saved, job)).toMatchObject({ state: "done", result: { status: "ok" } });
   });
 
+  it("отказ SSE до первого event не оставляет активную форму рядом с ошибкой; saved terminal всё ещё приоритетен", () => {
+    const failed = {
+      ...initialJob(ID(1)),
+      state: "failed" as const,
+      problem: { code: "not_found", detail: "Задание не найдено", extra: {} },
+      link: "closed" as const,
+    };
+    expect(connectionSnapshot(runtime, failed)).toMatchObject({
+      state: "failed",
+      problem: { code: "not_found" },
+    });
+    const finished = {
+      ...runtime,
+      pending: [],
+      activeJob: runtime.activeJob
+        ? { ...runtime.activeJob, state: "done" as const, result: { status: "ok" }, finishedAt: AT }
+        : null,
+    };
+    expect(connectionSnapshot(finished, failed)).toMatchObject({
+      state: "done",
+      problem: null,
+      result: { status: "ok" },
+    });
+  });
+
   it("исторические auth/choice/approval/login controls readonly и не открывают websocket", () => {
     vi.mocked(RemoteScreen).mockClear();
     const ctx: BlockContext = {
