@@ -1,97 +1,91 @@
-import { Banner } from "@botai/design";
+import { Banner, Button, SkeletonText } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { api, call } from "@/api/client";
+import { humanMessage } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
-import { useReconnect } from "@/features/data/use-reconnect";
+import type { Job } from "@/api/types";
+import { attachConnectionThread } from "@/features/chat/connection-api";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
 import { ProgressWall } from "@/widgets/progress-wall/progress-wall";
 import { WallMascot } from "./wall-mascot";
 
-/** Экран хода подключения: `ProgressWall` на потоке задания. Свёртывание ничего не обрывает. */
+/** Старая ссылка на job лишь восстанавливает canonical conversation; новое задание не создаётся. */
 export function ConnectProgress({ jobId }: { jobId: string }) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const active = useActiveJob((state) => (state.job?.jobId === jobId ? state.job : null));
-  const clear = useActiveJob((state) => state.clear);
-  const reconnect = useReconnect();
-  const [finished, setFinished] = useState(false);
-  const metadata = useQuery({
-    queryKey: ["jobs", jobId, "connection"],
+  const resolved = useQuery({
+    queryKey: ["jobs", jobId, "conversation"],
     queryFn: async ({ signal }) => {
       const job = await call(
         api.GET("/api/v1/jobs/{job_id}", { params: { path: { job_id: jobId } }, signal }),
       );
-      return { connectionId: job.connectionId };
+      // INGEST задаёт native-вопросы таблицы и не читает conversational inbox.
+      if (job.kind === "ingest") return { kind: "ingest" as const, job };
+      if (!job.connectionId) throw new Error("job_without_connection");
+      return {
+        kind: "conversation" as const,
+        thread: await attachConnectionThread(job.connectionId, jobId, signal),
+      };
     },
-    enabled: !finished && !active?.connectionId,
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const connectionId = active?.connectionId ?? metadata.data?.connectionId ?? undefined;
   useEffect(() => {
-    if (finished || !connectionId || active?.connectionId) return;
-    useActiveJob.getState().set({
-      jobId,
-      title: active?.title ?? "Подключение вуза",
-      spaceTitle: active?.spaceTitle,
-      connectionId,
-    });
-  }, [jobId, active, connectionId, finished]);
-  const openBrowser = useCallback(
-    async (signal: AbortSignal) => {
-      if (!connectionId) return;
-      // Одноразовый ticket из HTTP не сохраняется: экран придёт отдельным свежим SSE-блоком.
-      await call(
-        api.POST("/api/v1/connections/{connection_id}/login-session", {
-          params: { path: { connection_id: connectionId } },
-          signal,
-        }),
-      );
-    },
-    [connectionId],
+    if (resolved.data?.kind === "conversation")
+      void navigate({ to: "/chat", search: { thread: resolved.data.thread.id }, replace: true });
+  }, [navigate, resolved.data]);
+  if (resolved.data?.kind === "ingest") return <IngestWall key={jobId} job={resolved.data.job} />;
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-col flex-col gap-4 px-safe-4 pt-safe-6 xs:px-safe-5">
+      {resolved.isError ? (
+        <div className="flex flex-col items-start gap-3">
+          <Banner tone="warning" icon="warning" live>
+            {humanMessage(resolved.error)}
+          </Banner>
+          <Button variant="secondary" asChild>
+            <Link to="/chat">Открыть чаты</Link>
+          </Button>
+        </div>
+      ) : (
+        <SkeletonText lines={2} label="Открываю чат подключения" />
+      )}
+    </main>
   );
+}
 
+/** Legacy INGEST сохраняет native answer flow; прочие подключения живут в обычном чате. */
+function IngestWall({ job }: { job: Job }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [finished, setFinished] = useState(false);
+  const active = useActiveJob((state) => (state.job?.jobId === job.id ? state.job : null));
+  useEffect(() => {
+    if (finished || active) return;
+    useActiveJob
+      .getState()
+      .set({ jobId: job.id, title: "Добавляю документ", connectionId: job.connectionId ?? undefined });
+  }, [job.id, job.connectionId, active, finished]);
   const finish = async () => {
     setFinished(true);
-    // Итог прочитан: забываем задание и обновляем всё, что подключение могло изменить.
-    jobManager.stop(jobId);
-    clear();
+    jobManager.stop(job.id);
+    if (useActiveJob.getState().job?.jobId === job.id) useActiveJob.getState().clear();
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.spaces }),
       queryClient.invalidateQueries({ queryKey: queryKeys.today }),
     ]);
     await navigate({ to: "/" });
   };
-
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-col flex-col px-safe-4 pt-safe-6 xs:px-safe-5">
-      {metadata.isError && !connectionId && (
-        <Banner tone="warning" icon="warning" live>
-          Не удалось подготовить вход через браузер. Пока можно ответить в полях BotAI.
-        </Banner>
-      )}
       <ProgressWall
-        key={jobId}
-        jobId={jobId}
-        title={active?.title ?? "Подключение вуза"}
+        jobId={job.id}
+        title={active?.title ?? "Добавляю документ"}
         spaceTitle={active?.spaceTitle}
-        connectionId={connectionId}
-        onOpenBrowser={connectionId ? openBrowser : undefined}
-        onLoginAgain={
-          connectionId
-            ? () =>
-                reconnect.mutate({
-                  connectionId,
-                  spaceTitle: active?.spaceTitle ?? "личный кабинет",
-                })
-            : undefined
-        }
-        restarting={reconnect.isPending}
+        connectionId={job.connectionId ?? undefined}
         onMinimize={() => void navigate({ to: "/" })}
         onFinish={() => void finish()}
-        onCancel={() => void jobManager.cancel(jobId)}
+        onCancel={() => void jobManager.cancel(job.id)}
         onAskInChat={() => void navigate({ to: "/chat" })}
         renderMascot={(state, slot) => <WallMascot state={state} slot={slot} />}
       />

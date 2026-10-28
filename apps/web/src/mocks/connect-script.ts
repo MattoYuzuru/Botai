@@ -80,6 +80,8 @@ export async function runConnect(
     }
 
     if (variant === "failure") {
+      const connection = db.connections.find((item) => item.id === connectionId);
+      if (connection) connection.status = "error";
       sim.emit("error", {
         type: "https://botai.mnema.app/errors/source_unavailable",
         title: "source_unavailable",

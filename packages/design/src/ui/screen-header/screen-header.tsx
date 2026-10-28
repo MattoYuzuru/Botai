@@ -62,14 +62,16 @@ export function ScreenHeader({
         ) : (
           leading
         )}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 basis-auto flex-col">
           <h1 className="truncate type-title text-fg">{title}</h1>
           {subtitle && <div className="truncate type-caption text-fg-muted">{subtitle}</div>}
         </div>
         {meta && (
           <div className="order-last w-full min-w-0 lg:order-none lg:w-auto lg:max-w-reading">{meta}</div>
         )}
-        {trailing && <div className="flex shrink-0 items-center gap-1">{trailing}</div>}
+        {trailing && (
+          <div className="flex max-w-full min-w-0 shrink-0 flex-wrap items-center gap-1">{trailing}</div>
+        )}
       </div>
     </header>
   );

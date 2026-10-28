@@ -13,9 +13,11 @@ Text that tries to instruct the model is dropped and counted.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from html import escape
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -28,6 +30,10 @@ MAX_ITEMS = 3
 MAX_DEPTH = 8
 MAX_HTML = 6000
 MAX_SIMILAR = 3
+MAX_DOM_DEPTH = 96
+MAX_DOM_NODES = 10_000
+_CONTENT_ROOTS = "main,[role=main]"
+_CONTENT = "h1,h2,h3,h4,h5,h6,time,table,[role=grid],article"
 
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE = re.compile(
@@ -50,6 +56,10 @@ PERSONAL_KEYS = re.compile(
     r"full_?name|first_?name|last_?name|sur_?name|patronymic|middle_?name|\bfio\b|address|"
     r"photo|avatar|password|token|secret|cookie|csrf|session"
 )
+_AUTH_QUERY_KEY = re.compile(
+    r"(?i)(?:^|[_-])(?:auth|authorization|code|ticket|sid|signature|sig|key|jwt|credential|"
+    r"samlrequest|samlresponse|relaystate)(?:$|[_-])|^x-amz-|^x-goog-"
+)
 # A value that names a record rather than describes it: has a digit, no spaces, not a date/number.
 ID_LIKE = re.compile(r"^(?=\S{3,64}$)(?=.*\d)(?![\d:.,+\-TZ/ ]+$)[\w@.~-]+$")
 ID_KEY = re.compile(r"(?i)(?:^|[_.-])(?:id|uid|uuid|guid|sub)$|[a-z]Id$")
@@ -68,6 +78,10 @@ INJECTION = re.compile(
 
 def looks_like_injection(text: str) -> bool:
     return INJECTION.search(text) is not None
+
+
+def secret_query_key(key: str) -> bool:
+    return PERSONAL_KEYS.search(key) is not None or _AUTH_QUERY_KEY.search(key) is not None
 
 
 @dataclass(slots=True)
@@ -102,7 +116,7 @@ class Redactor:
 
     def text(self, value: str, limit: int = MAX_STRING) -> str | None:
         """Redacted text, or None if it is an attempt to instruct the model."""
-        value = clean_text(collapse(value), 4000)
+        value = clean_text(collapse(value), max(4000, min(limit, 8000)))
         if not value:
             return ""
         if looks_like_injection(value):
@@ -173,7 +187,7 @@ class Redactor:
         return (path if same else f"{scheme}//{parts.hostname}{path}") + query
 
     def _query_value(self, key: str, value: str) -> str:
-        if PERSONAL_KEYS.search(key):
+        if secret_query_key(key):
             return "<personal>"
         if value in self.pseudonyms:
             return self.pseudonyms[value]
@@ -225,36 +239,122 @@ class Redactor:
             return self.pseudonyms.get(raw) or "<number>"
         return value
 
+    def json_text(self, node: Any, limit: int) -> str:
+        """A valid JSON shape within the budget, including useful arrays after metadata."""
+        shape = self.json(node)
+
+        def encoded(value: Any) -> str:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+        def arrays_first(item: tuple[object, object]) -> bool:
+            return isinstance(item[1], list)
+
+        def fit(value: Any, budget: int) -> Any:
+            if len(encoded(value)) <= budget:
+                return value
+            if isinstance(value, dict):
+                result: dict[str, Any] = {}
+                # Records often follow a large envelope of navigation/profile metadata.
+                entries = sorted(value.items(), key=arrays_first, reverse=True)
+                for key, child in entries:
+                    overhead = len(encoded({key: None})) - 4
+                    remaining = budget - len(encoded(result)) - overhead - 1
+                    if remaining < 12:
+                        break
+                    result[key] = fit(child, remaining)
+                return result
+            if isinstance(value, list):
+                result_list: list[Any] = []
+                for child in value:
+                    remaining = budget - len(encoded(result_list)) - 1
+                    if remaining < 12:
+                        break
+                    result_list.append(fit(child, remaining))
+                return result_list
+            if isinstance(value, str):
+                # JSON escaping may cost more than the character count (quotes, control chars).
+                while value and len(encoded(value)) > budget:
+                    value = value[
+                        : max(0, len(value) - max(1, (len(encoded(value)) - budget) // 2))
+                    ]
+                return value
+            return None
+
+        return encoded(fit(shape, max(4, limit)))
+
     # --- HTML --------------------------------------------------------------------------------
 
     def html(self, html: str, limit: int = MAX_HTML) -> str:
-        """A skeleton of the page: tags, classes, ids and hrefs kept; text redacted and cut;
-        repeating siblings reduced to a few examples."""
+        """A bounded skeleton with a separate budget for primary content and navigation.
+
+        A SPA may put useful text dozens of layout wrappers below the body, after a long menu.
+        Main content therefore comes first; empty wrappers do not consume structural depth or
+        bytes. Limits apply while writing complete nodes, never by cutting a JSON/HTML prefix.
+        """
         tree = LexborHTMLParser(html)
         for bad in tree.css("script,style,svg,noscript,iframe,template,head link,head meta"):
             bad.decompose()
         root = tree.body or tree.root
-        out: list[str] = []
-        if root is not None:
-            self._node(root, out, 0)
-        text = "".join(out)
-        return text if len(text) <= limit else text[:limit] + "…"
+        if root is None or limit < 40:
+            return ""
+        roots = tree.css(_CONTENT_ROOTS)
+        # Keep only outer main regions; nested mains must not duplicate records in the prompt.
+        focused = [node for node in roots if not self._inside_main(node)]
+        visits = [0]
+        if not focused:
+            return self._node(root, limit, 0, visits)
+        nav_budget = min(600, limit // 8)
+        budget = limit - nav_budget - 20
+        content: list[str] = []
+        for i, node in enumerate(focused[:4]):
+            part = self._node(node, budget // (min(len(focused), 4) - i), 0, visits)
+            content.append(part)
+            budget -= len(part)
+        menus: list[str] = []
+        for node in tree.css("nav,[role=navigation]")[:2]:
+            part = self._node(node, nav_budget, 0, visits)
+            menus.append(part)
+            nav_budget -= len(part)
+        return "<body>" + "".join(content + menus) + "</body>"
+
+    @staticmethod
+    def _inside_main(node: LexborNode) -> bool:
+        parent = node.parent
+        while parent is not None:
+            if parent.tag == "main" or parent.attributes.get("role") == "main":
+                return True
+            parent = parent.parent
+        return False
 
     _KEEP_ATTRS = ("id", "class", "href", "datetime", "type", "name", "role", "data-id")
 
-    def _node(self, node: LexborNode, out: list[str], depth: int) -> None:
-        if depth > 14:
-            return
+    def _node(self, node: LexborNode, budget: int, depth: int, visits: list[int]) -> str:
+        if depth > MAX_DOM_DEPTH or visits[0] >= MAX_DOM_NODES or budget < 1:
+            return ""
+        visits[0] += 1
         tag = node.tag or ""
         if tag in {"-text", "#text"}:
             red = self.text(node.text() or "", 80)
             if red:
-                out.append(red)
+                return red if len(red) <= budget else red[: max(0, budget - 1)] + "…"
             elif red is None:
-                out.append("<instruction removed>")
-            return
+                return "<instruction removed>" if budget >= 21 else ""
+            return ""
         if tag in {"-comment", "#comment", "-undef"}:
-            return
+            return ""
+        children = list(node.iter(include_text=True))
+        elements = [child for child in children if child.tag not in {"-text", "#text"}]
+        # Pure layout wrappers carry neither a selector nor useful text. Skip them rather than
+        # spending the whole budget on ancestors of a deeply nested card.
+        if (
+            tag in {"div", "span"}
+            and not node.attributes
+            and len(elements) == 1
+            and not any(
+                child.text().strip() for child in children if child.tag in {"-text", "#text"}
+            )
+        ):
+            return self._node(elements[0], budget, depth + 1, visits)
         attrs = []
         for name in self._KEEP_ATTRS:
             value = node.attributes.get(name)
@@ -268,15 +368,23 @@ class Redactor:
                 value = self.pseudonym(value)
             else:
                 value = self._scrub(value)[:60]
-            attrs.append(f'{name}="{value}"')
+            attrs.append(f'{name}="{escape(value, quote=True)}"')
         for name, value in node.attributes.items():
             if name.startswith("data-") and name != "data-id" and value:
                 shown = self.pseudonym(value) if ID_LIKE.match(value) else self._scrub(value)[:30]
-                attrs.append(f'{name}="{shown}"')
-        out.append(f"<{tag}{' ' + ' '.join(attrs) if attrs else ''}>")
+                attrs.append(f'{name}="{escape(shown, quote=True)}"')
+        opening = f"<{tag}{' ' + ' '.join(attrs) if attrs else ''}>"
+        closing = f"</{tag}>"
+        remaining = budget - len(opening) - len(closing)
+        if remaining < 1:
+            return ""
+        out = [opening]
+        if tag in {"body", "main", "div", "section"} or node.attributes.get("role") == "main":
+            # Menus and decorative siblings must not hide data that appears later in DOM order.
+            children.sort(key=self._content_priority, reverse=True)
         seen: dict[str, int] = {}
         dropped = 0
-        for child in node.iter(include_text=True):
+        for child in children:
             ctag = child.tag or ""
             if ctag not in {"-text", "#text"}:
                 signature = f"{ctag}.{child.attributes.get('class') or ''}"
@@ -284,10 +392,36 @@ class Redactor:
                 if seen[signature] > MAX_SIMILAR:
                     dropped += 1
                     continue
-            self._node(child, out, depth + 1)
+            part = self._node(child, remaining, depth + 1, visits)
+            if part:
+                out.append(part)
+                remaining -= len(part)
+            if remaining < 24:
+                break
         if dropped:
-            out.append(f"<!-- +{dropped} similar -->")
-        out.append(f"</{tag}>")
+            marker = f"<!-- +{dropped} similar -->"
+            if len(marker) <= remaining:
+                out.append(marker)
+        out.append(closing)
+        return "".join(out)
+
+    @staticmethod
+    def _content_priority(node: LexborNode) -> int:
+        if node.tag in {"-text", "#text"}:
+            return 0
+        if (
+            node.tag in {"nav", "header", "aside", "footer"}
+            or node.attributes.get("role") == "navigation"
+        ):
+            return -1
+        if node.tag in {"main", "article", "table"} or node.attributes.get("role") in {
+            "main",
+            "grid",
+        }:
+            return 3
+        if node.css_first("time,[datetime]") is not None:
+            return 2
+        return int(node.css_first(_CONTENT) is not None)
 
 
 def collect_values(node: Any) -> Iterable[str]:

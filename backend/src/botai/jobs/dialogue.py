@@ -1,0 +1,229 @@
+"""Tenant-scoped non-secret learning turns and the durable public conversation projection."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from botai.contracts.agent_ui import AgentUiBlock, InputBlock
+from botai.core.diagnostics import diagnostic_event
+from botai.core.dialogue import DialogueTurn
+from botai.core.ids import new_id
+from botai.db.models import ChatMessage, ChatThread, Job
+from botai.jobs.events import TERMINAL, iso
+
+
+def state_of(job: Job) -> dict[str, Any]:
+    value = job.payload.get("dialogue")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def save_state(job: Job, state: dict[str, Any]) -> None:
+    job.payload = {**job.payload, "dialogue": state}
+
+
+def is_auth_input(block: AgentUiBlock) -> bool:
+    return (
+        isinstance(block, InputBlock)
+        and block.input_kind != "url"
+        and (
+            block.input_kind in {"password", "code"}
+            or block.autocomplete in {"username", "current-password", "one-time-code"}
+        )
+    )
+
+
+def receipt(
+    job: Job,
+    *,
+    now: datetime,
+    status: str,
+    message_id: str | None = None,
+    block_id: str | None = None,
+) -> None:
+    if (message_id is None) == (block_id is None):
+        raise ValueError("a receipt identifies exactly one message or block")
+    state = state_of(job)
+    receipts = dict(state.get("receipts") or {})
+    key = f"message:{message_id}" if message_id else f"block:{block_id}"
+    receipts[key] = {
+        "job_id": job.id,
+        "message_id": message_id,
+        "block_id": block_id,
+        "status": status,
+        "at": iso(now),
+    }
+    state["receipts"] = receipts
+    save_state(job, state)
+
+    diagnostic_event(
+        "dialogue.receipt",
+        job_id=job.id,
+        thread_id=job.thread_id,
+        connection_id=job.connection_id,
+        message_id=message_id,
+        block_id=block_id,
+        receipt_status=status,
+    )
+
+
+def set_pending(job: Job, block: AgentUiBlock, *, channel: str, now: datetime) -> None:
+    previous = state_of(job).get("pending")
+    if isinstance(previous, dict) and previous.get("block_id") != block.id:
+        receipt(job, now=now, status="superseded", block_id=str(previous["block_id"]))
+    state = state_of(job)
+    state["pending"] = {
+        "job_id": job.id,
+        "block_id": block.id,
+        "channel": channel,
+        "secret": isinstance(block, InputBlock) and block.secret,
+    }
+    save_state(job, state)
+
+
+def complete_pending(job: Job, block_id: str, *, now: datetime, status: str = "applied") -> None:
+    receipt(job, now=now, status=status, block_id=block_id)
+    state = state_of(job)
+    pending = state.get("pending")
+    if isinstance(pending, dict) and pending.get("block_id") == block_id:
+        state.pop("pending", None)
+    save_state(job, state)
+
+
+async def read_turns(session: AsyncSession, job: Job) -> list[DialogueTurn]:
+    if job.thread_id is None:
+        return []
+    state = state_of(job)
+    applied = set(state.get("applied_ids") or [])
+    entries = [
+        e
+        for e in state.get("inbox", [])
+        if isinstance(e, dict) and e.get("message_id") not in applied
+    ]
+    ids = [str(e["message_id"]) for e in entries]
+    if not ids:
+        return []
+    rows = await session.scalars(
+        select(ChatMessage).where(
+            ChatMessage.user_id == job.user_id,
+            ChatMessage.thread_id == job.thread_id,
+            ChatMessage.job_id == job.id,
+            ChatMessage.role == "user",
+            ChatMessage.id.in_(ids),
+        )
+    )
+    by_id = {row.id: row for row in rows}
+    turns: list[DialogueTurn] = []
+    for entry in entries:
+        row = by_id.get(str(entry["message_id"]))
+        if row is None:
+            continue
+        text = "\n\n".join(
+            str(b.get("markdown", "")) for b in row.blocks if b.get("type") == "text"
+        )
+        turns.append(DialogueTurn(row.id, text, row.created_at, entry.get("reply_to_block_id")))
+    return turns
+
+
+async def message_time(
+    session: AsyncSession, user_id: str, thread_id: str | None, now: datetime
+) -> datetime:
+    """Serialize thread appends; even two events in one clock tick keep their public order."""
+    await session.scalar(
+        select(ChatThread)
+        .where(
+            ChatThread.id == thread_id,
+            ChatThread.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    last = await session.scalar(
+        select(func.max(ChatMessage.created_at)).where(
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.user_id == user_id,
+        )
+    )
+    return max(now, last + timedelta(microseconds=1)) if last is not None else now
+
+
+async def project_block(
+    session: AsyncSession, job: Job, data: dict[str, Any], now: datetime
+) -> None:
+    """One stable message per public block, committed with its SSE event; never credentials/tickets."""
+    if job.thread_id is None or job.kind == "chat":
+        return
+    thread = await session.scalar(
+        select(ChatThread).where(ChatThread.id == job.thread_id, ChatThread.user_id == job.user_id)
+    )
+    if thread is None:
+        return
+    kind = data.get("type")
+    safe = dict(data)
+    if kind in {"login", "input", "choice", "confirm", "approval", "wait"}:
+        label = data.get("question") or data.get("message") or "Ручной вход в браузере"
+        safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": str(label)[:500]}
+    existing = await session.scalar(
+        select(ChatMessage).where(
+            ChatMessage.user_id == job.user_id,
+            ChatMessage.thread_id == job.thread_id,
+            ChatMessage.job_id == job.id,
+            ChatMessage.role == "agent",
+            ChatMessage.blocks[0]["id"].astext == str(data["id"]),
+        )
+    )
+    if existing is None:
+        session.add(
+            ChatMessage(
+                id=new_id(),
+                user_id=job.user_id,
+                thread_id=job.thread_id,
+                role="agent",
+                blocks=[safe],
+                job_id=job.id,
+                created_at=await message_time(session, job.user_id, job.thread_id, now),
+            )
+        )
+    else:
+        existing.blocks = [safe]  # creation time and message identity never move on a stage update
+    thread.updated_at = now
+    await session.flush()
+
+
+async def project_terminal(session: AsyncSession, job: Job, now: datetime) -> None:
+    if job.thread_id is None or job.kind == "chat" or job.state not in TERMINAL:
+        return
+    state = state_of(job)
+    pending = state.get("pending")
+    if isinstance(pending, dict):
+        complete_pending(job, str(pending["block_id"]), now=now, status="superseded")
+    state = state_of(job)
+    for entry in state.get("inbox", []):
+        message_id = entry.get("message_id")
+        if message_id and message_id not in set(state.get("applied_ids") or []):
+            receipt(job, now=now, status="rejected", message_id=str(message_id))
+    failed = job.state in {"failed", "cancelled"} or (job.result or {}).get("status") == "error"
+    state = state_of(job)
+    block_id = state.get("terminal_block_id") or new_id()
+    state["terminal_block_id"] = block_id
+    save_state(job, state)
+    detail = (job.error or {}).get("detail")
+    text = (
+        "Подключение отменено."
+        if job.state == "cancelled"
+        else "Подключение не завершено. Можно уточнить источник или продолжить настройку."
+    )
+    if not failed:
+        result_status = (job.result or {}).get("status")
+        text = "Работа с источником завершена."
+        if result_status == "continued":
+            text = "Продолжаю подключение по новой ссылке в этом разговоре."
+        elif result_status in {"unresolved", "rolled_back", "skipped"}:
+            text = "Автоматическая настройка не завершена. Можно уточнить источник или продолжить настройку."
+    elif isinstance(detail, str) and detail:
+        text += " " + detail[:500]
+    await project_block(
+        session, job, {"type": "text", "id": block_id, "at": iso(now), "markdown": text}, now
+    )

@@ -9,8 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent import actions
-from botai.agent.chat import DEFAULT_TITLE
+from botai.agent import actions, conversations
 from botai.agent.context_meter import build_context
 from botai.agent.schemas import (
     ApproveIn,
@@ -20,14 +19,13 @@ from botai.agent.schemas import (
     MessageOut,
     ThreadCreate,
     ThreadOut,
+    ThreadRuntime,
 )
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
-from botai.contracts.agent_ui import AgentUiBlock, TextBlock
+from botai.contracts.agent_ui import AgentUiBlock
 from botai.core.errors import BotaiError, ErrorCode
-from botai.core.ids import new_id
-from botai.core.jobs import JobKind
-from botai.db.models import ChatMessage, ChatThread, Job, Space
+from botai.db.models import ChatMessage, ChatThread
 from botai.db.session import DbSession
 
 router = APIRouter(prefix="/api/v1", tags=["agent"])
@@ -94,26 +92,7 @@ async def list_threads(user: AuthUser, session: DbSession) -> list[ThreadOut]:
 async def create_thread(
     body: ThreadCreate, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> ThreadOut:
-    if body.space_id is not None:
-        owned = (
-            await session.execute(
-                select(Space.id).where(Space.id == body.space_id, Space.user_id == user.id)
-            )
-        ).first()
-        if owned is None:
-            raise BotaiError(ErrorCode.NOT_FOUND, "Пространство не найдено")
-    now = services.clock.now()
-    thread = ChatThread(
-        id=new_id(),
-        user_id=user.id,
-        space_id=body.space_id,
-        title=(body.title or DEFAULT_TITLE).strip() or DEFAULT_TITLE,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(thread)
-    await session.commit()
-    return _thread_out(thread)
+    return _thread_out(await conversations.create_thread(session, services, user.id, body))
 
 
 @router.get("/chat/threads/{thread_id}/messages", response_model=list[MessageOut])
@@ -133,46 +112,14 @@ async def list_messages(thread_id: str, user: AuthUser, session: DbSession) -> l
 async def post_message(
     thread_id: str, body: MessageIn, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> MessageAccepted:
-    thread = await own_thread(session, user.id, thread_id)
-    busy = (
-        await session.execute(
-            select(Job.id).where(
-                Job.user_id == user.id,
-                Job.thread_id == thread_id,
-                Job.kind == JobKind.CHAT.value,
-                Job.state.in_(ACTIVE_JOB_STATES),
-            )
-        )
-    ).first()
-    if busy is not None:
-        raise BotaiError(ErrorCode.CONFLICT, "Ассистент ещё отвечает на прошлое сообщение")
+    return await conversations.post_message(session, services, user.id, thread_id, body)
 
-    now = services.clock.now()
-    block = TextBlock(id=new_id(), at=now, markdown=body.text)
-    message = ChatMessage(
-        id=new_id(),
-        user_id=user.id,
-        thread_id=thread_id,
-        role="user",
-        blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
-        created_at=now,
-    )
-    session.add(message)
-    thread.updated_at = now
-    await session.commit()
-    try:
-        job_id = await services.queue.enqueue(
-            JobKind.CHAT,
-            user_id=user.id,
-            thread_id=thread_id,
-            payload={"thread_id": thread_id, "message_id": message.id},
-            dedupe=False,
-        )
-    except Exception:
-        await session.delete(message)  # no job will ever answer this message
-        await session.commit()
-        raise
-    return MessageAccepted(message=_message_out(message), job_id=job_id)
+
+@router.get("/chat/threads/{thread_id}/runtime", response_model=ThreadRuntime)
+async def thread_runtime(
+    thread_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> ThreadRuntime:
+    return await conversations.runtime(session, services, user.id, thread_id)
 
 
 @router.get("/chat/threads/{thread_id}/context", response_model=ContextOut)

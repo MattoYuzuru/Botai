@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from botai.agent.schemas import ThreadOut
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
 from botai.core.jobs import JobKind
 from botai.db.session import DbSession
 from botai.domain import repo as domain_repo
-from botai.spaces import repo, service, universities
+from botai.spaces import conversations, repo, service, universities
 from botai.spaces.schemas import (
     ConnectionCreate,
     ConnectionOut,
     ConnectionStarted,
+    ConversationIn,
     JobRef,
     SecretIn,
     SectionOut,
@@ -95,6 +97,20 @@ async def get_connection(
 ) -> ConnectionOut:
     conn = await repo.get_connection(session, user.id, connection_id)
     return await service.connection_out(services.vault, conn)
+
+
+@router.post("/connections/{connection_id}/conversation", response_model=ThreadOut)
+async def connection_conversation(
+    connection_id: str,
+    body: ConversationIn,
+    user: AuthUser,
+    session: DbSession,
+    services: ServicesDep,
+) -> ThreadOut:
+    thread = await conversations.attach_conversation(
+        session, services, user.id, connection_id, body.job_id
+    )
+    return ThreadOut.model_validate(thread)
 
 
 @router.delete("/connections/{connection_id}", status_code=204)

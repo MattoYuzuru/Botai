@@ -8,6 +8,12 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnostics:
+        description: "Подробная диагностика: сохранить режим / включить / выключить"
+        type: choice
+        options: [keep, on, off]
+        default: keep
   # Build-only check when the image definition itself changes (agents' PRs are not affected).
   pull_request:
     paths: [ops/docker/**, ops/compose.prod.yaml, .github/workflows/deploy.yml, .dockerignore]
@@ -86,7 +92,9 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAG: ${{ needs.build.outputs.tag }}
+          DIAGNOSTICS: ${{ inputs.diagnostics || 'keep' }}
         run: |
+          case "$DIAGNOSTICS" in keep|on|off) ;; *) exit 64 ;; esac
           printf '%s\n%s\n%s\n' "${{ github.actor }}" "$GHCR_TOKEN" "$DEEPSEEK_API_KEY" |
             ssh -i ~/.ssh/id_deploy -o BatchMode=yes "botai-deploy@${DEPLOY_HOST}" \
-              "bash /srv/botai/remote-deploy.sh ${TAG}"
+              "bash /srv/botai/remote-deploy.sh ${TAG} ${DIAGNOSTICS}"

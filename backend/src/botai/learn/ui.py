@@ -25,6 +25,7 @@ from botai.contracts.agent_ui import (
 )
 from botai.contracts.specs import Kind
 from botai.core.clock import Clock
+from botai.core.dialogue import DialogueContext
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
 from botai.sources.adapter import Record
@@ -149,6 +150,24 @@ class Ui:
         value = answer.values
         text = value[0] if isinstance(value, list) and value else value
         return text.strip()[:200] if isinstance(text, str) and text.strip() else None
+
+    async def ask_learning_turn(self, question: str) -> str | None:
+        """A bounded conversational answer: a link, an explanation, or both."""
+        block = InputBlock(
+            id=new_id(),
+            at=self._now(),
+            question=question[:500],
+            input_kind="text",
+            placeholder="Ссылка и пояснение: что здесь есть и что подключить",
+            required=True,
+            max_length=2000,
+        )
+        if isinstance(self.ctx, DialogueContext):
+            return (await self.ctx.ask_dialogue(block)).strip()[:2000] or None
+        answer = await self.ctx.ask(block)
+        value = answer.values
+        text = value[0] if isinstance(value, list) and value else value
+        return text.strip()[:2000] if isinstance(text, str) and text.strip() else None
 
 
 def truthy(answer: AgentUiAnswer) -> bool:

@@ -264,6 +264,7 @@ def context_for(
         retry=retry or RetryPolicy(),
         expired=info.expired,
         spec_revision=spec_revision,
+        browser=services.browser,
     )
 
 

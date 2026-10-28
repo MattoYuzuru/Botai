@@ -9,6 +9,10 @@ export interface BlockContext {
   nowMs: number;
   timeZone: string;
   spaceTitle?: string;
+  /** Исторический turn никогда не открывает форму, approval или старый browser ticket. */
+  readOnly?: boolean;
+  /** Вопрос уже показан отдельным стабильным turn; здесь нужен только редактор. */
+  editorOnly?: boolean;
   /** Переход во вход через браузер: только контекст подключения, никогда не значения полей. */
   manualLogin?: {
     connectionId: string;

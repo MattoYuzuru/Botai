@@ -1,7 +1,7 @@
 import { Badge, Banner, Button, SourceStatus } from "@botai/design";
 import { useIsFetching } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import type { Connection } from "@/api/types";
+import { useConnectionChat } from "@/features/chat/use-connection-chat";
 import { MascotSyncIndicator } from "@/features/mascot/mascot-sync-indicator";
 import { describeConnection } from "./connection-status";
 import { useReconnect } from "./use-reconnect";
@@ -56,6 +56,7 @@ export function SourceNotices({
   nowMs: number;
 }) {
   const reconnect = useReconnect();
+  const conversation = useConnectionChat();
   const notices = collectNotices(spaces, attentionIds);
   if (notices.length === 0) return null;
   const several = spaces.length > 1;
@@ -85,12 +86,24 @@ export function SourceNotices({
               Войти снова
             </Button>
           ) : view.action === "answer" ? (
-            <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
-              <Link to="/connect">Продолжить</Link>
+            <Button
+              variant="secondary"
+              size="sm"
+              data-touch-expanded=""
+              loading={conversation.isPending && conversation.variables === connection.id}
+              onClick={() => conversation.mutate(connection.id)}
+            >
+              Продолжить
             </Button>
           ) : view.action === "chat" ? (
-            <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
-              <Link to="/chat">Спросить в чате</Link>
+            <Button
+              variant="secondary"
+              size="sm"
+              data-touch-expanded=""
+              loading={conversation.isPending && conversation.variables === connection.id}
+              onClick={() => conversation.mutate(connection.id)}
+            >
+              Спросить в чате
             </Button>
           ) : undefined;
         return (

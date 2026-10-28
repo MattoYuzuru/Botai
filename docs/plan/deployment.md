@@ -10,7 +10,7 @@
 | Пользователь `botai-deploy` | без пароля, группа `docker`, вход только ключом CI с `restrict` |
 | Каталог | `/srv/botai` (`0750`), `backups/` |
 | Секреты | `/srv/botai/app.secrets` (`0600`): `BOTAI_KEK`, `BOTAI_PROXY_SECRET` — сгенерированы на сервере и его не покидают; `DEEPSEEK_API_KEY` — записывается деплоем из GitHub Secret |
-| Переменные compose | `/srv/botai/compose.vars`: `IMAGE_TAG`, `POSTGRES_PASSWORD` |
+| Переменные compose | `/srv/botai/compose.vars`: `IMAGE_TAG`, `POSTGRES_PASSWORD`, `BOTAI_DIAGNOSTICS` |
 | Бэкап | `/etc/cron.d/botai-backup`: `pg_dump` в 03:15, хранение 14 дней. **KEK в бэкап не входит**: без `app.secrets` сохранённые пароли вузов не расшифровать — студенты введут их заново |
 | Caddy | блок `botai.mnema.app` в конце `/etc/caddy/Caddyfile`, бэкап `Caddyfile.bak-20261027-133201`, применён `reload`; TLS выпущен |
 | GitHub | Secrets `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEEPSEEK_API_KEY`; Variable `DEPLOY_ENABLED` |
@@ -18,7 +18,26 @@
 Скрипты: [bootstrap-server.sh](../../ops/deploy/bootstrap-server.sh) (один раз, идемпотентен),
 [remote-deploy.sh](../../ops/deploy/remote-deploy.sh) (каждый деплой),
 [compose.prod.yaml](../../ops/compose.prod.yaml), [deploy.yml](../../.github/workflows/deploy.yml).
-Ручной деплой: Actions → deploy → Run workflow. Отключить автодеплой: `gh variable set DEPLOY_ENABLED --body false`.
+Ручной деплой: Actions → deploy → Run workflow. Поле `diagnostics`: `keep` сохраняет
+текущий режим, `on` включает подробные события, `off` выключает. Автодеплой режим не меняет.
+При неудаче обновления скрипт возвращает прежние `IMAGE_TAG` и `BOTAI_DIAGNOSTICS` и проверяет
+здоровье отката. Подробности и чтение по ID чата — [диагностика](../development/diagnostics.md).
+Диагностический том `botai_diagdata` сохраняется при обновлении контейнеров; миграций БД
+для этой функции нет. Отключить автодеплой: `gh variable set DEPLOY_ENABLED --body false`.
+
+### Миграция диалогов `8148f6a927c3`
+
+Миграция добавляет метаданные подключения и ключи идемпотентности в `chat_threads` и
+`chat_messages`, уникальные ограничения и индекс. Существующие строки, секреты и снимки не
+переписываются; старый образ совместим с добавленными полями. Перед выкладкой нужен свежий
+`pg_dump` именно базы BotAI и проверка восстановления в отдельную временную БД: upgrade,
+сравнение существующих строк, downgrade/re-upgrade и совпадение схемы с моделями. Содержимое
+бэкапа и `app.secrets` в логи не выводятся; для проверки миграции KEK не нужен.
+
+Индекс строится обычным DDL, поэтому проверяются размер таблиц, активные задания и граница
+блокировки перед rollout. При сбое health-check возвращается предыдущий образ. После начала
+новых разговоров поля сохраняются при откате образа: downgrade удаляет историю контекста и
+ключи идемпотентности, поэтому штатное восстановление — исправляющая миграция вперёд.
 
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 

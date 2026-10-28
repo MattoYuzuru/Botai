@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { expectFitsWidth, freezeClock, open } from "./data-support";
+import { expectSheetReady } from "./support";
 
 test.beforeEach(async ({ page }) => freezeClock(page));
 
@@ -29,7 +30,7 @@ test("шапка, предупреждение и пустые данные на
   await expect(title).toBeVisible();
   const notice = page.getByRole("list", { name: "Состояние источников" });
   await expect(notice.getByText(/Вуз отклонил вход/)).toBeVisible();
-  const action = notice.getByRole("link", { name: "Спросить в чате" });
+  const action = notice.getByRole("button", { name: "Спросить в чате" });
   const text = notice.locator("[data-source-state]");
   const a = await action.boundingBox();
   const t = await text.boundingBox();
@@ -87,6 +88,10 @@ test("подключение: поиск с клавиатуры, отдельн
   const width = info.project.name === "phone" ? 400 : 1512;
   await page.setViewportSize({ width, height: 982 });
   await open(page, "/connect", "connected");
+  await expect(page).toHaveURL(/\/chat\?thread=/);
+  await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
+  await page.getByRole("button", { name: "Источник и подключения" }).click();
+  await expectSheetReady(page, "Источник и подключения");
   await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
   const input = page.getByRole("combobox", { name: "Вуз" });
   await input.fill("ВШЭ");
@@ -94,7 +99,11 @@ test("подключение: поиск с клавиатуры, отдельн
   await input.press("ArrowDown");
   await input.press("Enter");
   await expect(page.getByText(/Этот вуз уже добавлен/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Начать подключение" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Начать подключение" })).toHaveCount(0);
+  expect(await page.getByRole("button", { name: "Открыть разговор", exact: true }).count()).toBeGreaterThan(
+    0,
+  );
+  await expect(page.getByRole("link", { name: "Новый источник", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => {
       document.documentElement.dataset.theme = value;
@@ -108,11 +117,17 @@ test("подключение: поиск с клавиатуры, отдельн
     );
     await expect(input.locator("..")).toHaveCSS("background-color", background);
     await expectFitsWidth(page, width);
+    await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`connect-${theme}.png`), fullPage: true });
   }
   await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
-  await expectFitsWidth(page, width);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth), {
+      message: "ширина после перераскладки крупного текста",
+    })
+    .toBeLessThanOrEqual(width);
   await expect(input).toBeVisible();
+  await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("connect-200.png"), fullPage: true });
 });
 

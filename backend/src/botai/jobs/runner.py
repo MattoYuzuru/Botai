@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import socket
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -25,6 +26,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.llm import usage_scope
+from botai.core.diagnostics import diagnostic_event, diagnostic_scope, purge_diagnostics
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import Handler, HandlerTable
 from botai.core.ids import new_id
@@ -32,6 +34,7 @@ from botai.core.jobs import JobCancelled, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db.models import Connection, Job, JobAnswer, User
+from botai.jobs import dialogue
 from botai.jobs.context import ASK_TTL, PgJobContext
 from botai.jobs.events import (
     TERMINAL,
@@ -82,6 +85,7 @@ class Claimed:
     connection_id: str | None
     payload: dict[str, Any]
     attempts: int
+    thread_id: str | None = None
 
 
 class _Budget:
@@ -157,12 +161,32 @@ class Worker:
             await append_event(session, job.id, "status", status_data(job, now))
             await session.commit()
             return Claimed(
-                job.id, job.user_id, job.kind, job.connection_id, dict(job.payload), job.attempts
+                job.id,
+                job.user_id,
+                job.kind,
+                job.connection_id,
+                dict(job.payload),
+                job.attempts,
+                job.thread_id,
             )
 
     # --- running one job --------------------------------------------------------------------
 
     async def run_job(self, job: Claimed) -> None:
+        started = time.monotonic()
+        with diagnostic_scope(
+            job_id=job.id,
+            thread_id=job.thread_id,
+            connection_id=job.connection_id,
+            job_kind=job.kind,
+        ):
+            diagnostic_event("job.start", attempt=job.attempts)
+            try:
+                await self._run_job(job)
+            finally:
+                diagnostic_event("job.exit", elapsed_ms=int((time.monotonic() - started) * 1000))
+
+    async def _run_job(self, job: Claimed) -> None:
         handler: Handler | None = None
         with contextlib.suppress(ValueError):
             handler = self.handlers.get(JobKind(job.kind))
@@ -260,11 +284,18 @@ class Worker:
                 row.locked_by = None
                 if state == "cancelled" and row.stage is None:
                     row.stage = "Остановлено"
+                await dialogue.project_terminal(session, row, now)
                 await append_event(session, job.id, "status", status_data(row, now))
                 if state == "done":
                     await append_event(session, job.id, "done", {"result": result})
                 await session.commit()
         await self._drop_transient(job)
+        diagnostic_event(
+            "job.complete",
+            state=state,
+            outcome=(result or {}).get("status"),
+            error_code=(result or {}).get("detail"),
+        )
 
     async def _fail(
         self,
@@ -289,10 +320,12 @@ class Worker:
                 row.error = stored
                 row.finished_at = now
                 row.locked_by = None
+                await dialogue.project_terminal(session, row, now)
                 await append_event(session, job.id, "status", status_data(row, now))
                 await append_event(session, job.id, "error", body)
                 await session.commit()
         await self._drop_transient(job)
+        diagnostic_event("job.failed", state="failed", error_code=code, status=status)
 
     async def _requeue(self, job: Claimed, stage: str, *, delay: timedelta = timedelta(0)) -> None:
         now = self.services.clock.now()
@@ -309,6 +342,8 @@ class Worker:
             await append_event(session, job.id, "status", status_data(row, now))
             await session.execute(select(func.pg_notify(CHANNEL_JOBS, job.id)))
             await session.commit()
+
+        diagnostic_event("job.requeued", state="queued", delay_ms=int(delay.total_seconds() * 1000))
 
     async def _drop_transient(self, job: Claimed) -> None:
         """Secret answers nobody consumed must not outlive their job."""
@@ -444,6 +479,7 @@ class Worker:
             await asyncio.sleep(self.config.maintenance_seconds)
 
     async def maintain(self) -> None:
+        purge_diagnostics()
         await self.recover_orphans()
         async with self.services.db() as session:
             await purge_finished(session, self.services.clock.now())
@@ -472,6 +508,7 @@ class Worker:
                     job.error = {"code": "internal_error", "detail": detail, "status": 500}
                     job.finished_at = now
                     job.locked_by = None
+                    await dialogue.project_terminal(session, job, now)
                     await append_event(session, job.id, "status", status_data(job, now))
                     await append_event(
                         session,

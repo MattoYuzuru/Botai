@@ -210,3 +210,56 @@ def registry_request(page_text: str) -> LlmRequest:
         temperature=0.0,
         purpose="extract",
     )
+
+
+def discovery_request(observation: dict[str, Any], intent: object) -> LlmRequest:
+    """A separate planner schema; recipe authoring stays unchanged and independently linted."""
+    from botai.learn.intent import LearningIntent
+
+    if not isinstance(intent, LearningIntent):
+        raise TypeError("learning intent required")
+    return LlmRequest(
+        messages=[
+            LlmMessage(role="system", content=load("discover.md").strip()),
+            LlmMessage(
+                role="user",
+                content=json.dumps(
+                    {
+                        "mode": intent.discovery_mode,
+                        "requestedKinds": intent.requested_kinds,
+                        "absentKinds": intent.absent_kinds,
+                        "goal": intent.user_note,
+                        "kindLabels": KIND_LABELS,
+                        "observation": observation,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        ],
+        json_schema={
+            "title": "botai-observation-plan-v1",
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["stateRef", "action", "ref", "discoveries", "evidenceRefs"],
+            "properties": {
+                "stateRef": {"type": "integer", "minimum": 0},
+                "action": {"enum": ["navigate", "inspect", "activate", "finish"]},
+                "ref": {"type": ["string", "null"], "maxLength": 12},
+                "discoveries": {
+                    "type": "array",
+                    "maxItems": len(KIND_LABELS),
+                    "items": {"enum": list(KIND_LABELS)},
+                    "uniqueItems": True,
+                },
+                "evidenceRefs": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {"type": "string", "maxLength": 12},
+                    "uniqueItems": True,
+                },
+            },
+        },
+        max_tokens=1200,
+        temperature=0.0,
+        purpose="learn",
+    )

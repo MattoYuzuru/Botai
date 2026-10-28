@@ -89,7 +89,10 @@ class Env:
         self.ctx, self.asked = ls.scripted_user(
             self.seeded.user_id, self.seeded.connection_id, **user
         )
-        result = await self.handlers[kind](self.ctx, self.services, payload or {})
+        # Existing stories explicitly request the two original MVP sections. New chat jobs
+        # default to schedule only; individual tests pass {} to exercise that behavior.
+        requested = payload if payload is not None else {"kinds": ["scheduleEvents", "deadlines"]}
+        result = await self.handlers[kind](self.ctx, self.services, requested)
         assert result is not None
         return result
 

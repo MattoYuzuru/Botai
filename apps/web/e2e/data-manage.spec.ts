@@ -66,7 +66,7 @@ test.describe("«Подключения»: управление", () => {
     await open(page, "/study/connections", "reauth");
     await page.getByRole("button", { name: /LMS/ }).click();
     await page.getByRole("dialog", { name: "LMS" }).getByRole("button", { name: "Войти снова" }).click();
-    await expect(page).toHaveURL(/\/connect\/[0-9A-Z]{26}/);
+    await expect(page).toHaveURL(/\/chat\?thread=[0-9A-Z]{26}/);
   });
 });
 

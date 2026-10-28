@@ -17,7 +17,7 @@ export function useComposerKeyboard(): boolean {
       return;
     }
     const inComposer = (target: EventTarget | null) =>
-      target instanceof Element && target.closest("[data-composer]") !== null;
+      target instanceof Element && target.closest("[data-composer], [data-chat-input]") !== null;
     const onFocusIn = (event: FocusEvent) => setOpen(inComposer(event.target));
     const onFocusOut = (event: FocusEvent) => {
       if (!inComposer(event.relatedTarget)) setOpen(false);

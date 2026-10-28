@@ -20,7 +20,7 @@ import json
 import secrets
 from html import escape
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from tests.fakeuni import data
@@ -545,3 +545,41 @@ async def redirect_ip() -> RedirectResponse:
 @router.get("/redirect/metadata")
 async def redirect_metadata() -> RedirectResponse:
     return RedirectResponse("https://169.254.169.254/latest/meta-data/", status_code=302)
+
+
+READ_ONLY_WRITES = 0
+READ_ONLY_SOCKETS = 0
+
+
+@router.get("/readonly/page", response_class=HTMLResponse)
+async def readonly_page() -> str:
+    return _page(
+        "Reader fixture",
+        """<main><h1>Calendar</h1></main><script>
+fetch('/readonly/read').then(r=>r.json()).then(()=>document.body.dataset.read='ok');
+fetch('/readonly/write', {method:'POST'}).then(()=>document.body.dataset.write='sent')
+.catch(()=>document.body.dataset.write='blocked');
+const channel = new WebSocket('wss://fakeuni.test/readonly/socket');
+channel.onclose = ()=>document.body.dataset.socket='closed';
+</script>""",
+    )
+
+
+@router.get("/readonly/read")
+async def readonly_read() -> dict[str, bool]:
+    return {"ok": True}
+
+
+@router.post("/readonly/write")
+async def readonly_write() -> dict[str, bool]:
+    global READ_ONLY_WRITES
+    READ_ONLY_WRITES += 1
+    return {"ok": True}
+
+
+@router.websocket("/readonly/socket")
+async def readonly_socket(socket: WebSocket) -> None:
+    global READ_ONLY_SOCKETS
+    READ_ONLY_SOCKETS += 1
+    await socket.accept()
+    await socket.close()

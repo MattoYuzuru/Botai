@@ -13,6 +13,7 @@ answer its questions over `POST /api/v1/jobs/{id}/answers`.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,7 +23,8 @@ import pytest
 from sqlalchemy import func, select, text
 
 from botai.browser.session import decode_session
-from botai.core.llm import ScriptedLlm
+from botai.core.ids import new_id
+from botai.core.llm import LlmResponse, ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.db import models as m
 from botai.jobs.runner import schedule_syncs
@@ -31,6 +33,7 @@ from botai.worker import handler_table
 from tests.agent.rig import call, final, step
 from tests.e2e.support import (
     WRONG_PASSWORD,
+    Asked,
     Attendance,
     Campus,
     Learner,
@@ -44,7 +47,7 @@ from tests.e2e.support import (
 from tests.fakeuni import api as fakeuni_api
 from tests.fakeuni import data
 from tests.fakeuni import login as fakeuni_login
-from tests.jobs.env import Env, live_http
+from tests.jobs.env import Env, live_http, session_header
 from tests.learn import support as ls
 from tests.sources import recipes
 from tests.sources.helpers import FAST
@@ -216,6 +219,175 @@ async def test_a_student_connects_a_university_and_asks_about_it(
     await check_jobs(env, anna.user_id)
     await check_registry(env)
     await check_isolation(env, connection_id, anna.connect_job, thread["id"])
+
+
+async def test_chat_source_url_native_login_clarification_sync_and_reply_share_one_thread(
+    stack: Stack,
+    wiretap: WireTap,
+) -> None:
+    """Real TCP API/worker/Chromium/proxy; only fakeuni and the model are synthetic."""
+    env = stack.env
+    entry = "https://fakeuni.test/app?begin_date=2026-10-26"
+    clarification = "Ссылка уже правильная. Дедлайнов тут нет."
+    classifier = LlmResponse(
+        content=json.dumps(
+            {
+                "linkIndices": [],
+                "kinds": ["scheduleEvents"],
+                "absentKinds": ["deadlines"],
+                "note": clarification,
+            },
+            ensure_ascii=False,
+        )
+    )
+    learning_llm = ScriptedLlm(queue=[classifier, ls.timetable_answer()])
+    start_worker(env, learning_llm)
+    friend = env.new_client()
+    account = await env.account(friend)
+    response = await friend.post("/api/v1/chat/threads", json={"purpose": "connect"})
+    assert response.status_code == 201, response.text
+    thread = response.json()["id"]
+    initial = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+    connect_job = initial["activeJob"]["id"]
+    accepted_ids: list[str] = []
+
+    class ConversationStudent(Student):
+        bootstrap_count = 0
+
+        async def _answer(self, job_id: str, block: dict[str, Any], attendance: Attendance) -> None:
+            if (
+                block["type"] == "input"
+                and block.get("autocomplete") == "off"
+                and not block.get("secret")
+            ):
+                self.bootstrap_count += 1
+                assert self.bootstrap_count == 1, "a valid source URL must not be asked twice"
+                attendance.asked.append(
+                    Asked("input", block.get("inputKind"), False, block["question"])
+                )
+                posted = await self._http.post(
+                    f"/api/v1/chat/threads/{thread}/messages",
+                    headers=self._headers,
+                    json={"text": entry, "targetJobId": job_id, "clientMessageId": new_id()},
+                )
+                assert posted.status_code == 202, posted.text
+                assert posted.json()["jobId"] == job_id
+                accepted_ids.append(posted.json()["message"]["id"])
+                return
+            await super()._answer(job_id, block, attendance)
+
+    clarified = False
+
+    async def on_question(block: dict[str, Any]) -> None:
+        nonlocal clarified
+        if not clarified and block.get("autocomplete") == "username":
+            runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+            assert runtime["pending"][0]["channel"] == "native"
+            assert runtime["pending"][0]["secret"] is False
+            posted = await friend.post(
+                f"/api/v1/chat/threads/{thread}/messages",
+                json={
+                    "text": clarification,
+                    "targetJobId": connect_job,
+                    "clientMessageId": new_id(),
+                },
+            )
+            assert posted.status_code == 202, posted.text
+            assert posted.json()["jobId"] == connect_job
+            accepted_ids.append(posted.json()["message"]["id"])
+            clarified = True
+
+    async with live_http(env.app) as http:
+        student = ConversationStudent(http, session_header(friend))
+        connect = await student.attend(connect_job, on_question=on_question)
+        assert clarified
+        assert student.bootstrap_count == 1
+        assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
+        assert json.loads(learning_llm.requests[0].messages[-1].content)["message"] == clarification
+        assert [asked.label for asked in connect.asked] == [
+            "input:text",
+            *CONNECT_QUESTIONS,
+            "confirm",
+        ]
+        assert connect.result["status"] == "ok"
+        assert connect.result["kinds"] == ["scheduleEvents"]
+        assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
+        runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+        assert runtime["pending"] == []
+        assert runtime["connection"]["status"] == "active"
+        connection_id, space_id = runtime["connection"]["id"], runtime["connection"]["spaceId"]
+        learner = Learner(friend, account.id, space_id, connection_id, connect_job)
+        secrets = Secrets(env, learner)
+        await secrets.session("chat source")
+        assert {
+            receipt["messageId"]
+            for receipt in runtime["receipts"]
+            if receipt["status"] == "applied"
+        } >= set(accepted_ids)
+        async with env.sm() as session:
+            row = await session.get(m.ChatThread, thread)
+            assert row is not None
+            assert row.connect_context["entry_urls"] == [entry]
+            assert row.connect_context["absent_kinds"] == ["deadlines"]
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(m.Job)
+                    .where(m.Job.user_id == account.id, m.Job.kind == "connect")
+                )
+                == 1
+            )
+        events = (await friend.get("/api/v1/schedule", params=week())).json()
+        assert [event["title"] for event in events] == [title for title, _, _ in CLASSES]
+        assert (await friend.get("/api/v1/deadlines")).json() == []
+        history = await friend.get(f"/api/v1/chat/threads/{thread}/messages")
+        source_ids = {message["id"] for message in history.json()}
+        assert all(message["jobId"] == connect_job for message in history.json())
+        assert data.USERNAME not in history.text
+        assert leaks(history.text, secrets.needles) == []
+        assert all(
+            block["type"] != "login" for message in history.json() for block in message["blocks"]
+        )
+
+        sync_job = (await friend.post(f"/api/v1/connections/{connection_id}/sync")).json()["jobId"]
+        bound = await friend.post(
+            f"/api/v1/connections/{connection_id}/conversation", json={"jobId": sync_job}
+        )
+        assert bound.status_code == 200, bound.text
+        assert bound.json()["id"] == thread
+        sync = await student.attend(sync_job)
+        assert sync.result["status"] == "ok"
+        assert len(learning_llm.requests) == 2  # Sync is deterministic; it does not ask a model.
+
+        chat_llm = ScriptedLlm(
+            queue=[
+                step(call("get_schedule", from_date="2026-10-26", to_date="2026-10-26")),
+                final(
+                    "Первая пара в понедельник — «Математический анализ» в 09:30, ауд. А-101 [S1]."
+                ),
+            ]
+        )
+        env.services.llm = chat_llm
+        posted = await friend.post(
+            f"/api/v1/chat/threads/{thread}/messages",
+            json={"text": QUESTION, "clientMessageId": new_id()},
+        )
+        assert posted.status_code == 202, posted.text
+        chat = await student.attend(posted.json()["jobId"])
+        assert chat.result["tools"] == ["get_schedule"]
+        history = (await friend.get(f"/api/v1/chat/threads/{thread}/messages")).json()
+        assert source_ids <= {message["id"] for message in history}
+        reply = next(
+            message
+            for message in history
+            if message["jobId"] == chat.job_id and message["role"] == "agent"
+        )
+        assert "Математический анализ" in reply["blocks"][0]["markdown"]
+        assert reply["blocks"][0]["sources"][0]["url"].startswith(
+            "https://fakeuni.test/api/v2/timetable"
+        )
+    await check_nothing_leaked(env, wiretap, secrets, learning_llm, chat_llm)
+    assert stack.gateway.active_for(account.id) is None
 
 
 # =================================================================================================

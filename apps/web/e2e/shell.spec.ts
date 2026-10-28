@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { freezeClock } from "./data-support";
-import { DEMO, expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open, signIn } from "./support";
+import {
+  DEMO,
+  expectNoHorizontalOverflow,
+  expectSheetReady,
+  findSmallTapTargets,
+  findTinyText,
+  open,
+  signIn,
+} from "./support";
 
 test.describe("вход и онбординг", () => {
   for (const theme of ["light", "dark"] as const) {
@@ -87,7 +95,7 @@ test.describe("вход и онбординг", () => {
     await expect(page).toHaveURL(/\/welcome$/);
     await expect(page.getByRole("heading", { level: 2, name: "Что будет с паролем" })).toBeVisible();
     await page.getByRole("link", { name: "Подключить вуз" }).click();
-    await expect(page).toHaveURL(/\/connect$/);
+    await expect(page).toHaveURL(/\/chat\?thread=/);
   });
 
   test("поля входа — 16 px, зоны нажатия не меньше 44 px, текст не мельче 13 px", async ({ page }) => {
@@ -176,9 +184,15 @@ test.describe("каркас", () => {
         if (width === 1512)
           await page.screenshot({ path: testInfo.outputPath(`chat-1512-${theme}.png`), fullPage: true });
         await open(page, "/connect", "connected");
-        await expect(page.getByRole("heading", { level: 1, name: "Подключение вуза" })).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1, name: "Чат" })).toBeVisible();
+        await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
+        expect((await page.locator("[data-chat-transcript]").boundingBox())?.width).toBe(736);
+        await page.getByRole("button", { name: "Источник и подключения" }).click();
+        await expectSheetReady(page, "Источник и подключения");
         await expect(page.getByRole("combobox", { name: "Вуз" })).toBeVisible();
-        expect((await page.getByRole("main").boundingBox())?.width).toBe(1152);
+        expect(
+          (await page.getByRole("dialog", { name: "Источник и подключения" }).boundingBox())?.width ?? 0,
+        ).toBeLessThanOrEqual(420);
         await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
         if (width === 1512)
           await page.screenshot({ path: testInfo.outputPath(`connect-1512-${theme}.png`), fullPage: true });
@@ -323,7 +337,7 @@ test.describe("каркас", () => {
     await expect(page.getByText("Вузов пока нет")).toBeVisible();
     await expect(page.getByText(/сдано/i)).toHaveCount(0);
     await page.getByRole("link", { name: "Подключить вуз" }).click();
-    await expect(page).toHaveURL(/\/connect$/);
+    await expect(page).toHaveURL(/\/chat\?thread=/);
   });
 });
 

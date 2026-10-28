@@ -13,7 +13,7 @@ from botai.agent.tools import TOOL_SPECS, ChatEnv, build_chat_tools
 from botai.core.jobs import JobKind
 from botai.core.llm import ScriptedLlm
 from botai.core.queue import InMemoryJobQueue
-from botai.db.models import Job
+from botai.db.models import Connection, Job
 from tests.agent.conftest import add_user
 from tests.agent.seed import (
     FakeReader,
@@ -271,6 +271,11 @@ async def test_repair_enqueues_once_and_refuses_what_a_human_must_do(sm: Sm, use
     broken = await add_connection(
         sm, user_id, space, "Расписание", status="error", error_code="recipe_drift"
     )
+    async with sm() as session:
+        connection = await session.get(Connection, broken)
+        assert connection is not None
+        connection.adapter = "recipe"  # This case repairs an existing recipe, not unfinished setup.
+        await session.commit()
     reauth = await add_connection(sm, user_id, space, "ЛК", status="needs_reauth")
     foreign = await add_connection(sm, other, foreign_space, "Чужое", status="error")
     r = await rig(sm, user_id)

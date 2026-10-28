@@ -47,6 +47,9 @@ class RedactingFilter(logging.Filter):
 
 
 def configure_logging(level: int = logging.INFO) -> None:
+    from botai.core.diagnostics import configure_diagnostics
+
+    configure_diagnostics()
     handler = logging.StreamHandler()
     handler.addFilter(RedactingFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))

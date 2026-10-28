@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -19,6 +20,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -30,6 +32,7 @@ from playwright.async_api import (
     Request,
     Response,
     Route,
+    WebSocketRoute,
     async_playwright,
 )
 from playwright.async_api import Error as PlaywrightError
@@ -38,9 +41,18 @@ from pydantic import SecretStr
 
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.pagescan import SCAN_JS, build_snapshot
-from botai.browser.session import jwt_expiry
-from botai.core.browser import ObservedRequest, PageSnapshot, SessionCookie, SessionState
+from botai.browser.probe import requires_authentication
+from botai.browser.read_views import ReadView, ReadViewRegistry
+from botai.browser.session import bounded_browser_storage, jwt_expiry, storage_origin
+from botai.core.browser import (
+    ObservedRequest,
+    PageSnapshot,
+    SessionCookie,
+    SessionOriginStorage,
+    SessionState,
+)
 from botai.core.clock import Clock, SystemClock
+from botai.core.diagnostics import diagnostic_context, diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 
 log = logging.getLogger(__name__)
@@ -63,6 +75,53 @@ _TOKEN_KEYS = re.compile(
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _NAV_URL = re.compile(r"\bat (https?://[^\s]+)")
 _OBSERVED_TYPES = frozenset({"xhr", "fetch", "document"})
+_EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
+    "job_id": None,
+    "thread_id": None,
+    "connection_id": None,
+    "request_id": None,
+    "message_id": None,
+    "block_id": None,
+    "job_kind": None,
+}
+_SESSION_STORAGE_JS = """() => {
+  const items = [];
+  let size = 0;
+  try {
+    for (let i = 0; i < sessionStorage.length && items.length < 64; i++) {
+      const name = sessionStorage.key(i);
+      if (!name || name.length > 256) continue;
+      const value = sessionStorage.getItem(name);
+      if (value === null || value.length > 32768 || size + name.length + value.length > 262144) continue;
+      items.push({name, value});
+      size += name.length + value.length;
+    }
+  } catch (_) {}
+  return {origin: location.origin, items};
+}"""
+_RESTORE_SESSION_STORAGE_JS = """(() => {
+  const origins = JSON.parse(__BOTAI_STORAGE_DATA__);
+  if (!Object.prototype.hasOwnProperty.call(origins, location.origin)) return;
+  try {
+    for (const [key, value] of Object.entries(origins[location.origin])) {
+      if (sessionStorage.getItem(key) === null) sessionStorage.setItem(key, value);
+    }
+  } catch (_) {}
+})();"""
+
+
+def _browser_diagnostics(connection_id: str) -> dict[str, object]:
+    # Playwright dispatch runs in its launcher's task context. The owner of this browser
+    # supplies correlation; absent IDs explicitly suppress any stale dispatcher context.
+    return {**_EMPTY_DIAGNOSTIC_CONTEXT, **diagnostic_context(), "connection_id": connection_id}
+
+
+def _method(method: str) -> str:
+    return (
+        method
+        if method in {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"}
+        else "OTHER"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +173,28 @@ def map_navigation_error(exc: PlaywrightError, requested: str) -> BotaiError:
     return BotaiError(ErrorCode.SOURCE_UNAVAILABLE, f"Сайт {host} не отвечает")
 
 
+async def _read_only_request(
+    route: Route, *, diagnostic_facts: dict[str, object] | None = None
+) -> None:
+    if route.request.method in {"GET", "HEAD", "OPTIONS"}:
+        await route.fallback()
+    else:
+        diagnostic_event(
+            "browser.read_only_blocked",
+            **{
+                **_EMPTY_DIAGNOSTIC_CONTEXT,
+                **(diagnostic_facts or {}),
+                "method": _method(route.request.method),
+                **url_facts(route.request.url),
+            },
+        )
+        await route.abort("blockedbyclient")
+
+
+async def _read_only_socket(socket: WebSocketRoute) -> None:
+    await socket.close(code=1008, reason="read-only browser")
+
+
 def _host_matches(domain: str, hosts: Iterable[str]) -> bool:
     """Would a browser send a cookie with this `domain` attribute to one of `hosts`?
 
@@ -140,20 +221,25 @@ class PlaywrightHandle:
         origin: str,
         capture: CaptureConfig,
         clock: Clock,
+        read_only: bool = False,
     ) -> None:
         self._gateway = gateway
         self.context = context
         self._page = page
         self.user_id = user_id
         self.connection_id = connection_id
+        self._diagnostic_facts = _browser_diagnostics(connection_id)
+        self._read_view_registry = ReadViewRegistry()
         self.allow_hosts = tuple(allow_hosts)
         self.origin = origin
         self._capture = capture
         self._clock = clock
+        self.read_only = read_only
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
         self._sampled = 0
+        self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
@@ -163,10 +249,14 @@ class PlaywrightHandle:
         self._page_callbacks: list[Callable[[], None]] = []
         self.closed = False
         self._reaper: asyncio.Task[None] | None = None
+        self._closing: asyncio.Task[None] | None = None
         context.on("page", self._on_page)
         context.on("request", self._on_request)
         context.on("response", self._on_response)
         context.on("requestfailed", self._on_failed)
+
+    def _diagnostic(self, event: str, **facts: object) -> None:
+        diagnostic_event(event, **{**facts, **self._diagnostic_facts})
 
     # -- observation -------------------------------------------------------------------------
 
@@ -198,6 +288,7 @@ class PlaywrightHandle:
         self._page_callbacks.append(callback)
 
     def _on_page(self, page: Page) -> None:
+        self._read_view_registry.invalidate()
         self._page = page
         self._navigation_request = None
         self._navigation_error = None
@@ -228,6 +319,14 @@ class PlaywrightHandle:
         )
         self._log.append(entry)
         self._entries[request] = entry
+        self._diagnostic(
+            "browser.request",
+            connection_id=self.connection_id,
+            method=_method(request.method),
+            resource_type=request.resource_type,
+            read_only=self.read_only,
+            **url_facts(request.url),
+        )
 
     def _on_response(self, response: Response) -> None:
         entry = self._entries.get(response.request)
@@ -236,6 +335,15 @@ class PlaywrightHandle:
         entry.status = response.status
         content_type = response.headers.get("content-type")
         entry.response_content_type = content_type
+        self._diagnostic(
+            "browser.response",
+            connection_id=self.connection_id,
+            status=entry.status,
+            resource_type=response.request.resource_type,
+            json_response=bool(content_type and "json" in content_type.lower()),
+            html_response=bool(content_type and "html" in content_type.lower()),
+            **url_facts(response.url),
+        )
         if (
             response.request.resource_type in ("xhr", "fetch")
             and content_type
@@ -247,15 +355,42 @@ class PlaywrightHandle:
 
     async def _sample(self, response: Response, entry: ObservedRequest) -> None:
         if self._sampled >= SAMPLE_BUDGET:
+            self._diagnostic(
+                "browser.sample",
+                connection_id=self.connection_id,
+                budget_exhausted=True,
+                **url_facts(entry.url),
+            )
             return
         with contextlib.suppress(PlaywrightError, UnicodeError):
             body = await response.body()
             sample = scrub_sample(body[: SAMPLE_CHARS * 4].decode("utf-8", "replace"))
             entry.response_sample = sample
             self._sampled += len(sample or "")
+            self._diagnostic(
+                "browser.sample",
+                connection_id=self.connection_id,
+                body_bytes=len(body),
+                sample_chars=len(sample or ""),
+                omitted_sensitive=sample is None,
+                truncated=len(body) > SAMPLE_CHARS * 4
+                or bool(sample and len(sample) == SAMPLE_CHARS),
+                budget_exhausted=False,
+                **url_facts(entry.url),
+            )
 
     def _on_failed(self, request: Request) -> None:
         failure = request.failure or ""
+        if self._failed_diagnostics < MAX_LOG:
+            self._failed_diagnostics += 1
+            self._diagnostic(
+                "browser.request_failed",
+                connection_id=self.connection_id,
+                proxy_failed="TUNNEL" in failure or "PROXY" in failure,
+                blocked_by_client="BLOCKED_BY_CLIENT" in failure,
+                navigation=request is self._navigation_request,
+                **url_facts(request.url),
+            )
         if request is self._navigation_request:
             self._navigation_error = map_navigation_error(PlaywrightError(failure), request.url)
         if "TUNNEL" in failure or "PROXY" in failure:
@@ -288,26 +423,77 @@ class PlaywrightHandle:
             await page.wait_for_load_state("networkidle", timeout=timeout_ms)
 
     async def goto(self, url: str) -> PageSnapshot:
+        self._read_view_registry.invalidate()
+        started = monotonic()
+        self._diagnostic(
+            "browser.navigation.start",
+            connection_id=self.connection_id,
+            read_only=self.read_only,
+            **url_facts(url),
+        )
         self._check_url(url)
         self._navigation_request = None
         self._navigation_error = None
         try:
             await self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         except PlaywrightTimeout as exc:
+            self._diagnostic(
+                "browser.navigation.failed",
+                connection_id=self.connection_id,
+                timed_out=True,
+                elapsed_ms=int((monotonic() - started) * 1000),
+                **url_facts(url),
+            )
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Сайт вуза не отвечает") from exc
         except PlaywrightError as exc:
             await asyncio.sleep(0.1)  # let the `requestfailed` event for the refused tunnel land
+            self._diagnostic(
+                "browser.navigation.failed",
+                connection_id=self.connection_id,
+                timed_out=False,
+                elapsed_ms=int((monotonic() - started) * 1000),
+                **url_facts(url),
+            )
             raise self._navigation_error or map_navigation_error(exc, url) from exc
         await self._settle()
-        return await self.snapshot()
+        snap = await self.snapshot()
+        if self.read_only and (
+            self._navigation_error is not None or snap.url.startswith("chrome-error:")
+        ):
+            raise self._navigation_error or BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Страница источника недоступна для чтения"
+            )
+        self._diagnostic(
+            "browser.navigation.done",
+            connection_id=self.connection_id,
+            elapsed_ms=int((monotonic() - started) * 1000),
+            redirected=snap.url != url,
+            **url_facts(snap.url),
+        )
+        return snap
 
     async def snapshot(self) -> PageSnapshot:
+        self._read_view_registry.invalidate()
         last: PlaywrightError | None = None
         for _ in range(4):
             page = self._page
             try:
                 raw: Any = await page.evaluate(SCAN_JS)
-                return build_snapshot(page.url, await page.title(), raw)
+                snap = build_snapshot(page.url, await page.title(), raw)
+                self._diagnostic(
+                    "browser.snapshot",
+                    connection_id=self.connection_id,
+                    html_chars=len(snap.html),
+                    text_chars=len(snap.text),
+                    form_count=len(snap.forms),
+                    captcha_suspected=snap.captcha_suspected,
+                    auth_required=requires_authentication(snap),
+                    credential_fields=any(
+                        f.input_type == "password" for form in snap.forms for f in form.fields
+                    ),
+                    **url_facts(snap.url),
+                )
+                return snap
             except PlaywrightError as exc:  # navigation in flight destroys the execution context
                 last = exc
                 await asyncio.sleep(0.15)
@@ -317,6 +503,8 @@ class PlaywrightHandle:
         ) from last
 
     async def fill(self, selector: str, value: str) -> None:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.fill(selector, value, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -325,7 +513,21 @@ class PlaywrightHandle:
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
             ) from None
 
+    async def read_views(self) -> list[ReadView]:
+        if not self.read_only or self.closed:
+            return []
+        return await self._read_view_registry.discover(self._page)
+
+    async def activate_read_view(self, ref: str) -> PageSnapshot:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
+        await self._read_view_registry.activate(self._page, ref)
+        await self._settle()
+        return await self.snapshot()
+
     async def click(self, selector: str) -> PageSnapshot:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.click(selector, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -336,6 +538,8 @@ class PlaywrightHandle:
         return await self.snapshot()
 
     async def press(self, selector: str, key: str) -> PageSnapshot:
+        if self.read_only:
+            raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
             await self._page.press(selector, key, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -366,7 +570,8 @@ class PlaywrightHandle:
 
     async def export_session(self) -> SessionState:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single
-        explicitly named storage key). Arbitrary tokens in storage are never collected."""
+        explicitly named key). Bounded browser storage stays only in the encrypted session,
+        separate from bearer discovery and from observations supplied to the model."""
         hosts = self._cookie_hosts()
         cookies: list[SessionCookie] = []
         for c in await self.context.cookies():
@@ -404,32 +609,89 @@ class PlaywrightHandle:
             exp = jwt_expiry(bearer)
             if exp is not None and (hint is None or exp < hint):
                 hint = exp
+        browser_storage = await self._export_browser_storage()
+        self._diagnostic(
+            "browser.export",
+            connection_id=self.connection_id,
+            cookie_count=len(cookies),
+            bearer_present=bearer is not None,
+            capture_from=source,
+            expires_hint_present=hint is not None,
+        )
         return SessionState(
             origin=self.origin,
             cookies=cookies,
             bearer=SecretStr(bearer) if bearer else None,
             captured_at=now,
             expires_hint=hint,
+            browser_storage=browser_storage,
         )
+
+    async def _export_browser_storage(self) -> list[SessionOriginStorage]:
+        entries: dict[str, SessionOriginStorage] = {}
+        try:
+            state = await self.context.storage_state()
+            for item in state.get("origins", []):
+                origin = storage_origin(item["origin"], self.allow_hosts)
+                if origin is None:
+                    continue
+                entries[origin] = SessionOriginStorage(
+                    origin=origin,
+                    local_storage={
+                        value["name"]: SecretStr(value["value"])
+                        for value in item["localStorage"][:64]
+                    },
+                )
+            for page in self.context.pages:
+                if storage_origin(page.url, self.allow_hosts) is None:
+                    continue
+                raw: Any = await page.evaluate(_SESSION_STORAGE_JS)
+                if not isinstance(raw, dict) or not isinstance(raw.get("origin"), str):
+                    continue
+                origin = storage_origin(raw["origin"], self.allow_hosts)
+                values = raw.get("items")
+                if origin is None or not isinstance(values, list):
+                    continue
+                entry = entries.setdefault(origin, SessionOriginStorage(origin=origin))
+                entry.session_storage = {
+                    value["name"]: SecretStr(value["value"])
+                    for value in values[:64]
+                    if isinstance(value, dict)
+                    and isinstance(value.get("name"), str)
+                    and isinstance(value.get("value"), str)
+                }
+        except PlaywrightError:
+            # Playwright can quote a storage value or init script in its error details.
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Не удалось сохранить состояние браузера"
+            ) from None
+        return bounded_browser_storage(entries.values(), self.allow_hosts)
 
     # -- lifetime ----------------------------------------------------------------------------
 
     async def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        if self._reaper is not None and self._reaper is not asyncio.current_task():
-            self._reaper.cancel()
-        for task in list(self._samples):
-            task.cancel()
-        with contextlib.suppress(PlaywrightError, TimeoutError):
-            async with asyncio.timeout(10):
-                await self.context.close()
-        self._gateway.release(self)
-        for callback in self._close_callbacks:
-            with contextlib.suppress(Exception):
-                callback()
-        self._close_callbacks.clear()
+        if self._closing is None:
+            self.closed = True
+            if self._reaper is not None and self._reaper is not asyncio.current_task():
+                self._reaper.cancel()
+            for task in list(self._samples):
+                task.cancel()
+            self._closing = asyncio.create_task(self._finish_close())
+        # A fetch deadline may stop waiting for cleanup. The context and its pool slot still
+        # belong to this one bounded task; later callers and gateway shutdown wait for it too.
+        await asyncio.shield(self._closing)
+
+    async def _finish_close(self) -> None:
+        try:
+            with contextlib.suppress(PlaywrightError, TimeoutError):
+                async with asyncio.timeout(10):
+                    await self.context.close()
+        finally:
+            self._gateway.release(self)
+            for callback in self._close_callbacks:
+                with contextlib.suppress(Exception):
+                    callback()
+            self._close_callbacks.clear()
 
     def start_reaper(self, lifetime_s: float) -> None:
         async def reap() -> None:
@@ -471,6 +733,7 @@ class PlaywrightGateway:
         self._browser: Browser | None = None
         self._launch_lock = asyncio.Lock()
         self._by_user: dict[str, PlaywrightHandle] = {}
+        self._user_locks: dict[str, asyncio.Lock] = {}
         self._handles: set[PlaywrightHandle] = set()
         self._background: set[asyncio.Task[None]] = set()
 
@@ -565,11 +828,44 @@ class PlaywrightGateway:
         origin: str | None = None,
         capture: CaptureConfig | None = None,
         suffixes: Sequence[str] = (),
+        read_only: bool = False,
+        background: bool = False,
+    ) -> PlaywrightHandle:
+        async with self._user_locks.setdefault(user_id, asyncio.Lock()):
+            return await self._open_for_user(
+                user_id=user_id,
+                connection_id=connection_id,
+                allow_hosts=allow_hosts,
+                session=session,
+                origin=origin,
+                capture=capture,
+                suffixes=suffixes,
+                read_only=read_only,
+                background=background,
+            )
+
+    async def _open_for_user(
+        self,
+        *,
+        user_id: str,
+        connection_id: str,
+        allow_hosts: Iterable[str],
+        session: SessionState | None = None,
+        origin: str | None = None,
+        capture: CaptureConfig | None = None,
+        suffixes: Sequence[str] = (),
+        read_only: bool = False,
+        background: bool = False,
     ) -> PlaywrightHandle:
         hosts = tuple(dict.fromkeys(h.lower() for h in allow_hosts))
         if not hosts and not suffixes:
             raise ValueError("a browser context needs at least one allowed host")
         previous = self._by_user.get(user_id)
+        if background and previous is not None and not previous.closed:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                "Браузер занят другим действием; чтение продолжится позже",
+            )
         if previous is not None:
             await previous.close()  # one live context per user
         try:
@@ -602,7 +898,16 @@ class PlaywrightGateway:
             context.set_default_timeout(ACTION_TIMEOUT_MS)
             primary = origin or f"https://{hosts[0]}"
             if session is not None:
-                await self._restore(context, session)
+                await self._restore(context, session, allow_hosts=hosts)
+            if read_only:
+                # Install after restore so this guard runs before bearer injection.
+                route_diagnostics = _browser_diagnostics(connection_id)
+
+                async def read_only_request(route: Route) -> None:
+                    await _read_only_request(route, diagnostic_facts=route_diagnostics)
+
+                await context.route("**/*", read_only_request)
+                await context.route_web_socket("**/*", _read_only_socket)
             page = await context.new_page()
         except BaseException:
             if context is not None:  # a half-built context would live on with its cookies
@@ -620,6 +925,7 @@ class PlaywrightGateway:
             origin=primary,
             capture=capture or CaptureConfig(),
             clock=self._clock,
+            read_only=read_only,
         )
         self._handles.add(handle)
         self._by_user[user_id] = handle
@@ -627,7 +933,57 @@ class PlaywrightGateway:
         return handle
 
     @staticmethod
-    async def _restore(context: BrowserContext, session: SessionState) -> None:
+    async def _restore(
+        context: BrowserContext, session: SessionState, *, allow_hosts: Iterable[str] | None = None
+    ) -> None:
+        hosts = (
+            tuple(allow_hosts)
+            if allow_hosts is not None
+            else ((urlsplit(session.origin).hostname or ""),)
+        )
+        browser_storage = bounded_browser_storage(session.browser_storage, hosts)
+        diagnostic_event(
+            "browser.restore",
+            cookie_count=len(session.cookies),
+            bearer_present=session.bearer is not None,
+            storage_restored=bool(browser_storage),
+        )
+        if browser_storage:
+            try:
+                await context.set_storage_state(
+                    {
+                        "cookies": [],
+                        "origins": [
+                            {
+                                "origin": entry.origin,
+                                "localStorage": [
+                                    {"name": key, "value": value.get_secret_value()}
+                                    for key, value in entry.local_storage.items()
+                                ],
+                            }
+                            for entry in browser_storage
+                        ],
+                    }
+                )
+                session_values = {
+                    entry.origin: {
+                        key: value.get_secret_value()
+                        for key, value in entry.session_storage.items()
+                    }
+                    for entry in browser_storage
+                    if entry.session_storage
+                }
+                if session_values:
+                    # Fixed program; the serialized state is data, never executable source.
+                    await context.add_init_script(
+                        _RESTORE_SESSION_STORAGE_JS.replace(
+                            "__BOTAI_STORAGE_DATA__", json.dumps(json.dumps(session_values))
+                        )
+                    )
+            except PlaywrightError:
+                raise BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Не удалось восстановить состояние браузера"
+                ) from None
         if session.cookies:
             await context.add_cookies(
                 [

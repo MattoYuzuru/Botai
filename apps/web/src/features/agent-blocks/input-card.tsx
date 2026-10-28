@@ -63,7 +63,12 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
   if (secret) {
     const kind: SecretKind = block.inputKind === "code" ? "code" : "password";
     return (
-      <QuestionFrame question={block.question} required={block.required} answer={answer}>
+      <QuestionFrame
+        question={block.question}
+        required={block.required}
+        answer={answer}
+        editorOnly={ctx.editorOnly}
+      >
         {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
         <SecretField
           label="Ответ"
@@ -107,7 +112,12 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
   };
 
   return (
-    <QuestionFrame question={block.question} required={block.required} answer={answer}>
+    <QuestionFrame
+      question={block.question}
+      required={block.required}
+      answer={answer}
+      editorOnly={ctx.editorOnly}
+    >
       {manual && <p className="type-caption text-fg-muted">Вход через поля BotAI</p>}
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <Field label="Ответ" error={error ?? undefined}>
@@ -126,7 +136,13 @@ function PlainInput({ block, ctx, busy }: { block: InputBlock; ctx: BlockContext
           />
         </Field>
         <div className="flex flex-col gap-2 xs:flex-row xs:flex-wrap">
-          <Button type="submit" variant="primary" loading={busy} disabled={busy} className="xs:min-w-40">
+          <Button
+            type="submit"
+            variant="primary"
+            loading={busy}
+            disabled={busy}
+            className="max-w-full xs:w-40"
+          >
             Ответить
           </Button>
           {!block.required && (
@@ -153,7 +169,13 @@ function ManualLoginOption({
   if (!manual) return null;
   return (
     <div className="flex flex-col items-start gap-2">
-      <Button type="button" variant="secondary" disabled={busy} onClick={() => manual.onOpen(blockId)}>
+      <Button
+        type="button"
+        variant="secondary"
+        disabled={busy}
+        onClick={() => manual.onOpen(blockId)}
+        className="h-auto min-h-11 max-w-full whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0"
+      >
         Открыть браузер
       </Button>
       {manual.busy && (

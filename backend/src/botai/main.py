@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from botai.agent.router import router as agent_router
 from botai.auth.router import router as auth_router
 from botai.browser.router import router as browser_router
-from botai.core.errors import BotaiError, botai_error_handler
+from botai.core.diagnostics import diagnostic_event, diagnostic_scope, url_facts
+from botai.core.errors import BotaiError, ErrorCode, botai_error_handler, problem
+from botai.core.ids import new_id
 from botai.core.logging import configure_logging
 from botai.domain.router import router as domain_router
 from botai.jobs.router import router as jobs_router
@@ -43,6 +49,50 @@ def create_app() -> FastAPI:
         title="BotAI API", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json"
     )
     app.add_exception_handler(BotaiError, botai_error_handler)
+
+    @app.middleware("http")
+    async def diagnostic_request(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if not get_settings().botai_diagnostics or request.url.path == "/api/health":
+            return await call_next(request)
+        request_id = new_id()
+        started = time.monotonic()
+        with diagnostic_scope(request_id=request_id):
+            try:
+                response = await call_next(request)
+            except Exception:
+                diagnostic_event(
+                    "http.failed",
+                    method=request.method,
+                    status=500,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code="internal_error",
+                    **url_facts(str(request.url)),
+                )
+                raise
+            diagnostic_event(
+                "http.complete",
+                method=request.method,
+                status=response.status_code,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                **url_facts(str(request.url)),
+                **{
+                    k: v
+                    for k, v in request.path_params.items()
+                    if k in {"thread_id", "job_id", "connection_id"}
+                },
+            )
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
+        # Pydantic errors contain raw input, which can be a password or signed URL.
+        return JSONResponse(
+            problem(ErrorCode.VALIDATION, "Проверьте формат запроса", 422),
+            status_code=422,
+            media_type="application/problem+json",
+        )
+
     for r in (
         auth_router,
         spaces_router,

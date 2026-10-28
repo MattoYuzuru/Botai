@@ -64,11 +64,10 @@ def test_block_serializes_camel_case() -> None:
     assert schemas.errors("agent-ui.schema.json", dumped) == []
 
 
-def test_render_contract_is_get_html_and_execution_fails_closed() -> None:
+def test_render_contract_requires_get_html_without_request_body() -> None:
     from copy import deepcopy
 
     from botai.contracts.specs import RecipeSpec
-    from botai.core.errors import BotaiError, ErrorCode
     from botai.sources.adapters.recipe import RecipeAdapter
 
     valid = _load("valid", "rendered-recipe.json")[0]
@@ -83,9 +82,7 @@ def test_render_contract_is_get_html_and_execution_fails_closed() -> None:
     }
     assert schemas.errors("adapter-spec.schema.json", spec) == []
     parsed = RecipeSpec.model_validate(spec)
-    with pytest.raises(BotaiError) as exc:
-        RecipeAdapter(parsed)
-    assert exc.value.code == ErrorCode.RECIPE_REJECTED
+    assert RecipeAdapter(parsed).recipe.endpoints[0].request.render
     for request, response in (
         (
             {"method": "POST", "path": "/calendar", "render": True, "readOnlyPost": True},

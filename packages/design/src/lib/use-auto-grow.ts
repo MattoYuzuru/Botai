@@ -20,5 +20,28 @@ export function useAutoGrow(ref: RefObject<HTMLTextAreaElement | null>, value: u
   // biome-ignore lint/correctness/useExhaustiveDependencies: value запускает пересчёт высоты
   useLayoutEffect(resize, [resize, value]);
 
+  // Ширина меняется и при увеличении текста: соседняя кнопка и отступы растут вместе со шрифтом.
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    let width = element.clientWidth;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      const next = element.clientWidth;
+      if (next === width) return;
+      width = next;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        resize();
+      });
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [ref, resize]);
+
   return resize;
 }

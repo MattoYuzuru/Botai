@@ -166,7 +166,11 @@ async def test_invite_to_connect_job_to_answers(env: Env) -> None:
     assert stream.events[-1]["data"] == {
         "result": {
             "connected": "schedule",
-            "payload": {"url": "https://lms.example.org/login", "kind": "lms"},
+            "payload": {
+                "url": "https://lms.example.org/login",
+                "kind": "lms",
+                "kinds": ["scheduleEvents", "deadlines"],
+            },
         }
     }
     blocks = [e["data"] for e in stream.events if e["event"] == "block"]

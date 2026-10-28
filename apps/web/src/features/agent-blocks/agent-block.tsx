@@ -12,6 +12,20 @@ import { ApprovalBlock, ConfirmCard, SummaryCard, UnknownBlockView } from "./oth
  * `thinking` здесь не рисуется: шаги собирает `ThinkingStream`.
  */
 export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockContext }) {
+  if (ctx.readOnly) {
+    switch (block.type) {
+      case "input":
+      case "choice":
+      case "confirm":
+        return <ChatMessage role="agent" markdown={block.question} />;
+      case "approval":
+        return <ChatMessage role="agent" markdown={block.proposal.intent} />;
+      case "login":
+        return <ChatMessage role="agent" markdown="Вход через браузер" />;
+      case "wait":
+        return <ChatMessage role="agent" markdown={block.message} />;
+    }
+  }
   switch (block.type) {
     case "thinking":
       return null;

@@ -100,10 +100,13 @@ class ScriptedLlm:
         self,
         by_fingerprint: Mapping[str, LlmResponse] | None = None,
         queue: Sequence[LlmResponse] | None = None,
+        discovery_queue: Sequence[LlmResponse] | None = None,
     ) -> None:
         self._by_fp = dict(by_fingerprint or {})
         self._queue = list(queue or [])
         self.requests: list[LlmRequest] = []
+        self._discovery_queue = list(discovery_queue or [])
+        self.observation_requests: list[LlmRequest] = []
 
     @classmethod
     def from_dir(cls, path: Path) -> ScriptedLlm:
@@ -123,3 +126,10 @@ class ScriptedLlm:
         raise LlmFixtureMissing(
             f"no scripted response for request {fp} (purpose={request.purpose})"
         )
+
+    async def complete_observation(self, request: LlmRequest) -> LlmResponse:
+        """A separate discovery script never consumes an author/intent fixture by accident."""
+        if not self._discovery_queue:
+            raise LlmFixtureMissing("no scripted observation plan")
+        self.observation_requests.append(request)
+        return self._discovery_queue.pop(0)

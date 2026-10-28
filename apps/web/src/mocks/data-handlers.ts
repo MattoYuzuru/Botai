@@ -383,15 +383,14 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       if (!signedIn()) return unauthorized();
       const connection = db.connections.find((c) => c.id === String(params.connectionId));
       if (!connection) return problem(404, "not_found", "Подключение не найдено");
-      if (
-        connection.status === "draft" ||
-        connection.status === "learning" ||
-        connection.status === "disabled"
-      )
-        return problem(409, "conflict", "Подключение ещё настраивается или отключено");
+      if (connection.status === "disabled") return problem(409, "conflict", "Подключение отключено");
+      const active = [...db.sims.values()].find(
+        (item) => item.connectionId === connection.id && item.kind === "connect" && !item.terminal,
+      );
+      if (active) return HttpResponse.json({ jobId: active.jobId } satisfies S["JobRef"], { status: 202 });
       // Вход снова — тот же сценарий, что при подключении: вопросы агента приходят блоками потока задания.
       const jobId = ulid();
-      const sim = new JobSim(jobId, db.now, jobPace, connection.id, "sync");
+      const sim = new JobSim(jobId, db.now, jobPace, connection.id, connection.adapter ? "sync" : "connect");
       db.sims.set(jobId, sim);
       void runConnect(sim, db, connection.id, db.jobVariant).then(save);
       return HttpResponse.json({ jobId } satisfies S["JobRef"], { status: 202 });

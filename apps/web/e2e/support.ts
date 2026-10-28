@@ -26,6 +26,26 @@ export async function expectNoHorizontalOverflow(page: Page, label = "") {
   expect(overflow, `горизонтальная прокрутка ${label}`).toBeLessThanOrEqual(0);
 }
 
+/** Снимок панели — после её штатного въезда, когда она целиком находится во viewport. */
+export async function expectSheetReady(page: Page, title: string) {
+  const sheet = page.getByRole("dialog", { name: title });
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("Нет размера viewport");
+  await expect(sheet).toBeVisible();
+  await expect
+    .poll(async () => {
+      const box = await sheet.boundingBox();
+      return box ? box.x + box.width : Number.POSITIVE_INFINITY;
+    })
+    .toBeLessThanOrEqual(viewport.width);
+  await expect
+    .poll(async () => {
+      const box = await sheet.boundingBox();
+      return box ? box.y + box.height : Number.POSITIVE_INFINITY;
+    })
+    .toBeLessThanOrEqual(viewport.height);
+}
+
 /**
  * Интерактивные элементы с зоной нажатия меньше 44×44 px. Расширение через `::before` учитывается
  * попаданием `elementFromPoint`; ссылка внутри предложения — часть текста (WCAG 2.5.8) и пропускается.

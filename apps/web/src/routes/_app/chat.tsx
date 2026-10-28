@@ -6,8 +6,17 @@ import { ChatScreen } from "@/features/chat/chat-screen";
  * `/chat?thread=new` — новый. Так работают «назад» и открытие чата в новой вкладке.
  */
 export const Route = createFileRoute("/_app/chat")({
-  validateSearch: (search: Record<string, unknown>): { thread?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { thread?: string; connect?: string; space?: string; university?: string } => ({
     thread: typeof search.thread === "string" && search.thread !== "" ? search.thread : undefined,
+    connect:
+      typeof search.connect === "string" && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(search.connect)
+        ? search.connect
+        : undefined,
+    space: typeof search.space === "string" && search.space !== "" ? search.space : undefined,
+    university:
+      typeof search.university === "string" && search.university !== "" ? search.university : undefined,
   }),
   component: ChatScreen,
 });

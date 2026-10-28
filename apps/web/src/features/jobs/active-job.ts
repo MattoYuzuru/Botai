@@ -11,6 +11,7 @@ export interface ActiveJob {
   title: string;
   spaceTitle?: string;
   connectionId?: string;
+  threadId?: string;
 }
 
 interface ActiveJobState {

@@ -19,8 +19,9 @@ from botai.core.jobs import JobKind
 from botai.core.queue import InMemoryJobQueue
 from botai.core.services import Services
 from botai.core.vault import SecretKind
-from botai.db.models import Connection
+from botai.db.models import AdapterSpecRow, Connection
 from tests.auth.support import Sm, make_connection, make_space, signup
+from tests.sources.recipes import recipe_spec
 
 Make = Callable[[], httpx.AsyncClient]
 TOKEN = "tok-FIXTURE-9f3a"
@@ -58,7 +59,11 @@ async def test_create_connection_starts_a_connect_job(
     assert job["kind"] == JobKind.CONNECT
     assert job["user_id"] == acc.id
     assert job["connection_id"] == conn["id"]
-    assert set(job["payload"]) <= {"url", "kind"}  # hints only, never credentials
+    assert job["payload"] == {
+        "url": "https://lms.example.org/login?next=/x",
+        "kind": "lms",
+        "kinds": ["scheduleEvents", "deadlines"],
+    }  # Explicit legacy selection and hints only, never credentials.
 
     async with tx_sessionmaker() as s:
         row = (await s.execute(select(Connection))).scalar_one()
@@ -77,6 +82,7 @@ async def test_create_connection_without_a_url_lets_the_agent_discover(
     assert r.json()["connection"]["kind"] == "other"
     assert r.json()["connection"]["origin"] == ""
     assert queue.jobs[0]["kind"] == JobKind.CONNECT
+    assert queue.jobs[0]["payload"] == {"kinds": ["scheduleEvents", "deadlines"]}
 
 
 async def test_a_repeated_request_while_setup_runs_is_the_same_connection(
@@ -215,7 +221,13 @@ async def test_sync_and_repair_enqueue_a_deduplicated_job(
     r2 = await client.post(f"/api/v1/connections/{conn}/{path}")
     assert r1.status_code == r2.status_code == 202
     assert r1.json()["jobId"] == r2.json()["jobId"]
-    expected = JobKind.CONNECT if path == "sync" and status == "error" else kind
+    if status == "error":
+        async with tx_sessionmaker() as session:
+            row = await session.get(Connection, conn)
+            assert row is not None
+            assert row.adapter is None
+            assert row.spec_id is None
+    expected = JobKind.CONNECT if status == "error" else kind
     assert [(j["kind"], j["connection_id"], j["user_id"]) for j in queue.jobs] == [
         (expected, conn, acc.id)
     ]
@@ -234,7 +246,7 @@ async def test_sync_and_repair_wait_for_a_finished_setup(
     acc = await signup(client, tx_sessionmaker, clock)
     conn = await make_connection(tx_sessionmaker, acc.id, await _space(client), status=status)
     r = await client.post(f"/api/v1/connections/{conn}/{path}")
-    if path == "sync" and status != "disabled":
+    if status != "disabled":
         assert r.status_code == 202
         assert [(j["kind"], j["connection_id"]) for j in queue.jobs] == [(JobKind.CONNECT, conn)]
     else:
@@ -243,8 +255,13 @@ async def test_sync_and_repair_wait_for_a_finished_setup(
         assert queue.jobs == []
 
 
+@pytest.mark.parametrize("path", ["sync", "repair"])
 async def test_resume_setup_reuses_its_waiting_connect_job(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
+    client: httpx.AsyncClient,
+    tx_sessionmaker: Sm,
+    clock: FrozenClock,
+    queue: InMemoryJobQueue,
+    path: str,
 ) -> None:
     await signup(client, tx_sessionmaker, clock)
     started = await client.post(
@@ -253,25 +270,47 @@ async def test_resume_setup_reuses_its_waiting_connect_job(
     )
     assert started.status_code == 201
     body = started.json()
-    resumed = await client.post(f"/api/v1/connections/{body['connection']['id']}/sync")
+    resumed = await client.post(f"/api/v1/connections/{body['connection']['id']}/{path}")
     assert resumed.status_code == 202
     assert resumed.json()["jobId"] == body["jobId"]
     assert len(queue.jobs) == 1
 
 
+@pytest.mark.parametrize(("path", "kind"), [("sync", JobKind.SYNC), ("repair", JobKind.REPAIR)])
 async def test_failed_configured_connection_still_syncs_its_adapter(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
+    client: httpx.AsyncClient,
+    tx_sessionmaker: Sm,
+    clock: FrozenClock,
+    queue: InMemoryJobQueue,
+    path: str,
+    kind: JobKind,
 ) -> None:
     acc = await signup(client, tx_sessionmaker, clock)
-    conn = await make_connection(tx_sessionmaker, acc.id, await _space(client), status="error")
+    conn = await make_connection(
+        tx_sessionmaker, acc.id, await _space(client), status="error", origin="https://fakeuni.test"
+    )
     async with tx_sessionmaker() as session:
         row = await session.get(Connection, conn)
         assert row is not None
+        spec = AdapterSpecRow(
+            id=new_id(),
+            origin=row.origin,
+            adapter="recipe",
+            revision=1,
+            state="active",
+            spec=recipe_spec(),
+        )
+        session.add(spec)
+        await session.flush()
         row.adapter = "recipe"
+        row.spec_id = spec.id
+        row.spec_revision = 1
         await session.commit()
-    response = await client.post(f"/api/v1/connections/{conn}/sync")
+    response = await client.post(f"/api/v1/connections/{conn}/{path}")
     assert response.status_code == 202
-    assert [j["kind"] for j in queue.jobs] == [JobKind.SYNC]
+    assert [(j["kind"], j["connection_id"], j["user_id"]) for j in queue.jobs] == [
+        (kind, conn, acc.id)
+    ]
 
 
 # --- secrets ------------------------------------------------------------------------------------

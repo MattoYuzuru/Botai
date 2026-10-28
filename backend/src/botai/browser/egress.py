@@ -13,13 +13,21 @@ Other modules (the sync Runner) call `proxy_url_for(...)` and hand the result to
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from botai.browser.proxy import EgressProxy, derive_key, mint_token, proxy_url_with_token
+from botai.browser.proxy import (
+    EgressProxy,
+    derive_key,
+    mint_token,
+    proxy_url_with_token,
+    verify_token,
+)
+from botai.core.diagnostics import diagnostic_event
 from botai.settings import Settings
 
 LOGIN_TOKEN_TTL_S = 35 * 60  # a little over the longest login session (events.md §3)
@@ -59,6 +67,13 @@ class ProxyEgress:
         self, hosts: Sequence[str], *, ttl_s: float, suffixes: Sequence[str] = ()
     ) -> ProxyCredentials:
         token = mint_token(self._secret, hosts=hosts, ttl_s=ttl_s, suffixes=suffixes)
+        grant = verify_token(self._secret, token)
+        if grant is not None:
+            diagnostic_event(
+                "egress.grant",
+                grant_hash=hashlib.sha256(grant.jti.encode()).hexdigest()[:16],
+                allow_host_count=len(grant.hosts),
+            )
         if self._proxy is not None:
             async with self._start_lock:
                 await self._proxy.start()

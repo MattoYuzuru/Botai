@@ -169,7 +169,8 @@ describe("«Подключения»: управление", () => {
     await userEvent.click(await screen.findByRole("button", { name: /LMS/ }));
     const sheet = await screen.findByRole("dialog", { name: "LMS" });
     await userEvent.click(within(sheet).getByRole("button", { name: "Войти снова" }));
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/connect\/[0-9A-Z]{26}$/));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
   });
 });
 

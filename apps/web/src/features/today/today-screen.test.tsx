@@ -151,7 +151,8 @@ describe("«Сегодня»: состояния данных", () => {
     useScenario("reauth");
     const { router } = renderApp("/");
     await userEvent.click(await screen.findByRole("button", { name: "Войти снова" }));
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/connect\/[0-9A-Z]{26}$/));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
   });
 
   it("stale: подключение устарело — полоса объясняет, что показан снимок, обновление идёт само", async () => {
@@ -175,10 +176,12 @@ describe("«Сегодня»: состояния данных", () => {
 
   it("error: подключение не обновляется — понятный текст и «Спросить в чате»", async () => {
     useScenario("connected", "error");
-    renderApp("/");
+    const { router } = renderApp("/");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
     expect(within(notices).getByText("Сайт вуза не отвечает уже вторые сутки.")).toBeInTheDocument();
-    expect(within(notices).getByRole("link", { name: "Спросить в чате" })).toHaveAttribute("href", "/chat");
+    await userEvent.click(within(notices).getByRole("button", { name: "Спросить в чате" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
   });
 
   it("offline: последний снимок и подпись «Нет сети. Показан снимок от …»", async () => {

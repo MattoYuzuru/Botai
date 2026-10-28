@@ -12,14 +12,22 @@ export function QuestionFrame({
   question,
   required,
   answer,
+  editorOnly = false,
   children,
 }: {
   question: string;
   required: boolean;
   answer: AnswerState | undefined;
+  editorOnly?: boolean;
   children: ReactNode;
 }) {
   if (answer?.status === "answered") {
+    if (editorOnly)
+      return (
+        <p role="status" className="type-caption text-fg-muted">
+          Ответ отправлен.
+        </p>
+      );
     return (
       <div className="flex flex-col gap-3" data-question="answered">
         <ChatMessage role="agent" markdown={question} />
@@ -29,13 +37,15 @@ export function QuestionFrame({
   }
   return (
     <Card data-question="pending" className="flex flex-col gap-4" aria-label="Вопрос агента">
-      <div className="flex flex-col gap-2">
-        <Badge tone="info" icon="waiting" className="self-start">
-          Жду ответа
-        </Badge>
-        <p className="type-body text-fg">{question}</p>
-        {required && <p className="type-caption text-fg-muted">Без ответа работа не продолжится.</p>}
-      </div>
+      {!editorOnly && (
+        <div className="flex flex-col gap-2">
+          <Badge tone="info" icon="waiting" className="self-start">
+            Жду ответа
+          </Badge>
+          <p className="type-body text-fg">{question}</p>
+          {required && <p className="type-caption text-fg-muted">Без ответа работа не продолжится.</p>}
+        </div>
+      )}
       {children}
       {answer?.status === "failed" && answer.error && (
         <p role="alert" className="type-caption text-danger-fg">

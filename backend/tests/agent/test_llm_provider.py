@@ -52,6 +52,17 @@ async def test_profile_by_purpose_is_applied() -> None:
     assert "temperature" not in body  # ignored in thinking mode
 
 
+async def test_observation_planner_uses_normal_quota_and_usage_accounting() -> None:
+    wire = Wire()
+    gate = FakeGate()
+    llm = provider(wire, gate=gate)
+    with usage_scope("fixture-user", "fixture-job"):
+        await llm.complete_observation(req(purpose="learn"))
+    assert gate.checked == ["fixture-user"]
+    assert len(gate.recorded) == 1
+    assert wire.body()["reasoning_effort"] == "high"
+
+
 async def test_classify_profile_disables_thinking() -> None:
     wire = Wire()
     await provider(wire).complete(req(purpose="classify", temperature=0.0))

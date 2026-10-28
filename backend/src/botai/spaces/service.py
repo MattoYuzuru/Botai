@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -12,7 +13,8 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import Connection, Space
+from botai.db.models import Connection, Job, Space
+from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities
 from botai.spaces.schemas import (
     ConnectionCreate,
@@ -123,7 +125,10 @@ async def create_connection(
 ) -> tuple[Connection, str]:
     """Creates a `draft` connection and enqueues its `connect` job (login + learn)."""
     space = await repo.get_space(session, user_id, space_id)
-    origin = universities.origin_of(body.url) if body.url else ""
+    from botai.spaces.conversations import safe_url
+
+    url = safe_url(body.url) if body.url else None
+    origin = universities.origin_of(url) if url else ""
     if len(origin) > _ORIGIN_MAX:
         raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
     kind = body.kind or "other"
@@ -160,7 +165,12 @@ async def create_connection(
             JobKind.CONNECT,
             user_id=user_id,
             connection_id=conn.id,
-            payload={"url": body.url, "kind": body.kind} if body.url or body.kind else {},
+            # Keep the pre-chat REST entry point's original data selection explicit.
+            # Chat bootstrap supplies its own schedule-only LearningIntent instead.
+            payload={
+                **({"url": url, "kind": body.kind} if url or body.kind else {}),
+                "kinds": ["scheduleEvents", "deadlines"],
+            },
             dedupe=True,
         )
     except Exception:
@@ -178,15 +188,97 @@ async def delete_connection(session: AsyncSession, user_id: str, connection_id: 
     await session.commit()
 
 
+def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
+    """Only the source's own explicit learning context may enter a retry payload."""
+    from botai.spaces.conversations import intent_of, normalize_context
+
+    if not isinstance(data, dict) or "requested_kinds" not in data:
+        return None
+    raw_urls = data.get("entry_urls")
+    urls = raw_urls[:6] if isinstance(raw_urls, list) else []
+    own_urls = [
+        url for value in urls if (url := navigation_url(value)) and url_origin(url) == origin
+    ]
+    return intent_of(
+        normalize_context(
+            {
+                "entry_urls": own_urls,
+                "requested_kinds": data["requested_kinds"],
+                "absent_kinds": data.get("absent_kinds", []),
+                "user_note": data.get("user_note", ""),
+            }
+        )
+    )
+
+
+async def _connect_retry_payload(
+    session: AsyncSession,
+    conn: Connection,
+    context: dict[str, Any] | None,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    previous = await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == conn.user_id,
+            Job.connection_id == conn.id,
+            Job.kind == JobKind.CONNECT.value,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    prior = previous.payload if previous else {}
+    canonical = _same_origin_intent(context, conn.origin)
+    source_intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
+    context_urls = context.get("entry_urls") if context else None
+    foreign_context = isinstance(context_urls, list) and any(
+        url_origin(url) != conn.origin for value in context_urls if (url := navigation_url(value))
+    )
+    # A conversation may now point at a child source: its parent's own intent wins then.
+    if canonical and not canonical["entry_urls"] and foreign_context:
+        intent = source_intent
+    else:
+        intent = canonical or source_intent
+    result = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key not in {"learning_intent", "url", "kinds"}
+    }
+    entry = navigation_url(prior.get("url"))
+    if entry and url_origin(entry) != conn.origin:
+        entry = None
+    if intent is not None:
+        if not intent["entry_urls"]:
+            intent["entry_urls"] = list(source_intent["entry_urls"]) if source_intent else []
+            if not intent["entry_urls"] and entry:
+                intent["entry_urls"] = [entry]
+        result["learning_intent"] = intent
+        result["kinds"] = list(intent["requested_kinds"])
+        if intent["entry_urls"]:
+            result["url"] = intent["entry_urls"][0]
+    else:
+        result["kinds"] = ["scheduleEvents", "deadlines"]  # Legacy REST before a chat context.
+        if entry:
+            result["url"] = entry
+    return result
+
+
 async def enqueue_for_connection(
-    session: AsyncSession, queue: JobQueue, user_id: str, connection_id: str, kind: JobKind
+    session: AsyncSession,
+    queue: JobQueue,
+    user_id: str,
+    connection_id: str,
+    kind: JobKind,
+    *,
+    thread_id: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     """Manual `sync` / `repair`. Deduplicated: a job already queued or running is returned."""
     conn = await repo.get_connection(session, user_id, connection_id)
     if conn.status == "disabled":
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
     if (
-        kind == JobKind.SYNC
+        kind in {JobKind.SYNC, JobKind.REPAIR}
         and conn.status in {"draft", "learning", "error"}
         and conn.adapter is None
         and conn.spec_id is None
@@ -196,8 +288,35 @@ async def enqueue_for_connection(
         kind = JobKind.CONNECT
     elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
+    from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
+
+    thread = await canonical_thread(session, user_id, conn.id)
+    if thread is None and thread_id is not None:
+        thread = await owned_thread(session, user_id, thread_id)
+        bind_thread(thread, conn.id)
+    target_thread = thread.id if thread is not None else None
+    if kind == JobKind.CONNECT:
+        payload = await _connect_retry_payload(
+            session, conn, thread.connect_context if thread else None, payload
+        )
     await session.commit()  # the queue works in its own transaction
-    return await queue.enqueue(kind, user_id=user_id, connection_id=conn.id, dedupe=True)
+    job_id = await queue.enqueue(
+        kind,
+        user_id=user_id,
+        connection_id=conn.id,
+        thread_id=target_thread,
+        payload=payload,
+        dedupe=True,
+    )
+    # An existing deduplicated legacy job can predate its conversation.
+    if target_thread is not None:
+        job = await session.scalar(
+            select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
+        )
+        if job is not None and job.thread_id is None:
+            job.thread_id = target_thread
+            await session.commit()
+    return job_id
 
 
 async def put_secret(

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _DAYS = re.compile(r"^(plusDays|minusDays):(\d{1,4})$")
 PARAM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,30}$")
-BUILTIN_NAMES = frozenset({"today", "nowUnix"})
+BUILTIN_NAMES = frozenset({"today", "nowUnix", "weekStart"})
 MAX_PARAM_VALUE = 200
 
 
@@ -44,6 +44,8 @@ def _builtin(name: str, now: datetime, tz: ZoneInfo) -> str | None:
     local = now.astimezone(tz)
     if name == "today":
         return local.date().isoformat()
+    if name == "weekStart":
+        return (local.date() - timedelta(days=local.weekday())).isoformat()
     if name == "nowUnix":
         return str(int(now.timestamp()))
     m = _DAYS.match(name)
