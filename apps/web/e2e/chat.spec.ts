@@ -9,8 +9,13 @@ import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } f
 const composer = (page: Page) => page.getByRole("textbox", { name: "Сообщение агенту" });
 
 async function ask(page: Page, text: string) {
-  await composer(page).fill(text);
-  await page.getByRole("button", { name: "Отправить" }).click();
+  const input = composer(page);
+  const submit = page.getByRole("button", { name: "Отправить" });
+  await expect(input).toBeEnabled();
+  await input.fill(text);
+  await expect(input).toHaveValue(text);
+  await expect(submit).toBeEnabled();
+  await submit.click();
 }
 
 const openChat = (page: Page, path = "/chat?pace=0") => open(page, path, "connected");
@@ -64,9 +69,15 @@ test.describe("раскладка чата", () => {
 
   test("длинная переписка прокручивается внутри ленты, а не страницей", async ({ page }) => {
     await openChat(page, "/chat?thread=new&pace=0");
-    for (const question of ["Что сдавать на неделе?", "Какая следующая пара?", "Расскажи анекдот"]) {
+    const savedReplies = timeline(page).locator('[data-role="agent"]:not([data-live-reply] *)');
+    const questions = ["Что сдавать на неделе?", "Какая следующая пара?", "Расскажи анекдот"];
+    for (const [index, question] of questions.entries()) {
       await ask(page, question);
       await expect(timeline(page).getByText(question, { exact: true })).toBeVisible();
+      // Вопрос появляется оптимистично, до запуска job. Следующий оборот начинается только
+      // после нового ответа в истории и завершения передачи live → canonical.
+      await expect(savedReplies).toHaveCount(index + 1);
+      await expect(page.locator("[data-live-reply]")).toHaveCount(0);
       await expect(composer(page)).toBeEnabled();
     }
     // Последний ответ дорисован, лента догнала его.
