@@ -51,6 +51,7 @@ _LOGIN_REQUIRED = re.compile(
     r"(?i)вы не вошли|для продолжения.{0,40}войдите|необходимо (?:войти|авторизоваться)|"
     r"you (?:are not|aren't) (?:logged|signed) in|please (?:log|sign) in|login required"
 )
+RequestKey = tuple[str, tuple[str, tuple[tuple[str, str], ...]]]
 
 
 @dataclass(slots=True)
@@ -242,6 +243,38 @@ def interesting_call(call: ObservedRequest, origin: str) -> bool:
     return not any(skip in ctype for skip in _SKIP_TYPES)
 
 
+def request_key(call: ObservedRequest) -> RequestKey:
+    """One identity for health, adaptive references and the final evidence bundle."""
+    return call.method, _url_key(call.url)
+
+
+def latest_responses(entries: list[ObservedRequest], origin: str) -> list[ObservedRequest]:
+    """An unfinished repeat cannot replace the latest completed response, including errors."""
+    latest: dict[RequestKey, ObservedRequest] = {}
+    for call in entries:
+        if call.status is not None and interesting_call(call, origin):
+            latest[request_key(call)] = call
+    return list(latest.values())
+
+
+def data_response_health(entries: list[ObservedRequest], origin: str) -> tuple[bool, bool]:
+    """Authentication and technical failures are evidence gaps, never confirmed absence.
+
+    Only observed same-origin GET data branches are considered. A 404/410 dead link is an
+    examined missing destination; it does not declare the whole source unavailable.
+    """
+    auth_required = technical_failure = False
+    for call in latest_responses(entries, origin):
+        if call.method != "GET" or call.resource_type not in {"xhr", "fetch"}:
+            continue
+        status = call.status
+        if status == 401:
+            auth_required = True
+        elif status is not None and status >= 400 and status not in {404, 410}:
+            technical_failure = True
+    return auth_required, technical_failure
+
+
 def _call_priority(call: ObservedRequest) -> int:
     """Useful successful record responses outrank envelopes and repeated background noise."""
     score = int(call.resource_type in {"xhr", "fetch"})
@@ -328,13 +361,12 @@ async def observe(
         snapshots.append((url, snap))
         if requires_authentication(snap) or snap.captcha_suspected:
             break
-        if max_requests is not None:
-            current_log = await network()
-            if current_log is None:
-                break
-            if len(current_log) >= max_requests:
-                stop_reason = "request_budget"
-                break
+        current_log = await network()
+        if current_log is None or data_response_health(current_log or [], origin)[0]:
+            break
+        if max_requests is not None and len(current_log) >= max_requests:
+            stop_reason = "request_budget"
+            break
         if len(snapshots) == 1 or len(queue) < max_pages:
             for _, link in menu_links(snap.html, snap.url or url, origin):
                 if link not in visited and link not in queue:
@@ -355,8 +387,8 @@ async def observe(
             stop_reason = "navigation_failed"
         if not stop_reason and queue and len(snapshots) >= max_pages:
             stop_reason = "page_budget"
-        obs.limited = bool(stop_reason)
-        obs.stop_reason = stop_reason
+        obs.limited = obs.limited or bool(stop_reason)
+        obs.stop_reason = obs.stop_reason or stop_reason
     return obs
 
 
@@ -370,7 +402,7 @@ def observations_of(
     queued_count: int = 0,
     started: float | None = None,
     page_refs: tuple[str, ...] = (),
-    call_refs: Mapping[tuple[str, str], str] | None = None,
+    call_refs: Mapping[RequestKey, str] | None = None,
 ) -> Observations:
     """Build the same redacted bundle from legacy crawling or adaptive browser actions."""
     started = time.monotonic() if started is None else started
@@ -379,22 +411,24 @@ def observations_of(
         auth_required=any(requires_authentication(snap) for _, snap in snapshots),
         bot_protection=any(snap.captcha_suspected for _, snap in snapshots),
     )
+    network_auth, network_failure = data_response_health(log_entries, origin)
+    obs.auth_required = obs.auth_required or network_auth
+    obs.limited = network_failure
+    obs.stop_reason = (
+        "authentication" if obs.auth_required else "data_request_failed" if network_failure else ""
+    )
     # URLs first: that is where identifiers are met for the first time and get their pseudonyms
     for _, snap in snapshots:
         redactor.url(snap.url, origin)
-    seen_calls: set[tuple[str, tuple[str, tuple[tuple[str, str], ...]]]] = set()
     kept: list[ObservedRequest] = []
-    filtered_count = duplicate_count = processed_count = 0
-    for call in sorted(log_entries, key=_call_priority, reverse=True):
+    latest = latest_responses(log_entries, origin)
+    filtered_count = sum(
+        call.status is None or not interesting_call(call, origin) for call in log_entries
+    )
+    duplicate_count = len(log_entries) - filtered_count - len(latest)
+    processed_count = 0
+    for call in sorted(latest, key=_call_priority, reverse=True):
         processed_count += 1
-        if not interesting_call(call, origin):
-            filtered_count += 1
-            continue
-        key = (call.method, _url_key(call.url))
-        if key in seen_calls:
-            duplicate_count += 1
-            continue
-        seen_calls.add(key)
         redactor.url(call.url, origin)
         redactor.observed.update(raw_json_values(call.response_sample))
         kept.append(call)
@@ -440,7 +474,7 @@ def observations_of(
                 status=call.status,
                 content_type=(call.response_content_type or "").split(";")[0],
                 body=body,
-                reference=call_refs.get((call.method, call.url)) if call_refs is not None else None,
+                reference=call_refs.get(request_key(call)) if call_refs is not None else None,
             )
         )
     obs.observed = set(redactor.observed)
@@ -453,7 +487,7 @@ def observations_of(
         considered_count=len(log_entries),
         filtered_count=filtered_count,
         duplicate_count=duplicate_count,
-        unexamined_count=len(log_entries) - processed_count,
+        unexamined_count=len(latest) - processed_count,
         failed_count=max(0, visited_count - len(snapshots)),
         queued_count=queued_count,
         sample_missing_count=sum(c.response_sample is None for c in kept),

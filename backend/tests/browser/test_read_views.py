@@ -91,6 +91,40 @@ async def test_tab_observation_waits_for_fresh_dom_after_an_already_idle_spa(
     assert "Пары скрыты" not in snapshot.text
 
 
+async def test_selection_attributes_do_not_complete_a_tab_before_delayed_data_fetch(
+    tabs: PlaywrightHandle,
+) -> None:
+    async def data(route: Route) -> None:
+        await route.fulfill(content_type="application/json", body='{"title":"Свежие пары"}')
+
+    await tabs.context.route(ORIGIN + "/delayed-tab-data", data)
+    await tabs.page.wait_for_load_state("networkidle")
+    await tabs.page.evaluate(
+        """() => {
+          document.getElementById('schedule').onclick = () => {
+            const tab = document.getElementById('schedule');
+            tab.setAttribute('aria-selected', 'true');
+            tab.classList.add('active');
+            setTimeout(async () => {
+              const body = await (await fetch('/delayed-tab-data')).json();
+              document.getElementById('panel-schedule').textContent = body.title;
+            }, 400);
+          };
+        }"""
+    )
+    view = next(view for view in await tabs.read_views() if view.label == "Расписание")
+    snapshot = await tabs.activate_read_view(view.ref)
+    assert snapshot.url == ORIGIN + "/tabs"
+    assert "Свежие пары" in snapshot.text
+    assert "Пары скрыты" not in snapshot.text
+    responses = [
+        request.status
+        for request in await tabs.network_log()
+        if request.url.endswith("/delayed-tab-data")
+    ]
+    assert responses == [200]
+
+
 @pytest.mark.parametrize("action", ["invalid_ref", "snapshot", "navigation", "replacement"])
 async def test_stale_or_replaced_targets_cannot_be_activated(
     tabs: PlaywrightHandle, action: str

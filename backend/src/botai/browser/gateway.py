@@ -568,20 +568,37 @@ class PlaywrightHandle:
     async def activate_read_view(self, ref: str) -> PageSnapshot:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
+        panel_id = self._read_view_registry.panel_id(self._page, ref)
         # A SPA's earlier `networkidle` lifecycle may already be satisfied. Observe *new*
         # DOM mutations and in-flight read requests instead of reusing that old load state.
         # The observer contains only a timestamp, never page text or credential values.
         monitor = await self._page.evaluate_handle(
-            """() => {
+            """id => {
+              let panel = document.getElementById(id);
               const state = {changedAt: performance.now(), changed: false};
-              state.observer = new MutationObserver(() => {
-                state.changedAt = performance.now(); state.changed = true;
+              const presentation = new Set([
+                'class', 'style', 'hidden', 'tabindex', 'aria-selected', 'aria-expanded',
+                'aria-hidden', 'aria-busy', 'data-state', 'data-active', 'data-selected'
+              ]);
+              state.observer = new MutationObserver(records => {
+                const current = document.getElementById(id);
+                const contentChanged = current !== panel || records.some(record => {
+                  const inside = (panel && panel.contains(record.target)) ||
+                    (current && current.contains(record.target));
+                  return inside && (record.type !== 'attributes' ||
+                    !presentation.has(record.attributeName));
+                });
+                panel = current;
+                if (contentChanged) {
+                  state.changedAt = performance.now(); state.changed = true;
+                }
               });
               state.observer.observe(document, {
                 subtree: true, childList: true, attributes: true, characterData: true
               });
               return state;
-            }"""
+            }""",
+            panel_id,
         )
         try:
             network_before = self._activity_generation
