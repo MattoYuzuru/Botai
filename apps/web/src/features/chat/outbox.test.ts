@@ -76,6 +76,23 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("очередь исходящих сообщений", () => {
+  it("сброс во время проверки сессии не отправляет уже удалённое сообщение и не создаёт чат", async () => {
+    let resolveUser: (id: string) => void = () => undefined;
+    const { outbox, deps } = setup({
+      currentUserId: () =>
+        new Promise((resolve) => {
+          resolveUser = resolve;
+        }),
+    });
+    outbox.send("Старая попытка подключения", { ...target, threadId: null });
+    outbox.discardBefore("u1", NOW);
+    resolveUser("u1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outbox.snapshot).toEqual([]);
+    expect(deps.createThread).not.toHaveBeenCalled();
+    expect(deps.postMessage).not.toHaveBeenCalled();
+  });
+
   it("с сетью сообщение уходит сразу и пропадает из очереди; событие несёт задание ответа", async () => {
     const { outbox, deps, events } = setup();
     outbox.send("Какая следующая пара?", target);

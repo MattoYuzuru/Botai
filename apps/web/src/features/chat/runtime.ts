@@ -6,6 +6,7 @@
 import { useSyncExternalStore } from "react";
 import { api, call } from "@/api/client";
 import { isUnauthorized } from "@/api/errors";
+import { onDataReset } from "@/features/auth/data-reset";
 import { jobManager } from "@/features/jobs/job-manager";
 import { useChatJobs } from "./chat-jobs";
 import { Outbox, type OutboxDeps, type OutboxItem } from "./outbox";
@@ -60,6 +61,12 @@ export function createChatDeps(): OutboxDeps {
 }
 
 export const outbox = new Outbox(createChatDeps());
+onDataReset(({ userId, resetAt }) => {
+  outbox.discardBefore(userId, resetAt);
+  useChatJobs.getState().clearAll();
+  jobManager.stopAll();
+  meCache = null;
+});
 
 // Ответ принят: задание привязывается к чату, и поток начинает приходить сразу.
 outbox.on((event) => {

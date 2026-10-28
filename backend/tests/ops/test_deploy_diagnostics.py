@@ -38,6 +38,8 @@ elif args[0] == 'compose':
             sys.exit(1)
 elif args[:2] == ['image', 'ls']:
     print('0123456789ab 2026-10-28 00:00:00')
+elif args[:2] == ['image', 'inspect']:
+    print(os.environ.get('IMAGE_REVISION', ''))
 """
 CURL = """#!/usr/bin/env python3
 import os, sys
@@ -59,7 +61,7 @@ class Deployment:
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(  # noqa: S603 - controlled script and fake subprocess environment
             ["/bin/bash", str(self.script), *args],
-            input="fixture-user\nfixture-registry-secret\nfixture-model-secret\n",
+            input="fixture-user\nfixture-registry-secret\nfixture-model-secret\nfixture-search-secret\n",
             env=self.env,
             capture_output=True,
             text=True,
@@ -72,7 +74,12 @@ class Deployment:
 def deployment(tmp_path: Path) -> Deployment:
     commands = tmp_path / "bin"
     commands.mkdir()
-    for name, script in {"docker": DOCKER, "curl": CURL, "sleep": "#!/bin/sh\nexit 0\n"}.items():
+    for name, script in {
+        "docker": DOCKER,
+        "curl": CURL,
+        "sleep": "#!/bin/sh\nexit 0\n",
+        "flock": "#!/bin/sh\nexit 0\n",
+    }.items():
         path = commands / name
         path.write_text(script)
         path.chmod(0o700)
@@ -115,7 +122,34 @@ def test_toggle_preserves_or_changes_server_mode(
     assert "POSTGRES_PASSWORD=fixture-db-secret\n" in variables
     assert "fixture-registry-secret" not in result.stdout + result.stderr
     assert "fixture-model-secret" not in result.stdout + result.stderr
+    assert "fixture-search-secret" not in result.stdout + result.stderr
     assert not list(deployment.root.glob(".compose.vars.rollback.*"))
+
+
+def test_search_key_is_delivered_without_overwriting_vault_or_duplicate_keys(
+    deployment: Deployment,
+) -> None:
+    secrets = deployment.root / "app.secrets"
+    secrets.write_text("BOTAI_KEK=fixture-key\nEXA_API_KEY=old-search-secret\n")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    assert secrets.read_text() == (
+        "BOTAI_KEK=fixture-key\nDEEPSEEK_API_KEY=fixture-model-secret\n"
+        "EXA_API_KEY=fixture-search-secret\n"
+    )
+    assert secrets.stat().st_mode & 0o777 == 0o600
+    assert "fixture-search-secret" not in result.stdout + result.stderr
+
+
+def test_image_revision_must_match_checked_source_before_migration(deployment: Deployment) -> None:
+    revision = NEW_TAG + "0" * 28
+    deployment.env["IMAGE_REVISION"] = "f" * 40
+    result = deployment.run(NEW_TAG, "keep", revision)
+    assert result.returncode == 1
+    assert "image revision mismatch" in result.stderr
+    commands = (deployment.root / "commands.jsonl").read_text()
+    assert '"migrate"' not in commands
+    assert (deployment.root / "compose.vars").read_text() == deployment.original
 
 
 def test_omitted_mode_defaults_to_keep(deployment: Deployment) -> None:

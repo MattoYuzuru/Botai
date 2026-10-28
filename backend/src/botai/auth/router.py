@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.api.deps import ClockDep, SettingsDep
@@ -19,7 +20,7 @@ from botai.auth.schemas import (
 )
 from botai.core.clock import Clock
 from botai.core.errors import BotaiError, ErrorCode
-from botai.db.models import User
+from botai.db.models import AuditLog, User
 from botai.db.session import DbSession
 from botai.settings import Settings
 from botai.usage.service import quota_snapshot
@@ -133,8 +134,19 @@ async def create_invite(owner: OwnerUser, session: DbSession, clock: ClockDep) -
 
 
 @router.get("/me", response_model=MeOut)
-async def me(user: AuthUser, session: DbSession, settings: SettingsDep, clock: ClockDep) -> MeOut:
+async def me(
+    user: AuthUser, response: Response, session: DbSession, settings: SettingsDep, clock: ClockDep
+) -> MeOut:
     row = await session.get(User, user.id)
     if row is None:  # deleted between the cookie check and now
         raise BotaiError(ErrorCode.UNAUTHORIZED, "Нужно войти")
+    response.headers["Cache-Control"] = "no-store"
+    reset_at = await session.scalar(
+        select(AuditLog.created_at)
+        .where(AuditLog.user_id == user.id, AuditLog.kind == "product_data_reset")
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    )
+    if reset_at is not None:
+        response.headers["X-Botai-Data-Reset"] = str(int(reset_at.timestamp() * 1000))
     return await _me(session, row, settings, clock)

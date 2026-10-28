@@ -188,6 +188,10 @@ export class Outbox {
     this.commit([]);
   }
 
+  discardBefore(ownerId: string, resetAt: number): void {
+    this.commit(this.items.filter((item) => item.ownerId !== ownerId || item.createdAt > resetAt));
+  }
+
   private async process(): Promise<void> {
     if (this.running) {
       this.rerun = true;
@@ -236,6 +240,8 @@ export class Outbox {
         this.markAll("queued");
         return;
       }
+      // Проверка /me могла очистить очередь после операторского сброса данных.
+      if (!this.items.some((item) => item.id === first.id)) continue;
       if (this.items.some((item) => item.ownerId !== me)) {
         this.commit(this.items.filter((item) => item.ownerId === me));
         continue;

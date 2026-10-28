@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # Runs on mnema as botai-deploy, called by .github/workflows/deploy.yml.
-# stdin: GHCR user, GHCR token, DeepSeek key (one per line). Nothing secret is echoed.
+# stdin: GHCR user, GHCR token, DeepSeek key, Exa key (one per line).
 # Touches only the `botai` compose project; Mnema containers, images and volumes are never touched.
 set -euo pipefail
 umask 077
 
 TAG="${1:?image tag}"
 DIAGNOSTICS="${2:-keep}"
+EXPECTED_REVISION="${3:-}"
 case "$DIAGNOSTICS" in keep|on|off) ;; *) echo "diagnostics must be keep, on or off" >&2; exit 64 ;; esac
 [[ "$TAG" =~ ^[a-f0-9]{7,40}$ ]] || { echo "image tag must be a commit SHA" >&2; exit 64; }
+if [ -n "$EXPECTED_REVISION" ]; then
+  [[ "$EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ && "$EXPECTED_REVISION" == "$TAG"* ]] || {
+    echo "expected revision must match the image tag" >&2; exit 64;
+  }
+fi
 cd /srv/botai
+# Serialize CI and operator rollouts before reading/writing shared configuration.
+exec 9>.deploy.lock
+flock -w 300 9 || { echo "another BotAI deployment holds the lock" >&2; exit 75; }
 
 prev="$(sed -n 's/^IMAGE_TAG=//p' compose.vars)"
 previous_diagnostics="$(sed -n 's/^BOTAI_DIAGNOSTICS=//p' compose.vars)"
@@ -33,6 +42,7 @@ trap cleanup EXIT
 IFS= read -r GHCR_USER
 IFS= read -r GHCR_TOKEN
 IFS= read -r DEEPSEEK_KEY
+IFS= read -r EXA_KEY || EXA_KEY=''
 
 if [ -n "$DEEPSEEK_KEY" ]; then
   grep -v '^DEEPSEEK_API_KEY=' app.secrets > app.secrets.tmp || true
@@ -40,6 +50,13 @@ if [ -n "$DEEPSEEK_KEY" ]; then
   mv app.secrets.tmp app.secrets
 fi
 unset DEEPSEEK_KEY
+if [ -n "$EXA_KEY" ]; then
+  grep -v '^EXA_API_KEY=' app.secrets > app.secrets.tmp || true
+  printf 'EXA_API_KEY=%s\n' "$EXA_KEY" >> app.secrets.tmp
+  mv app.secrets.tmp app.secrets
+fi
+unset EXA_KEY
+chmod 600 app.secrets
 
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
 registry_logged_in=true
@@ -76,6 +93,11 @@ rollback() {
 }
 
 dc pull --quiet || rollback "image pull"
+if [ -n "$EXPECTED_REVISION" ]; then
+  actual_revision=$(docker image inspect "ghcr.io/mattoyuzuru/botai-app:${TAG}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}') || rollback "image identity"
+  [ "$actual_revision" = "$EXPECTED_REVISION" ] || rollback "image revision mismatch"
+fi
 dc --profile tools run --rm migrate || rollback "migration"
 runtime_changed=true
 dc up -d --remove-orphans || rollback "container update"

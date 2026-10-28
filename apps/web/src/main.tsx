@@ -7,6 +7,9 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { retryPolicy } from "./api/queries";
+import { useActiveSpaceStore } from "./app/active-space";
+import { onDataReset } from "./features/auth/data-reset";
+import { useActiveJob } from "./features/jobs/active-job";
 import { registerServiceWorker } from "./features/pwa/register";
 import { routeTree } from "./routeTree.gen";
 
@@ -25,6 +28,11 @@ const queryClient = new QueryClient({
   },
 });
 const router = createRouter({ routeTree, context: { queryClient } });
+onDataReset(() => {
+  useActiveJob.getState().clear();
+  useActiveSpaceStore.getState().select("all");
+  queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "me" });
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

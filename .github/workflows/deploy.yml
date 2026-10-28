@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   packages: write
 
 concurrency:
@@ -30,10 +31,43 @@ env:
   IMAGE: ghcr.io/mattoyuzuru/botai-app
 
 jobs:
-  build:
+  candidate:
     if: >-
       github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.verify.outputs.eligible }}
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$sha" != "$current" ]; then
+            echo 'Skipping superseded deployment candidate'
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50" \
+            --jq ".workflow_runs | map(select(.head_sha == \"$sha\")) | sort_by(.run_number) | last | .conclusion")
+          [ "$conclusion" = success ] || { echo 'Current main must pass CI before deployment'; exit 1; }
+          echo 'eligible=true' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: candidate
+    if: needs.candidate.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -41,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.candidate.outputs.sha }}
       - id: tag
         run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
@@ -61,17 +95,25 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          labels: org.opencontainers.image.source=https://github.com/MattoYuzuru/Botai
+          labels: |
+            org.opencontainers.image.source=https://github.com/MattoYuzuru/Botai
+            org.opencontainers.image.revision=${{ needs.candidate.outputs.sha }}
 
   deploy:
-    needs: build
+    needs: [candidate, build]
     if: github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.candidate.outputs.sha }}
+      - name: Refuse a superseded rollout
+        env:
+          EXPECTED_SHA: ${{ needs.candidate.outputs.sha }}
+        run: |
+          current=$(git ls-remote origin refs/heads/main | cut -f1)
+          [ "$EXPECTED_SHA" = "$current" ] || { echo 'Main changed during build; newer rollout will follow'; exit 1; }
       - name: SSH identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -91,10 +133,12 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           TAG: ${{ needs.build.outputs.tag }}
+          REVISION: ${{ needs.candidate.outputs.sha }}
           DIAGNOSTICS: ${{ inputs.diagnostics || 'keep' }}
         run: |
           case "$DIAGNOSTICS" in keep|on|off) ;; *) exit 64 ;; esac
-          printf '%s\n%s\n%s\n' "${{ github.actor }}" "$GHCR_TOKEN" "$DEEPSEEK_API_KEY" |
+          printf '%s\n%s\n%s\n%s\n' "${{ github.actor }}" "$GHCR_TOKEN" "$DEEPSEEK_API_KEY" "$EXA_API_KEY" |
             ssh -i ~/.ssh/id_deploy -o BatchMode=yes "botai-deploy@${DEPLOY_HOST}" \
-              "bash /srv/botai/remote-deploy.sh ${TAG} ${DIAGNOSTICS}"
+              "bash /srv/botai/remote-deploy.sh ${TAG} ${DIAGNOSTICS} ${REVISION}"
