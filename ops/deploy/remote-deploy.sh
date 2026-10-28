@@ -98,6 +98,18 @@ if [ -n "$EXPECTED_REVISION" ]; then
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}') || rollback "image identity"
   [ "$actual_revision" = "$EXPECTED_REVISION" ] || rollback "image revision mismatch"
 fi
+# A database-only encrypted recovery point before DDL. The encryption key is kept
+# separately from backups and is unrelated to the Vault KEK. Never output either.
+if [ -n "$(dc ps -q postgres)" ]; then
+  install -d -m 700 backups .rollback-keys
+  backup_name="pre-${TAG}-$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_key=".rollback-keys/${backup_name}.key"
+  openssl rand -out "$backup_key" 32
+  chmod 600 "$backup_key"
+  dc exec -T postgres pg_dump -U botai -Fc botai |
+    openssl enc -aes-256-cbc -salt -pbkdf2 -pass "file:${backup_key}" \
+      -out "backups/${backup_name}.dump.enc" || rollback "database backup"
+fi
 dc --profile tools run --rm migrate || rollback "migration"
 runtime_changed=true
 dc up -d --remove-orphans || rollback "container update"
