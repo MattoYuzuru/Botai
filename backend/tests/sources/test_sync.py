@@ -145,6 +145,27 @@ async def test_every_row_belongs_to_the_owner(env: Env) -> None:
     assert {u[0] for u in users} == {env.seeded.user_id}
 
 
+async def test_scope_is_rechecked_before_persisting_an_older_inflight_fetch(env: Env) -> None:
+    inner = env.transport
+
+    class NarrowDuringFetch(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            response = await inner.handle_async_request(request)
+            if request.url.path == "/api/v2/tasks/deadlines":
+                async with env.services.db() as db, db.begin():
+                    row = await db.get(m.Connection, env.seeded.connection_id)
+                    assert row is not None
+                    row.data_scope = ["scheduleEvents"]
+            return response
+
+    env.transport = NarrowDuringFetch()
+    result = await env.sync()
+    assert result["status"] == "ok"
+    assert set(result["kinds"]) == {"scheduleEvents"}
+    assert len(await env.rows(m.ScheduleEvent, "id")) == 4
+    assert await env.rows(m.Deadline, "id") == []
+
+
 async def test_second_sync_creates_no_duplicates(env: Env) -> None:
     await env.sync()
     first = await env.rows(m.ScheduleEvent, "external_id", "id")

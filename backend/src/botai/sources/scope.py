@@ -6,6 +6,7 @@ import copy
 from typing import Any, cast
 
 from botai.contracts.specs import Kind
+from botai.sources.templates import placeholders
 from botai.sources.vocab import KIND_LABELS
 
 
@@ -25,4 +26,28 @@ def scoped_spec(spec: dict[str, Any], scope: tuple[Kind, ...] | None) -> dict[st
     recipe["validation"]["requireKinds"] = [
         kind for kind in recipe["validation"]["requireKinds"] if kind in scope
     ]
+    if not recipe["validation"]["requireKinds"] and recipe["endpoints"]:
+        recipe["validation"]["requireKinds"] = list(
+            dict.fromkeys(entry["kind"] for entry in recipe["endpoints"])
+        )
+    # A shared recipe can have bootstrap reads solely for an excluded kind. Retain only
+    # parameters the selected requests need, including dependencies between bootstrap steps.
+    needed = {name for entry in recipe["endpoints"] for name in _references(entry["request"])}
+    kept: list[dict[str, Any]] = []
+    for step in reversed(recipe.get("bootstrap", [])):
+        if needed.intersection(step["extract"]):
+            kept.append(step)
+            needed.update(placeholders(step["path"]))
+    if "bootstrap" in recipe:
+        recipe["bootstrap"] = list(reversed(kept))
     return result
+
+
+def _references(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return set(placeholders(value))
+    if isinstance(value, dict):
+        return set().union(*(_references(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_references(item) for item in value))
+    return set()
