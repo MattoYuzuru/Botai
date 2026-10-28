@@ -132,6 +132,7 @@ class Explorer:
         self._verification_failed = False
         self._scope_connection_id: str | None = None
         self._scope_base: tuple[Kind, ...] = ()
+        self._scope_auto_base = False
         self._scope_replaced = False
 
     # --- small helpers -----------------------------------------------------------------------
@@ -205,7 +206,9 @@ class Explorer:
             await self.ctx.checkpoint_learning(self.intent.checkpoint())
 
     def _data_scope(self) -> tuple[Kind, ...] | None:
-        if self.intent.discovery_mode == "auto":
+        if self.intent.discovery_mode == "auto" or (
+            self._scope_auto_base and not self._scope_replaced
+        ):
             if not self.intent.absent_kinds:
                 return None
             return tuple(kind for kind in KIND_LABELS if kind not in self.intent.absent_kinds)
@@ -337,6 +340,7 @@ class Explorer:
         if snap.adapter != "recipe":
             return {"status": "skipped", "detail": "adapter"}
         self._scope_connection_id = connection_id
+        self._scope_auto_base = snap.data_scope is None
         self._scope_base = (
             snap.data_scope
             if snap.data_scope is not None

@@ -698,3 +698,24 @@ async def test_pending_repeat_does_not_erase_the_last_completed_network_evidence
     assert "r0" not in state.delta
     assert "Подтверждённая запись" in state.details["r0"]
     assert state.calls["r0"].status == 200
+
+
+@pytest.mark.parametrize("missing_branch", [False, True])
+async def test_legacy_crawl_with_unexamined_or_failed_menu_branches_is_incomplete(
+    missing_branch: bool,
+) -> None:
+    menu = "".join(f'<a href="/branch/{i}">Раздел {i}</a>' for i in range(8))
+    pages = {ORIGIN + "/": FakePage(f"<nav>{menu}</nav>")}
+    if not missing_branch:
+        pages.update({ORIGIN + f"/branch/{i}": FakePage("<main>Пусто</main>") for i in range(8)})
+    obs = await adaptive_observe(
+        TrackingHandle(pages),
+        ORIGIN,
+        Redactor(),
+        start_urls=[ORIGIN + "/"],
+        intent=LearningIntent(),
+        llm=ScriptedLlm(),
+    )
+    assert obs.limited
+    assert obs.stop_reason == ("navigation_failed" if missing_branch else "page_budget")
+    assert obs.pages

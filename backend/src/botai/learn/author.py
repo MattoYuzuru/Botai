@@ -271,7 +271,7 @@ async def author_kind(
             found=found,
             candidate_count=len(candidates),
             doubt_count=len(doubts),
-            outcome="accepted" if found and candidates else "not_found",
+            outcome="accepted" if found and candidates else "rejected" if found else "not_found",
         )
         if found and not candidates:
             feedback = ["найденные данные не имеют пригодного описания эндпоинта"]

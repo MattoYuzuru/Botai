@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock
+from botai.core.browser import FakeBrowserGateway, FakePage
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
 from botai.core.llm import LlmResponse
@@ -193,6 +194,16 @@ async def test_nothing_at_all_is_an_honest_question_and_then_an_honest_no(
     make_env: EnvFactory,
 ) -> None:
     env = await make_env([ls.nothing()] * 6)
+    # Confirmed absence needs a completely inspected source. The normal cabinet has more
+    # menu/news branches than the fallback budget; stopping there would correctly be incomplete.
+    env.services.browser = FakeBrowserGateway(
+        {
+            f"{data.ORIGIN}/": FakePage("<main>Данных пока нет</main>"),
+            f"{data.ORIGIN}/news": FakePage("<main>Новостей пока нет</main>"),
+        },
+        NOW,
+        data.ORIGIN,
+    )
     result = await env.run(links=[f"{data.ORIGIN}/news", f"{data.ORIGIN}/news"])
     assert result["status"] == "error"
     assert [type(b).__name__ for b in env.asked] == ["InputBlock", "InputBlock"]
@@ -487,8 +498,32 @@ async def test_learn_adds_a_kind_as_a_new_revision_and_keeps_the_rest(
     assert kinds == ["scheduleEvents", "deadlines", "news"]
     assert spec["recipe"]["validation"]["requireKinds"] == ["scheduleEvents", "deadlines", "news"]
     assert (await env.conn()).spec_revision == 2
+    assert (await env.conn()).data_scope is None  # add-only LEARN preserves auto/all
     assert await env.count(m.NewsItem) == 2
     assert await env.count(m.ScheduleEvent) == 4
+
+
+async def test_explicit_only_clarification_can_narrow_an_automatic_connection_during_learn(
+    make_env: EnvFactory,
+) -> None:
+    classifier = LlmResponse(
+        content=json.dumps({"kinds": ["news"], "replaceKinds": True, "linkIndices": []})
+    )
+    env = await make_env([classifier, ls.answer([recipes.news_endpoint()])], with_spec=True)
+    result = await env.run(
+        JobKind.LEARN,
+        {
+            "learning_intent": {
+                "requested_kinds": ["news"],
+                "user_note": "Оставь только новости",
+            }
+        },
+    )
+    assert result["status"] == "ok"
+    assert (await env.conn()).data_scope == ["news"]
+    assert await env.count(m.NewsItem) == 2
+    assert await env.count(m.ScheduleEvent) == 0
+    assert await env.count(m.Deadline) == 0
 
 
 def test_copy_of_recipes_is_independent() -> None:
