@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import ScriptedLlm
 from botai.db.models import AuditLog, LlmUsageRow
 from botai.search import SearchService
@@ -113,3 +115,23 @@ async def test_injected_search_result_cannot_supply_a_new_external_query(
             )
         )
     assert audit is not None
+
+
+async def test_search_spend_participates_in_the_existing_pool_dollar_quota(
+    sm: async_sessionmaker[AsyncSession],
+    user_id: str,
+) -> None:
+    service = SearchService(make_settings(quota_pool_usd_per_day=0.003), db=sm)
+    await service._account("exa", user_id=user_id, job_id=None, before=False)
+    async with sm() as db:
+        row = await db.scalar(
+            select(LlmUsageRow).where(
+                LlmUsageRow.user_id == user_id, LlmUsageRow.purpose == "search"
+            )
+        )
+    assert row is not None
+    assert float(row.cost_usd) == 0.004
+    with pytest.raises(BotaiError) as error:
+        await service._account("exa", user_id=user_id, job_id=None, before=True)
+    assert error.value.code == ErrorCode.QUOTA_EXCEEDED
+    assert error.value.extra["scope"] == "pool"

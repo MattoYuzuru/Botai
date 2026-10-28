@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Literal
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.browser.egress import proxy_url_for
@@ -63,6 +64,7 @@ class SearchResponse:
     status: Literal["ok", "empty", "unavailable", "rejected", "budget"]
     results: tuple[SearchResult, ...] = ()
     issues: tuple[SearchIssue, ...] = ()
+    accounting: Literal["not_applicable", "recorded", "unconfirmed"] = "not_applicable"
 
 
 @dataclass(slots=True)
@@ -229,11 +231,13 @@ class SearchService:
                     diagnostic_event("search.limited", provider=provider, reason=limited)
                     return SearchResponse("budget", issues=tuple(issues))
                 retry_after = 0.0
+                dispatched = False
                 try:
                     # Includes proxy credential acquisition, connection, complete bounded body.
                     remaining = min(ATTEMPT_TIMEOUT_S, budget.remaining(self._now()))
                     async with asyncio.timeout(remaining):
                         await self._account(provider, user_id=user_id, job_id=job_id, before=True)
+                        dispatched = True
                         response = await self._sender(provider, body, remaining)
                     reason = _error_reason(response)
                     retry_after = _retry_after(response)
@@ -241,11 +245,34 @@ class SearchService:
                         state.until = 0
                         state.reason = "cooldown"
                         results = _results(response, provider)
+                        accounting: Literal["not_applicable", "recorded", "unconfirmed"] = (
+                            "not_applicable"
+                        )
                         # Filtered unsafe hits can still be billable at the provider.
                         if provider == "exa" or response.json()["results"]:
-                            await self._account(
-                                provider, user_id=user_id, job_id=job_id, before=False
-                            )
+                            try:
+                                async with asyncio.timeout(budget.remaining(self._now())):
+                                    await self._account(
+                                        provider, user_id=user_id, job_id=job_id, before=False
+                                    )
+                            except (TimeoutError, SQLAlchemyError, BotaiError):
+                                # A commit interrupted by timeout has an ambiguous outcome.
+                                # Do not retry or call another provider: the search succeeded
+                                # and another call would spend again without repairing it.
+                                accounting = "unconfirmed"
+                                issues.append(SearchIssue(provider, "accounting_unconfirmed"))
+                                diagnostic_event(
+                                    "search.accounting",
+                                    provider=provider,
+                                    outcome="error",
+                                    reason="unconfirmed",
+                                )
+                            else:
+                                if self.db is not None and user_id is not None:
+                                    accounting = "recorded"
+                                    diagnostic_event(
+                                        "search.accounting", provider=provider, outcome="ok"
+                                    )
                         diagnostic_event(
                             "search.result",
                             provider=provider,
@@ -253,13 +280,33 @@ class SearchService:
                             item_count=len(results),
                             attempt=attempt + 1,
                         )
-                        return SearchResponse("ok" if results else "empty", results, tuple(issues))
+                        return SearchResponse(
+                            "ok" if results else "empty", results, tuple(issues), accounting
+                        )
                 except BotaiError as exc:
                     if exc.code == ErrorCode.QUOTA_EXCEEDED:
                         raise
                     reason = "timeout" if budget.remaining(self._now()) <= 0 else "unavailable"
                 except (TimeoutError, httpx.TransportError):
+                    if not dispatched:
+                        issues.append(SearchIssue(provider, "accounting_unavailable"))
+                        diagnostic_event(
+                            "search.accounting",
+                            provider=provider,
+                            outcome="error",
+                            reason="unconfirmed",
+                        )
+                        return SearchResponse("unavailable", issues=tuple(issues))
                     reason = "timeout"
+                except SQLAlchemyError:
+                    issues.append(SearchIssue(provider, "accounting_unavailable"))
+                    diagnostic_event(
+                        "search.accounting",
+                        provider=provider,
+                        outcome="error",
+                        reason="unconfirmed",
+                    )
+                    return SearchResponse("unavailable", issues=tuple(issues))
                 except (ValueError, TypeError, KeyError):
                     reason = "invalid_response"
                 issues.append(SearchIssue(provider, reason))

@@ -22,6 +22,7 @@ async def smoke(provider: str) -> int:
                     "provider": provider,
                     "status": result.status,
                     "results": len(result.results),
+                    "accounting": result.accounting,
                     "issues": [
                         {"provider": issue.provider, "reason": issue.reason}
                         for issue in result.issues

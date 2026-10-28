@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from botai.agent.tools import ChatEnv, build_chat_tools
 from botai.core import diagnostics
@@ -368,3 +369,67 @@ def test_search_diagnostics_only_accept_provider_and_structural_reason() -> None
         }
     )
     assert clean == {"provider": "exa", "reason": "credits_exhausted", "status": 402}
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_post_success_accounting_is_inside_the_whole_search_deadline(fail: bool) -> None:
+    sender = Script(answer())
+    service = SearchService(settings(search_deadline_s=0.1), sender=sender)
+    persisted: list[Provider] = []
+
+    async def account(
+        provider: Provider, *, user_id: str | None, job_id: str | None, before: bool
+    ) -> None:
+        if before:
+            return
+        if fail:
+            raise SQLAlchemyError("opaque database failure")
+        await asyncio.sleep(1)
+        persisted.append(provider)
+
+    service._account = account  # type: ignore[method-assign]
+    started = asyncio.get_running_loop().time()
+    response = await service.search("public docs", user_id="fixture-user")
+    assert asyncio.get_running_loop().time() - started < 0.5
+    assert response.status == "ok"
+    assert response.accounting == "unconfirmed"
+    assert response.issues[-1].reason == "accounting_unconfirmed"
+    assert len(response.results) == 1
+    assert not persisted
+    assert len(sender.calls) == 1  # no paid repeat/fallback after a successful provider response
+
+
+async def test_cancelling_post_success_accounting_is_not_reported_as_persisted() -> None:
+    sender = Script(answer())
+    service = SearchService(settings(), sender=sender)
+    writing = asyncio.Event()
+    persisted: list[Provider] = []
+
+    async def account(
+        provider: Provider, *, user_id: str | None, job_id: str | None, before: bool
+    ) -> None:
+        if before:
+            return
+        writing.set()
+        await asyncio.sleep(1)
+        persisted.append(provider)
+
+    service._account = account  # type: ignore[method-assign]
+    task = asyncio.create_task(service.search("public docs", user_id="fixture-user"))
+    await writing.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not persisted
+    assert len(sender.calls) == 1
+
+
+async def test_unavailable_quota_storage_does_not_dispatch_or_blame_a_provider() -> None:
+    sender = Script()
+    service = SearchService(settings(), sender=sender)
+    service._account = AsyncMock(side_effect=SQLAlchemyError("opaque"))  # type: ignore[method-assign]
+    response = await service.search("public docs", user_id="fixture-user")
+    assert response.status == "unavailable"
+    assert response.accounting == "not_applicable"
+    assert response.issues[-1].reason == "accounting_unavailable"
+    assert not sender.calls
