@@ -2,8 +2,9 @@
 
 Read-only by construction: schedule, deadlines, courses, grades, people, news (through
 `DomainReader`), connection state, full-text search over documents and saved facts, and
-`request_repair`, which only enqueues a repair job for a connection the student owns. There is no
-tool that opens an address, sends data anywhere or changes anything outside BotAI.
+`request_repair`, which only enqueues a repair job for a connection the student owns. Public
+search has a separate deterministic gate: only short public words from the current question
+can reach the fixed search APIs. No tool accepts an arbitrary outbound address or writes there.
 
 Every result is plain text with source keys (`[S1]`). Dates are shown in the space's time zone.
 The harness wraps the text in `<source_data>`; what these functions return is untrusted data.
