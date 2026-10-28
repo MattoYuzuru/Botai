@@ -87,7 +87,9 @@ describe("выбор вуза", () => {
     renderApp("/connect");
     const count = current.db.connections.length;
     const buttons = await screen.findAllByRole("button", { name: "Войти снова" });
-    await userEvent.click(buttons[0]);
+    const first = buttons[0];
+    if (!first) throw new Error("Нет подключения для повторного входа");
+    await userEvent.click(first);
     expect(await screen.findByRole("heading", { level: 1, name: "Вхожу в ВШЭ" })).toBeInTheDocument();
     expect(current.db.connections).toHaveLength(count);
   });
