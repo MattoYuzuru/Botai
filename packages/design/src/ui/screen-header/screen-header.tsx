@@ -10,6 +10,8 @@ export interface ScreenHeaderProps {
   onBack?: () => void;
   /** Переключатель пространства, неразрушающее действие. Верхние 25 % экрана. */
   trailing?: ReactNode;
+  /** Свежесть данных: справа на ноутбуке, отдельная строка на телефоне. */
+  meta?: ReactNode;
   /** Подзаголовок: вуз, дата. */
   subtitle?: ReactNode;
   sticky?: boolean;
@@ -24,6 +26,7 @@ export function ScreenHeader({
   leading,
   onBack,
   trailing,
+  meta,
   subtitle,
   sticky = true,
   narrow = false,
@@ -50,7 +53,7 @@ export function ScreenHeader({
     >
       <div
         className={cn(
-          "mx-auto flex min-h-14 w-full max-w-col items-center gap-2 px-safe-4 xs:px-safe-5",
+          "mx-auto flex min-h-14 w-full max-w-col flex-wrap items-center gap-x-3 gap-y-2 px-safe-4 py-5 xs:px-safe-5",
           !narrow && "lg:max-w-page",
         )}
       >
@@ -63,6 +66,9 @@ export function ScreenHeader({
           <h1 className="truncate type-title text-fg">{title}</h1>
           {subtitle && <div className="truncate type-caption text-fg-muted">{subtitle}</div>}
         </div>
+        {meta && (
+          <div className="order-last w-full min-w-0 lg:order-none lg:w-auto lg:max-w-reading">{meta}</div>
+        )}
         {trailing && <div className="flex shrink-0 items-center gap-1">{trailing}</div>}
       </div>
     </header>

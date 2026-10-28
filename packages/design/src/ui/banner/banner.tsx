@@ -3,18 +3,21 @@ import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { Icon, type IconName } from "../icon";
 
-const bannerVariants = cva("flex items-start gap-3 rounded-lg px-4 py-3 type-ui", {
-  variants: {
-    tone: {
-      info: "bg-info-subtle text-info-fg",
-      warning: "bg-warning-subtle text-warning-fg",
-      danger: "bg-danger-subtle text-danger-fg",
-      success: "bg-success-subtle text-success-fg",
-      neutral: "bg-bg-subtle text-fg-muted",
+const bannerVariants = cva(
+  "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 rounded-lg px-4 py-3 type-ui md:flex md:items-center",
+  {
+    variants: {
+      tone: {
+        info: "bg-info-subtle text-info-fg",
+        warning: "bg-warning-subtle text-warning-fg",
+        danger: "bg-danger-subtle text-danger-fg",
+        success: "bg-success-subtle text-success-fg",
+        neutral: "bg-bg-subtle text-fg-muted",
+      },
     },
+    defaultVariants: { tone: "neutral" },
   },
-  defaultVariants: { tone: "neutral" },
-});
+);
 
 export interface BannerProps extends VariantProps<typeof bannerVariants> {
   icon: IconName;
@@ -36,7 +39,7 @@ export function Banner({ tone, icon, children, action, className, live = false }
     >
       <Icon name={icon} size={20} className="mt-0" />
       <div className="min-w-0 flex-1">{children}</div>
-      {action && <div className="-my-1 -mr-2 shrink-0">{action}</div>}
+      {action && <div className="col-start-2 flex shrink-0 md:ml-auto">{action}</div>}
     </div>
   );
 }

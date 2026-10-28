@@ -16,6 +16,7 @@ test.describe("«Сегодня»", () => {
     await expect(classes.getByText("ЦУ")).toBeVisible();
     // Свежесть: у каждого вуза своя подпись.
     await expect(page.getByRole("list", { name: "Свежесть данных" }).getByRole("listitem")).toHaveCount(2);
+    await page.getByRole("button", { name: /^ВШЭ: Обновлено/ }).click();
     await expect(page.getByText(/Обновлено\s+\d+\s+мин/).first()).toBeVisible();
   });
 
@@ -75,7 +76,9 @@ test.describe("«Сегодня»", () => {
 
   test("вуз что-то поменял: «Варя чинит», кнопок повтора нет нигде", async ({ page }) => {
     await open(page, "/?data=repairing", "connected");
-    await expect(page.getByText("Вуз что-то поменял, Варя чинит").first()).toBeVisible();
+    await expect(
+      page.getByRole("list", { name: "Состояние источников" }).getByText("Вуз что-то поменял, Варя чинит"),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toHaveCount(0);
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "repairing");
   });
@@ -89,6 +92,7 @@ test.describe("«Сегодня»", () => {
       4,
     );
     await context.setOffline(true);
+    await page.getByRole("button", { name: /^ВШЭ: Нет сети/ }).click();
     await expect(page.getByText(/Нет сети\. Показан снимок от/).first()).toBeVisible();
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "offline");
     await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(

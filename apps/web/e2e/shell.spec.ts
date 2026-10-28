@@ -177,9 +177,9 @@ test.describe("каркас", () => {
           await page.screenshot({ path: testInfo.outputPath(`chat-1512-${theme}.png`), fullPage: true });
         await open(page, "/connect", "connected");
         await expect(page.getByRole("heading", { level: 1, name: "Подключение вуза" })).toBeVisible();
-        await expect(page.getByRole("radiogroup", { name: "Вузы" })).toBeVisible();
-        expect((await page.getByRole("main").boundingBox())?.width).toBe(736);
-        expect((await page.locator("main form").boundingBox())?.width ?? 0).toBeLessThanOrEqual(544);
+        await expect(page.getByRole("combobox", { name: "Вуз" })).toBeVisible();
+        expect((await page.getByRole("main").boundingBox())?.width).toBe(1152);
+        await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
         if (width === 1512)
           await page.screenshot({ path: testInfo.outputPath(`connect-1512-${theme}.png`), fullPage: true });
         await open(page, "/welcome", "empty");

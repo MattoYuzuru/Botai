@@ -19,6 +19,27 @@ const at = (day: number, h: number, m = 0) => Date.UTC(2026, 9, day, h - 3, m);
 const plain = (text: string) => text.replaceAll(NBSP, " ");
 
 describe("SourceStatus: шесть видимо разных состояний, кнопки повтора нет", () => {
+  it("компактный статус раскрывает пояснение, не запускает обновление и доступен скринридеру", async () => {
+    const reauth = vi.fn();
+    render(
+      <SourceStatus
+        variant="compact"
+        state="stale"
+        spaceId="fakeuni"
+        spaceTitle="Учебный вуз"
+        updatedAt={null}
+        nowMs={NOW}
+        onReauth={reauth}
+      />,
+    );
+    const status = screen.getByRole("button", { name: "Учебный вуз: Данные устарели" });
+    expect(status).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(status);
+    expect(status).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(status);
+    expect(status).toHaveAttribute("aria-expanded", "false");
+    expect(reauth).not.toHaveBeenCalled();
+  });
   const states: [SourceState, RegExp][] = [
     ["ok", /^Обновлено 5\sминут назад$/],
     ["syncing", /^Обновляется$/],
@@ -344,6 +365,7 @@ describe("TabBar", () => {
   it("скрывается при открытой клавиатуре", () => {
     render(<TabBar items={items} activeId="today" hidden />);
     expect(screen.getByRole("navigation", { hidden: true })).toHaveAttribute("data-hidden");
+    expect(screen.getByRole("navigation", { hidden: true })).toHaveAttribute("inert");
   });
 });
 

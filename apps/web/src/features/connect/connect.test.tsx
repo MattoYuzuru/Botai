@@ -27,15 +27,17 @@ beforeEach(() => {
 afterEach(() => current.server.resetHandlers());
 
 const choose = async (name: RegExp | string) => {
-  await userEvent.click(await screen.findByRole("radio", { name }));
+  await userEvent.click(await screen.findByRole("combobox", { name: "Вуз" }));
+  await userEvent.click(await screen.findByRole("option", { name }));
 };
 
 describe("выбор вуза", () => {
   it("список из учебного реестра пула и «Другой вуз»; без выбора начать нельзя", async () => {
     renderApp("/connect");
-    expect(await screen.findByRole("radio", { name: /Высшая школа экономики/ })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Центральный университет/ })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Другой вуз/ })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("combobox", { name: "Вуз" }));
+    expect(await screen.findByRole("option", { name: /Высшая школа экономики/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Центральный университет/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Другой вуз/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
     expect(await screen.findByText("Выберите вуз из списка или укажите свой")).toBeInTheDocument();
   });
@@ -43,8 +45,8 @@ describe("выбор вуза", () => {
   it("поиск сужает список по названию и сокращению", async () => {
     renderApp("/connect");
     await userEvent.type(await screen.findByLabelText("Вуз"), "ЦУ");
-    await waitFor(() => expect(screen.queryByRole("radio", { name: /Высшая школа экономики/ })).toBeNull());
-    expect(await screen.findByRole("radio", { name: /Центральный университет/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("option", { name: /Высшая школа экономики/ })).toBeNull());
+    expect(await screen.findByRole("option", { name: /Центральный университет/ })).toBeInTheDocument();
   });
 
   it("предупреждение вуза о стороннем доступе показано до начала (Q12)", async () => {
@@ -66,6 +68,28 @@ describe("выбор вуза", () => {
     renderApp("/connect");
     expect(await screen.findByText(/пароль хранится зашифрованным/)).toBeInTheDocument();
     expect(screen.getByText(/Ввод при входе проходит через сервер BotAI/)).toBeInTheDocument();
+  });
+
+  it("выбор сохраняется после нового ответа поиска и поддерживает клавиатуру", async () => {
+    renderApp("/connect");
+    const input = await screen.findByRole("combobox", { name: "Вуз" });
+    await userEvent.type(input, "ЦУ");
+    await screen.findByRole("option", { name: /Центральный университет/ });
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+    expect(input).toHaveValue("ЦУ");
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Подключаю ЦУ" })).toBeInTheDocument();
+  });
+
+  it("повторный вход использует прежнее подключение без создания нового", async () => {
+    switchScenario("connected");
+    renderApp("/connect");
+    const count = current.db.connections.length;
+    const buttons = await screen.findAllByRole("button", { name: "Войти снова" });
+    await userEvent.click(buttons[0]);
+    expect(await screen.findByRole("heading", { level: 1, name: "Вхожу в ВШЭ" })).toBeInTheDocument();
+    expect(current.db.connections).toHaveLength(count);
   });
 });
 
@@ -222,12 +246,13 @@ describe("ProgressWall: подключение вуза", () => {
     expect(screen.getByRole("button", { name: "Готово" })).toBeInTheDocument();
   });
 
-  it("второй источник того же вуза идёт в то же пространство", async () => {
+  it("уже добавленный вуз предлагает управление подключением без дубликата", async () => {
     switchScenario("connected");
     renderApp("/connect");
     await choose(/Высшая школа экономики/);
-    await userEvent.click(screen.getByRole("button", { name: "Начать подключение" }));
-    await screen.findByRole("heading", { level: 1, name: "Подключаю ВШЭ" });
+    expect(await screen.findByText(/Этот вуз уже добавлен/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Начать подключение" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Войти снова" }).length).toBeGreaterThan(0);
     expect(current.db.spaces.filter((space) => space.universityId === "u-hse")).toHaveLength(1);
   });
 

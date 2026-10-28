@@ -17,7 +17,7 @@ import { useMemo, useState } from "react";
 import { Screen } from "@/app/screen";
 import { resolveDataState, scheduleListState } from "@/features/data/data-state";
 import { todayQuery } from "@/features/data/queries";
-import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
+import { HeaderFreshness, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { EventSheet } from "@/features/schedule/event-sheet";
@@ -87,12 +87,13 @@ export function TodayScreen() {
       title="Сегодня"
       subtitle={formatDayWithWeekday(nowMs, nowMs, timeZone)}
       trailing={<ScreenSyncIndicator />}
+      meta={<HeaderFreshness spaces={directory.spaces} nowMs={nowMs} />}
     >
-      <div data-screen="today" data-state={state} className="flex flex-col gap-6">
+      <div data-screen="today" data-state={state} className="flex flex-1 flex-col gap-6">
         <SourceNotices spaces={directory.spaces} attentionIds={fetched?.data.attention} nowMs={nowMs} />
         <MascotPresence screen="other" />
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+        <div className="grid grid-cols-1 gap-6 lg:flex-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-stretch">
           <section aria-labelledby="today-classes" className="flex flex-col gap-3">
             <div className="flex items-baseline justify-between gap-3 px-1">
               <h2 id="today-classes" className="type-heading text-fg">
@@ -109,6 +110,7 @@ export function TodayScreen() {
                 as="h3"
                 title="Пар в этих данных нет"
                 description="Данные могут быть неполными: проверьте, когда они обновлялись."
+                className="lg:my-auto"
               />
             ) : (
               <ScheduleDay
@@ -136,6 +138,7 @@ export function TodayScreen() {
                 size="sm"
                 as="h3"
                 title="Ближайших сроков нет"
+                className="lg:my-auto"
                 description={
                   state === "ok" || state === "empty"
                     ? "Когда в источниках появятся задания со сроком, три ближайших будут здесь."
@@ -173,8 +176,6 @@ export function TodayScreen() {
             )}
           </section>
         </div>
-
-        <FreshnessFooter spaces={directory.spaces} nowMs={nowMs} />
       </div>
 
       <EventSheet

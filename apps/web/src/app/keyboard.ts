@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
  * `visualViewport` ненадёжен — iOS и Android ведут себя по-разному.
  */
 export function useComposerKeyboard(): boolean {
-  const touch = useMediaQuery("(pointer: coarse)");
+  const touch = useMediaQuery("(max-width: 1023px) and (pointer: coarse)");
   const [open, setOpen] = useState(false);
 
   useEffect(() => {

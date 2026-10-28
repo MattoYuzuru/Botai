@@ -104,7 +104,11 @@ export function SourceNotices({
                 <span className="type-label">
                   {several ? `${space.shortTitle} · ${connection.title}` : connection.title}
                 </span>
-                <span className="type-ui">{view.detail}</span>
+                <span className="type-ui">
+                  {connection.errorCode === "login_failed"
+                    ? "Вуз отклонил вход. Подождите перед новой попыткой."
+                    : view.detail}
+                </span>
               </span>
             </Banner>
           </li>
@@ -135,6 +139,29 @@ export function FreshnessFooter({
         <li key={space.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <Badge tone="neutral">{space.shortTitle}</Badge>
           <SourceStatus
+            state={space.health.state === "none" ? "ok" : space.health.state}
+            spaceId={space.id}
+            spaceTitle={space.shortTitle}
+            updatedAt={space.health.updatedAt}
+            nowMs={nowMs}
+            timeZone={space.timeZone}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Компактные статусы в шапке. Нажатие раскрывает пояснение и не фильтрует данные. */
+export function HeaderFreshness({ spaces, nowMs }: { spaces: readonly SpaceInfo[]; nowMs: number }) {
+  const rows = spaces.filter((space) => space.health.state !== "none");
+  if (rows.length === 0) return null;
+  return (
+    <ul aria-label="Свежесть данных" className="flex min-w-0 flex-wrap items-center gap-x-2">
+      {rows.map((space) => (
+        <li key={space.id} className="max-w-full min-w-0">
+          <SourceStatus
+            variant="compact"
             state={space.health.state === "none" ? "ok" : space.health.state}
             spaceId={space.id}
             spaceTitle={space.shortTitle}

@@ -87,11 +87,12 @@ export function TabBar({
   return (
     <nav
       aria-label="Основная навигация"
+      inert={hidden && !inline ? true : undefined}
       data-hidden={hidden || undefined}
       className={cn(
         "@container relative z-dock border-t border-border bg-bg-subtle px-safe pb-safe-2",
         !inline && "fixed inset-x-0 bottom-0",
-        "data-[hidden]:max-lg:hidden",
+        "transition-[transform,opacity,visibility] duration-slow ease-soft max-lg:data-[hidden]:pointer-events-none max-lg:data-[hidden]:invisible max-lg:data-[hidden]:translate-y-full max-lg:data-[hidden]:opacity-0",
         wide(
           "lg:inset-y-0 lg:right-auto lg:flex lg:w-rail lg:flex-col lg:gap-6 lg:border-t-0 lg:border-r lg:px-3 lg:pt-safe-5 lg:pb-safe-4",
         ),

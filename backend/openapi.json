@@ -3653,7 +3653,7 @@
     },
     "/api/v1/universities": {
       "get": {
-        "description": "The learned registry (shared by the pool): rows appear when a student names a university.",
+        "description": "Learned registry plus name-only suggestions; searching does not create integrations.",
         "operationId": "search_universities_api_v1_universities_get",
         "parameters": [
           {

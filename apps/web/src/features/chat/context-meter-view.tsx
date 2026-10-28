@@ -49,7 +49,7 @@ function ContextSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="Контекст агента"
-      description="Что агент держит в памяти этого чата. Числа — оценка, а не счёт."
+      description="Что агент держит в памяти этого чата."
       size="half"
     >
       {context.data ? (
