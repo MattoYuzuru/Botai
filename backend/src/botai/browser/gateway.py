@@ -60,6 +60,7 @@ log = logging.getLogger(__name__)
 NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 10_000
 SETTLE_MS = 3_000
+READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
 SAMPLE_CHARS = 64_000  # a whole timetable or marks page as JSON, so the learner can parse it
 SAMPLE_BUDGET = 4_000_000  # characters of samples one browser context may hold
@@ -75,6 +76,7 @@ _TOKEN_KEYS = re.compile(
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _NAV_URL = re.compile(r"\bat (https?://[^\s]+)")
 _OBSERVED_TYPES = frozenset({"xhr", "fetch", "document"})
+_SETTLE_TYPES = _OBSERVED_TYPES | {"script"}
 _EMPTY_DIAGNOSTIC_CONTEXT: dict[str, object] = {
     "job_id": None,
     "thread_id": None,
@@ -238,6 +240,8 @@ class PlaywrightHandle:
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
+        self._inflight: set[Request] = set()
+        self._last_activity = monotonic()
         self._sampled = 0
         self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
@@ -254,6 +258,7 @@ class PlaywrightHandle:
         context.on("request", self._on_request)
         context.on("response", self._on_response)
         context.on("requestfailed", self._on_failed)
+        context.on("requestfinished", self._on_finished)
 
     def _diagnostic(self, event: str, **facts: object) -> None:
         diagnostic_event(event, **{**facts, **self._diagnostic_facts})
@@ -296,6 +301,9 @@ class PlaywrightHandle:
             callback()
 
     def _on_request(self, request: Request) -> None:
+        if request.resource_type in _SETTLE_TYPES:
+            self._inflight.add(request)
+            self._last_activity = monotonic()
         if request.is_navigation_request():
             # An early popup request may precede its Frame. It is not yet a known
             # main-page navigation and must not become a host-consent candidate.
@@ -380,6 +388,7 @@ class PlaywrightHandle:
             )
 
     def _on_failed(self, request: Request) -> None:
+        self._on_finished(request)
         failure = request.failure or ""
         if self._failed_diagnostics < MAX_LOG:
             self._failed_diagnostics += 1
@@ -397,6 +406,11 @@ class PlaywrightHandle:
             host = urlsplit(request.url).hostname
             if host:
                 self._blocked.append(host.lower())
+
+    def _on_finished(self, request: Request) -> None:
+        if request in self._inflight:
+            self._inflight.discard(request)
+            self._last_activity = monotonic()
 
     async def network_log(self) -> list[ObservedRequest]:
         if self._samples:
@@ -521,9 +535,45 @@ class PlaywrightHandle:
     async def activate_read_view(self, ref: str) -> PageSnapshot:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
-        await self._read_view_registry.activate(self._page, ref)
-        await self._settle()
-        return await self.snapshot()
+        # A SPA's earlier `networkidle` lifecycle may already be satisfied. Observe *new*
+        # DOM mutations and in-flight read requests instead of reusing that old load state.
+        # The observer contains only a timestamp, never page text or credential values.
+        monitor = await self._page.evaluate_handle(
+            """() => {
+              const state = {changedAt: performance.now()};
+              state.observer = new MutationObserver(() => {state.changedAt = performance.now();});
+              state.observer.observe(document, {
+                subtree: true, childList: true, attributes: true, characterData: true
+              });
+              return state;
+            }"""
+        )
+        try:
+            await self._read_view_registry.activate(self._page, ref)
+            deadline = monotonic() + SETTLE_MS / 1000
+            self._last_activity = monotonic()
+            while monotonic() < deadline:
+                quiet_ms: float = await monitor.evaluate(
+                    "state => performance.now() - state.changedAt"
+                )
+                if (
+                    not self._inflight
+                    and quiet_ms >= READ_VIEW_QUIET_S * 1000
+                    and monotonic() - self._last_activity >= READ_VIEW_QUIET_S
+                ):
+                    return await self.snapshot()
+                await asyncio.sleep(min(0.05, max(0, deadline - monotonic())))
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Представление источника не завершило загрузку"
+            )
+        except PlaywrightError:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Представление страницы недоступно для чтения"
+            ) from None
+        finally:
+            with contextlib.suppress(PlaywrightError):
+                await monitor.evaluate("state => state.observer.disconnect()")
+                await monitor.dispose()
 
     async def click(self, selector: str) -> PageSnapshot:
         if self.read_only:
