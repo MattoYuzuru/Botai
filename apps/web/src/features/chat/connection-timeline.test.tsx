@@ -1,3 +1,4 @@
+import { ThinkingStream } from "@botai/design";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { Message } from "@/api/types";
@@ -52,6 +53,38 @@ const row = (id: number, value: ParsedBlock, role: "user" | "agent" = "agent"): 
 });
 
 describe("плоская source timeline", () => {
+  it("исторические шаги ограничены последним durable turn, открытие позже не наращивает elapsed", () => {
+    const started = block({ type: "thinking", id: ID(10), stage: "Читаю источник", state: "ok" });
+    const end = "2026-10-28T10:00:20Z";
+    const reply = block({ type: "text", id: ID(11), at: end, markdown: "Источник прочитан" });
+    const turns = connectionTurns([row(12, started), { ...row(13, reply), createdAt: end }], null, {
+      ...runtime,
+      activeJob: null,
+      pending: [],
+    });
+    const thought = turns.find((turn) => turn.kind === "thinking");
+    if (thought?.kind !== "thinking") throw new Error("missing historical thinking");
+    expect(thought.finishedAt).toBe(Date.parse(end));
+    const view = render(
+      <ThinkingStream
+        steps={thought.steps}
+        finishedAt={thought.finishedAt}
+        nowMs={Date.parse(end) + 60_000}
+        collapsed
+      />,
+    );
+    const before = screen.getByRole("button").textContent;
+    view.rerender(
+      <ThinkingStream
+        steps={thought.steps}
+        finishedAt={thought.finishedAt}
+        nowMs={Date.parse(end) + 86_400_000}
+        collapsed
+      />,
+    );
+    expect(screen.getByRole("button").textContent).toBe(before);
+  });
+
   it("SSE question сохраняет key после durable upsert и остаётся перед user turn", () => {
     const live = connectionTurns([], job, runtime);
     const reply = block({ type: "text", id: ID(4), markdown: "Нужны оценки, не дедлайны" });

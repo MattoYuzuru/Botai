@@ -8,6 +8,8 @@ import { outbox } from "@/features/chat/runtime";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { parseBlock } from "@/features/jobs/blocks";
 import { jobManager } from "@/features/jobs/job-manager";
+import { ulid } from "@/mocks/db";
+import { JobSim } from "@/mocks/job-sim";
 import { renderApp } from "@/test/render-app";
 import { createTestServer } from "@/test/server";
 
@@ -42,6 +44,45 @@ async function legacyJob() {
 }
 
 describe("legacy и восстановление разговора", () => {
+  it("waiting INGEST сохраняет native вопрос, принимает ответ и не перенаправляется в conversation", async () => {
+    const started = await legacyJob();
+    const sim = new JobSim(started.jobId, current.db.now, 0, started.connection.id, "ingest");
+    current.db.sims.set(sim.jobId, sim);
+    const attached = vi.fn();
+    current.server.use(
+      http.post("*/api/v1/connections/:connectionId/conversation", () => {
+        attached();
+      }),
+    );
+    void sim
+      .ask(
+        {
+          type: "choice",
+          id: ulid(),
+          at: AT,
+          question: "Какая колонка содержит дату?",
+          mode: "single",
+          required: true,
+          allowOther: false,
+          options: [
+            { value: "day", label: "Дата занятия" },
+            { value: "other", label: "Другая колонка" },
+          ],
+        },
+        "Жду разметку таблицы",
+      )
+      .then(() => sim.emit("done", { result: { status: "ok" } }));
+    const { router } = renderApp(`/connect/${sim.jobId}`);
+    await userEvent.click(await screen.findByRole("radio", { name: "Дата занятия" }, WAIT));
+    expect(router.state.location.pathname).toBe(`/connect/${sim.jobId}`);
+    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+    expect(await screen.findByRole("button", { name: "Готово" }, WAIT)).toBeInTheDocument();
+    expect(attached).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"), WAIT);
+    expect(useActiveJob.getState().job).toBeNull();
+  });
+
   it("legacy job URL получает actual connectionId и открывает canonical chat без нового задания", async () => {
     const started = await legacyJob();
     const { router } = renderApp(`/connect/${started.jobId}`);

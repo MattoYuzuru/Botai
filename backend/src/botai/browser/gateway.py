@@ -177,6 +177,7 @@ class PlaywrightHandle:
         self._page_callbacks: list[Callable[[], None]] = []
         self.closed = False
         self._reaper: asyncio.Task[None] | None = None
+        self._closing: asyncio.Task[None] | None = None
         context.on("page", self._on_page)
         context.on("request", self._on_request)
         context.on("response", self._on_response)
@@ -442,21 +443,28 @@ class PlaywrightHandle:
     # -- lifetime ----------------------------------------------------------------------------
 
     async def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        if self._reaper is not None and self._reaper is not asyncio.current_task():
-            self._reaper.cancel()
-        for task in list(self._samples):
-            task.cancel()
-        with contextlib.suppress(PlaywrightError, TimeoutError):
-            async with asyncio.timeout(10):
-                await self.context.close()
-        self._gateway.release(self)
-        for callback in self._close_callbacks:
-            with contextlib.suppress(Exception):
-                callback()
-        self._close_callbacks.clear()
+        if self._closing is None:
+            self.closed = True
+            if self._reaper is not None and self._reaper is not asyncio.current_task():
+                self._reaper.cancel()
+            for task in list(self._samples):
+                task.cancel()
+            self._closing = asyncio.create_task(self._finish_close())
+        # A fetch deadline may stop waiting for cleanup. The context and its pool slot still
+        # belong to this one bounded task; later callers and gateway shutdown wait for it too.
+        await asyncio.shield(self._closing)
+
+    async def _finish_close(self) -> None:
+        try:
+            with contextlib.suppress(PlaywrightError, TimeoutError):
+                async with asyncio.timeout(10):
+                    await self.context.close()
+        finally:
+            self._gateway.release(self)
+            for callback in self._close_callbacks:
+                with contextlib.suppress(Exception):
+                    callback()
+            self._close_callbacks.clear()
 
     def start_reaper(self, lifetime_s: float) -> None:
         async def reap() -> None:

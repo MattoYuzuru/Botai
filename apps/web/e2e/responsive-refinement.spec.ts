@@ -118,7 +118,11 @@ test("подключение: поиск с клавиатуры, отдельн
     await page.screenshot({ path: info.outputPath(`connect-${theme}.png`), fullPage: true });
   }
   await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
-  await expectFitsWidth(page, width);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth), {
+      message: "ширина после перераскладки крупного текста",
+    })
+    .toBeLessThanOrEqual(width);
   await expect(input).toBeVisible();
   await page.screenshot({ path: info.outputPath("connect-200.png"), fullPage: true });
 });

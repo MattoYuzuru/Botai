@@ -63,6 +63,7 @@ export function connectionTurns(
   const turns: ConnectTurn[] = [];
   const rows = new Map<string, number>();
   const thoughts = new Map<string, Map<string, ParsedBlock>>();
+  const lastDurableAt = new Map<string, number>();
   const pending = new Set(runtime.pending.map((item) => interactionKey(item.jobId, item.blockId)));
   const add = (block: ParsedBlock, jobId: string | null, fallback: string, live = false) => {
     if (block.type === "thinking") {
@@ -89,6 +90,10 @@ export function connectionTurns(
     turns.push({ kind: "block", key, jobId, block });
   };
   for (const message of messages) {
+    const at = stamp(message.createdAt);
+    if (message.jobId && at !== null && Number.isFinite(at)) {
+      lastDurableAt.set(message.jobId, Math.max(lastDurableAt.get(message.jobId) ?? at, at));
+    }
     if (message.role === "user") {
       turns.push({
         kind: "user",
@@ -109,14 +114,17 @@ export function connectionTurns(
     if (index === undefined) continue;
     const active = job?.jobId === jobId ? job : null;
     const snapshot = { ...initialJob(jobId), blocks: [...blocks.values()] };
+    // У прошлых jobs нет runtime.finishedAt: фиксируем фактический видимый интервал истории.
+    let finishedAt: number | undefined;
+    if (active && isTerminal(active.state)) finishedAt = stamp(runtime.activeJob?.finishedAt) ?? undefined;
+    else if (!active) finishedAt = lastDurableAt.get(jobId);
     turns[index] = {
       kind: "thinking",
       key: `thinking:${jobId}`,
       jobId,
       steps: thinkingSteps(snapshot),
       running: active !== null && !isTerminal(active.state),
-      finishedAt:
-        active && isTerminal(active.state) ? (stamp(runtime.activeJob?.finishedAt) ?? undefined) : undefined,
+      finishedAt,
     };
   }
   if (job && !isTerminal(job.state) && !thoughts.has(job.jobId)) {

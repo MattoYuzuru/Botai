@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.agent_ui import InputBlock, TextBlock
@@ -144,11 +144,28 @@ async def make_connection(
                 homepage_url=origin,
             )
         )
-        space = Space(
-            user_id=user_id, university_id=uni.id, title=uni.title, accent_hue=uni.accent_hue
+        # Distinct chat drafts for the same known university must resolve one owned space.
+        # This precedes Connection/Job/Thread locks; explicit space_id bypasses this lookup.
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"university-space:{user_id}:{uni.id}", 0)
+                )
+            )
         )
-        session.add(space)
-        await session.flush([space])
+        space = await session.scalar(
+            select(Space)
+            .where(Space.user_id == user_id, Space.university_id == uni.id)
+            .order_by(Space.created_at, Space.id)
+            .limit(1)
+            .with_for_update()
+        )
+        if space is None:
+            space = Space(
+                user_id=user_id, university_id=uni.id, title=uni.title, accent_hue=uni.accent_hue
+            )
+            session.add(space)
+            await session.flush([space])
         thread.space_id = space.id
     space = await repo.get_space(session, user_id, thread.space_id)
     conn = await session.scalar(

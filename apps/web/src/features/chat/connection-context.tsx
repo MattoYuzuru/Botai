@@ -62,7 +62,7 @@ export function ConnectionContext({
           ? last.current
           : { title, jobId: job.jobId, id: clientId() };
       last.current = attempt;
-      await sendConnectText(threadId, `Мой вуз — ${title}.`, attempt.id, job.jobId);
+      await sendConnectText(threadId, title, attempt.id, job.jobId);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: chatKeys.messages(threadId) }),
         queryClient.invalidateQueries({ queryKey: threadRuntimeKey(threadId) }),

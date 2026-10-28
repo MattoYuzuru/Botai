@@ -16,7 +16,7 @@ from botai.contracts.agent_ui import InputBlock, LoginBlock, TextBlock, Thinking
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobKind
 from botai.core.vault import SecretKind
-from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, University
+from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, Space, University
 from botai.jobs.context import PgJobContext
 from botai.jobs.events import append_event, purge_finished
 from botai.jobs.notify import Notifier
@@ -788,3 +788,268 @@ async def test_url_only_bootstrap_keeps_address_out_of_note_and_preserves_prior_
     assert payload["learning_intent"]["entry_urls"] == [URL]
     assert payload["learning_intent"]["user_note"] == prior_note
     assert await worker.drain_dialogue() == []
+
+
+@pytest.mark.parametrize("child_context", [False, True])
+async def test_unconfigured_repair_restores_own_intent_url_query_and_current_job(
+    env: Env, child_context: bool
+) -> None:
+    client, user, thread, first_job = await start(
+        env,
+        context={"entryUrls": [URL], "absentKinds": ["deadlines"], "userNote": INTENT["user_note"]},
+    )
+    parent, _ = await bind_bootstrap(ctx(env, user, first_job), env.services, {})
+    await env.services.vault.put(user, parent, SecretKind.PASSWORD, SECRET)
+    async with env.sm() as session:
+        old = await session.get(Job, first_job)
+        conn = await session.get(Connection, parent)
+        assert old is not None
+        assert conn is not None
+        old.state = "done"
+        old.result = {"status": "error", "detail": "not_found"}
+        old.finished_at = env.clock.now()
+        conn.status = "error"
+        if child_context:
+            conversation = await session.get(ChatThread, thread)
+            assert conversation is not None
+            conversation.connect_context = {
+                **conversation.connect_context,
+                "entry_urls": ["https://child.fakeuni.test/courses"],
+                "requested_kinds": ["grades"],
+                "absent_kinds": ["scheduleEvents"],
+                "user_note": "Оценки на другом сайте",
+            }
+        await session.commit()
+    response = await client.post(f"/api/v1/connections/{parent}/repair")
+    assert response.status_code == 202
+    job_id = response.json()["jobId"]
+    assert job_id != first_job
+    retried = await env.job(job_id)
+    assert retried.kind == "connect"
+    assert retried.thread_id == thread
+    assert retried.payload["url"] == URL
+    assert retried.payload["learning_intent"] == INTENT
+    assert retried.payload["kinds"] == ["scheduleEvents"]
+    assert "child.fakeuni.test" not in json.dumps(retried.payload)
+    assert SECRET not in json.dumps(retried.payload)
+    assert await env.services.vault.has(user, parent, SecretKind.PASSWORD)
+    runtime = (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+    assert runtime["activeJob"]["id"] == job_id
+    stale = await client.post(
+        f"/api/v1/chat/threads/{thread}/messages",
+        json={"text": "старый ответ", "targetJobId": first_job},
+    )
+    assert stale.status_code == 409
+    current = await client.post(
+        f"/api/v1/chat/threads/{thread}/messages",
+        json={"text": "Продолжаю с этой ссылки", "targetJobId": job_id},
+    )
+    assert current.status_code == 202
+    assert current.json()["jobId"] == job_id
+
+
+async def test_legacy_unbound_connect_retry_retains_both_kinds_and_own_url(env: Env) -> None:
+    client = env.new_client()
+    user = (await env.account(client)).id
+    space = (await client.post("/api/v1/spaces", json={"title": "Фикстурный вуз"})).json()["id"]
+    initial = await client.post(f"/api/v1/spaces/{space}/connections", json={"url": URL})
+    assert initial.status_code == 201
+    body = initial.json()
+    conn_id, initial_job = body["connection"]["id"], body["jobId"]
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ChatThread).where(ChatThread.user_id == user)
+            )
+            == 0
+        )
+        job = await session.get(Job, initial_job)
+        conn = await session.get(Connection, conn_id)
+        assert job is not None
+        assert conn is not None
+        job.state = "failed"
+        job.finished_at = env.clock.now()
+        conn.status = "error"
+        await session.commit()
+    retry = await client.post(f"/api/v1/connections/{conn_id}/repair")
+    assert retry.status_code == 202
+    job = await env.job(retry.json()["jobId"])
+    assert job.id != initial_job
+    assert job.kind == "connect"
+    assert job.thread_id is None
+    assert job.payload["url"] == URL
+    assert job.payload["kinds"] == ["scheduleEvents", "deadlines"]
+    assert "learning_intent" not in job.payload
+
+
+@pytest.mark.parametrize("explicit_space", [False, True])
+async def test_known_university_adds_connection_to_existing_owned_space(
+    env: Env, explicit_space: bool
+) -> None:
+    client = env.new_client()
+    user = (await env.account(client)).id
+    foreign_client = env.new_client()
+    foreign = (await env.account(foreign_client)).id
+    university_id = "known-fixture-" + new_id().lower()
+    first_space, second_space, foreign_space = new_id(), new_id(), new_id()
+    selected = second_space if explicit_space else first_space
+    new_url = "https://new.fakeuni.test/schedule?begin_date=2026-10-26"
+    async with env.sm() as session:
+        session.add(
+            University(
+                id=university_id,
+                title="Фикстурный вуз",
+                short_title="ФУ",
+                origins=["https://old.fakeuni.test"],
+                accent_hue=280,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                Space(
+                    id=foreign_space,
+                    user_id=foreign,
+                    university_id=university_id,
+                    title="Чужое",
+                    created_at=env.clock.now() - timedelta(days=3),
+                ),
+                Space(
+                    id=first_space,
+                    user_id=user,
+                    university_id=university_id,
+                    title="Первое",
+                    created_at=env.clock.now() - timedelta(days=2),
+                ),
+                Space(
+                    id=second_space,
+                    user_id=user,
+                    university_id=university_id,
+                    title="Явное",
+                    created_at=env.clock.now() - timedelta(days=1),
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            Connection(
+                id=new_id(),
+                user_id=user,
+                space_id=selected,
+                origin="https://old.fakeuni.test",
+                kind="portal",
+                title="Первый источник",
+                status="active",
+                allow_hosts=["old.fakeuni.test"],
+            )
+        )
+        await session.commit()
+    body: dict[str, Any] = {
+        "purpose": "connect",
+        "connectContext": {"universityId": university_id, "entryUrls": [new_url]},
+    }
+    if explicit_space:
+        body["spaceId"] = second_space
+    response = await client.post("/api/v1/chat/threads", json=body)
+    assert response.status_code == 201
+    thread = response.json()["id"]
+    runtime = (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+    job_id = runtime["activeJob"]["id"]
+    worker = ctx(env, user, job_id)
+    connection_id, _ = await bind_bootstrap(worker, env.services, {})
+    repeated, _ = await bind_bootstrap(worker, env.services, {})
+    assert repeated == connection_id
+    async with env.sm() as session:
+        row = await session.get(ChatThread, thread)
+        conn = await session.get(Connection, connection_id)
+        uni = await session.get(University, university_id)
+        assert row is not None
+        assert conn is not None
+        assert uni is not None
+        assert row.space_id == selected
+        assert conn.space_id == selected
+        assert conn.origin == "https://new.fakeuni.test"
+        assert conn.allow_hosts == ["new.fakeuni.test"]
+        assert uni.origins == ["https://old.fakeuni.test"]
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Space).where(Space.user_id == user)
+            )
+            == 2
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Connection)
+                .where(Connection.user_id == user, Connection.space_id == selected)
+            )
+            == 2
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Connection)
+                .where(Connection.space_id == foreign_space)
+            )
+            == 0
+        )
+
+
+async def test_concurrent_known_university_bootstraps_create_one_owned_space(env: Env) -> None:
+    client = env.new_client()
+    user = (await env.account(client)).id
+    other_client = env.new_client()
+    other = (await env.account(other_client)).id
+    university_id = "concurrent-fixture-" + new_id().lower()
+    async with env.sm() as session:
+        session.add(
+            University(
+                id=university_id,
+                title="Фикстурный вуз",
+                short_title="ФУ",
+                origins=[],
+                accent_hue=280,
+            )
+        )
+        await session.flush()
+        session.add(Space(id=new_id(), user_id=other, university_id=university_id, title="Чужое"))
+        await session.commit()
+    jobs: list[str] = []
+    for host in ["one.fakeuni.test", "two.fakeuni.test"]:
+        response = await client.post(
+            "/api/v1/chat/threads",
+            json={
+                "purpose": "connect",
+                "connectContext": {
+                    "universityId": university_id,
+                    "entryUrls": [f"https://{host}/schedule"],
+                },
+            },
+        )
+        assert response.status_code == 201
+        runtime = (await client.get(f"/api/v1/chat/threads/{response.json()['id']}/runtime")).json()
+        jobs.append(runtime["activeJob"]["id"])
+    async with asyncio.timeout(5):
+        results = await asyncio.gather(
+            *(bind_bootstrap(ctx(env, user, job), env.services, {}) for job in jobs)
+        )
+    async with env.sm() as session:
+        spaces = list(
+            await session.scalars(
+                select(Space).where(Space.user_id == user, Space.university_id == university_id)
+            )
+        )
+        assert len(spaces) == 1
+        connections = list(
+            await session.scalars(
+                select(Connection).where(
+                    Connection.user_id == user, Connection.id.in_([result[0] for result in results])
+                )
+            )
+        )
+        assert len(connections) == 2
+        assert {connection.space_id for connection in connections} == {spaces[0].id}
+        assert {connection.origin for connection in connections} == {
+            "https://one.fakeuni.test",
+            "https://two.fakeuni.test",
+        }

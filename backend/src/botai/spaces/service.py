@@ -14,6 +14,7 @@ from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Connection, Job, Space
+from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities
 from botai.spaces.schemas import (
     ConnectionCreate,
@@ -164,7 +165,12 @@ async def create_connection(
             JobKind.CONNECT,
             user_id=user_id,
             connection_id=conn.id,
-            payload={"url": url, "kind": body.kind} if url or body.kind else {},
+            # Keep the pre-chat REST entry point's original data selection explicit.
+            # Chat bootstrap supplies its own schedule-only LearningIntent instead.
+            payload={
+                **({"url": url, "kind": body.kind} if url or body.kind else {}),
+                "kinds": ["scheduleEvents", "deadlines"],
+            },
             dedupe=True,
         )
     except Exception:
@@ -180,6 +186,81 @@ async def delete_connection(session: AsyncSession, user_id: str, connection_id: 
     await repo.purge_connection_secrets(session, user_id, [conn.id])
     await session.delete(conn)
     await session.commit()
+
+
+def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
+    """Only the source's own explicit learning context may enter a retry payload."""
+    from botai.spaces.conversations import intent_of, normalize_context
+
+    if not isinstance(data, dict) or "requested_kinds" not in data:
+        return None
+    raw_urls = data.get("entry_urls")
+    urls = raw_urls[:6] if isinstance(raw_urls, list) else []
+    own_urls = [
+        url for value in urls if (url := navigation_url(value)) and url_origin(url) == origin
+    ]
+    return intent_of(
+        normalize_context(
+            {
+                "entry_urls": own_urls,
+                "requested_kinds": data["requested_kinds"],
+                "absent_kinds": data.get("absent_kinds", []),
+                "user_note": data.get("user_note", ""),
+            }
+        )
+    )
+
+
+async def _connect_retry_payload(
+    session: AsyncSession,
+    conn: Connection,
+    context: dict[str, Any] | None,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    previous = await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == conn.user_id,
+            Job.connection_id == conn.id,
+            Job.kind == JobKind.CONNECT.value,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    prior = previous.payload if previous else {}
+    canonical = _same_origin_intent(context, conn.origin)
+    source_intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
+    context_urls = context.get("entry_urls") if context else None
+    foreign_context = isinstance(context_urls, list) and any(
+        url_origin(url) != conn.origin for value in context_urls if (url := navigation_url(value))
+    )
+    # A conversation may now point at a child source: its parent's own intent wins then.
+    if canonical and not canonical["entry_urls"] and foreign_context:
+        intent = source_intent
+    else:
+        intent = canonical or source_intent
+    result = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key not in {"learning_intent", "url", "kinds"}
+    }
+    entry = navigation_url(prior.get("url"))
+    if entry and url_origin(entry) != conn.origin:
+        entry = None
+    if intent is not None:
+        if not intent["entry_urls"]:
+            intent["entry_urls"] = list(source_intent["entry_urls"]) if source_intent else []
+            if not intent["entry_urls"] and entry:
+                intent["entry_urls"] = [entry]
+        result["learning_intent"] = intent
+        result["kinds"] = list(intent["requested_kinds"])
+        if intent["entry_urls"]:
+            result["url"] = intent["entry_urls"][0]
+    else:
+        result["kinds"] = ["scheduleEvents", "deadlines"]  # Legacy REST before a chat context.
+        if entry:
+            result["url"] = entry
+    return result
 
 
 async def enqueue_for_connection(
@@ -214,6 +295,10 @@ async def enqueue_for_connection(
         thread = await owned_thread(session, user_id, thread_id)
         bind_thread(thread, conn.id)
     target_thread = thread.id if thread is not None else None
+    if kind == JobKind.CONNECT:
+        payload = await _connect_retry_payload(
+            session, conn, thread.connect_context if thread else None, payload
+        )
     await session.commit()  # the queue works in its own transaction
     job_id = await queue.enqueue(
         kind,

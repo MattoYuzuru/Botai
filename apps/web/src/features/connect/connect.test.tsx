@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { http } from "msw";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { outbox } from "@/features/chat/runtime";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
@@ -197,6 +198,12 @@ describe("подключение в обычном чате", () => {
 
 describe("необязательный каталог в контексте чата", () => {
   it("поиск/выбор с клавиатуры сохраняются, предупреждение каталога видно до уточнения", async () => {
+    const sent = vi.fn();
+    current.server.use(
+      http.post("*/api/v1/chat/threads/:threadId/messages", async ({ request }) => {
+        sent(await request.clone().json());
+      }),
+    );
     renderApp("/connect");
     await screen.findByText(URL_QUESTION, undefined, WAIT);
     await userEvent.click(screen.getByRole("button", { name: "Источник и подключения" }));
@@ -208,6 +215,18 @@ describe("необязательный каталог в контексте ча
     expect(input).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText(/Правила вуза ограничивают сторонний доступ/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Указать вуз в чате" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Указать вуз в чате" }));
+    await waitFor(
+      () =>
+        expect(sent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: "Центральный университет",
+            targetJobId: expect.any(String),
+            clientMessageId: expect.any(String),
+          }),
+        ),
+      WAIT,
+    );
   });
 
   it("существующий источник открывает прежний разговор, Новый источник — отдельное подключение", async () => {
