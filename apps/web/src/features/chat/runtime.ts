@@ -11,20 +11,15 @@ import { jobManager } from "@/features/jobs/job-manager";
 import { useChatJobs } from "./chat-jobs";
 import { Outbox, type OutboxDeps, type OutboxItem } from "./outbox";
 
-let meCache: { id: string | null; at: number } | null = null;
-const ME_TTL_MS = 30_000;
-
 async function currentUserId(): Promise<string | null> {
-  if (meCache && Date.now() - meCache.at < ME_TTL_MS) return meCache.id;
   try {
     // Offline-снимок личности подходит для просмотра, но не разрешает отправку очереди.
     const me = await call(api.GET("/api/v1/me", { cache: "no-store" }));
-    meCache = { id: me.user.id, at: Date.now() };
+    return me.user.id;
   } catch (error) {
     if (!isUnauthorized(error)) throw error;
-    meCache = { id: null, at: Date.now() };
+    return null;
   }
-  return meCache.id;
 }
 
 const safeStorage = (): OutboxDeps["storage"] => {
@@ -64,13 +59,11 @@ export function createChatDeps(): OutboxDeps {
 export const outbox = new Outbox(createChatDeps());
 onQueueReset(({ userId, resetAt }) => {
   outbox.discardBefore(userId, resetAt);
-  if (meCache?.id === userId) meCache = null;
 });
 onDataReset(({ userId, resetAt }) => {
   outbox.discardBefore(userId, resetAt);
   useChatJobs.getState().clearAll();
   jobManager.stopAll();
-  meCache = null;
 });
 
 // Ответ принят: задание привязывается к чату, и поток начинает приходить сразу.
@@ -86,7 +79,6 @@ outbox.on((event) => {
 if (typeof window !== "undefined") {
   // Сеть вернулась — очередь уходит сама, без кнопки.
   window.addEventListener("online", () => {
-    meCache = null;
     outbox.kick();
   });
   // Сообщение, не ушедшее до перезагрузки страницы, уходит при старте.
@@ -106,5 +98,4 @@ export function useOutbox(): readonly OutboxItem[] {
 export function resetChatRuntime(): void {
   outbox.clear();
   useChatJobs.getState().clearAll();
-  meCache = null;
 }
