@@ -139,6 +139,11 @@ test("нет сети: страница открывается из кэша и 
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "Сегодня" })).toBeVisible();
   await expect(today(page)).toHaveAttribute("data-state", "offline");
+  await page
+    .locator("header")
+    .getByRole("button", { name: /Нет сети/ })
+    .first()
+    .click();
   await expect(page.getByText(/Нет сети\. Показан снимок от/).first()).toBeVisible();
   await expect(page.getByText("Алгоритмы и структуры данных").first()).toBeVisible();
   await expect(page.getByText("Лабораторная: сортировки")).toBeVisible();
