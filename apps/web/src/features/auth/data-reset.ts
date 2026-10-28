@@ -45,7 +45,8 @@ export async function observeDataReset(response: Response): Promise<void> {
   const key = `botai.data-reset.${userId}`;
   if ((seen.get(userId) ?? 0) >= resetAt) return;
   try {
-    if (Number(window.localStorage.getItem(key)) >= resetAt) {
+    // Общая localStorage-отметка не означает, что sessionStorage этой вкладки очищена.
+    if (Number(window.sessionStorage.getItem(key)) >= resetAt) {
       seen.set(userId, resetAt);
       return;
     }
@@ -80,6 +81,7 @@ export async function observeDataReset(response: Response): Promise<void> {
       const owner = window.localStorage.getItem("botai.snapshot-owner");
       if (owner === null || owner === userId) await clearSnapshots();
       window.localStorage.setItem(key, String(resetAt));
+      window.sessionStorage.setItem(key, String(resetAt));
     } catch {
       await clearSnapshots();
     }

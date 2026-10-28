@@ -14,6 +14,25 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("сброс данных аккаунта", () => {
+  it("общая отметка другой вкладки не сохраняет старое активное подключение текущей вкладки", async () => {
+    localStorage.setItem("botai.data-reset.session-owner", String(RESET_AT));
+    sessionStorage.setItem("botai.activeJob", "stale-active-job");
+    sessionStorage.setItem("botai.chat.jobs", "stale-job-refs");
+    const listener = vi.fn();
+    const remove = onDataReset(listener);
+    try {
+      await observeDataReset(response("session-owner"));
+      expect(listener).toHaveBeenCalledOnce();
+      expect(sessionStorage.getItem("botai.activeJob")).toBeNull();
+      expect(sessionStorage.getItem("botai.chat.jobs")).toBeNull();
+      expect(sessionStorage.getItem("botai.data-reset.session-owner")).toBe(String(RESET_AT));
+      sessionStorage.setItem("botai.activeJob", "new-job-after-reset");
+      await observeDataReset(response("session-owner"));
+      expect(sessionStorage.getItem("botai.activeJob")).toBe("new-job-after-reset");
+    } finally {
+      remove();
+    }
+  });
   it("уведомляет очередь соседней вкладки и повторно проверяет её при уже сохранённой отметке", async () => {
     const listener = vi.fn();
     const remove = onQueueReset(listener);
