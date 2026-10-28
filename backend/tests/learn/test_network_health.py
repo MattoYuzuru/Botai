@@ -145,3 +145,53 @@ async def test_legacy_observer_stops_browsing_after_a_data_request_requires_logi
     auth = obs.auth_required
     assert auth
     assert handle.visits == [ORIGIN + "/"]
+
+
+@pytest.mark.parametrize("error_status", [401, 503])
+@pytest.mark.parametrize("evidence", [(), ("r0", "r1"), ("r1", "r0")])
+async def test_query_reordering_and_evidence_order_cannot_replay_a_stale_error_after_recovery(
+    error_status: int,
+    evidence: tuple[str, ...],
+) -> None:
+    original = response(200).model_copy(update={"url": ORIGIN + "/api/data?a=1&b=2"})
+    other = response(200).model_copy(update={"url": ORIGIN + "/api/other"})
+    outage = response(error_status).model_copy(update={"url": ORIGIN + "/api/data?b=2&a=1"})
+    recovered = original.model_copy(
+        update={"response_sample": '{"items":[{"title":"Восстановлено"}]}'}
+    )
+    history = [original, other]
+
+    class Changing(TrackingHandle):
+        async def network_log(self) -> list[ObservedRequest]:
+            return history
+
+    handle = Changing({ORIGIN + "/": FakePage("<main>Кабинет открыт</main>")})
+    state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
+    await state.visit(ORIGIN + "/")
+    page = PageSnapshot(url=ORIGIN + "/", html="<main>Кабинет открыт</main>")
+    history.append(outage)
+    await state.capture(page)
+    await state.apply(
+        state.decision({"stateRef": state.revision, "action": "inspect", "ref": "r0"})
+    )
+    history.append(outage.model_copy(update={"status": None, "response_sample": None}))
+    pending_progress = await state.capture(page)
+    pending_status = state.calls["r0"].status
+    assert not pending_progress
+    assert pending_status == error_status
+    history.append(recovered)
+    recovered_progress = await state.capture(page)
+    assert recovered_progress
+    assert set(state.calls) == {"r0", "r1"}
+    assert "r0" not in state.details
+    obs = state.bundle(evidence)
+    facts = (
+        obs.auth_required,
+        obs.limited,
+        tuple(sorted((call.reference, call.status) for call in obs.calls)),
+    )
+    assert facts == (False, False, (("r0", 200), ("r1", 200)))
+    data_call = next(call for call in obs.calls if call.reference == "r0")
+    fresh_body = "Восстановлено" in data_call.body
+    assert fresh_body
+    assert data_response_health(history, ORIGIN) == (False, False)

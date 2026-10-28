@@ -51,6 +51,7 @@ _LOGIN_REQUIRED = re.compile(
     r"(?i)вы не вошли|для продолжения.{0,40}войдите|необходимо (?:войти|авторизоваться)|"
     r"you (?:are not|aren't) (?:logged|signed) in|please (?:log|sign) in|login required"
 )
+RequestKey = tuple[str, tuple[str, tuple[tuple[str, str], ...]]]
 
 
 @dataclass(slots=True)
@@ -242,12 +243,17 @@ def interesting_call(call: ObservedRequest, origin: str) -> bool:
     return not any(skip in ctype for skip in _SKIP_TYPES)
 
 
+def request_key(call: ObservedRequest) -> RequestKey:
+    """One identity for health, adaptive references and the final evidence bundle."""
+    return call.method, _url_key(call.url)
+
+
 def latest_responses(entries: list[ObservedRequest], origin: str) -> list[ObservedRequest]:
     """An unfinished repeat cannot replace the latest completed response, including errors."""
-    latest: dict[tuple[str, tuple[str, tuple[tuple[str, str], ...]]], ObservedRequest] = {}
+    latest: dict[RequestKey, ObservedRequest] = {}
     for call in entries:
         if call.status is not None and interesting_call(call, origin):
-            latest[(call.method, _url_key(call.url))] = call
+            latest[request_key(call)] = call
     return list(latest.values())
 
 
@@ -396,7 +402,7 @@ def observations_of(
     queued_count: int = 0,
     started: float | None = None,
     page_refs: tuple[str, ...] = (),
-    call_refs: Mapping[tuple[str, str], str] | None = None,
+    call_refs: Mapping[RequestKey, str] | None = None,
 ) -> Observations:
     """Build the same redacted bundle from legacy crawling or adaptive browser actions."""
     started = time.monotonic() if started is None else started
@@ -468,7 +474,7 @@ def observations_of(
                 status=call.status,
                 content_type=(call.response_content_type or "").split(";")[0],
                 body=body,
-                reference=call_refs.get((call.method, call.url)) if call_refs is not None else None,
+                reference=call_refs.get(request_key(call)) if call_refs is not None else None,
             )
         )
     obs.observed = set(redactor.observed)

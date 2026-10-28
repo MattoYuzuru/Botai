@@ -26,6 +26,7 @@ from botai.learn.intent import LearningIntent
 from botai.learn.observe import (
     MAX_CALLS,
     Observations,
+    RequestKey,
     body_view,
     data_response_health,
     interesting_call,
@@ -33,6 +34,7 @@ from botai.learn.observe import (
     observations_of,
     observe,
     protect_observation,
+    request_key,
 )
 from botai.learn.prompting import discovery_request
 from botai.learn.redact import Redactor
@@ -161,15 +163,15 @@ class ObservationSession:
             self.failures.add("data_request_failed")
         else:
             self.failures.discard("data_request_failed")
-        by_request = {(call.method, call.url): ref for ref, call in self.calls.items()}
+        by_request = {request_key(call): ref for ref, call in self.calls.items()}
         changed_response = False
         # network_log is cumulative. Compare the newest response of each request with the
         # previous capture once; replaying its older history is not new evidence.
-        latest_calls: dict[tuple[str, str], ObservedRequest] = {}
+        latest_calls: dict[RequestKey, ObservedRequest] = {}
         for call in log[: self.budget.requests]:
             if call.status is None or not interesting_call(call, self.origin):
                 continue
-            latest_calls[(call.method, call.url)] = call
+            latest_calls[request_key(call)] = call
         for key, call in latest_calls.items():
             call_ref = by_request.get(key)
             previous = self.calls.get(call_ref) if call_ref is not None else None
@@ -333,7 +335,7 @@ class ObservationSession:
             [self.calls[ref] for ref in ordered_calls],
             visited_count=len(self.visited),
             page_refs=tuple(ordered_pages),
-            call_refs={(self.calls[ref].method, self.calls[ref].url): ref for ref in ordered_calls},
+            call_refs={request_key(self.calls[ref]): ref for ref in ordered_calls},
         )
         # Auth/refusal evidence is a stop condition, never an optional planner-selected page.
         obs.auth_required = self.auth_required
