@@ -104,7 +104,7 @@ if [ -n "$(dc ps -q postgres)" ]; then
   install -d -m 700 backups .rollback-keys
   backup_name="pre-${TAG}-$(date -u +%Y%m%dT%H%M%SZ)"
   backup_key=".rollback-keys/${backup_name}.key"
-  openssl rand -out "$backup_key" 32
+  openssl rand -hex 32 > "$backup_key"
   chmod 600 "$backup_key"
   dc exec -T postgres pg_dump -U botai -Fc botai |
     openssl enc -aes-256-cbc -salt -pbkdf2 -pass "file:${backup_key}" \

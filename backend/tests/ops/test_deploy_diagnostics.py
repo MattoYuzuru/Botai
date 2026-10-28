@@ -165,6 +165,7 @@ def test_database_recovery_point_is_encrypted_and_key_is_separate(deployment: De
     assert result.returncode == 0, result.stderr
     backup = next((deployment.root / "backups").glob("*.dump.enc"))
     key = next((deployment.root / ".rollback-keys").glob("*.key"))
+    assert len(key.read_text().strip()) == 64
     assert b"fixture-database-recovery-point" not in backup.read_bytes()
     openssl = shutil.which("openssl")
     assert openssl is not None
