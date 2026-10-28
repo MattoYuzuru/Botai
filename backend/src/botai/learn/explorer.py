@@ -263,9 +263,14 @@ class Explorer:
     ) -> dict[str, Any]:
         ui, svc = self.ui, self.services
         stage = await ui.stage("Вхожу в кабинет")
-        session = await svc.sessions.ensure(
-            self.ctx, user_id=info.user_id, connection_id=info.connection_id
-        )
+        try:
+            session = await svc.sessions.ensure(
+                self.ctx, user_id=info.user_id, connection_id=info.connection_id
+            )
+            info = await self._info(info.connection_id)
+        except BotaiError:
+            await stage.finish("failed")
+            raise
         await stage.finish()
         redactor = await self._redactor(info)
         sctx = self._sync_context(info, session)

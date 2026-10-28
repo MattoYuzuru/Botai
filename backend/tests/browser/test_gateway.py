@@ -7,10 +7,12 @@ import logging
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock, PropertyMock
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Request
 from pydantic import SecretStr
 
 from botai.browser.gateway import SAMPLE_CHARS, CaptureConfig, PlaywrightGateway, PlaywrightHandle
@@ -289,6 +291,59 @@ async def test_navigation_to_an_unlisted_host_never_reaches_the_browser(
         with pytest.raises(BotaiError) as exc:
             await handle.goto(url)
         assert exc.value.code == ErrorCode.EGRESS_BLOCKED, url
+
+
+@pytest.mark.parametrize("tag", ["img", "iframe"])
+async def test_background_denial_cannot_become_a_login_host_approval(
+    open_browser: Opener, tag: str
+) -> None:
+    handle = await open_browser(hosts=("fakeuni.test",))
+    await handle.goto("https://fakeuni.test/auth/login")
+    background = "https://evil.localhost/blocked-background"
+    async with handle.page.expect_event(
+        "requestfailed", predicate=lambda request: request.url == background
+    ):
+        await handle.page.evaluate(
+            "([tag, url]) => { const node = document.createElement(tag); "
+            "node.src = url; document.body.append(node); }",
+            [tag, background],
+        )
+    assert "evil.localhost" in handle.blocked_hosts()
+    assert handle.navigation_failure() is None
+
+    # A subsequent failure of the allowed main page has its own cause. An old blocked
+    # tracker/frame must never cause the user to be asked to allow that unrelated host.
+    broken = "https://fakeuni.test/broken-navigation"
+    await handle.page.route(broken, lambda route: route.abort("connectionrefused"))
+    with pytest.raises(BotaiError) as error:
+        await handle.goto(broken)
+    assert error.value.code == ErrorCode.SOURCE_UNAVAILABLE
+    failure = handle.navigation_failure()
+    assert failure is not None
+    assert failure.code == ErrorCode.SOURCE_UNAVAILABLE
+    assert "evil.localhost" not in error.value.detail
+
+    await handle.goto("https://fakeuni.test/auth/login")
+    assert handle.navigation_failure() is None
+
+
+async def test_navigation_before_its_frame_does_not_escape_the_event_callback(
+    open_browser: Opener,
+) -> None:
+    handle = await open_browser(hosts=("fakeuni.test",))
+    request = Mock(spec=Request)
+    request.is_navigation_request.return_value = True
+    type(request).frame = PropertyMock(side_effect=PlaywrightError("Frame is not available yet"))
+    request.url = "https://id.fakeuni.test/early-popup"
+    request.method = "GET"
+    request.headers = {}
+    request.resource_type = "document"
+    request.failure = "net::ERR_TUNNEL_CONNECTION_FAILED"
+
+    handle._on_request(cast(Request, request))
+    handle._on_failed(cast(Request, request))
+    assert "id.fakeuni.test" in handle.visited_hosts()
+    assert handle.navigation_failure() is None
 
 
 async def test_page_scripts_cannot_bypass_the_proxy(

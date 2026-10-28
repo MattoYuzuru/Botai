@@ -95,14 +95,11 @@ def scrub_sample(text: str) -> str | None:
     return _JWT.sub("[jwt]", text)[:SAMPLE_CHARS]
 
 
-def map_navigation_error(
-    exc: PlaywrightError, requested: str, refused_host: str | None = None
-) -> BotaiError:
-    """`refused_host` is the host the proxy turned away during this navigation, if any: after a
-    redirect it differs from the URL Playwright reports."""
+def map_navigation_error(exc: PlaywrightError, requested: str) -> BotaiError:
+    """Classify a main-frame failure without exposing its URL parameters."""
     message = str(exc)
     match = _NAV_URL.search(message)
-    host = refused_host or urlsplit(match.group(1) if match else requested).hostname or "?"
+    host = urlsplit(match.group(1) if match else requested).hostname or "?"
     if any(
         code in message
         for code in ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY", "ERR_NO_SUPPORTED_PROXIES")
@@ -160,6 +157,8 @@ class PlaywrightHandle:
         self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
         self._visited: dict[str, None] = {}
         self._blocked: list[str] = []  # one entry per refused tunnel, oldest first
+        self._navigation_request: Request | None = None
+        self._navigation_error: BotaiError | None = None
         self._close_callbacks: list[Callable[[], None]] = []
         self._page_callbacks: list[Callable[[], None]] = []
         self.closed = False
@@ -187,6 +186,10 @@ class PlaywrightHandle:
         """Hosts whose tunnel the proxy refused, first-seen order."""
         return list(dict.fromkeys(self._blocked))
 
+    def navigation_failure(self) -> BotaiError | None:
+        """Only the current main-page navigation, never a blocked image or an old request."""
+        return self._navigation_error
+
     def on_close(self, callback: Callable[[], None]) -> None:
         self._close_callbacks.append(callback)
 
@@ -196,10 +199,19 @@ class PlaywrightHandle:
 
     def _on_page(self, page: Page) -> None:
         self._page = page
+        self._navigation_request = None
+        self._navigation_error = None
         for callback in list(self._page_callbacks):
             callback()
 
     def _on_request(self, request: Request) -> None:
+        if request.is_navigation_request():
+            # An early popup request may precede its Frame. It is not yet a known
+            # main-page navigation and must not become a host-consent candidate.
+            with contextlib.suppress(PlaywrightError):
+                if request.frame == self._page.main_frame:
+                    self._navigation_request = request
+                    self._navigation_error = None
         host = urlsplit(request.url).hostname
         if host:
             self._visited.setdefault(host.lower(), None)
@@ -244,6 +256,8 @@ class PlaywrightHandle:
 
     def _on_failed(self, request: Request) -> None:
         failure = request.failure or ""
+        if request is self._navigation_request:
+            self._navigation_error = map_navigation_error(PlaywrightError(failure), request.url)
         if "TUNNEL" in failure or "PROXY" in failure:
             host = urlsplit(request.url).hostname
             if host:
@@ -275,15 +289,15 @@ class PlaywrightHandle:
 
     async def goto(self, url: str) -> PageSnapshot:
         self._check_url(url)
-        refused_before = len(self._blocked)
+        self._navigation_request = None
+        self._navigation_error = None
         try:
             await self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         except PlaywrightTimeout as exc:
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Сайт вуза не отвечает") from exc
         except PlaywrightError as exc:
             await asyncio.sleep(0.1)  # let the `requestfailed` event for the refused tunnel land
-            refused = self._blocked[refused_before:]
-            raise map_navigation_error(exc, url, refused[-1] if refused else None) from exc
+            raise self._navigation_error or map_navigation_error(exc, url) from exc
         await self._settle()
         return await self.snapshot()
 

@@ -15,16 +15,17 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from botai.browser.egress import ProxyEgress
+from botai.browser.egress import LOGIN_TOKEN_TTL_S, ProxyEgress
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
 from botai.browser.login import LoginFlow, LoginTiming
 from botai.browser.presets import InMemoryLoginStore
 from botai.browser.session import decode_session
 from botai.contracts import schemas
-from botai.contracts.agent_ui import AgentUiBlock, InputBlock, LoginBlock, WaitBlock
+from botai.contracts.agent_ui import AgentUiBlock, ConfirmBlock, InputBlock, LoginBlock, WaitBlock
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -115,10 +116,15 @@ class Student:
     username: str = data.USERNAME
     wrong_passwords: int = 0  # answer wrong this many times first
     wrong_otps: int = 0
+    approve_hosts: bool = False
     asked: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())
     questions: list[str] = field(default_factory=lambda: list[str]())
+    confirmations: list[str] = field(default_factory=lambda: list[str]())
 
-    def __call__(self, block: AgentUiBlock) -> str | None:
+    def __call__(self, block: AgentUiBlock) -> str | bool | None:
+        if isinstance(block, ConfirmBlock):
+            self.confirmations.append(block.question)
+            return self.approve_hosts
         if not isinstance(block, InputBlock):
             return None
         self.questions.append(block.question)
@@ -645,6 +651,54 @@ async def test_the_human_not_finishing_cancels_the_job(make_rig: Callable[..., R
         await rig.ensure(Student())
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_code", "blocked_host", "close_reason"),
+    [
+        ("/redirect/evil", ErrorCode.EGRESS_BLOCKED, "evil.localhost", "navigation_failed"),
+        ("/screen/unavailable", ErrorCode.SOURCE_UNAVAILABLE, None, "navigation_failed"),
+        ("/blocked", ErrorCode.SOURCE_BOT_PROTECTION, None, "bot_protection"),
+    ],
+)
+async def test_failed_navigation_from_the_human_screen_closes_it_and_reports_the_error(
+    make_rig: Callable[..., Rig],
+    target: str,
+    expected_code: ErrorCode,
+    blocked_host: str | None,
+    close_reason: str,
+) -> None:
+    """A real click after handoff must not leave the job waiting on a Chromium error page."""
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        if target == "/screen/unavailable":
+            await handle.page.route(
+                f"{ORIGIN}{target}", lambda route: route.abort("connectionfailed")
+            )
+        await handle.page.locator("#a").evaluate(
+            "(anchor, target) => anchor.setAttribute('href', target)", target
+        )
+        await handle.page.click("#a", no_wait_after=True)
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(ORIGIN, {**preset_dict(f"{ORIGIN}/screen/lab"), "mode": "screen"})
+    with pytest.raises(BotaiError) as exc:
+        # FAST.human_wait_s is 25 s: before the fix this timed out or got
+        # JobCancelled instead of promptly reporting the actual failure.
+        await asyncio.wait_for(rig.ensure(Student()), timeout=10.0)
+    await rig.screens.settle()
+    assert exc.value.code == expected_code
+    assert exc.value.extra == ({"host": blocked_host} if blocked_host else {})
+    (link,) = rig.screens.links
+    assert link.closed
+    assert link.close_reason == close_reason
+    assert not link.succeeded
+    assert not await rig.vault.has(rig.user, rig.conn, SecretKind.SESSION)
+    if expected_code == ErrorCode.SOURCE_BOT_PROTECTION:
+        opened = len(rig.gateway._handles)
+        with pytest.raises(BotaiError, match="отклонил автоматический заход"):
+            await rig.ensure(None)
+        assert len(rig.gateway._handles) == opened
+
+
 async def test_after_the_captcha_a_normal_form_is_mirrored_again(
     make_rig: Callable[..., Rig],
 ) -> None:
@@ -725,6 +779,182 @@ async def test_sso_second_host_missing_from_the_preset_is_egress_blocked(
         await rig.ensure(Student())
     assert exc.value.code == ErrorCode.EGRESS_BLOCKED
     assert exc.value.extra["host"] == "id.fakeuni.test"
+
+
+async def test_sso_host_approval_persists_it_and_reopens_with_a_fresh_exact_grant(
+    make_rig: Callable[..., Rig],
+    gateway: PlaywrightGateway,
+    egress_access: ProxyEgress,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = AsyncMock(wraps=gateway.open)
+    grants = AsyncMock(wraps=egress_access.credentials)
+    monkeypatch.setattr(gateway, "open", opened)
+    monkeypatch.setattr(egress_access, "credentials", grants)
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/sso/start"))
+    student = Student(approve_hosts=True)
+
+    def respond(block: AgentUiBlock) -> str | bool | None:
+        if isinstance(block, ConfirmBlock):
+            # The failed context and screen are closed before permission is requested.
+            assert rig.user not in gateway._by_user
+        return student(block)
+
+    ctx = InMemoryJobContext(user_id=rig.user, connection_id=rig.conn, responder=respond)
+    session = await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    assert await works(session)
+    assert [kind for kind, _ in student.asked] == ["login", "password"]
+    (confirm,) = [block for block in ctx.blocks if isinstance(block, ConfirmBlock)]
+    assert "id.fakeuni.test" in confirm.question
+    assert "://" not in confirm.question
+    assert "?" not in confirm.question[:-1]
+    assert confirm.confirm_label == "Разрешить и продолжить"
+    assert confirm.cancel_label == "Не разрешать"
+    info = await rig.store.connection(rig.user, rig.conn)
+    assert info.allow_hosts == ("fakeuni.test", "id.fakeuni.test")
+    assert opened.await_count == 2
+    assert [call.kwargs["allow_hosts"] for call in opened.await_args_list] == [
+        ["fakeuni.test"],
+        ["fakeuni.test", "id.fakeuni.test"],
+    ]
+    browser_grants = [
+        call for call in grants.await_args_list if call.kwargs["ttl_s"] == LOGIN_TOKEN_TTL_S
+    ]
+    assert [list(call.args[0]) for call in browser_grants] == [
+        ["fakeuni.test"],
+        ["fakeuni.test", "id.fakeuni.test"],
+    ]
+    assert all(call.kwargs["suffixes"] == [] for call in browser_grants)
+
+
+async def test_saved_preset_keeps_the_connections_approved_hosts_on_forced_relogin(
+    make_rig: Callable[..., Rig],
+) -> None:
+    rig = make_rig()
+    rig.store.add_connection(
+        rig.user, rig.conn, ORIGIN, allow_hosts=("fakeuni.test", "id.fakeuni.test")
+    )
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/sso/start"))
+    student = Student()
+    ctx = rig.ctx(student)
+    session = await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn, force=True)
+    assert await works(session)
+    assert student.confirmations == []
+    assert [kind for kind, _ in student.asked] == ["login", "password"]
+
+
+@pytest.mark.parametrize("answer", [False, "true", ["yes"]])
+async def test_an_unapproved_sso_host_never_changes_the_connection_or_retries(
+    make_rig: Callable[..., Rig], answer: bool | str | list[str]
+) -> None:
+    rig = make_rig()
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/sso/start"))
+    ctx = InMemoryJobContext(user_id=rig.user, connection_id=rig.conn, responder=lambda _: answer)
+    with pytest.raises(BotaiError, match="не разрешён") as exc:
+        await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    assert exc.value.code == ErrorCode.EGRESS_BLOCKED
+    assert len([block for block in ctx.blocks if isinstance(block, ConfirmBlock)]) == 1
+    assert (await rig.store.connection(rig.user, rig.conn)).allow_hosts == ("fakeuni.test",)
+    assert rig.user not in rig.gateway._by_user
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        None,
+        42,
+        "https://id.fakeuni.test/path",
+        "*.fakeuni.test",
+        "127.0.0.1",
+        "127.1",
+        "[::1]",
+        "fakeuni.test",
+    ],
+)
+async def test_only_a_new_exact_dns_host_can_be_approved(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch, host: object
+) -> None:
+    rig = make_rig()
+    failure = BotaiError(ErrorCode.EGRESS_BLOCKED, "Запрос запрещён", extra={"host": host})
+    login = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(rig.flow, "_login", login)
+    student = Student(approve_hosts=True)
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(student)
+    assert exc.value is failure
+    assert student.confirmations == []
+    assert login.await_count == 1
+    assert (await rig.store.connection(rig.user, rig.conn)).allow_hosts == ("fakeuni.test",)
+
+
+async def test_a_repeated_failure_of_an_already_approved_host_does_not_prompt_again(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    failure = BotaiError(
+        ErrorCode.EGRESS_BLOCKED, "Запрос запрещён", extra={"host": "id.fakeuni.test"}
+    )
+    login = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(rig.flow, "_login", login)
+    student = Student(approve_hosts=True)
+    with pytest.raises(BotaiError) as exc:
+        await rig.ensure(student)
+    assert exc.value is failure
+    assert len(student.confirmations) == 1
+    assert login.await_count == 2
+    assert (await rig.store.connection(rig.user, rig.conn)).allow_hosts == (
+        "fakeuni.test",
+        "id.fakeuni.test",
+    )
+
+
+async def test_late_host_consent_cannot_reopen_a_connection_rejected_by_the_store(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    login = AsyncMock(
+        side_effect=BotaiError(
+            ErrorCode.EGRESS_BLOCKED, "Запрос запрещён", extra={"host": "id.fakeuni.test"}
+        )
+    )
+    allow_host = AsyncMock(side_effect=BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено"))
+    monkeypatch.setattr(rig.flow, "_login", login)
+    monkeypatch.setattr(rig.store, "allow_host", allow_host)
+    student = Student(approve_hosts=True)
+    with pytest.raises(BotaiError, match="Подключение отключено") as exc:
+        await rig.ensure(student)
+    assert exc.value.code == ErrorCode.FORBIDDEN
+    assert len(student.confirmations) == 1
+    assert login.await_count == 1  # no second browser or proxy grant after the late answer
+    allow_host.assert_awaited_once_with(rig.user, rig.conn, "id.fakeuni.test")
+    assert (await rig.store.connection(rig.user, rig.conn)).allow_hosts == ("fakeuni.test",)
+
+
+async def test_new_login_hosts_require_separate_confirmations_and_stop_after_four(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig()
+    login = AsyncMock(
+        side_effect=[
+            BotaiError(
+                ErrorCode.EGRESS_BLOCKED, "Запрос запрещён", extra={"host": f"sso-{i}.fakeuni.test"}
+            )
+            for i in range(5)
+        ]
+    )
+    monkeypatch.setattr(rig.flow, "_login", login)
+    student = Student(approve_hosts=True)
+    ctx = rig.ctx(student)
+    with pytest.raises(BotaiError):
+        await rig.flow.ensure(ctx, user_id=rig.user, connection_id=rig.conn)
+    confirmations = [block for block in ctx.blocks if isinstance(block, ConfirmBlock)]
+    assert len(confirmations) == len({block.id for block in confirmations}) == 4
+    assert login.await_count == 5
+    assert (await rig.store.connection(rig.user, rig.conn)).allow_hosts == (
+        "fakeuni.test",
+        *(f"sso-{i}.fakeuni.test" for i in range(4)),
+    )
 
 
 async def test_first_login_follows_the_site_to_its_own_subdomains_and_learns_them(
