@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,12 @@ if args[0] == 'login':
     sys.stdin.read()
 elif args[0] == 'compose':
     failure = os.environ.get('FAIL_AT')
+    if 'ps' in args and os.environ.get('HAS_POSTGRES'):
+        print('fixture-postgres-id')
+    if 'pg_dump' in args:
+        if failure == 'backup':
+            sys.exit(1)
+        sys.stdout.buffer.write(b'fixture-database-recovery-point')
     if 'pull' in args and failure == 'pull':
         sys.exit(1)
     if 'migrate' in args and failure == 'migration':
@@ -149,6 +156,44 @@ def test_image_revision_must_match_checked_source_before_migration(deployment: D
     assert "image revision mismatch" in result.stderr
     commands = (deployment.root / "commands.jsonl").read_text()
     assert '"migrate"' not in commands
+    assert (deployment.root / "compose.vars").read_text() == deployment.original
+
+
+def test_database_recovery_point_is_encrypted_and_key_is_separate(deployment: Deployment) -> None:
+    deployment.env["HAS_POSTGRES"] = "1"
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    backup = next((deployment.root / "backups").glob("*.dump.enc"))
+    key = next((deployment.root / ".rollback-keys").glob("*.key"))
+    assert b"fixture-database-recovery-point" not in backup.read_bytes()
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    restored = subprocess.run(  # noqa: S603 - fixed executable and test-generated paths
+        [
+            openssl,
+            "enc",
+            "-d",
+            "-aes-256-cbc",
+            "-pbkdf2",
+            "-pass",
+            f"file:{key}",
+            "-in",
+            str(backup),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    assert restored.stdout == b"fixture-database-recovery-point"
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert backup.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_database_backup_blocks_migration(deployment: Deployment) -> None:
+    deployment.env.update(HAS_POSTGRES="1", FAIL_AT="backup")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 1
+    assert "database backup" in result.stderr
+    assert '"migrate"' not in (deployment.root / "commands.jsonl").read_text()
     assert (deployment.root / "compose.vars").read_text() == deployment.original
 
 
