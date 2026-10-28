@@ -56,7 +56,7 @@ export function ChatLayout({ header, children, composer, keyboardOpen = false, c
       <div
         data-chat-dock=""
         className={cn(
-          "mx-auto w-full max-w-col px-safe-4 pt-2 xs:px-safe-5",
+          "mx-auto w-full max-w-col px-safe-4 pt-2 transition-[padding-bottom] duration-slow ease-soft xs:px-safe-5",
           // Нижняя панель (≈ 65 px + safe area) закрывает низ экрана на телефоне; на ноутбуке её нет.
           keyboardOpen ? "pb-safe-2" : "pb-[calc(4.25rem+env(safe-area-inset-bottom,0px))] lg:pb-safe-4",
         )}

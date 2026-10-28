@@ -43,7 +43,7 @@ export function AppShell() {
           </Link>
         )}
       />
-      <div className="min-h-dvh lg:pl-rail">
+      <div className="flex min-h-dvh flex-col lg:pl-rail">
         {!online && (
           <Banner tone="info" icon="offline" live className="rounded-none px-safe-4 pt-safe-3">
             Нет сети. Показаны последние данные, они обновятся, когда сеть вернётся.

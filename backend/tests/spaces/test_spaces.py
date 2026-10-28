@@ -24,7 +24,7 @@ from botai.db.models import (
     Space,
     University,
 )
-from botai.spaces import universities
+from botai.spaces import catalog, universities
 from tests.auth.support import Sm, make_connection, make_space, signup
 
 Make = Callable[[], httpx.AsyncClient]
@@ -230,8 +230,8 @@ async def test_search_universities(
     for title in ("Высшая школа экономики", "Центральный университет", "Технологический институт"):
         await client.post("/api/v1/spaces", json={"title": title})
     everything = (await client.get("/api/v1/universities")).json()
-    assert len(everything) == 3
-    assert [u["title"] for u in everything] == sorted(u["title"] for u in everything)
+    assert len(everything) == len(catalog.entries()) + 1
+    assert [u["title"] for u in everything[:3]] == sorted(u["title"] for u in everything[:3])
     found = (await client.get("/api/v1/universities", params={"q": "ЦЕНТРАЛЬН"})).json()
     assert [u["title"] for u in found] == ["Центральный университет"]
     assert found[0]["shortTitle"] == "ЦУ"

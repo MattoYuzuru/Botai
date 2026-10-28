@@ -669,7 +669,7 @@ export interface paths {
         };
         /**
          * Search Universities
-         * @description The learned registry (shared by the pool): rows appear when a student names a university.
+         * @description Learned registry plus name-only suggestions; searching does not create integrations.
          */
         get: operations["search_universities_api_v1_universities_get"];
         put?: never;

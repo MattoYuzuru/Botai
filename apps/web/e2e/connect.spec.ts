@@ -11,7 +11,8 @@ const SECRET = "correct-horse-battery-staple";
 
 async function startHse(page: Page, variant = "") {
   await open(page, `/connect?pace=0${variant ? `&job=${variant}` : ""}`, "empty");
-  await page.getByRole("radio", { name: /Высшая школа экономики/ }).click();
+  await page.getByRole("combobox", { name: "Вуз" }).click();
+  await page.getByRole("option", { name: /Высшая школа экономики/ }).click();
   await page.getByRole("button", { name: "Начать подключение" }).click();
   await expect(page).toHaveURL(/\/connect\/01J/);
   await expect(page.getByRole("heading", { level: 1, name: "Подключаю ВШЭ" })).toBeVisible();
@@ -29,7 +30,8 @@ test.describe("выбор вуза", () => {
     for (const width of [320, 390, 430]) {
       await page.setViewportSize({ width, height: 800 });
       await open(page, "/connect", "empty");
-      await expect(page.getByRole("radio", { name: /Высшая школа экономики/ })).toBeVisible();
+      await page.getByRole("combobox", { name: "Вуз" }).click();
+      await expect(page.getByRole("option", { name: /Высшая школа экономики/ })).toBeVisible();
       await expectNoHorizontalOverflow(page, `выбор вуза ${width}`);
     }
     const sizes = await page.evaluate(() =>

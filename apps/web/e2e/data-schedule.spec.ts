@@ -87,6 +87,7 @@ test.describe("«Расписание»", () => {
     await open(page, "/schedule", "connected");
     await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "ok");
     await context.setOffline(true);
+    await page.getByRole("button", { name: /^ВШЭ: Нет сети/ }).click();
     await expect(page.getByText(/Нет сети\. Показан снимок от/).first()).toBeVisible();
     await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "offline");
     await expect(page.getByText("Математический анализ").first()).toBeVisible();
