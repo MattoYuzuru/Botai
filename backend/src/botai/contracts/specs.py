@@ -6,9 +6,9 @@ spec lint runs first. Agents write JSON that must pass both.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 Kind = Literal[
@@ -53,6 +53,7 @@ class HtmlResponse(_M):
 
 
 class RecipeRequest(_M):
+    render: bool = False
     method: Literal["GET", "POST"]
     read_only_post: bool = Field(default=False)
     path: str
@@ -76,6 +77,16 @@ class Endpoint(_M):
     request: RecipeRequest
     pagination: Pagination | None = None
     response: Annotated[JsonResponse | HtmlResponse, Field(discriminator="format")]
+
+    @model_validator(mode="after")
+    def validate_rendering(self) -> Self:
+        if self.request.render and (
+            self.request.method != "GET"
+            or self.request.body is not None
+            or not isinstance(self.response, HtmlResponse)
+        ):
+            raise ValueError("rendered endpoints require GET HTML without a body")
+        return self
 
 
 class BootstrapStep(_M):

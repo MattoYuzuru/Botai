@@ -20,5 +20,72 @@
   {"adapter": "ical", "origin": "https://lms.fakeuni.test"},
   {"adapter": "document", "source": {"kind": "url", "url": "https://fakeuni.test/files/exams.xlsx"}, "format": "xlsx",
    "table": {"kind": "scheduleEvents", "columns": {"title": {"column": "Предмет"}, "startsAt": {"column": "Дата", "transform": "date"}},
-             "rowFilter": {"column": "ФИО", "equalsParam": "fullName"}}}
+             "rowFilter": {"column": "ФИО", "equalsParam": "fullName"}}},
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 1,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/calendar",
+            "render": true
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "article",
+            "fields": {
+              "title": {
+                "selector": "h2"
+              }
+            }
+          }
+        },
+        {
+          "id": "news",
+          "kind": "news",
+          "request": {
+            "method": "GET",
+            "path": "/news"
+          },
+          "response": {
+            "format": "html",
+            "itemsSelector": "li.news-item",
+            "fields": {
+              "title": {
+                "selector": "a"
+              },
+              "url": {
+                "selector": "a",
+                "attr": "href"
+              },
+              "publishedAt": {
+                "selector": "time",
+                "attr": "datetime",
+                "transform": "iso"
+              }
+            },
+            "identity": [
+              "url"
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  }
 ]

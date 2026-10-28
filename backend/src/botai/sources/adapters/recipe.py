@@ -55,6 +55,11 @@ class RecipeAdapter:
 
     def __init__(self, spec: RecipeSpec) -> None:
         self.recipe: Recipe = spec.recipe
+        if any(endpoint.request.render for endpoint in self.recipe.endpoints):
+            raise BotaiError(
+                ErrorCode.RECIPE_REJECTED,
+                "Чтение отрисованного HTML ещё не включено в этом исполнителе",
+            )
 
     async def fetch(self, ctx: SyncContext) -> AdapterResult:
         recipe = self.recipe
