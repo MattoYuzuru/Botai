@@ -39,7 +39,7 @@ export function ChatComposer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const finePointer = useMediaQuery("(pointer: fine)");
   const sendOnEnter = enterToSend ?? finePointer;
-  const resize = useAutoGrow(ref, value, 6);
+  const resize = useAutoGrow(ref, value || placeholder, 6);
   const text = value.trim();
   const canSend = !disabled && text.length > 0;
 

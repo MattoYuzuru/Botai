@@ -129,6 +129,7 @@ export function ConnectTimeline({
       {failed && (
         <li data-connection-failure="" className="flex flex-col items-start gap-3">
           <ChatMessage
+            className="w-full min-w-0"
             role="agent"
             markdown={
               problem?.code === "login_failed" && !problem.detail

@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { freezeClock } from "./data-support";
-import { DEMO, expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open, signIn } from "./support";
+import {
+  DEMO,
+  expectNoHorizontalOverflow,
+  expectSheetReady,
+  findSmallTapTargets,
+  findTinyText,
+  open,
+  signIn,
+} from "./support";
 
 test.describe("вход и онбординг", () => {
   for (const theme of ["light", "dark"] as const) {
@@ -180,6 +188,7 @@ test.describe("каркас", () => {
         await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
         expect((await page.locator("[data-chat-transcript]").boundingBox())?.width).toBe(736);
         await page.getByRole("button", { name: "Источник и подключения" }).click();
+        await expectSheetReady(page, "Источник и подключения");
         await expect(page.getByRole("combobox", { name: "Вуз" })).toBeVisible();
         expect(
           (await page.getByRole("dialog", { name: "Источник и подключения" }).boundingBox())?.width ?? 0,

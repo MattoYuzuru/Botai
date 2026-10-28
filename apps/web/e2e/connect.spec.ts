@@ -1,6 +1,12 @@
 import { expect, type Page, test } from "@playwright/test";
 import type { JobSnapshot } from "../src/features/jobs/job-state";
-import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
+import {
+  expectNoHorizontalOverflow,
+  expectSheetReady,
+  findSmallTapTargets,
+  findTinyText,
+  open,
+} from "./support";
 
 const SECRET = "correct-horse-battery-staple";
 const URL_QUESTION = "Пришлите ссылку на источник, который хотите подключить.";
@@ -87,6 +93,7 @@ test.describe("подключение в общем чате", () => {
       await page.setViewportSize({ width, height: 844 });
       await start(page);
       await page.getByRole("button", { name: "Источник и подключения" }).click();
+      await expectSheetReady(page, "Источник и подключения");
       await page.getByRole("combobox", { name: "Вуз" }).click();
       await expect(page.getByRole("option", { name: /Высшая школа экономики/ })).toBeVisible();
       await expectNoHorizontalOverflow(page, `каталог ${width}`);
@@ -162,6 +169,35 @@ test.describe("подключение в общем чате", () => {
         document.documentElement.dataset.theme = next;
       }, theme);
       await expectNoHorizontalOverflow(page, `terminal 200% ${theme}`);
+      const geometry = await page.locator("[data-connection-failure]").evaluate((element) => {
+        const parent = element.getBoundingClientRect();
+        return {
+          left: parent.left,
+          right: parent.right,
+          children: [...element.querySelectorAll("article, article > div:first-child")].map((child) => {
+            const box = child.getBoundingClientRect();
+            return {
+              left: box.left,
+              right: box.right,
+              scrollWidth: child.scrollWidth,
+              clientWidth: child.clientWidth,
+            };
+          }),
+        };
+      });
+      expect(geometry.children).toHaveLength(2);
+      for (const child of geometry.children) {
+        expect(child.left).toBeGreaterThanOrEqual(geometry.left);
+        expect(child.right).toBeLessThanOrEqual(geometry.right);
+        expect(child.scrollWidth).toBeLessThanOrEqual(child.clientWidth);
+      }
+      await expect
+        .poll(() =>
+          page
+            .getByRole("textbox", { name: "Сообщение агенту" })
+            .evaluate((element) => element.scrollHeight - element.clientHeight),
+        )
+        .toBeLessThanOrEqual(0);
       const box = await page.getByRole("button", { name: "Войти заново" }).boundingBox();
       expect(box).not.toBeNull();
       if (box) {
@@ -171,6 +207,45 @@ test.describe("подключение в общем чате", () => {
       expect(await findSmallTapTargets(page)).toEqual([]);
       await page.screenshot({ path: testInfo.outputPath(`terminal-200-${theme}.png`), fullPage: true });
     }
+  });
+
+  test("composer пересчитывает пустой placeholder при его смене и 200%, длинный текст сохраняет предел строк", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await native(page);
+    await page.evaluate(async () => {
+      const path = "/src/features/jobs/active-job.ts";
+      const { useActiveJob } = (await import(/* @vite-ignore */ path)) as {
+        useActiveJob: { getState: () => { job: { jobId: string } | null } };
+      };
+      const id = useActiveJob.getState().job?.jobId;
+      if (!id) throw new Error("Нет active fixture job");
+      const response = await fetch(`/api/v1/jobs/${id}/cancel`, { method: "POST" });
+      if (!response.ok) throw new Error("Fixture cancel failed");
+    });
+    const composer = page.getByRole("textbox", { name: "Сообщение агенту" });
+    await expect(composer).toBeEnabled();
+    await expect(composer).toHaveAttribute("placeholder", "Ответьте агенту или уточните задачу");
+    await expect
+      .poll(() => composer.evaluate((element) => element.scrollHeight - element.clientHeight))
+      .toBeLessThanOrEqual(0);
+    await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
+    await expect
+      .poll(() => composer.evaluate((element) => element.scrollHeight - element.clientHeight))
+      .toBeLessThanOrEqual(0);
+    await composer.fill("Длинная строка для проверки переноса и прокрутки. ".repeat(80));
+    const long = await composer.evaluate((element) => ({
+      height: element.clientHeight,
+      content: element.scrollHeight,
+      cap: Number.parseFloat(getComputedStyle(element).lineHeight) * 6,
+      overflow: getComputedStyle(element).overflowY,
+    }));
+    expect(long.height).toBeLessThanOrEqual(long.cap);
+    expect(long.content).toBeGreaterThan(long.height);
+    expect(long.overflow).toBe("auto");
+    expect(errors).toEqual([]);
   });
 
   test("фоновая операция возвращается через canonical chat notification", async ({ page }) => {

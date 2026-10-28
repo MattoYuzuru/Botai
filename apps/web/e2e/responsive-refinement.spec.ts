@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { expectFitsWidth, freezeClock, open } from "./data-support";
+import { expectSheetReady } from "./support";
 
 test.beforeEach(async ({ page }) => freezeClock(page));
 
@@ -90,6 +91,7 @@ test("подключение: поиск с клавиатуры, отдельн
   await expect(page).toHaveURL(/\/chat\?thread=/);
   await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
   await page.getByRole("button", { name: "Источник и подключения" }).click();
+  await expectSheetReady(page, "Источник и подключения");
   await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
   const input = page.getByRole("combobox", { name: "Вуз" });
   await input.fill("ВШЭ");
