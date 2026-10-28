@@ -180,7 +180,7 @@ async def test_invented_stale_or_executable_plan_never_becomes_browser_action(
     state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
     await state.visit(ORIGIN + "/")
     with pytest.raises(
-        ValueError, match="observation|reference|discovered|destination|evidence|link"
+        ValueError, match=r"observation|reference|discovered|destination|evidence|link"
     ):
         state.decision(invalid)
     assert handle.visits == [ORIGIN + "/"]
