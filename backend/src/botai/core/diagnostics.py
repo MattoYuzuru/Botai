@@ -181,6 +181,7 @@ _BOOLEANS = set(
 )
 _CODES: dict[str, set[str]] = {
     "stop_reason": {
+        "data_request_failed",
         "navigation_failed",
         "network_log_failed",
         "finished",
