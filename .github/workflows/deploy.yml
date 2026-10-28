@@ -12,8 +12,8 @@ on:
       diagnostics:
         description: "Подробная диагностика: сохранить режим / включить / выключить"
         type: choice
-        options: [keep, on, off]
-        default: keep
+        options: ["keep", "on", "off"]
+        default: "keep"
   # Build-only check when the image definition itself changes (agents' PRs are not affected).
   pull_request:
     paths: [ops/docker/**, ops/compose.prod.yaml, .github/workflows/deploy.yml, .dockerignore]
