@@ -117,7 +117,7 @@ export function TabBar({
         {items.map((item) => {
           const active = item.id === activeId;
           const className = cn(
-            "flex min-h-14 min-w-11 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1.5",
+            "flex min-h-14 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1.5",
             "transition-colors duration-fast ease-soft",
             wide("lg:min-h-11 lg:w-full lg:flex-row lg:justify-start lg:gap-3 lg:px-3 lg:py-2"),
             active
@@ -154,7 +154,10 @@ export function TabBar({
             children: content,
           };
           return (
-            <li key={item.id} className={cn("flex min-w-11 justify-center", wide("lg:w-full"))}>
+            <li
+              key={item.id}
+              className={cn("flex min-w-0 justify-center", inline ? "flex-1" : "max-lg:flex-1 lg:w-full")}
+            >
               {renderLink ? renderLink(item, props) : <a href={item.href ?? "#"} {...props} />}
             </li>
           );

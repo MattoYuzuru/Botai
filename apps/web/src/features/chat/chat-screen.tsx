@@ -378,7 +378,7 @@ export function ChatScreen() {
         className="h-full"
         viewportRef={scroll.viewport}
         onViewportScroll={scroll.onScroll}
-        viewportClassName="px-safe-4 xs:px-safe-5"
+        viewportClassName="px-safe-4 xs:px-safe-5 [&>div]:block!"
       >
         <div
           className={`mx-auto flex min-h-full w-full max-w-col flex-col justify-end pt-4 ${showEmpty ? "pb-4" : "pb-10"}`}

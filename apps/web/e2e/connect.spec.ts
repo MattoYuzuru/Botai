@@ -31,6 +31,67 @@ async function answer(page: Page, text: string) {
   await page.getByRole("button", { name: "Ответить", exact: true }).click();
 }
 
+async function expectChatReflow(page: Page) {
+  const expectedWidth = page.viewportSize()?.width;
+  if (!expectedWidth) throw new Error("Нет viewport");
+  const layout = await page.evaluate(() => {
+    const rect = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return {
+        left: box.left,
+        right: box.right,
+        width: box.width,
+        height: box.height,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      };
+    };
+    const viewport = document.querySelector("[data-chat-transcript] [data-radix-scroll-area-viewport]");
+    const heading = document.querySelector("header h1");
+    if (!viewport || !heading) throw new Error("Нет chat layout");
+    const box = viewport.getBoundingClientRect();
+    const style = getComputedStyle(viewport);
+    return {
+      width: innerWidth,
+      visualWidth: visualViewport?.width ?? innerWidth,
+      viewport: rect(viewport),
+      contentLeft: box.left + Number.parseFloat(style.paddingLeft),
+      contentRight: box.right - Number.parseFloat(style.paddingRight),
+      chain: [
+        ...viewport.querySelectorAll(
+          ":scope > div, [data-timeline], [data-timeline] > li, [data-role], [data-role] > div:first-child",
+        ),
+      ].map(rect),
+      controls: [
+        ...viewport.querySelectorAll(
+          "[data-chat-input] button, [data-chat-input] input, [data-connection-failure] button",
+        ),
+      ].map(rect),
+      heading: rect(heading),
+      headerControls: [...document.querySelectorAll("header button")].map(rect),
+      nav: [...document.querySelectorAll('nav[aria-label="Основная навигация"] a')].map(rect),
+    };
+  });
+  expect(layout.width).toBe(expectedWidth);
+  expect(layout.visualWidth).toBe(expectedWidth);
+  expect(layout.viewport.left).toBeGreaterThanOrEqual(0);
+  expect(layout.viewport.right).toBeLessThanOrEqual(expectedWidth);
+  expect(layout.viewport.scrollWidth).toBeLessThanOrEqual(layout.viewport.clientWidth);
+  for (const box of [...layout.chain, ...layout.controls]) {
+    expect(box.left).toBeGreaterThanOrEqual(layout.contentLeft);
+    expect(box.right).toBeLessThanOrEqual(layout.contentRight);
+  }
+  for (const box of layout.chain) expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth);
+  expect(layout.heading.scrollWidth).toBeLessThanOrEqual(layout.heading.clientWidth);
+  expect(layout.nav).toHaveLength(5);
+  for (const box of [...layout.headerControls, ...layout.nav]) {
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(expectedWidth);
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+}
+
 test.describe("подключение в общем чате", () => {
   test("первый вопрос стабилен до/после ответа, хронология идёт вниз без дубликата", async ({ page }) => {
     await start(page);
@@ -115,6 +176,12 @@ test.describe("подключение в общем чате", () => {
           .getByLabel("Ответ", { exact: true })
           .evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize));
         expect(fontSize).toBeGreaterThanOrEqual(16);
+        if (width >= 1280) {
+          for (const box of await page
+            .locator("[data-role] > div:first-child")
+            .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width)))
+            expect(box).toBeLessThanOrEqual(544);
+        }
         await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
         await page.screenshot({ path: testInfo.outputPath(`connect-${width}-${theme}.png`), fullPage: true });
       }
@@ -140,6 +207,7 @@ test.describe("подключение в общем чате", () => {
       }, theme);
       await expectNoHorizontalOverflow(page, `native 200% ${theme}`);
       expect(await findSmallTapTargets(page)).toEqual([]);
+      await expectChatReflow(page);
       await page.screenshot({ path: testInfo.outputPath(`native-200-${theme}.png`), fullPage: true });
     }
     // UI-only external failure: no answer is submitted and no credential is fabricated.
@@ -205,16 +273,28 @@ test.describe("подключение в общем чате", () => {
         expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
       }
       expect(await findSmallTapTargets(page)).toEqual([]);
+      await expectChatReflow(page);
       await page.screenshot({ path: testInfo.outputPath(`terminal-200-${theme}.png`), fullPage: true });
     }
   });
 
   test("composer пересчитывает пустой placeholder при его смене и 200%, длинный текст сохраняет предел строк", async ({
     page,
-  }) => {
+  }, testInfo) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await native(page);
+    const originalViewport = page.viewportSize();
+    if (!originalViewport) throw new Error("Нет viewport");
+    await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
+    for (const width of [320, 390, 430]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expectChatReflow(page);
+      if (width === 320)
+        await page.screenshot({ path: testInfo.outputPath("native-320-200.png"), fullPage: true });
+    }
+    await page.evaluate(() => document.documentElement.style.removeProperty("font-size"));
+    await page.setViewportSize(originalViewport);
     await page.evaluate(async () => {
       const path = "/src/features/jobs/active-job.ts";
       const { useActiveJob } = (await import(/* @vite-ignore */ path)) as {

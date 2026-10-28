@@ -163,7 +163,13 @@ function ManualLoginOption({
   if (!manual) return null;
   return (
     <div className="flex flex-col items-start gap-2">
-      <Button type="button" variant="secondary" disabled={busy} onClick={() => manual.onOpen(blockId)}>
+      <Button
+        type="button"
+        variant="secondary"
+        disabled={busy}
+        onClick={() => manual.onOpen(blockId)}
+        className="h-auto min-h-11 max-w-full whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0"
+      >
         Открыть браузер
       </Button>
       {manual.busy && (

@@ -140,7 +140,13 @@ export function ConnectTimeline({
             }
           />
           {source && connectionId && (
-            <Button variant="secondary" loading={restarting} disabled={restarting} onClick={onRestart}>
+            <Button
+              variant="secondary"
+              loading={restarting}
+              disabled={restarting}
+              onClick={onRestart}
+              className="h-auto min-h-11 max-w-full whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0"
+            >
               Войти заново
             </Button>
           )}
