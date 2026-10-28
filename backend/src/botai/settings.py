@@ -6,7 +6,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,7 +39,15 @@ class Settings(BaseSettings):
     llm_profile_learn: str = "deepseek-flash:enabled:high"
     llm_profile_repair: str = "deepseek-flash:enabled:low"
     llm_profile_extract: str = "deepseek-flash:enabled:low"
-    llm_debug_traces: bool = False  # reasoning_content to DEBUG logs; dev only
+    llm_debug_traces: bool = False  # legacy configuration accepted; raw reasoning is never logged
+
+    # Operator-only structured diagnostics. This switch never enables logging of raw content.
+    botai_diagnostics: bool = False
+    botai_diagnostics_dir: str = "/var/log/botai/diagnostics"
+    botai_diagnostics_service: Literal["api", "worker", "proxy", "app"] = "app"
+    botai_diagnostics_retention_hours: int = Field(default=24, ge=1, le=168)
+    botai_diagnostics_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=104857600)
+    botai_diagnostics_backup_count: int = Field(default=2, ge=0, le=10)
 
     # Outbound traffic to universities goes through this CONNECT proxy (EgressProxy).
     egress_proxy_url: str | None = None

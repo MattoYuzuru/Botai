@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -12,6 +13,7 @@ from dataclasses import dataclass, field
 import httpx
 import pytest
 
+from botai.browser.egress import ProxyEgress
 from botai.browser.proxy import (
     EgressProxy,
     address_block_reason,
@@ -118,6 +120,65 @@ async def test_allowed_host_is_tunnelled_to_the_pinned_address(lab: Lab) -> None
     assert await asyncio.wait_for(reader.read(100), 5) == b"hello through the tunnel"
     writer.close()
     assert lab.connected == [(PUBLIC_A, 443)]
+
+
+@pytest.mark.parametrize("case", ["allow", "deny", "invalid_auth"])
+async def test_persistent_decisions_correlate_grants_without_host_or_credential_values(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    marker = "private-marker-never-retained"
+    allowed_host = f"{marker}.fakeuni.test"
+    denied_host = f"denied-{marker}.fakeuni.test"
+    lab.answers[allowed_host] = [[PUBLIC_A]]
+    events: list[tuple[str, dict[str, object]]] = []
+    completed = asyncio.Event()
+
+    def record(event: str, **facts: object) -> None:
+        events.append((event, facts))
+        if event == "egress.decision":
+            completed.set()
+
+    monkeypatch.setattr("botai.browser.egress.diagnostic_event", record)
+    monkeypatch.setattr("botai.browser.proxy.diagnostic_event", record)
+    credentials = await ProxyEgress(SECRET, server_url=lab.proxy.url).credentials(
+        [allowed_host], ttl_s=60
+    )
+    grant = verify_token(SECRET, credentials.token)
+    assert grant is not None
+    grant_hash = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
+    assert events == [("egress.grant", {"grant_hash": grant_hash, "allow_host_count": 1})]
+    target = denied_host if case == "deny" else allowed_host
+    token = credentials.token if case != "invalid_auth" else f"invalid-{marker}"
+    status, _, reader, writer = await connect(lab.proxy, f"{target}:443", token)
+    assert status == {"allow": 200, "deny": 403, "invalid_auth": 407}[case]
+    if case == "allow":
+        writer.write(marker.encode())
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(len(marker)), 1) == marker.encode()
+    writer.close()
+    await writer.wait_closed()
+    await asyncio.wait_for(completed.wait(), 2)
+    event, facts = events[-1]
+    assert event == "egress.decision"
+    assert all(facts[key] is None for key in ("job_id", "thread_id", "connection_id", "request_id"))
+    assert facts["status"] == status
+    assert facts["decision"] == ("allow" if case == "allow" else "deny")
+    assert (
+        facts["reason"]
+        == {"allow": "ok", "deny": "not_allowlisted", "invalid_auth": "auth_failed"}[case]
+    )
+    if case == "invalid_auth":
+        assert "grant_hash" not in facts
+        assert "host_hash" not in facts
+    else:
+        assert facts["grant_hash"] == grant_hash
+        assert facts["host_hash"] == hashlib.sha256(target.encode()).hexdigest()[:16]
+    if case == "allow":
+        assert facts["up_bytes"] == len(marker)
+        assert facts["down_bytes"] == len(marker)
+    assert marker not in repr(events)
+    assert grant.jti not in repr(events)
+    assert credentials.token not in repr(events)
 
 
 async def test_host_matching_is_case_insensitive_and_ignores_trailing_dot(lab: Lab) -> None:

@@ -20,6 +20,7 @@ from botai.browser.forms import looks_personal, safe_path
 from botai.browser.session import httpx_cookies, request_headers
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import ObservedRequest, SessionState
+from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy, build_client, request_with_retries
 
@@ -54,7 +55,17 @@ async def probe_ok(
 ) -> bool:
     """Does the learned probe answer what it answered at login?"""
     response = await _status(egress, hosts, str(probe["url"]), state=state)
-    return response.status_code == int(probe["expectStatus"])
+    passed = response.status_code == int(probe["expectStatus"])
+    diagnostic_event(
+        "auth.probe",
+        status=response.status_code,
+        expected_status=int(probe["expectStatus"]),
+        passed=passed,
+        bearer_present=state.bearer is not None,
+        cookie_count=len(state.cookies),
+        **url_facts(str(probe["url"])),
+    )
+    return passed
 
 
 def _areas(preset: LoginPreset) -> list[str]:
@@ -72,8 +83,10 @@ async def check_session(
 ) -> bool | None:
     """True: works. False: expired. None: nothing to check it with."""
     if state.expires_hint is not None and state.expires_hint <= now:
+        diagnostic_event("auth.check_session", expired_hint=True, passed=False)
         return False
     if preset is None:
+        diagnostic_event("auth.check_session", preset_present=False)
         return None
     probe: Any = preset.success.get("probe")
     try:
@@ -81,15 +94,28 @@ async def check_session(
             return await probe_ok(state, probe, hosts, egress=egress)
         areas = _areas(preset)
         if not areas:
+            diagnostic_event(
+                "auth.check_session", probe_present=False, redirect_check_present=False
+            )
             return None
         response = await _status(egress, hosts, preset.start["url"], state=state, follow=True)
     except BotaiError as exc:
         if exc.code == ErrorCode.EGRESS_BLOCKED:  # the site sent us to a host we never learned
+            diagnostic_event("auth.check_session", egress_blocked=True, passed=False)
             return False
         raise
     if response.status_code in (401, 403):
+        diagnostic_event("auth.check_session", status=response.status_code, passed=False)
         return False
-    return not any(response.url.path.startswith(a) for a in areas)
+    passed = not any(response.url.path.startswith(a) for a in areas)
+    diagnostic_event(
+        "auth.check_session",
+        status=response.status_code,
+        passed=passed,
+        redirect_check_present=True,
+        **url_facts(str(response.url)),
+    )
+    return passed
 
 
 def candidates(
@@ -159,5 +185,11 @@ async def learn_probe(
                 continue
             raise
         if anonymous.status_code in _REFUSALS:
+            diagnostic_event(
+                "auth.probe_learned",
+                status=with_session.status_code,
+                anonymous_status=anonymous.status_code,
+                **url_facts(url),
+            )
             return {"method": "GET", "url": url, "expectStatus": with_session.status_code}
     return None

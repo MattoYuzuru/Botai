@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
@@ -17,6 +18,7 @@ from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
+from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.learn.addresses import navigation_url
 from botai.learn.redact import Redactor, collect_values
 from botai.sources.extract import node_text
@@ -36,6 +38,10 @@ _SKIP_LINK = re.compile(
 )
 _MENU = "nav a[href], header a[href], aside a[href], [role=navigation] a[href], .menu a[href], .sidebar a[href]"
 _SKIP_TYPES = ("image/", "font/", "text/css", "javascript", "video/", "audio/")
+_LOGIN_REQUIRED = re.compile(
+    r"(?i)вы не вошли|для продолжения.{0,40}войдите|необходимо (?:войти|авторизоваться)|"
+    r"you (?:are not|aren't) (?:logged|signed) in|please (?:log|sign) in|login required"
+)
 
 
 @dataclass(slots=True)
@@ -101,6 +107,18 @@ class Observations:
                 parts.append(f"  {body}")
         parts.append("</observation>")
         text = "\n".join(parts)
+        diagnostic_event(
+            "observe.render",
+            page_count=len(self.pages),
+            call_count=len(self.calls),
+            input_chars=sum(len(p.html) for p in self.pages) + sum(len(c.body) for c in self.calls),
+            output_chars=len(text),
+            limit=limit,
+            share_chars=share,
+            truncated=any(len(p.html) > share for p in self.pages)
+            or any(len(c.body) > share for c in self.calls),
+            outcome="ok" if len(text) <= limit else "budget_exceeded",
+        )
         # Very small caller budgets may not fit even the headers. Do not expose broken data.
         return (
             text
@@ -155,6 +173,7 @@ async def _visit(handle: BrowserHandle, url: str) -> PageSnapshot | None:
         return await handle.goto(url)
     except Exception as exc:
         log.info("observation skipped a page: %s", type(exc).__name__)
+        diagnostic_event("observe.visit_failed", reason="navigation_failed", **url_facts(url))
         return None
 
 
@@ -216,6 +235,8 @@ async def observe(
     max_pages: int = MAX_PAGES,
 ) -> Observations:
     """Visit the start pages and the menu links they lead to, then read the network log."""
+    started = time.monotonic()
+    diagnostic_event("observe.start", entry_count=len(start_urls), limit=max_pages)
     snapshots: list[tuple[str, PageSnapshot]] = []
     visited: set[str] = set()
     queue = list(start_urls)
@@ -224,9 +245,23 @@ async def observe(
         if url in visited:
             continue
         visited.add(url)
+        page_index = len(snapshots)
+        diagnostic_event("observe.page", phase="requested", page_index=page_index, **url_facts(url))
         snap = await _visit(handle, url)
         if snap is None:
             continue
+        diagnostic_event(
+            "observe.page",
+            phase="final",
+            page_index=page_index,
+            html_chars=len(snap.html),
+            text_chars=len(snap.text),
+            form_count=len(snap.forms),
+            captcha_suspected=snap.captcha_suspected,
+            login_required=bool(_LOGIN_REQUIRED.search(snap.text or _plain(snap.html))),
+            redirected=snap.url != url,
+            **url_facts(snap.url),
+        )
         snapshots.append((url, snap))
         if len(snapshots) == 1 or len(queue) < max_pages:
             for _, link in menu_links(snap.html, snap.url or url, origin):
@@ -235,6 +270,7 @@ async def observe(
     try:
         log_entries = await handle.network_log()
     except Exception:
+        diagnostic_event("observe.network_failed", reason="network_log_failed")
         log_entries = []
 
     obs = Observations(origin=origin)
@@ -243,11 +279,15 @@ async def observe(
         redactor.url(snap.url, origin)
     seen_calls: set[tuple[str, tuple[str, tuple[tuple[str, str], ...]]]] = set()
     kept: list[ObservedRequest] = []
+    filtered_count = duplicate_count = processed_count = 0
     for call in sorted(log_entries, key=_call_priority, reverse=True):
+        processed_count += 1
         if not _interesting(call, origin):
+            filtered_count += 1
             continue
         key = (call.method, _url_key(call.url))
         if key in seen_calls:
+            duplicate_count += 1
             continue
         seen_calls.add(key)
         redactor.url(call.url, origin)
@@ -273,18 +313,47 @@ async def observe(
         )
         texts.append(redactor.text(snap.text or _plain(snap.html), 1500) or "")
     for call in kept:
+        body = _body_view(redactor, call.response_sample)
+        diagnostic_event(
+            "observe.call",
+            method=call.method if call.method in {"GET", "HEAD", "OPTIONS", "POST"} else "OTHER",
+            resource_type=call.resource_type
+            if call.resource_type in {"document", "xhr", "fetch"}
+            else "other",
+            status=call.status,
+            has_sample=call.response_sample is not None,
+            sample_chars=len(call.response_sample or ""),
+            body_chars=len(body),
+            body_reduced=len(body) < len(call.response_sample or ""),
+            **url_facts(call.url),
+        )
         obs.calls.append(
             CallView(
                 method=call.method,
                 url=redactor.url(call.url, origin),
                 status=call.status,
                 content_type=(call.response_content_type or "").split(";")[0],
-                body=_body_view(redactor, call.response_sample),
+                body=body,
             )
         )
     obs.observed = set(redactor.observed)
     obs.injections = redactor.injections
     obs.plain_text = "\n".join(t for t in texts if t)
+    diagnostic_event(
+        "observe.complete",
+        page_count=len(obs.pages),
+        call_count=len(obs.calls),
+        considered_count=len(log_entries),
+        filtered_count=filtered_count,
+        duplicate_count=duplicate_count,
+        unexamined_count=len(log_entries) - processed_count,
+        failed_count=len(visited) - len(snapshots),
+        queued_count=len(queue),
+        sample_missing_count=sum(c.response_sample is None for c in kept),
+        injection_count=obs.injections,
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+        outcome="empty" if obs.empty else "ok",
+    )
     return obs
 
 

@@ -33,6 +33,7 @@ import httpx
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
+from botai.core.diagnostics import diagnostic_event
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy
@@ -161,6 +162,22 @@ class Explorer:
                 requested_kinds=tuple(wanted_kinds(payload)),
             )
         self._initial_note_pending = bool(self.intent.user_note)
+        self._trace_intent()
+
+    def _trace_intent(self, *, changed: bool = False, rejected_count: int = 0) -> None:
+        diagnostic_event(
+            "learn.intent",
+            entry_count=len(self.intent.entry_urls),
+            requested_count=len(self.intent.requested_kinds),
+            absent_count=len(self.intent.absent_kinds),
+            has_user_note=bool(self.intent.user_note),
+            intent_changed=changed,
+            rejected_count=rejected_count,
+        )
+        for kind in self.intent.requested_kinds:
+            diagnostic_event("learn.intent_kind", kind=kind, outcome="requested")
+        for kind in self.intent.absent_kinds:
+            diagnostic_event("learn.intent_kind", kind=kind, outcome="absent")
 
     async def _initial_note(self, redactor: Redactor) -> None:
         if self._initial_note_pending:
@@ -173,6 +190,7 @@ class Explorer:
 
     async def _turn(self, text: str, redactor: Redactor, *, checkpoint: bool = True) -> None:
         # A plain link needs no classifier and costs no model call.
+        before = self.intent
         plain = navigation_url(text)
         turn = prepare_turn(plain or text, redactor)
         if turn.rejected_links:
@@ -195,6 +213,7 @@ class Explorer:
                 self.intent = apply_intent(
                     self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
                 )
+        self._trace_intent(changed=self.intent != before, rejected_count=turn.rejected_links)
         if checkpoint:
             await self._checkpoint()
 
@@ -207,12 +226,16 @@ class Explorer:
             if turns:
                 # drain delivers a batch. Ack it only after every turn has been applied.
                 await self._checkpoint()
+                diagnostic_event(
+                    "learn.dialogue", message_count=len(turns), intent_changed=self.intent != before
+                )
         return self.intent != before
 
     async def _continue_foreign(self, info: ConnInfo) -> dict[str, Any] | None:
         foreign = [url for url in self.intent.entry_urls if url_origin(url) != info.origin]
         if not foreign:
             return None
+        diagnostic_event("learn.outcome", outcome="continued", entry_count=len(foreign))
         # A recipe still has exactly one origin. A student's link creates a sibling source;
         # credentials and bearer values are not copied between the two connections.
         from botai.spaces.conversations import continue_source
@@ -405,6 +428,13 @@ class Explorer:
                 return continued
             chosen = {k: value for k, value in chosen.items() if k not in self.intent.absent_kinds}
             pending = [k for k in self.intent.requested_kinds if k not in chosen]
+            diagnostic_event(
+                "learn.round",
+                round_no=round_no,
+                pending_count=len(pending),
+                chosen_count=len(chosen),
+                token_count=self.tokens,
+            )
             if not pending:
                 break
             round_intent = self.intent
@@ -429,6 +459,7 @@ class Explorer:
                     if await self._drain(redactor):
                         break  # Re-observe a changed entry/view before authoring another kind.
                     if self.tokens > TOKEN_BUDGET:
+                        diagnostic_event("learn.selection", outcome="failed", reason="token_budget")
                         break
                     found = await self._author_and_verify(
                         kind, text, lint_ctx, sctx, info, revision, digest
@@ -484,6 +515,7 @@ class Explorer:
             "Да, всё верно",
             "Нет, не то",
         )
+        diagnostic_event("learn.confirmation", confirmed=confirmed, chosen_count=len(chosen))
         if not confirmed:
             await ui.say("Хорошо, ничего не сохраняю.")
             return await self._fail(
@@ -588,6 +620,13 @@ class Explorer:
                 else "Подходящих данных не видно"
             )
             await stage.finish("skipped" if not authored.rejected else "failed", reason)
+            diagnostic_event(
+                "learn.selection",
+                kind=kind,
+                outcome="rejected" if authored.rejected else "not_found",
+                reason="lint_rejected" if authored.rejected else "no_candidates",
+                candidate_count=0,
+            )
             return None
         verified: list[Chosen] = []
         for i, cand in enumerate(authored.candidates):
@@ -614,6 +653,14 @@ class Explorer:
                 verified.append(Chosen(kind, cand, report, comparison))
         if not verified:
             await stage.finish("failed", "Проверка на вашей сессии не прошла")
+            diagnostic_event(
+                "learn.selection",
+                kind=kind,
+                outcome="rejected",
+                reason="canary_rejected",
+                candidate_count=len(authored.candidates),
+                verified_count=0,
+            )
             return None
         picked = await self._pick(kind, verified, sctx.tz)
         note = f"Найдено записей: {picked.report.count(kind)}"
@@ -621,6 +668,14 @@ class Explorer:
             c = picked.comparison
             note += f"; совпало с прежними данными: {c.matched} из {c.baseline}"
         await stage.finish("ok", note)
+        diagnostic_event(
+            "learn.selection",
+            kind=kind,
+            outcome="accepted",
+            candidate_count=len(authored.candidates),
+            verified_count=len(verified),
+            record_count=picked.report.count(kind),
+        )
         return picked
 
     async def _pick(self, kind: Kind, verified: list[Chosen], tz: ZoneInfo) -> Chosen:
@@ -795,6 +850,13 @@ class Explorer:
             self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
         )
         await self._report_sync(outcome, prefix="Готово.")
+        diagnostic_event(
+            "learn.outcome",
+            connection_id=info.connection_id,
+            outcome="ok" if outcome.status == "ok" else "failed",
+            chosen_count=len(chosen),
+            revision=revision,
+        )
         return {
             "status": outcome.status,
             "kinds": sorted(chosen),
@@ -810,6 +872,12 @@ class Explorer:
     async def _fail(
         self, info: ConnInfo, detail: str, code: ErrorCode, *, say: bool = True
     ) -> dict[str, Any]:
+        diagnostic_event(
+            "learn.outcome",
+            connection_id=info.connection_id,
+            outcome="failed",
+            error_code=code.value,
+        )
         if say:
             await self.ui.say(f"Не получилось подключить: {detail}.")
         await self._set(info.connection_id, status="error", error=(code.value, detail))

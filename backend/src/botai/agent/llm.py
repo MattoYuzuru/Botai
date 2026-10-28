@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import (
     Effort,
@@ -74,7 +75,6 @@ DEFAULT_HEADROOM = REASONING_HEADROOM["high"]  # DeepSeek default effort is high
 MAX_OUTPUT_TOKENS = 64_000
 
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
-_ERROR_BODY_LIMIT = 300
 
 
 # --- profiles -----------------------------------------------------------------------------------
@@ -380,18 +380,6 @@ def _retry_after(response: httpx.Response) -> float | None:
     return float(value) if value.replace(".", "", 1).isdigit() else None
 
 
-def _error_summary(body: bytes) -> str:
-    """Provider error code/message, truncated. API error messages do not echo prompts."""
-    try:
-        data = json.loads(body)
-        err = data.get("error") if isinstance(data, dict) else None
-        if isinstance(err, dict):
-            return f"{err.get('type', '')}: {err.get('message', '')}"[:_ERROR_BODY_LIMIT]
-    except (ValueError, AttributeError):
-        pass
-    return body[:_ERROR_BODY_LIMIT].decode("utf-8", "replace")
-
-
 def _llm_error(detail: str) -> BotaiError:
     return BotaiError(ErrorCode.LLM_UNAVAILABLE, detail, status=503)
 
@@ -431,6 +419,12 @@ class DeepSeekProvider:
     async def complete(self, request: LlmRequest) -> LlmResponse:
         resolved = resolve(request, self._settings, self._profiles)
         body = build_body(request, resolved, stream=self._stream)
+        diagnostic_event(
+            "llm.start",
+            purpose=request.purpose,
+            message_count=len(request.messages),
+            tool_count=len(request.tools),
+        )
         scope = current_scope()
         if scope is not None:
             await self._gate.check(scope.user_id)  # raises quota_exceeded before any spend
@@ -442,6 +436,12 @@ class DeepSeekProvider:
                 response = await self._send_once(body, resolved, started)
             except _Retryable as exc:
                 last = exc
+                diagnostic_event(
+                    "llm.retry",
+                    purpose=request.purpose,
+                    attempt=attempt + 1,
+                    error_code="llm_unavailable",
+                )
                 log.warning(
                     "llm call failed (attempt %d/%d): %s",
                     attempt + 1,
@@ -454,6 +454,17 @@ class DeepSeekProvider:
                 await self._sleep(self._delay(attempt, exc.retry_after_s))
                 continue
             await self._account(scope, request.purpose, response.usage)
+            diagnostic_event(
+                "llm.complete",
+                purpose=request.purpose,
+                attempt=attempt + 1,
+                input_tokens=response.usage.input_cache_hit + response.usage.input_cache_miss,
+                output_tokens=response.usage.output,
+                reasoning_tokens=response.usage.reasoning,
+                elapsed_ms=response.usage.latency_ms,
+                tool_count=len(response.tool_calls),
+                output_chars=len(response.content),
+            )
             return response
         raise _llm_error(
             "Модель сейчас недоступна, я не смог получить ответ. Попробуйте чуть позже."
@@ -527,8 +538,9 @@ class DeepSeekProvider:
         status = resp.status_code
         if status in _RETRYABLE_STATUS or status >= 500:
             raise _Retryable(f"http {status}", _retry_after(resp))
-        summary = _error_summary(resp.content)
-        log.error("llm request rejected: http %d %s", status, summary)
+        # Provider messages may echo input. Status is sufficient; never retain the error body.
+        log.error("llm request rejected: http %d", status)
+        diagnostic_event("llm.failed", status=status, error_code="llm_unavailable")
         if status == 401:
             raise _llm_error("Ключ модели отклонён. Сообщите владельцу.")
         if status == 402:

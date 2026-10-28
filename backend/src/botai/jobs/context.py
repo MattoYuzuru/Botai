@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.contracts.agent_ui import AgentUiAnswer, AgentUiBlock, InputBlock
 from botai.core.clock import Clock
+from botai.core.diagnostics import bind_diagnostics, diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.jobs import JobCancelled, JobState
 from botai.core.vault import SecretKind, Vault
@@ -86,6 +87,8 @@ class PgJobContext:
                 dialogue.complete_pending(job, str(pending["block_id"]), now=self._clock.now())
             await append_event(session, self.job_id, "status", status_data(job, self._clock.now()))
             await session.commit()
+        bind_diagnostics(connection_id=self.connection_id)
+        diagnostic_event("job.status", state=state.value)
         # A handler that reports `waiting_user` itself (a human step on the fallback screen) is
         # waiting for the student too: that time is not part of the job's budget.
         waiting = state is JobState.WAITING_USER
@@ -107,15 +110,23 @@ class PgJobContext:
             await dialogue.project_block(session, job, _dump(block), now)
             await append_event(session, self.job_id, "block", _dump(block))
             await session.commit()
+        diagnostic_event(
+            "dialogue.block",
+            block_id=block.id,
+            block_type=block.type,
+            secret=isinstance(block, InputBlock) and block.secret,
+        )
 
     async def drain_dialogue(self) -> list[DialogueTurn]:
         async with self._db() as session:
             job = await self._live_job(session)
             turns = await dialogue.read_turns(session, job)
         self._dialogue_delivered.update(turn.message_id for turn in turns)
+        diagnostic_event("dialogue.drain", turn_count=len(turns))
         return turns
 
     async def checkpoint_learning(self, intent: dict[str, Any]) -> None:
+        bind_diagnostics(connection_id=self.connection_id)
         allowed = {"entry_urls", "requested_kinds", "absent_kinds", "user_note"}
         if set(intent) - allowed or not isinstance(intent.get("user_note", ""), str):
             raise ValueError("invalid learning intent checkpoint")

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.agent_ui import AgentUiBlock, InputBlock
+from botai.core.diagnostics import diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.ids import new_id
 from botai.db.models import ChatMessage, ChatThread, Job
@@ -57,6 +58,16 @@ def receipt(
     }
     state["receipts"] = receipts
     save_state(job, state)
+
+    diagnostic_event(
+        "dialogue.receipt",
+        job_id=job.id,
+        thread_id=job.thread_id,
+        connection_id=job.connection_id,
+        message_id=message_id,
+        block_id=block_id,
+        receipt_status=status,
+    )
 
 
 def set_pending(job: Job, block: AgentUiBlock, *, channel: str, now: datetime) -> None:

@@ -60,6 +60,7 @@ from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, TextB
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import PageSnapshot, SessionState
 from botai.core.clock import Clock, SystemClock
+from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobContext, JobState
@@ -229,15 +230,32 @@ class LoginFlow:
             preset = await self._store.preset_for(info.origin)
             hosts = self._hosts(info, preset)
             stored = None if force else await self._stored_session(user_id, connection_id)
+            diagnostic_event(
+                "auth.session.check",
+                connection_id=connection_id,
+                force=force,
+                stored_present=stored is not None,
+                preset_present=preset is not None,
+                allow_host_count=len(hosts),
+            )
             if stored is not None:
                 verdict = await check_session(
                     stored, preset, hosts, now=self._clock.now(), egress=self._egress
                 )
                 if verdict is True:
+                    diagnostic_event("auth.session.reused", connection_id=connection_id)
                     return stored
             for added in range(MAX_ADDITIONAL_LOGIN_HOSTS + 1):
                 try:
-                    return await self._login(job, user_id, connection_id, info, preset, hosts)
+                    diagnostic_event(
+                        "auth.session.login",
+                        connection_id=connection_id,
+                        allow_host_count=len(hosts),
+                        host_round=added,
+                    )
+                    state = await self._login(job, user_id, connection_id, info, preset, hosts)
+                    diagnostic_event("auth.session.ready", connection_id=connection_id)
+                    return state
                 except BotaiError as exc:
                     host = self._host_to_approve(exc, hosts)
                     if (
@@ -387,6 +405,17 @@ class LoginFlow:
             if run.preset and run.preset.steps and not snap.captcha_suspected:
                 learned = replay(run.preset.steps, snap)
             detection = learned or detect(snap)
+            diagnostic_event(
+                "auth.page",
+                connection_id=run.connection_id,
+                form_detected=isinstance(detection, FormStep),
+                push_detected=isinstance(detection, PushWait),
+                captcha_detected=isinstance(detection, CaptchaPage),
+                unknown_detected=isinstance(detection, UnknownPage),
+                hard_block_detected=isinstance(detection, HardBlock),
+                error_detected=isinstance(detection, ErrorPage),
+                preset_replayed=learned is not None,
+            )
             if (
                 run.preset is not None
                 and run.preset.mode == "screen"

@@ -26,7 +26,8 @@ COPY backend/alembic.ini ./
 COPY backend/src src
 RUN uv sync --frozen --no-dev
 COPY --from=web /src/apps/web/dist /app/static
-RUN useradd --system --uid 10001 --home /app botai && chown -R botai /app
+RUN useradd --system --user-group --uid 10001 --home /app botai && chown -R botai /app \
+    && install -d -m 700 -o botai -g botai /var/log/botai/diagnostics
 USER botai
 ENV STATIC_DIR=/app/static
 EXPOSE 8000

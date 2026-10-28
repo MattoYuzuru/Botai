@@ -9,6 +9,7 @@ from is still recognised as reading the same data.
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
@@ -20,8 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.specs import Kind
+from botai.core.diagnostics import diagnostic_event
 from botai.sources import normalize
-from botai.sources.adapter import AdapterResult, Record, SyncContext
+from botai.sources.adapter import AdapterResult, Record, SessionExpired, SyncContext
 from botai.sources.extract import collapse
 from botai.sources.factory import AdapterFactory
 
@@ -81,12 +83,31 @@ async def run_canary(
     spec: dict[str, Any], sctx: SyncContext, *, require: Collection[Kind]
 ) -> CanaryReport:
     """Fetch with the candidate. Session expiry and transport errors propagate to the caller."""
-    result = await AdapterFactory().create(spec).fetch(sctx)
+    started = time.monotonic()
+    diagnostic_event("canary.start", required_count=len(require))
+    try:
+        result = await AdapterFactory().create(spec).fetch(sctx)
+    except SessionExpired:
+        diagnostic_event("canary.failed", reason="session_expired")
+        raise
+    except Exception:
+        diagnostic_event("canary.failed", reason="fetch_failed")
+        raise
     valid = valid_records(result, sctx.tz)
     problems = [f"{o.kind or o.endpoint_id}: {o.problem}" for o in result.structural_problems()]
     for kind in sorted(require):
         if not valid.get(kind):
             problems.append(f"{kind}: no valid records")
+    diagnostic_event(
+        "canary.complete",
+        record_count=len(result.records),
+        valid_count=sum(len(rows) for rows in valid.values()),
+        missing_count=sum(not valid.get(kind) for kind in require),
+        structural_count=len(result.structural_problems()),
+        problem_count=len(problems),
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+        outcome="accepted" if not problems else "rejected",
+    )
     return CanaryReport(ok=not problems, result=result, valid=valid, problems=problems)
 
 
