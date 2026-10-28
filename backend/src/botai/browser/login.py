@@ -602,7 +602,7 @@ class LoginFlow:
             run.native_waiting = False
             if unregister is not None:
                 unregister()
-            tasks = [task for task in (answer, manual) if task is not None]
+            tasks: list[asyncio.Task[Any]] = [task for task in (answer, manual) if task is not None]
             for task in tasks:
                 if not task.done():
                     task.cancel()
