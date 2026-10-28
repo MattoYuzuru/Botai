@@ -23,6 +23,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
+from botai.core.browser import SessionState
+from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.extract import clean_text, collapse
 
 MAX_STRING = 120
@@ -92,6 +94,50 @@ class Redactor:
     pseudonyms: dict[str, str] = field(default_factory=dict, repr=False)
     injections: int = 0
     observed: set[str] = field(default_factory=set, repr=False)  # raw values, for the lint
+    secrets: set[str] = field(default_factory=set, repr=False)
+
+    def protect_session(self, state: SessionState) -> None:
+        """Remember exact session values, including structured storage, only for redaction.
+
+        The cumulative bound covers refreshes during this observation. Exceeding it fails
+        closed; no partially protected observation may be handed to the model.
+        """
+        values = [cookie.value.get_secret_value() for cookie in state.cookies]
+        if state.bearer is not None:
+            values.append(state.bearer.get_secret_value())
+        for origin in state.browser_storage:
+            for store in (origin.local_storage, origin.session_storage):
+                values.extend(value.get_secret_value() for value in store.values())
+        pending: list[Any] = list(values)
+        examined = 0
+        secret_chars = sum(len(secret) for secret in self.secrets)
+        while pending:
+            examined += 1
+            if examined > 100_000:
+                raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Состояние сессии слишком сложное")
+            value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                pending.append(str(value))
+            elif isinstance(value, str) and value:
+                added = {value, collapse(value)} - {""} - self.secrets
+                self.secrets.update(added)
+                secret_chars += sum(len(secret) for secret in added)
+                self.observed.add(value)
+                if value.lstrip().startswith(("{", "[")):
+                    try:
+                        pending.append(json.loads(value))
+                    except (ValueError, RecursionError):
+                        # The complete opaque value remains protected; malformed structured
+                        # state cannot safely expose arbitrary decoded fragments.
+                        raise BotaiError(
+                            ErrorCode.SOURCE_UNAVAILABLE, "Не удалось защитить состояние сессии"
+                        ) from None
+            if len(self.secrets) > 4096 or secret_chars > 1_048_576:
+                raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Состояние сессии слишком большое")
 
     # --- setup -------------------------------------------------------------------------------
 
@@ -128,6 +174,11 @@ class Redactor:
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
     def _scrub(self, value: str) -> str:
+        for secret in sorted(self.secrets, key=len, reverse=True):
+            if len(secret) >= 3:
+                value = value.replace(secret, "<secret>")
+            else:
+                value = re.sub(r"(?<!\w)" + re.escape(secret) + r"(?!\w)", "<secret>", value)
         for known in sorted(self.known, key=len, reverse=True):
             if known in value:
                 self.observed.add(known)

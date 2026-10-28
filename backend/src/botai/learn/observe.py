@@ -8,6 +8,7 @@ both paths use the same bounded, redacted bundle builder below.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -23,6 +24,7 @@ from botai.browser.probe import requires_authentication
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
 from botai.core.diagnostics import diagnostic_event, url_facts
+from botai.core.errors import BotaiError, ErrorCode
 from botai.learn.addresses import navigation_url
 from botai.learn.redact import Redactor, collect_values
 from botai.sources.extract import node_text
@@ -33,6 +35,7 @@ MAX_PAGES = 6
 MAX_CALLS = 30
 MAX_LINKS_PER_PAGE = 12
 MAX_BODY_CHARS = 2500
+SESSION_CAPTURE_SECONDS = 2.0
 _STATIC = re.compile(
     r"(?i)\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|pdf|zip)(?:\?|$)"
 )
@@ -197,6 +200,19 @@ async def _visit(handle: BrowserHandle, url: str) -> PageSnapshot | None:
         return None
 
 
+async def protect_observation(handle: BrowserHandle, redactor: Redactor) -> None:
+    """Refresh the in-memory secret deny-set before any DOM/response is shaped for a prompt."""
+    try:
+        async with asyncio.timeout(SESSION_CAPTURE_SECONDS):
+            state = await handle.export_session()
+        redactor.protect_session(state)
+    except Exception:
+        diagnostic_event("observe.network_failed", reason="network_log_failed")
+        raise BotaiError(
+            ErrorCode.SOURCE_UNAVAILABLE, "Не удалось безопасно прочитать состояние браузера"
+        ) from None
+
+
 def body_view(redactor: Redactor, sample: str | None, limit: int = MAX_BODY_CHARS) -> str:
     if not sample:
         return ""
@@ -291,6 +307,7 @@ async def observe(
         if snap is None:
             failed_count += 1
             continue
+        await protect_observation(handle, redactor)
         diagnostic_event(
             "observe.page",
             phase="final",
@@ -318,6 +335,7 @@ async def observe(
                 if link not in visited and link not in queue:
                     queue.append(link)
     log_entries = await network()
+    await protect_observation(handle, redactor)
     obs = observations_of(
         origin,
         redactor,

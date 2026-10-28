@@ -31,6 +31,7 @@ from botai.learn.observe import (
     menu_links,
     observations_of,
     observe,
+    protect_observation,
 )
 from botai.learn.prompting import discovery_request
 from botai.learn.redact import Redactor
@@ -116,6 +117,7 @@ class ObservationSession:
 
     async def capture(self, snap: PageSnapshot) -> bool:
         """Refresh DOM, UI capabilities and the response delta after one executor action."""
+        await protect_observation(self.handle, self.redactor)
         ref = f"p{len(self.pages)}"
         self.pages[ref] = snap
         self.revision += 1
@@ -148,6 +150,9 @@ class ObservationSession:
             self.failures.add("network_log_failed")
             diagnostic_event("observe.network_failed", reason="network_log_failed")
             log = []
+        # Sampling can await a response while the SPA refreshes its credentials. Protect
+        # that new state before any response or DOM detail becomes a planner/author input.
+        await protect_observation(self.handle, self.redactor)
         self.network_count = len(log)
         by_request = {(call.method, call.url): ref for ref, call in self.calls.items()}
         changed_response = False

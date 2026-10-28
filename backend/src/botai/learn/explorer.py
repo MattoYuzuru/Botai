@@ -73,6 +73,7 @@ from botai.sources.runner import (
     sync_connection,
 )
 from botai.sources.scope import scoped_spec
+from botai.sources.session import load_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
 
 log = logging.getLogger(__name__)
@@ -158,6 +159,9 @@ class Explorer:
         if password is not None:  # never shown to a model; replaced if a page ever echoes it
             r.known.add(password.get_secret_value())
             r.observed.add(password.get_secret_value())
+        session = await load_session(vault, info.user_id, info.connection_id)
+        if session is not None:
+            r.protect_session(session)
         return r
 
     # --- entry points ------------------------------------------------------------------------
@@ -684,6 +688,7 @@ class Explorer:
         start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
         obs = Observations(origin=info.origin)
         for _ in range(2):
+            redactor.protect_session(session)
             handle = await self.services.browser.open(
                 user_id=info.user_id,
                 connection_id=info.connection_id,
