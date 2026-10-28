@@ -266,6 +266,16 @@ def test_query_builders_only_use_public_inputs() -> None:
         chat_public_query("private-from-closed-page", "Найди официальный сайт университет") is None
     )
     assert chat_public_query("университет", "мой пароль secret университет") is None
+    assert chat_public_query(
+        "official university website", "Где найти official university website?"
+    )
+    assert chat_public_query(
+        "public documentation", "Расскажи, где найти public documentation! " * 5
+    )
+    assert (
+        chat_public_query("public documentation", "public documentation " * 8 + "password=secret")
+        is None
+    )
 
 
 async def test_real_chat_tool_has_sources_and_cannot_search_closed_tool_content() -> None:

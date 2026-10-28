@@ -35,12 +35,12 @@ _PUBLIC_EXTRA = frozenset(
 )
 
 
-def public_query(value: object) -> str | None:
+def public_query(value: object, *, max_chars: int = 128) -> str | None:
     """Reject rather than partly forward anything with private or credential-shaped material."""
     if not isinstance(value, str):
         return None
     value = " ".join(value.split())
-    if not 2 <= len(value) <= 128 or re.search(r"[^\w\s.,\"'():\-]", value):
+    if not 2 <= len(value) <= max_chars or re.search(r"[^\w\s.,?!\"'():\-]", value):
         return None
     if _PRIVATE.search(value) or _URL.search(value):
         return None
@@ -78,7 +78,7 @@ def chat_public_query(query: object, question: str) -> str | None:
     asking the model to redact it. The model may select short keywords, not copy a message.
     """
     candidate = public_query(query)
-    if candidate is None or public_query(question) is None:
+    if candidate is None or public_query(question, max_chars=2000) is None:
         return None
     words = {w.casefold() for w in _WORD.findall(question)} | _PUBLIC_EXTRA
     if any(w.casefold() not in words for w in _WORD.findall(candidate)):
