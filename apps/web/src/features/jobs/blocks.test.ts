@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isQuestion, KNOWN_TYPES, parseBlock, patchBlock } from "./blocks";
+import { KNOWN_TYPES, parseBlock, patchBlock } from "./blocks";
 
 const root = resolve(import.meta.dirname, "../../../../..");
 const valid = JSON.parse(
@@ -86,16 +86,6 @@ describe("block_update", () => {
     const thinking = parseBlock({ ...base, type: "thinking", stage: "Читаю" });
     if (!thinking) throw new Error("нет блока");
     expect(patchBlock(thinking, "oops")).toBe(thinking);
-  });
-});
-
-describe("вопросы", () => {
-  it("вопрос — choice, input, confirm, approval", () => {
-    const sample = (type: string) => ({ type, id: base.id, rawType: type, at: null, text: null }) as never;
-    expect(isQuestion(sample("choice"))).toBe(true);
-    expect(isQuestion(sample("approval"))).toBe(true);
-    expect(isQuestion(sample("text"))).toBe(false);
-    expect(isQuestion(sample("wait"))).toBe(false);
   });
 });
 

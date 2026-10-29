@@ -250,10 +250,3 @@ export function patchBlock(current: ParsedBlock, patch: unknown): ParsedBlock {
   const { type: _type, id: _id, ...rest } = patch;
   return parseBlock({ ...current, ...rest }, current.id) ?? current;
 }
-
-/** Блок, на который ждут ответа человека. */
-export function isQuestion(block: ParsedBlock): boolean {
-  return (
-    block.type === "choice" || block.type === "input" || block.type === "confirm" || block.type === "approval"
-  );
-}
