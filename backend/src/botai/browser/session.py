@@ -33,6 +33,22 @@ class ObservationSecretBrowser(Protocol):
     async def observation_secrets(self) -> tuple[SecretStr, ...]: ...
 
 
+@runtime_checkable
+class EntrySessionProvider(Protocol):
+    """Optional internal login capability; the private entry never becomes a shared preset."""
+
+    async def ensure_for_entry(
+        self,
+        ctx: object,
+        *,
+        user_id: str,
+        connection_id: str,
+        entry_url: str,
+        force: bool = False,
+        manual: bool = False,
+    ) -> SessionState: ...
+
+
 def storage_origin(url: str, allow_hosts: Iterable[str]) -> str | None:
     """A plain HTTPS origin explicitly allowed for this connection, never a suffix grant."""
     try:

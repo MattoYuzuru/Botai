@@ -17,7 +17,7 @@ from botai.core.services import Services
 from botai.db.models import ChatThread, Connection, Job, JobAnswer, JobEvent, Space, University
 from botai.jobs import dialogue
 from botai.jobs.events import IN_FLIGHT, append_event
-from botai.jobs.queue import enqueue_in_session
+from botai.jobs.queue import enqueue_in_session, lock_sources
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.intent import prepare_turn
 from botai.learn.registry import clean_warning
@@ -176,7 +176,7 @@ async def make_connection(
             await session.flush([space])
         thread.space_id = space.id
     space = await repo.get_space(session, user_id, thread.space_id)
-    conn = await session.scalar(
+    query = (
         select(Connection)
         .where(
             Connection.user_id == user_id,
@@ -185,12 +185,22 @@ async def make_connection(
         )
         .order_by(Connection.created_at, Connection.id)
         .limit(1)
-        .with_for_update()
     )
+    conn = await session.scalar(query)
+    if conn is not None:
+        await lock_sources(session, [conn.id])
+        conn = await session.scalar(
+            query.where(Connection.id == conn.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if conn is None:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Подключение больше недоступно")
     if conn is not None and conn.status == "disabled":
         raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
     if conn is None:
         conn = Connection(
+            id=new_id(),
             user_id=user_id,
             space_id=space.id,
             origin=origin,
@@ -200,6 +210,7 @@ async def make_connection(
             allow_hosts=[urlsplit(url).hostname or ""],
         )
         session.add(conn)
+        await lock_sources(session, [conn.id])
         await session.flush([conn])
     bind_thread(thread, conn.id)
     return conn
@@ -444,6 +455,20 @@ async def continue_source(
         )
         if space is None:
             raise BotaiError(ErrorCode.NOT_FOUND, "Пространство не найдено")
+        # Resolve the existing destination without row locks. A producer holding its
+        # source group may need Connection KEY SHARE to insert a job, so neither the
+        # parent's nor the child's Connection/Job rows may be locked before these groups.
+        child_id = await session.scalar(
+            select(Connection.id)
+            .where(
+                Connection.user_id == ctx.user_id,
+                Connection.space_id == space.id,
+                Connection.origin == url_origin(url),
+            )
+            .order_by(Connection.created_at, Connection.id)
+            .limit(1)
+        )
+        await lock_sources(session, [parent_connection_id, *([child_id] if child_id else [])])
         parent = await session.scalar(
             select(Connection)
             .where(Connection.user_id == ctx.user_id, Connection.id == parent_connection_id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,23 @@ from botai.core.jobs import JobKind
 from botai.db.models import Job
 from botai.jobs.events import IN_FLIGHT, append_event, status_data
 from botai.jobs.notify import CHANNEL_JOBS
+
+SOURCE_KINDS = ("connect", "learn", "repair", "sync")
+
+
+async def lock_sources(session: AsyncSession, connection_ids: Iterable[str]) -> None:
+    """Acquire source groups before existing Connection/Job row locks, in stable order.
+
+    Callers that bind or continue a connection use this before locking its rows. New,
+    uncommitted connections are not visible to competing producers yet.
+    """
+    with session.no_autoflush:
+        for connection_id in sorted(set(connection_ids)):
+            await session.execute(
+                select(
+                    func.pg_advisory_xact_lock(func.hashtextextended(f"source:{connection_id}", 0))
+                )
+            )
 
 
 class PgJobQueue:
@@ -65,6 +83,27 @@ async def enqueue_in_session(
 ) -> Job:
     """The same queue semantics in the caller's transaction; NOTIFY is delivered on its commit."""
     due = run_after or now
+    if connection_id and kind.value in SOURCE_KINDS:
+        # Scheduler and explicit source actions share this lock before any Job row lock.
+        # A requested human login must not race another source browser into existence.
+        await lock_sources(session, [connection_id])
+        incoming_manual = kind == JobKind.CONNECT and (payload or {}).get("manual_login") is True
+        query = select(Job).where(
+            Job.user_id == user_id,
+            Job.connection_id == connection_id,
+            Job.kind.in_(SOURCE_KINDS),
+            Job.state.in_(sorted(IN_FLIGHT)),
+        )
+        if not incoming_manual:
+            query = query.where(
+                Job.kind == JobKind.CONNECT.value,
+                Job.payload["manual_login"].as_boolean().is_(True),
+            )
+        existing_source = await session.scalar(
+            query.order_by(Job.created_at, Job.id).limit(1).with_for_update()
+        )
+        if existing_source is not None:
+            return existing_source
     if dedupe and connection_id:
         await session.execute(
             select(

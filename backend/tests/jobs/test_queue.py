@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 
 from botai.core.jobs import JobKind
 from botai.db.models import Job
+from botai.jobs.queue import enqueue_in_session
 from tests.jobs.env import Env
 
 pytestmark = pytest.mark.db
@@ -127,3 +128,57 @@ async def test_run_after_is_kept_for_a_new_delayed_job(env: Env) -> None:
     later = env.clock.now() + timedelta(hours=1)
     job_id = await env.services.queue.enqueue(JobKind.ACTION, user_id=acc.id, run_after=later)
     assert (await env.job(job_id)).run_after == later
+
+
+@pytest.mark.parametrize("first_kind", [JobKind.CONNECT, JobKind.SYNC])
+async def test_manual_login_and_scheduler_interlock_before_commit_without_cross_owner_blocking(
+    env: Env, first_kind: JobKind
+) -> None:
+    user = (await env.account()).id
+    other = (await env.account()).id
+    _, connection = await env.connection(user)
+    _, foreign_connection = await env.connection(other)
+    second_kind = JobKind.SYNC if first_kind == JobKind.CONNECT else JobKind.CONNECT
+
+    def payload(kind: JobKind) -> dict[str, object]:
+        return {"manual_login": True} if kind == JobKind.CONNECT else {"scheduled": True}
+
+    async with env.sm() as session:
+        first = await enqueue_in_session(
+            session,
+            first_kind,
+            user_id=user,
+            connection_id=connection,
+            payload=payload(first_kind),
+            now=env.clock.now(),
+        )
+        competing = asyncio.create_task(
+            env.services.queue.enqueue(
+                second_kind, user_id=user, connection_id=connection, payload=payload(second_kind)
+            )
+        )
+        try:
+            # A different owner's connection proceeds while this source transaction is open.
+            foreign_id = await asyncio.wait_for(
+                env.services.queue.enqueue(
+                    JobKind.CONNECT,
+                    user_id=other,
+                    connection_id=foreign_connection,
+                    payload={"manual_login": True},
+                ),
+                timeout=2,
+            )
+            assert not competing.done()
+            await session.commit()
+            assert await asyncio.wait_for(competing, timeout=2) == first.id
+        finally:
+            if not competing.done():
+                competing.cancel()
+                await asyncio.gather(competing, return_exceptions=True)
+    current = await env.job(first.id)
+    assert current.kind == first_kind.value
+    assert current.payload == payload(first_kind)
+    assert (await env.job(foreign_id)).user_id == other
+    async with env.sm() as session:
+        rows = list(await session.scalars(select(Job).where(Job.connection_id == connection)))
+    assert len(rows) == 1

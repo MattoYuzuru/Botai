@@ -19,11 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import SecretStr
 
@@ -54,7 +54,7 @@ from botai.browser.presets import (
 )
 from botai.browser.probe import check_session, learn_probe, probe_ok, requires_authentication
 from botai.browser.proxy import is_ip_literal, normalize_host
-from botai.browser.session import decode_session, encode_session
+from botai.browser.session import decode_session, encode_session, storage_origin
 from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, TextBlock, WaitBlock
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import PageSnapshot, SessionState
@@ -154,6 +154,10 @@ class _Run:
     start_url: str
     handle: PlaywrightHandle
     creds: _Creds
+    entry_url: str | None = field(default=None, repr=False)
+    entry_form_path: str | None = field(default=None, repr=False)
+    force_relogin: bool = False
+    manual: bool = False
     recorder: Recorder = field(default_factory=Recorder)
     attempts: dict[Any, int] = field(default_factory=lambda: dict[Any, int]())
     last_signature: Any = None
@@ -168,6 +172,8 @@ class _Run:
     manual_signal: asyncio.Event = field(default_factory=asyncio.Event)
     manual_ready: asyncio.Future[bool] | None = None
     human_confirmed: bool = False
+    human_progress: bool = False
+    push_confirmed: bool = False
 
 
 def _avoid_tokens(creds: _Creds) -> list[str]:
@@ -221,6 +227,38 @@ class LoginFlow:
         """A session that works. `force` skips the stored one: a caller that has just seen the
         site refuse it (its data request answered 401 while the probe still passes) logs in
         anew instead of being handed the same session again."""
+        return await self._ensure(ctx, user_id=user_id, connection_id=connection_id, force=force)
+
+    async def ensure_for_entry(
+        self,
+        ctx: object,
+        *,
+        user_id: str,
+        connection_id: str,
+        entry_url: str,
+        force: bool = False,
+        manual: bool = False,
+    ) -> SessionState:
+        """Verify access to the supplied private page, using a screen when explicitly requested."""
+        return await self._ensure(
+            ctx,
+            user_id=user_id,
+            connection_id=connection_id,
+            entry_url=entry_url,
+            force=force or manual,
+            manual=manual,
+        )
+
+    async def _ensure(
+        self,
+        ctx: object,
+        *,
+        user_id: str,
+        connection_id: str,
+        entry_url: str | None = None,
+        force: bool = False,
+        manual: bool = False,
+    ) -> SessionState:
         job = cast(JobContext, ctx)  # the SessionProvider protocol types it as `object`
         key = (user_id, connection_id)
         async with self._locks.setdefault(key, asyncio.Lock()):
@@ -228,6 +266,8 @@ class LoginFlow:
             info = await self._store.connection(user_id, connection_id)
             preset = await self._store.preset_for(info.origin)
             hosts = self._hosts(info, preset)
+            if entry_url is not None:
+                self._validate_entry(info, hosts, entry_url)
             stored = None if force else await self._stored_session(user_id, connection_id)
             diagnostic_event(
                 "auth.session.check",
@@ -242,8 +282,24 @@ class LoginFlow:
                     stored, preset, hosts, now=self._clock.now(), egress=self._egress
                 )
                 if verdict is True:
-                    diagnostic_event("auth.session.reused", connection_id=connection_id)
-                    return stored
+                    refreshed = (
+                        stored
+                        if entry_url is None
+                        else await self._stored_entry_ready(
+                            user_id, connection_id, info, preset, hosts, stored, entry_url
+                        )
+                    )
+                    if refreshed is not None:
+                        if entry_url is not None:
+                            await self._vault.put(
+                                user_id,
+                                connection_id,
+                                SecretKind.SESSION,
+                                encode_session(refreshed),
+                                expires_at=refreshed.expires_hint,
+                            )
+                        diagnostic_event("auth.session.reused", connection_id=connection_id)
+                        return refreshed
             for added in range(MAX_ADDITIONAL_LOGIN_HOSTS + 1):
                 try:
                     diagnostic_event(
@@ -252,7 +308,17 @@ class LoginFlow:
                         allow_host_count=len(hosts),
                         host_round=added,
                     )
-                    state = await self._login(job, user_id, connection_id, info, preset, hosts)
+                    state = await self._login(
+                        job,
+                        user_id,
+                        connection_id,
+                        info,
+                        preset,
+                        hosts,
+                        entry_url=entry_url,
+                        force=force,
+                        manual=manual,
+                    )
                     diagnostic_event("auth.session.ready", connection_id=connection_id)
                     return state
                 except BotaiError as exc:
@@ -284,6 +350,96 @@ class LoginFlow:
                     preset = await self._store.preset_for(info.origin)
                     hosts = self._hosts(info, preset)
             raise AssertionError("unreachable")  # pragma: no cover
+
+    @staticmethod
+    def _validate_entry(info: ConnectionInfo, hosts: list[str], entry_url: str) -> None:
+        if (
+            not entry_url
+            or "\\" in entry_url
+            or _CONTROL.search(entry_url)
+            or storage_origin(entry_url, hosts) != info.origin
+        ):
+            raise BotaiError(
+                ErrorCode.VALIDATION,
+                "Для входа нужна HTTPS-ссылка на тот же разрешённый сайт источника",
+            )
+
+    @staticmethod
+    def _entry_ready(
+        info: ConnectionInfo,
+        preset: LoginPreset | None,
+        snap: PageSnapshot,
+        entry_url: str,
+        login_paths: Sequence[str] = (),
+        *,
+        human_confirmed: bool = False,
+        allow_generic_root: bool = False,
+    ) -> bool:
+        if (
+            storage_origin(snap.url, (urlsplit(info.origin).hostname or "",)) != info.origin
+            or not snap.text.strip()
+            or requires_authentication(snap)
+            or not isinstance(detect(snap), UnknownPage)
+        ):
+            return False
+        # A guest bootstrap session may turn a protected link into a public
+        # catalogue. A material redirect is not browser authorization evidence.
+        # Query canonicalization and a trailing slash do not change the view.
+        requested = urlsplit(entry_url)
+        requested_path = unquote(requested.path).rstrip("/") or "/"
+        actual_path = unquote(urlsplit(snap.url).path).rstrip("/") or "/"
+        generic_root = (
+            allow_generic_root
+            and requested.path in {"", "/"}
+            and not requested.query
+            and not requested.fragment
+        )
+        if not human_confirmed and not generic_root and actual_path != requested_path:
+            return False
+        path = urlsplit(snap.url).path
+        known = preset.expired.get("redirectPathPrefix", []) if preset else []
+        return path not in login_paths and not any(
+            isinstance(prefix, str) and prefix and path.startswith(prefix) for prefix in known
+        )
+
+    async def _stored_entry_ready(
+        self,
+        user_id: str,
+        connection_id: str,
+        info: ConnectionInfo,
+        preset: LoginPreset | None,
+        hosts: list[str],
+        state: SessionState,
+        entry_url: str,
+    ) -> SessionState | None:
+        handle = await self._gateway.open(
+            user_id=user_id,
+            connection_id=connection_id,
+            allow_hosts=hosts,
+            origin=info.origin,
+            session=state,
+            read_only=True,
+            background=True,
+        )
+        try:
+            snap = await handle.goto(entry_url)
+            if isinstance(detect(snap), ErrorPage):
+                raise handle.navigation_failure() or BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Страница источника не открылась"
+                )
+            return (
+                await handle.export_session()
+                if self._entry_ready(info, preset, snap, entry_url)
+                else None
+            )
+        except BotaiError as exc:
+            if exc.code == ErrorCode.EGRESS_BLOCKED:
+                # The fresh login handles an exact-host consent, rather than a
+                # read-only restore silently granting a newly required host.
+                return None
+            raise
+        finally:
+            await handle.close()
 
     @staticmethod
     def _hosts(info: ConnectionInfo, preset: LoginPreset | None) -> list[str]:
@@ -342,9 +498,17 @@ class LoginFlow:
         info: ConnectionInfo,
         preset: LoginPreset | None,
         hosts: list[str],
+        *,
+        entry_url: str | None = None,
+        force: bool = False,
+        manual: bool = False,
     ) -> SessionState:
-        username = await self._vault.get(user_id, connection_id, SecretKind.LOGIN)
-        password = await self._vault.get(user_id, connection_id, SecretKind.PASSWORD)
+        username = (
+            None if manual else await self._vault.get(user_id, connection_id, SecretKind.LOGIN)
+        )
+        password = (
+            None if manual else await self._vault.get(user_id, connection_id, SecretKind.PASSWORD)
+        )
         creds = _Creds(username.get_secret_value() if username else None, password)
         origin_host = urlsplit(info.origin).hostname or ""
         capture = CaptureConfig()
@@ -378,6 +542,10 @@ class LoginFlow:
                 handle=handle,
                 creds=creds,
                 probe=_probe_of(preset),
+                entry_url=entry_url,
+                force_relogin=force,
+                manual=manual,
+                manual_requested=manual,
             )
             try:
                 session = await self._drive(run)
@@ -395,11 +563,32 @@ class LoginFlow:
             await handle.close()
 
     async def _drive(self, run: _Run) -> SessionState:
-        snap = await run.handle.goto(run.start_url)
+        if run.entry_url is not None:
+            async with run.handle.read_only_entry():
+                snap = await run.handle.goto(run.entry_url)
+        else:
+            snap = await run.handle.goto(run.start_url)
+        if run.entry_url is not None and requires_authentication(snap):
+            run.entry_form_path = urlsplit(snap.url).path
         for _ in range(self._timing.max_pages):
+            if run.manual:
+                if isinstance(detect(snap), ErrorPage):
+                    raise self._navigation_failure(run)
+                if isinstance(detect(snap), HardBlock):
+                    raise BotaiError(ErrorCode.SOURCE_BOT_PROTECTION, _BOT_PROTECTION_DETAIL)
+                outcome = await self._human(
+                    run, snap, hint="Вы просили ручной вход. Войдите на экране и нажмите «Готово»."
+                )
+                if isinstance(outcome, SessionState):
+                    return outcome
+                snap = outcome
+                continue
             done = await self._try_finish(run, snap)
             if done is not None:
                 return done
+            # Entry verification can navigate from the candidate cabinet back to
+            # a login/refusal. Process that fresh page, never the pre-check DOM.
+            snap = await run.handle.snapshot()
             learned = None
             if run.preset and run.preset.steps and not snap.captcha_suspected:
                 learned = replay(run.preset.steps, snap)
@@ -458,12 +647,14 @@ class LoginFlow:
     async def _try_finish(
         self, run: _Run, snap: PageSnapshot, *, force: bool = False
     ) -> SessionState | None:
-        """The session, if this page is the logged-in side and a probe proves it."""
+        """Session-dependent GETs are useful probes, but cannot prove a student logged in."""
         if snap.url.startswith("chrome-error:") or snap.captcha_suspected:
             return None
         if (urlsplit(snap.url).hostname or "").lower() not in run.handle.allow_hosts:
             return None
-        if requires_authentication(snap):
+        if requires_authentication(snap) or not isinstance(detect(snap), UnknownPage):
+            return None
+        if run.manual and not force:
             return None
         signature = page_signature(snap)
         if run.verified_page == signature and not force:
@@ -471,25 +662,67 @@ class LoginFlow:
         state = await run.handle.export_session()
         if not state.cookies and state.bearer is None:
             return None
+        if not (run.submitted or run.push_confirmed or run.human_progress or force):
+            # A public page may issue guest cookies/bearers whose GETs refuse a
+            # bare HTTP client. That is client bootstrap, not authentication.
+            run.verified_page = signature
+            return None
+        if run.entry_url is not None:
+            async with run.handle.read_only_entry():
+                fresh = await run.handle.goto(run.entry_url)
+            found = detect(fresh)
+            if isinstance(found, ErrorPage):
+                raise self._navigation_failure(run)
+            if isinstance(found, HardBlock):
+                raise BotaiError(ErrorCode.SOURCE_BOT_PROTECTION, _BOT_PROTECTION_DETAIL)
+            private_path = urlsplit(run.entry_url).path
+            paths = [
+                p for p in run.recorder.login_paths if p not in {private_path, run.entry_form_path}
+            ]
+            if not self._entry_ready(
+                run.info,
+                run.preset,
+                fresh,
+                run.entry_url,
+                paths,
+                human_confirmed=force,
+                allow_generic_root=bool(run.submitted or run.push_confirmed),
+            ):
+                run.verified_page = page_signature(fresh)
+                return None
+            snap = fresh
+            state = await run.handle.export_session()
         if run.probe is not None:
             if await probe_ok(state, run.probe, run.hosts, egress=self._egress):
+                run.human_confirmed = force
                 run.final_url = snap.url
                 return state
             run.verified_page = signature
             return None
+        network = await run.handle.network_log()
+        if run.entry_url is not None:
+            private_path = urlsplit(run.entry_url).path
+            private_paths = {private_path, run.entry_form_path}
+            network = [
+                request for request in network if urlsplit(request.url).path not in private_paths
+            ]
         learned = await learn_probe(
-            await run.handle.network_log(),
+            network,
             state,
             run.hosts,
-            snap.url,
+            # A personal entry cannot become a shared landing-page probe.
+            run.start_url if run.entry_url is not None else snap.url,
             egress=self._egress,
             avoid=_avoid_tokens(run.creds),
         )
         if learned is not None:
+            run.human_confirmed = force
             run.probe = run.learned_probe = learned
             run.final_url = snap.url
             return state
-        if (run.submitted > 0 or force) and _ordinary_page(run, snap):
+        if (run.submitted > 0 or force) and (
+            run.entry_url is not None or _ordinary_page(run, snap)
+        ):
             # An explicit Done can confirm the ordinary page after all success guards above.
             run.human_confirmed = force
             run.final_url = snap.url
@@ -525,11 +758,25 @@ class LoginFlow:
         reached = [h for h in run.handle.visited_hosts() if h not in run.handle.blocked_hosts()]
         hosts = list(dict.fromkeys([*run.hosts, *reached]))
         try:
+            recorder = run.recorder
+            entry = urlsplit(run.entry_url) if run.entry_url is not None else None
+            if entry is not None and (entry.path not in {"", "/"} or entry.query or entry.fragment):
+                private_path = entry.path
+                private_paths = {private_path, run.entry_form_path}
+                # A login form served directly at a supplied private URL must
+                # not teach that URL to other users of this origin. A generic
+                # root carries no private view: keep its discovered auth steps,
+                # as the legacy entrance does, without a later revision churn.
+                recorder = replace(
+                    recorder,
+                    forms=[f for f in recorder.forms if urlsplit(f.url).path not in private_paths],
+                    login_paths=[p for p in recorder.login_paths if p not in private_paths],
+                )
             preset = build_preset(
                 origin=run.info.origin,
                 start_url=run.start_url,
                 hosts=hosts,
-                recorder=run.recorder,
+                recorder=recorder,
                 session=session,
                 probe=run.probe,
                 final_url=run.final_url or run.start_url,
@@ -725,12 +972,15 @@ class LoginFlow:
             raise _ManualRequested
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
-        if step.submit:
-            try:
-                return await run.handle.click(step.submit)
-            except BotaiError:
-                pass  # the learned or guessed button is gone: Enter in the last field
-        return await run.handle.press(step.fields[-1].selector, "Enter")
+        async with run.handle.auth_document():
+            if step.submit:
+                try:
+                    await run.handle.click(step.submit)
+                except BotaiError:
+                    await run.handle.press(step.fields[-1].selector, "Enter")
+            else:
+                await run.handle.press(step.fields[-1].selector, "Enter")
+        return await run.handle.snapshot()
 
     # -- push approval -------------------------------------------------------------------------
 
@@ -753,6 +1003,7 @@ class LoginFlow:
             await asyncio.sleep(t.poll_s)
             now = await run.handle.snapshot()
             if now.url != snap.url or not isinstance(detect(now), PushWait):
+                run.push_confirmed = not isinstance(detect(now), PushWait)
                 await run.job.status("Подтверждение получено, продолжаю вход")
                 return now
         raise BotaiError(
@@ -853,10 +1104,14 @@ class LoginFlow:
                 await link.close("bot_protection")
                 raise BotaiError(ErrorCode.SOURCE_BOT_PROTECTION, _BOT_PROTECTION_DETAIL)
             said_done = link.take_done()
+            if not run.force_relogin and link.human_control and page_signature(now) != handed_over:
+                run.human_progress = True
             finished = await self._try_finish(run, now, force=said_done)
             if finished is not None:
                 await link.succeed()
                 return finished
+            now = await run.handle.snapshot()
+            found = detect(now)
             same_form = best_step(now)
             if (
                 said_done

@@ -2,7 +2,7 @@
 
 Read-only by construction: schedule, deadlines, courses, grades, people, news (through
 `DomainReader`), connection state, full-text search over documents and saved facts, and
-`request_repair`, which only enqueues a repair job for a connection the student owns. Public
+`request_repair` and `request_login`, which enqueue owned connection jobs. Public
 search has a separate deterministic gate: only short public words from the current question
 can reach the fixed search APIs. No tool accepts an arbitrary outbound address or writes there.
 
@@ -29,6 +29,7 @@ from botai.core.llm import LlmTool
 from botai.core.services import Services
 from botai.db.models import Chunk, Connection, Document, Fact, Job, Space
 from botai.domain.schemas import Provenance
+from botai.jobs import dialogue
 from botai.search import SearchBudget
 from botai.search.safety import chat_public_query
 
@@ -598,6 +599,65 @@ async def request_repair(env: ChatEnv, args: dict[str, Any]) -> str:
     return f"{action} «{conn.title}» {queued} в очередь (задание {job_id}). Ход работы и результат сохранятся в разговоре подключения."
 
 
+async def request_login(env: ChatEnv, args: dict[str, Any]) -> str:
+    """Request the protected LoginFlow, without exposing a screen ticket or credentials."""
+    connection_id = str(args.get("connection_id", "")).strip()
+    conn = (await env.titles()).get(connection_id)
+    if conn is None:
+        return "Такого подключения у студента нет. Возьмите id из list_connections."
+    if conn.status == "disabled":
+        return "Подключение отключено. Защищённый вход не запущен."
+    from botai.spaces import service
+
+    async with env.services.db() as session:
+        job_id = await service.enqueue_for_connection(
+            session,
+            env.services.queue,
+            env.user_id,
+            connection_id,
+            JobKind.CONNECT,
+            thread_id=env.thread_id,
+            payload={"manual_login": True, "source": "chat"},
+            now=env.services.clock.now(),
+        )
+        queued = await session.scalar(
+            select(Job).where(Job.id == job_id, Job.user_id == env.user_id)
+        )
+        if queued is not None and not (
+            queued.kind == JobKind.CONNECT.value and queued.payload.get("manual_login") is True
+        ):
+            conversation = f"Разговор подключения: {queued.thread_id}. " if queued.thread_id else ""
+            pending = dialogue.state_of(queued).get("pending")
+            controls = ""
+            if (
+                isinstance(pending, dict)
+                and pending.get("channel") == "native"
+                and pending.get("secret") is True
+            ):
+                controls = (
+                    "В текущем шаге есть защищённые поля; рядом с ними можно открыть браузер. "
+                )
+            elif isinstance(pending, dict) and pending.get("channel") == "manual":
+                controls = "В текущем шаге уже доступен защищённый экран. "
+            return (
+                f"Для «{conn.title}» уже идёт задание {job_id}, состояние {queued.state}. "
+                + conversation
+                + controls
+                + "Новый вход не запущен: сначала дождитесь текущего задания или остановите его "
+                "в приложении, затем попросите войти снова."
+            )
+    conversation = (
+        f"Разговор подключения: {queued.thread_id}. " if queued and queued.thread_id else ""
+    )
+    return (
+        f"Запрос защищённого входа «{conn.title}» связан с заданием {job_id}. "
+        + conversation
+        + "Следите за ходом работы и защищёнными шагами в разговоре подключения. "
+        "Если задание уже выполняется, продолжается оно; второй браузер не запускается. "
+        "Не присылайте пароль и код в чат."
+    )
+
+
 # --- specs --------------------------------------------------------------------------------------
 
 
@@ -728,6 +788,16 @@ TOOL_SPECS: dict[str, LlmTool] = {
         },
         ["connection_id", "reason"],
     ),
+    "request_login": _spec(
+        "request_login",
+        "Открыть защищённый ручной вход BotAI по явной просьбе студента войти заново, "
+        "войти самому или открыть браузер для входа. Только известный id своего подключения "
+        "из контекста разговора или list_connections. При неоднозначности сначала уточните "
+        "подключение. Возобновляет CONNECT в его разговоре; существующее активное задание "
+        "продолжается без второго браузера. Пароли, коды, URL и cookie сюда не передаются.",
+        {"connection_id": {"type": "string"}},
+        ["connection_id"],
+    ),
 }
 
 STAGES: dict[str, str] = {
@@ -742,6 +812,7 @@ STAGES: dict[str, str] = {
     "search_facts": "Ищу в сохранённых ответах",
     "search_public_web": "Ищу публичные источники",
     "request_repair": "Запускаю починку",
+    "request_login": "Запрашиваю защищённый вход",
 }
 
 _IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
@@ -756,6 +827,7 @@ _IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
     "search_facts": search_facts,
     "search_public_web": search_public_web,
     "request_repair": request_repair,
+    "request_login": request_login,
 }
 
 

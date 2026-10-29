@@ -30,10 +30,11 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from botai.browser.session import EntrySessionProvider
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
-from botai.core.diagnostics import diagnostic_event
+from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy
@@ -135,6 +136,9 @@ class Explorer:
         self._scope_base: tuple[Kind, ...] = ()
         self._scope_auto_base = False
         self._scope_replaced = False
+        self._manual_login = False
+        self._manual_connect = False
+        self._prepared_session: SessionState | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -147,6 +151,56 @@ class Explorer:
 
     def _sync_context(self, info: ConnInfo, session: SessionState | None) -> SyncContext:
         return context_for(self.services, info, session, transport=self.transport, retry=self.retry)
+
+    async def _ensure_session(
+        self,
+        info: ConnInfo,
+        *,
+        entry_url: str | None = None,
+        force: bool = False,
+        manual: bool = False,
+    ) -> SessionState:
+        if entry_url is None:
+            entry_url = next(
+                (url for url in self.intent.entry_urls if url_origin(url) == info.origin),
+                info.origin + "/",
+            )
+        target = navigation_url(entry_url)
+        if target is None or url_origin(target) != info.origin:
+            raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Страница входа не относится к источнику")
+        sessions = self.services.sessions
+        diagnostic_event(
+            "auth.session.request",
+            connection_id=info.connection_id,
+            force=force,
+            manual_login=manual,
+            **url_facts(target),
+        )
+        if isinstance(sessions, EntrySessionProvider):
+            state = await sessions.ensure_for_entry(
+                self.ctx,
+                user_id=info.user_id,
+                connection_id=info.connection_id,
+                entry_url=target,
+                force=force,
+                manual=manual,
+            )
+            diagnostic_event(
+                "auth.entry_ready",
+                connection_id=info.connection_id,
+                force=force,
+                manual_login=manual,
+                entry_verified=True,
+                **url_facts(target),
+            )
+            return state
+        if manual:
+            raise BotaiError(
+                ErrorCode.SOURCE_UNAVAILABLE, "Защищённый экран входа сейчас недоступен"
+            )
+        return await sessions.ensure(
+            self.ctx, user_id=info.user_id, connection_id=info.connection_id, force=force
+        )
 
     async def _redactor(self, info: ConnInfo) -> Redactor:
         r = Redactor()
@@ -168,6 +222,7 @@ class Explorer:
 
     def _start_intent(self, payload: dict[str, Any]) -> None:
         self._learning = True
+        self._manual_login = payload.get("manual_login") is True
         if "learning_intent" in payload:
             self.intent = LearningIntent.restore(payload["learning_intent"])
         else:
@@ -304,13 +359,39 @@ class Explorer:
         return {"status": "continued", **result}
 
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._manual_connect = payload.get("manual_login") is True
+        result = await self._connect(connection_id, payload)
+        if not self._manual_connect or result.get("status") != "repairing":
+            return result
+        # The manual CONNECT still owns the source interlock. Queueing its repair
+        # would deduplicate back to this very job and leave the source repairing forever.
+        # Run the existing repair state machine here, outside _connect's cancellation
+        # restoration: Repairer itself leaves stopped/failed repairs stale, with old data.
+        from botai.learn.repair import Repairer
+
+        repairer = Repairer(self.ctx, self.services, transport=self.transport, retry=self.retry)
+        repairer.tokens = self.tokens
+        try:
+            repaired = await repairer.run(connection_id, {"reason": "drift"})
+        finally:
+            self.tokens = repairer.tokens
+        metadata = {key: value for key, value in result.items() if key != "sync"}
+        if "sync" in result:
+            metadata["initial_sync"] = result["sync"]
+        return {**metadata, **repaired}
+
+    async def _connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._scope_connection_id = connection_id
         self._start_intent(payload)
         info = await self._info(connection_id)
         if info.status == "disabled":
             return {"status": "skipped", "detail": "disabled"}
+        manual_existing = self._manual_login and info.adapter is not None
+        if manual_existing:
+            # An authentication request cannot narrow an already configured source's scope.
+            self._scope_connection_id = None
         self._previous_status = info.status
-        await self._set(connection_id, status="learning", clear_error=True)
+        await self._set(connection_id, status="learning", clear_error=not manual_existing)
         try:
             origin = await self._resolve_origin(info, payload)
             if origin is None:
@@ -318,6 +399,34 @@ class Explorer:
                     info, "Не получилось определить адрес сайта", ErrorCode.VALIDATION
                 )
             info = await self._info(connection_id)
+            if self._manual_login:
+                # The human hand-off precedes classification of old notes or new turns.
+                # A configured source resumes its recipe even while the model is unavailable.
+                await self._checkpoint()
+                stage = await self.ui.stage("Открываю защищённый вход")
+                try:
+                    self._prepared_session = await self._ensure_session(
+                        info, force=True, manual=True
+                    )
+                except BotaiError:
+                    await stage.finish("failed")
+                    raise
+                await stage.finish()
+                self._manual_login = False
+                self._reauth_attempted = True
+                info = await self._info(connection_id)
+                if info.adapter is not None:
+                    await self._set(connection_id, status="active", clear_error=True)
+                    outcome = await sync_connection(
+                        self.ctx,
+                        self.services,
+                        connection_id,
+                        transport=self.transport,
+                        retry=self.retry,
+                        queue_repair=not self._manual_connect,
+                    )
+                    await self._report_sync(outcome, prefix="Вход проверен.")
+                    return {"status": outcome.status, "login_resumed": True}
             await self._initial_note(await self._redactor(info))
             await self._checkpoint()
             await self._drain(await self._redactor(info))
@@ -331,7 +440,10 @@ class Explorer:
         except (JobCancelled, asyncio.CancelledError):
             # nobody answered in time (JobCancelled), or the student stopped the job and the
             # runner cancelled its task (CancelledError): either way the setup is not running
-            await self._set(connection_id, status="draft")
+            await self._set(
+                connection_id,
+                status=(self._previous_status or "draft") if manual_existing else "draft",
+            )
             raise
         except BotaiError as err:
             return await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
@@ -460,7 +572,12 @@ class Explorer:
             status="active",
         )
         outcome = await sync_connection(
-            self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
+            self.ctx,
+            self.services,
+            info.connection_id,
+            transport=self.transport,
+            retry=self.retry,
+            queue_repair=not self._manual_connect,
         )
         await stage.finish("ok" if outcome.status == "ok" else "failed")
         await self._report_sync(outcome, prefix="Готово.")
@@ -489,9 +606,8 @@ class Explorer:
         ui, svc = self.ui, self.services
         stage = await ui.stage("Вхожу в кабинет")
         try:
-            session = await svc.sessions.ensure(
-                self.ctx, user_id=info.user_id, connection_id=info.connection_id
-            )
+            session = self._prepared_session or await self._ensure_session(info)
+            self._prepared_session = None
             info = await self._info(info.connection_id)
         except BotaiError:
             await stage.finish("failed")
@@ -728,9 +844,7 @@ class Explorer:
             await self.ui.say(
                 "Источник снова просит войти. Восстанавливаю вход перед поиском данных."
             )
-            session = await self.services.sessions.ensure(
-                self.ctx, user_id=info.user_id, connection_id=info.connection_id, force=True
-            )
+            session = await self._ensure_session(info, entry_url=obs.auth_target_url, force=True)
             info = await self._info(info.connection_id)
         await stage.finish(
             "ok" if not obs.empty else "failed",
@@ -1041,7 +1155,12 @@ class Explorer:
             revision = row.revision
         await stage.finish("ok", f"Версия описания: {revision}")
         outcome = await sync_connection(
-            self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
+            self.ctx,
+            self.services,
+            info.connection_id,
+            transport=self.transport,
+            retry=self.retry,
+            queue_repair=not self._manual_connect,
         )
         await self._report_sync(outcome, prefix="Готово.")
         diagnostic_event(

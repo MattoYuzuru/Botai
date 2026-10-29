@@ -16,17 +16,18 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    Frame,
     Page,
     Playwright,
     Request,
@@ -40,6 +41,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import SecretStr
 
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
+from botai.browser.forms import CaptchaPage, PushWait, detect, has_credential_fields
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
 from botai.browser.read_views import ReadView, ReadViewRegistry
@@ -71,6 +73,10 @@ ACTION_TIMEOUT_MS = 10_000
 SETTLE_MS = 3_000
 READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
+AUTH_EVALUATE_S = 0.5
+_AUTH_SCAN_JS = (
+    "() => { const result = (" + SCAN_JS + ")(); result.title = document.title; return result; }"
+)
 SAMPLE_CHARS = 64_000  # a whole timetable or marks page as JSON, so the learner can parse it
 SAMPLE_BUDGET = 4_000_000  # characters of samples one browser context may hold
 HOLD_MAX_S = 30 * 60
@@ -145,6 +151,14 @@ class CaptureConfig:
     cookies_for: tuple[str, ...] | None = None  # default: every allowed host
     bearer_from: BearerFrom = "authorizationHeader"
     bearer_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _AuthPermit:
+    page: Page
+    epoch: int
+    url: str
+    actions: frozenset[str]
 
 
 def in_container() -> bool:
@@ -249,6 +263,10 @@ class PlaywrightHandle:
         self._capture = capture
         self._clock = clock
         self.read_only = read_only
+        self._entry_guarded = False
+        self._entry_verifying = 0
+        self._auth_epochs: dict[Frame, int] = {}
+        self._auth_permits: dict[Frame, _AuthPermit] = {}
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
@@ -271,6 +289,8 @@ class PlaywrightHandle:
         self._reaper: asyncio.Task[None] | None = None
         self._closing: asyncio.Task[None] | None = None
         context.on("page", self._on_page)
+        page.on("framenavigated", self._revoke_auth_document)
+        page.on("framedetached", self._forget_auth_document)
         context.on("request", self._on_request)
         context.on("response", self._on_response)
         context.on("requestfailed", self._on_failed)
@@ -301,6 +321,141 @@ class PlaywrightHandle:
         """Only the current main-page navigation, never a blocked image or an old request."""
         return self._navigation_error
 
+    def _revoke_auth_document(self, frame: Frame) -> None:
+        self._auth_epochs[frame] = self._auth_epochs.get(frame, 0) + 1
+        if frame == frame.page.main_frame:
+            self._auth_permits.clear()
+        else:
+            self._auth_permits.pop(frame, None)
+
+    def _forget_auth_document(self, frame: Frame) -> None:
+        self._auth_permits.pop(frame, None)
+        self._auth_epochs.pop(frame, None)
+
+    async def _entry_auth_allowed(self, request: Request) -> bool:
+        if self.read_only or self._entry_verifying:
+            return False
+        try:
+            frame = request.frame
+            permit = self._auth_permits.pop(frame, None)
+            if (
+                permit is None
+                or frame.page != self._page
+                or self._page != permit.page
+                or self._auth_epochs.get(frame, 0) != permit.epoch
+                or frame.url != permit.url
+            ):
+                return False
+            if request.is_navigation_request():
+                # Never inspect a renderer suspended by this document POST.
+                return request.url in permit.actions
+            # GET polling can remove auth UI without changing a SPA's URL.
+            # No snapshot/title/navigation waits or retries inside interception.
+            async with asyncio.timeout(AUTH_EVALUATE_S):
+                raw: Any = await frame.evaluate(_AUTH_SCAN_JS)
+            snap = build_snapshot(permit.url, str(raw.get("title", "")), raw)
+            return (
+                self._page == permit.page == frame.page
+                and self._auth_epochs.get(frame, 0) == permit.epoch
+                and frame.url == permit.url
+                and (
+                    has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
+                )
+            )
+        except (PlaywrightError, TimeoutError):
+            return False
+
+    async def _arm_auth_document(self, frame: Frame) -> _AuthPermit | None:
+        page = self._page
+        epoch = self._auth_epochs.get(frame, 0)
+        url = frame.url
+        try:
+            async with asyncio.timeout(AUTH_EVALUATE_S):
+                raw: Any = await frame.evaluate(_AUTH_SCAN_JS)
+            snap = build_snapshot(url, str(raw.get("title", "")), raw)
+            if (
+                page != self._page
+                or frame.page != page
+                or frame.url != url
+                or self._auth_epochs.get(frame, 0) != epoch
+                or not (
+                    has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
+                )
+            ):
+                return None
+        except (PlaywrightError, TimeoutError):
+            return None
+        actions = frozenset(
+            urlsplit(urljoin(url, form.action or url))._replace(fragment="").geturl()
+            for form in snap.forms
+            if form.method.lower() == "post"
+            and has_credential_fields(PageSnapshot(url=url, title=snap.title, forms=[form]))
+        )
+        grant = _AuthPermit(page, epoch, url, actions)
+        self._auth_permits[frame] = grant
+        return grant
+
+    @contextlib.asynccontextmanager
+    async def read_only_entry(self) -> AsyncGenerator[None]:
+        """Keep entry documents read-only, including scripts that run after navigation settles."""
+        if not self._entry_guarded:
+
+            async def guard(route: Route) -> None:
+                if route.request.method in {"GET", "HEAD", "OPTIONS"} or (
+                    route.request.method == "POST" and await self._entry_auth_allowed(route.request)
+                ):
+                    await route.fallback()
+                else:
+                    await _read_only_request(route, diagnostic_facts=self._diagnostic_facts)
+
+            async def socket_guard(socket: WebSocketRoute) -> None:
+                # A socket opened at login can survive a same-URL SPA transition.
+                # Do not leave an unrestricted write channel on the data page.
+                await _read_only_socket(socket)
+
+            await self.context.route("**/*", guard)
+            await self.context.route_web_socket("**/*", socket_guard)
+            self._entry_guarded = True
+        self._entry_verifying += 1
+        self._auth_permits.clear()
+        try:
+            yield
+        finally:
+            self._entry_verifying -= 1
+
+    @contextlib.asynccontextmanager
+    async def auth_document(self) -> AsyncGenerator[None]:
+        """One native auth POST; never inspect a paused navigation from its route handler."""
+        frame = self._page.main_frame
+        grant = await self._arm_auth_document(frame) if self._entry_guarded else None
+        deadline = monotonic() + SETTLE_MS / 1000
+        try:
+            yield
+            if self._entry_guarded:
+                while self._inflight or monotonic() - self._last_activity < READ_VIEW_QUIET_S:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise BotaiError(
+                            ErrorCode.SOURCE_UNAVAILABLE, "Страница входа не завершила загрузку"
+                        )
+                    await asyncio.sleep(min(0.02, remaining))
+        finally:
+            permit = self._auth_permits.get(frame)
+            if permit is grant:
+                self._auth_permits.pop(frame, None)
+
+    async def arm_human_auth(self) -> None:
+        """Before a real screen input, grant only recognized auth frames of the selected page."""
+        if not self._entry_guarded or self._entry_verifying:
+            return
+        self._auth_permits.clear()
+        try:
+            async with asyncio.timeout(1.0):
+                for frame in self._page.frames[:32]:
+                    await self._arm_auth_document(frame)
+        except TimeoutError:
+            self._auth_permits.clear()
+
     def on_close(self, callback: Callable[[], None]) -> None:
         self._close_callbacks.append(callback)
 
@@ -309,6 +464,9 @@ class PlaywrightHandle:
         self._page_callbacks.append(callback)
 
     def _on_page(self, page: Page) -> None:
+        self._auth_permits.clear()
+        page.on("framenavigated", self._revoke_auth_document)
+        page.on("framedetached", self._forget_auth_document)
         self._read_view_registry.invalidate()
         self._page = page
         self._navigation_request = None

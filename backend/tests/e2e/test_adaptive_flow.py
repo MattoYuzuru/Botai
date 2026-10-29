@@ -284,7 +284,13 @@ async def test_chat_connect_deep_spa_canary_persistence_and_model_free_sync(
         assert [
             event["id"] for event in (await friend.get("/api/v1/schedule", params=week())).json()
         ] == [event["id"] for event in events]
-    assert deep.STATE.visits[:3] == ["/deep-portal", "/deep-courses", "/deep-course"]
+    # Login verifies the private entry before the explorer opens its fresh browser context.
+    assert deep.STATE.visits[:4] == [
+        "/deep-portal",
+        "/deep-portal",
+        "/deep-courses",
+        "/deep-course",
+    ]
     assert deep.STATE.panels[:2] == ["courses", "schedule"]
     assert deep.STATE.writes == 0
     assert stack.gateway.active_for(account.id) is None

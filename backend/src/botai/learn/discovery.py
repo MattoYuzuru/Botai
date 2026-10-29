@@ -86,6 +86,8 @@ class ObservationSession:
     current_links: list[str] = field(default_factory=list)
     failures: set[str] = field(default_factory=set)
     network_auth_required: bool = False
+    current_requested_url: str | None = field(default=None, repr=False)
+    auth_target_url: str | None = field(default=None, repr=False)
 
     def offer_entries(self, urls: list[str]) -> None:
         """Keep explicit entry pages and the source home available without inventing routes."""
@@ -117,6 +119,7 @@ class ObservationSession:
             self.failures.add("navigation_failed")
             diagnostic_event("observe.visit_failed", reason="navigation_failed")
             return False
+        self.current_requested_url = url
         return await self.capture(snap)
 
     async def capture(self, snap: PageSnapshot) -> bool:
@@ -132,6 +135,7 @@ class ObservationSession:
         self.views.clear()
         self.current_links.clear()
         if requires_authentication(snap) or snap.captcha_suspected:
+            self.auth_target_url = self.current_requested_url
             return True  # Let Explorer reauthenticate before another model call.
         known = {target for _, target in self.links.values()}
         previous_links = len(self.links)
@@ -159,6 +163,8 @@ class ObservationSession:
         await protect_observation(self.handle, self.redactor)
         self.network_count = len(log)
         self.network_auth_required, network_failed = data_response_health(log, self.origin)
+        if self.network_auth_required:
+            self.auth_target_url = self.current_requested_url
         if network_failed:
             self.failures.add("data_request_failed")
         else:
@@ -340,6 +346,9 @@ class ObservationSession:
         # Auth/refusal evidence is a stop condition, never an optional planner-selected page.
         obs.auth_required = self.auth_required
         obs.bot_protection = self.bot_protection
+        obs.auth_target_url = (
+            self.auth_target_url if obs.auth_required or obs.bot_protection else None
+        )
         for ref, detail in self.details.items():
             if ref in self.pages:
                 for page in obs.pages:

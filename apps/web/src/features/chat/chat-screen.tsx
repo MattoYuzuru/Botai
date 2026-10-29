@@ -17,7 +17,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { humanMessage } from "@/api/errors";
 import { meQuery, queryKeys } from "@/api/queries";
-import type { Message } from "@/api/types";
+import type { Me, Message } from "@/api/types";
 import { useComposerKeyboard } from "@/app/keyboard";
 import { documentsQuery, todayQuery } from "@/features/data/queries";
 import { useReconnect } from "@/features/data/use-reconnect";
@@ -41,6 +41,7 @@ import { ThreadsSheet } from "./threads-sheet";
 import { awaitingReply, buildTimeline, isReplying, keptBlocks } from "./timeline";
 import { TimelineView } from "./timeline-view";
 import { useChatMascot } from "./use-chat-mascot";
+import { useConnectionEchoes } from "./use-connection-echoes";
 import { useStickToBottom } from "./use-stick-to-bottom";
 
 const NEW_THREAD = "new";
@@ -99,6 +100,7 @@ export function ChatScreen() {
   const activeId = connectRequestId || param === NEW_THREAD ? null : (param ?? latestId);
   const resolving = Boolean(connectRequestId) || (param === undefined && threads.isPending);
   const activeThread = threads.data?.find((thread) => thread.id === activeId) ?? null;
+  const sourceEchoes = useConnectionEchoes(me.data?.user.id ?? null, activeId);
 
   const pending = useMemo(
     () =>
@@ -261,8 +263,9 @@ export function ChatScreen() {
     [messages, pending, job, nowMs],
   );
   const connectTimeline = useMemo(
-    () => (runtime ? connectionTurns(messages, job, runtime) : []),
-    [messages, job, runtime],
+    () =>
+      runtime ? connectionTurns(sourceEchoes.messages(messages), job, runtime, sourceEchoes.echoes) : [],
+    [messages, job, runtime, sourceEchoes],
   );
   const startingThread =
     activeId === null && draftMessages.some((message) => message.ownerId === me.data?.user.id);
@@ -349,11 +352,32 @@ export function ChatScreen() {
         <div className="relative">
           {connectionMode ? (
             <ConnectionComposer
-              key={activeId ?? connectRequestId}
+              key={`${activeId ?? connectRequestId}:${sourceEchoes.generation}`}
               threadId={activeId}
               runtime={runtime}
               job={job}
               onTyping={setConnectTyping}
+              onSending={(id, text) =>
+                sourceEchoes.start(
+                  id,
+                  text,
+                  connectTimeline.map((turn) => turn.key),
+                  messages,
+                )
+              }
+              onAccepted={(id, message) => {
+                if (
+                  !activeId ||
+                  queryClient.getQueryData<Me>(meQuery.queryKey)?.user.id !== me.data?.user.id ||
+                  !sourceEchoes.accept(id, message)
+                )
+                  return false;
+                queryClient.setQueryData<Message[]>(chatKeys.messages(activeId), (old) =>
+                  old?.some((row) => row.id === message.id) ? old : [...(old ?? []), message],
+                );
+                return true;
+              }}
+              onRejected={sourceEchoes.reject}
             />
           ) : (
             <ChatComposer

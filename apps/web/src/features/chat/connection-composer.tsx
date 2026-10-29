@@ -2,6 +2,7 @@ import { ChatComposer } from "@botai/design";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { humanMessage } from "@/api/errors";
+import type { Message } from "@/api/types";
 import { isTerminal, type JobSnapshot } from "@/features/jobs/job-state";
 import { clientId } from "@/lib/client-id";
 import { sendConnectText, type ThreadRuntime, threadRuntimeKey } from "./connection-api";
@@ -9,17 +10,23 @@ import { chatKeys } from "./queries";
 
 export const SOURCE_JOBS = new Set(["connect", "sync", "repair", "learn"]);
 
-/** Текст этого разговора живёт только в открытом editor, никогда в persisted Outbox. */
+/** До API-подтверждения текст живёт только в памяти открытой страницы, никогда в persisted Outbox. */
 export function ConnectionComposer({
   threadId,
   runtime,
   job,
   onTyping,
+  onSending,
+  onAccepted,
+  onRejected,
 }: {
   threadId: string | null;
   runtime: ThreadRuntime | undefined;
   job: JobSnapshot | null;
   onTyping: (typing: boolean) => void;
+  onSending: (id: string, text: string) => boolean;
+  onAccepted: (id: string, message: Message) => boolean;
+  onRejected: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [value, setValue] = useState("");
@@ -46,8 +53,8 @@ export function ConnectionComposer({
     [onTyping],
   );
   useEffect(() => {
-    if (protectedRequest) setValue("");
-  }, [protectedRequest]);
+    if (protectedRequest && !busy && !error) setValue("");
+  }, [protectedRequest, busy, error]);
 
   const send = async (text: string) => {
     if (!ready || busy || request.current || !threadId) return;
@@ -56,12 +63,18 @@ export function ConnectionComposer({
         ? last.current
         : { text, jobId: targetJobId, id: clientId() };
     last.current = attempt;
+    if (!onSending(attempt.id, text)) return;
     const controller = new AbortController();
     request.current = controller;
     setBusy(true);
     setError(null);
     try {
-      await sendConnectText(threadId, text, attempt.id, attempt.jobId, controller.signal);
+      const accepted = await sendConnectText(threadId, text, attempt.id, attempt.jobId, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!onAccepted(attempt.id, accepted.message)) {
+        controller.abort();
+        return;
+      }
       // Сначала canonical messages: вопрос не окажется после принятого user turn.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: chatKeys.messages(threadId) }),
@@ -73,6 +86,7 @@ export function ConnectionComposer({
         last.current = null;
       }
     } catch (failure) {
+      onRejected(attempt.id);
       if (!controller.signal.aborted) {
         setError(humanMessage(failure));
         void queryClient.invalidateQueries({ queryKey: threadRuntimeKey(threadId) });

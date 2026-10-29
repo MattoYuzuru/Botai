@@ -145,6 +145,8 @@ _BOOLEANS = set(
         "bearer_present",
         "expires_hint_present",
         "storage_restored",
+        "manual_login",
+        "entry_verified",
         "force",
         "stored_present",
         "preset_present",
