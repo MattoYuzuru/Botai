@@ -369,9 +369,11 @@ export async function runReply(
               `| ${clock(Date.parse(event.startsAt))} | ${event === next ? `**${event.title}**` : event.title} | ${event.location ?? "—"} |`,
           )
           .join("\n");
+        const table = `| Время | Предмет | Аудитория |\n|:---|:---|:---|\n${rows}`;
+        const link = `*Расписание обновлено 12 минут назад.* Подробнее — [в кабинете](${(next ?? last)?.url ?? "https://lk.fakeuni.test/timetable"}).`;
         finalText = next
-          ? `Следующая пара — **${next.title}** в ${clock(Date.parse(next.startsAt))}${next.location ? `, ${next.location}` : ""}.\n\n| Время | Предмет | Аудитория |\n|:---|:---|:---|\n${rows}\n\n*Расписание обновлено 12 минут назад.* Подробнее — [в кабинете](${next.url ?? "https://lk.fakeuni.test/timetable"}).`
-          : `На сегодня пары закончились. Последняя — **${last?.title}** в ${clock(Date.parse(last?.startsAt ?? ""))}.`;
+          ? `Следующая пара — **${next.title}** в ${clock(Date.parse(next.startsAt))}${next.location ? `, ${next.location}` : ""}.\n\n${table}\n\n${link}`
+          : `На сегодня пары закончились. Последняя — **${last?.title}** в ${clock(Date.parse(last?.startsAt ?? ""))}.\n\n${table}\n\n${link}`;
         // Три страницы одного подключения: под ответом это одна запись «Расписание — личный кабинет».
         sources = [
           { title: "Расписание — личный кабинет", url: `botai://connections/${connection.id}`, fetchedAt },

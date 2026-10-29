@@ -52,6 +52,59 @@ function problem(status: number, code: string, detail: string) {
   );
 }
 
+interface Upload {
+  file: { name: string; type: string; size: number };
+  data: ArrayBuffer;
+  threadId: string;
+}
+
+/**
+ * Разбор multipart-тела загрузки. В браузере это `request.formData()`; окружение тестов (jsdom поверх Node) не
+ * разбирает чужой multipart, и тогда тело читается как текст: имя, тип и размер те же, содержимое — для проверки.
+ */
+async function readUpload(request: Request): Promise<Upload | null> {
+  try {
+    const form = await request.clone().formData();
+    const entry = form.get("file");
+    if (!entry || typeof entry === "string") return null;
+    const file = entry as File;
+    const threadId = form.get("threadId");
+    return {
+      file: { name: file.name, type: file.type, size: file.size },
+      data: await file.arrayBuffer(),
+      threadId: typeof threadId === "string" ? threadId : "",
+    };
+  } catch {
+    const boundary = /boundary=([^;]+)/.exec(request.headers.get("content-type") ?? "")?.[1];
+    if (!boundary) return null;
+    const text = await request.text();
+    let result: Upload | null = null;
+    let threadId = "";
+    for (const part of text.split(`--${boundary}`)) {
+      const split = part.indexOf("\r\n\r\n");
+      if (split < 0) continue;
+      const head = part.slice(0, split);
+      const body = part.slice(split + 4).replace(/\r\n$/, "");
+      const name = /name="([^"]*)"/.exec(head)?.[1];
+      const filename = /filename="([^"]*)"/.exec(head)?.[1];
+      if (name === "threadId") threadId = body;
+      else if (name === "file" && filename !== undefined) {
+        const bytes = new TextEncoder().encode(body);
+        result = {
+          file: {
+            name: decodeURIComponent(filename),
+            type: /Content-Type:\s*([^\r\n]+)/i.exec(head)?.[1] ?? "",
+            size: bytes.byteLength,
+          },
+          data: bytes.buffer as ArrayBuffer,
+          threadId,
+        };
+      }
+    }
+    return result ? { ...result, threadId } : null;
+  }
+}
+
 const estimate = (text: string) => Math.ceil(text.length / 3);
 
 function kindOfMime(mime: string, name: string): MockAttachment["kind"] {
@@ -421,13 +474,13 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
     http.post("*/api/v1/attachments", async ({ request }) => {
       await wait();
       if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
-      const form = await request.formData().catch(() => null);
-      const file = form?.get("file");
-      if (!(file instanceof File)) return problem(422, "validation", "Файл не передан");
+      const upload = await readUpload(request);
+      if (!upload) return problem(422, "validation", "Файл не передан");
+      const file = upload.file;
       if (file.size > MAX_FILE_BYTES) return problem(413, "file_too_large", "Файл больше 20 МБ");
       if (file.type === "application/x-msdownload" || /\.(exe|bat|dll)$/i.test(file.name))
         return problem(415, "unsupported_type", "Такой тип файла не поддерживается");
-      const threadId = form?.get("threadId");
+      const threadId = upload.threadId;
       const item: MockAttachment = {
         id: ulid(),
         name: file.name,
@@ -435,11 +488,11 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
         size: file.size,
         kind: kindOfMime(file.type, file.name),
         createdAt: iso(),
-        threadId: typeof threadId === "string" && threadId ? threadId : null,
+        threadId: threadId || null,
         attached: false,
       };
       state().attachments[item.id] = item;
-      attachmentBytes(db).set(item.id, { data: await file.arrayBuffer(), mime: item.mime });
+      attachmentBytes(db).set(item.id, { data: upload.data, mime: item.mime });
       save();
       return HttpResponse.json(attachmentOut(item), { status: 201 });
     }),

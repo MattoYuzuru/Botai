@@ -185,7 +185,7 @@ describe("MascotPresence: тихое присутствие и действия"
         </>
       ),
     });
-    const paths = ["/", "/tasks", "/schedule", "/chat", "/connect", "/study"];
+    const paths = ["/", "/tasks", "/schedule", "/chat", "/study"];
     const children = paths.map((path) =>
       createRoute({
         getParentRoute: () => root,
@@ -225,11 +225,12 @@ describe("MascotPresence: тихое присутствие и действия"
     expect(screen.queryByRole("button", { name: "Войти снова" })).toBeNull();
   });
 
-  it("нет данных: приглашение «Подключить вуз» ведёт на подключение", async () => {
+  it("нет данных: приглашение «Подключить вуз» открывает чат с заготовкой в поле ввода", async () => {
     const user = userEvent.setup();
     const { router } = mount("today", "empty");
     await user.click(await screen.findByRole("button", { name: "Подключить вуз" }, wait));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/connect"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(router.state.location.search).toMatchObject({ draft: expect.stringContaining("подключить вуз") });
   });
 
   it("в покое Варя не показывается: ни картинки, ни подписи", async () => {

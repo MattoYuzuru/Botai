@@ -115,7 +115,10 @@ describe("«Сегодня»: состояния данных", () => {
     useScenario("empty");
     renderApp("/");
     expect(await screen.findByText("Вузов пока нет")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Подключить вуз" })).toHaveAttribute("href", "/connect");
+    expect(screen.getByRole("link", { name: "Подключить вуз" })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/^\/chat\?draft=/),
+    );
     expect(screen.queryByText(/сдано/i)).toBeNull();
   });
 

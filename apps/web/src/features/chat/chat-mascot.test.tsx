@@ -166,7 +166,7 @@ describe("Варя в чате: сцена, насест, реплики", () =>
           expect(dock()).toHaveAttribute("data-dock", "floor");
           expect(screen.queryByText("Прежний вопрос", { selector: "p" })).toBeNull();
         } else {
-          await user.click(screen.getByRole("button", { name: "История чатов" }));
+          await user.click(screen.getByRole("button", { name: "Чаты" }));
           await user.click(await screen.findByRole("link", { name: /Что сегодня по расписанию\?/ }, wait));
           await screen.findByText("Что сегодня по расписанию?", { selector: "p" }, wait);
         }
@@ -194,7 +194,7 @@ describe("Варя в чате: сцена, насест, реплики", () =>
       let meAvailable = false;
       current.server.use(http.get("*/api/v1/me", () => (meAvailable ? undefined : HttpResponse.error())));
       const { router, queryClient } = renderApp("/chat?thread=new");
-      await screen.findByRole("heading", { level: 1, name: "Чат" }, wait);
+      await screen.findByRole("heading", { level: 1, name: "Новый чат" }, wait);
       expect(queryClient.getQueryData(queryKeys.me)).toBeUndefined();
       expect(screen.queryByText("Что сдавать на неделе?", { selector: "p" })).toBeNull();
 
@@ -282,18 +282,15 @@ describe("Варя в чате: сцена, насест, реплики", () =>
     expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled();
   });
 
-  it("список сообщений получает нижний отступ под выступ Вари, пустой чат — нет", async () => {
+  it("лента получает нижний отступ под выступ Вари: последнее сообщение не уходит под неё", async () => {
     const user = userEvent.setup();
     renderApp("/chat");
     await screen.findByText("Что сегодня по расписанию?", { selector: "p" }, wait);
-    expect(document.querySelector("[data-radix-scroll-area-viewport] > div > div")?.className).toContain(
-      "pb-10",
-    );
+    expect(document.querySelector("[data-chat-content]")?.className).toContain("pb-6");
     await user.click(screen.getByRole("button", { name: "Новый чат" }));
     await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
-    expect(document.querySelector("[data-radix-scroll-area-viewport] > div > div")?.className).toContain(
-      "pb-4",
-    );
+    // На пустом чате место сцены входит в центрируемый блок, а не стоит пустой полосой над полем.
+    expect(document.querySelector("[data-empty-chat] [data-stage-floor]")).not.toBeNull();
   });
 
   it("спокойный режим: Варя статична, пузыри остаются (это текст)", async () => {

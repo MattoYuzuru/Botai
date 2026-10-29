@@ -151,7 +151,8 @@ export function ChatScreen() {
   jobsRef.current = jobs.filter((job) => !isJobTerminal(job.snapshot.state)).length;
 
   const running = jobsRef.current > 0;
-  const awaiting = !running && awaitingReply(messages, pending, Date.now());
+  // Задание неизвестно (страницу перезагрузили, ответ потерялся), но вопрос свежий: ответ ещё может прийти.
+  const awaiting = jobs.length === 0 && awaitingReply(messages, pending, Date.now());
   const composer = composerState({
     threadId: activeId,
     runtime,
@@ -257,6 +258,9 @@ export function ChatScreen() {
   );
 
   const startNewChat = () => {
+    // Новый чат начинается пустым: сообщение, которое ещё создаёт прежний чат, остаётся в очереди и уйдёт туда.
+    setDraftMessages([]);
+    setDrafts((all) => ({ ...all, [NEW_THREAD]: "" }));
     void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
   };
 

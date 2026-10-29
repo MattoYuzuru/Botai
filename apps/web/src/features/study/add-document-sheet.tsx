@@ -14,9 +14,9 @@ import {
 } from "@botai/design";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { threadOfJob } from "@/features/chat/job-thread";
 import { useState } from "react";
 import { humanMessage } from "@/api/errors";
+import { threadOfJob } from "@/features/chat/job-thread";
 import { trackJob } from "@/features/data/use-reconnect";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import {

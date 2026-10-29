@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** Ближе этого к низу страницы считается «прокручено до конца»: новые сообщения тянут страницу за собой. */
 const PINNED_PX = 48;
 
-const root = (): HTMLElement => document.scrollingElement as HTMLElement;
+const root = (): HTMLElement => (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
 const distanceToBottom = (): number => {
   const element = root();
   return element.scrollHeight - element.scrollTop - element.clientHeight;

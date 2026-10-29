@@ -98,3 +98,86 @@ describe("вопросы", () => {
     expect(isQuestion(sample("wait"))).toBe(false);
   });
 });
+
+describe("блоки v3: plan, attachment, task и быстрые ответы", () => {
+  const plan = {
+    ...base,
+    type: "plan",
+    title: "Как отвечу",
+    steps: [
+      { id: "a", title: "Собрать пары", state: "done" },
+      { id: "b", title: "Ответить", state: "pending" },
+    ],
+  };
+
+  it("известные формы разбираются как свои типы", () => {
+    expect(parseBlock(plan)?.type).toBe("plan");
+    const file = {
+      ...base,
+      type: "attachment",
+      attachmentId: "A1",
+      name: "фото.png",
+      mime: "image/png",
+      size: 12,
+      kind: "image",
+    };
+    expect(parseBlock(file)?.type).toBe("attachment");
+    const task = {
+      ...base,
+      type: "task",
+      jobId: "J1",
+      kind: "connect",
+      title: "Подключение ЦУ",
+      state: "running",
+      threadId: "T1",
+      connectionId: "C1",
+    };
+    expect(parseBlock(task)?.type).toBe("task");
+  });
+
+  it("битая форма — неизвестный блок: неизвестное состояние шага, вид вложения, вид задачи", () => {
+    expect(parseBlock({ ...plan, steps: [{ id: "a", title: "x", state: "queued" }] })?.type).toBe("unknown");
+    expect(parseBlock({ ...plan, steps: [] })?.type).toBe("unknown");
+    expect(
+      parseBlock({
+        ...base,
+        type: "attachment",
+        attachmentId: "A",
+        name: "n",
+        mime: "m",
+        size: 1,
+        kind: "video",
+      })?.type,
+    ).toBe("unknown");
+    expect(
+      parseBlock({
+        ...base,
+        type: "task",
+        jobId: "J",
+        kind: "learn",
+        title: "t",
+        state: "running",
+        threadId: "T",
+      })?.type,
+    ).toBe("unknown");
+  });
+
+  it("быстрые ответы: до четырёх, непустые, до 60 знаков; остальное отбрасывается, текст остаётся", () => {
+    const text = { ...base, type: "text", markdown: "Готово." };
+    const block = parseBlock({
+      ...text,
+      quickReplies: ["Да", " Нет ", "", "x".repeat(61), 7, "Ещё", "Три", "Четыре", "Пять"],
+    });
+    expect(block).toMatchObject({ type: "text", quickReplies: ["Да", "Нет", "Ещё", "Три"] });
+    expect(parseBlock({ ...text, quickReplies: "Да" })).not.toHaveProperty("quickReplies");
+    expect(parseBlock({ ...text, quickReplies: [] })).not.toHaveProperty("quickReplies");
+    expect(parseBlock(text)).not.toHaveProperty("quickReplies");
+  });
+
+  it("план обновляется патчем: новое состояние шага, тот же id", () => {
+    const block = parseBlock(plan);
+    if (!block) throw new Error("нет блока");
+    const next = patchBlock(block, { steps: [{ id: "a", title: "Собрать пары", state: "done" }] });
+    expect(next).toMatchObject({ type: "plan", id: base.id });
+  });
+});

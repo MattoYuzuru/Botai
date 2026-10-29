@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { groupCitations } from "@/features/chat/citations";
 import { parseBlock } from "@/features/jobs/blocks";
 import type { AnswerState } from "@/features/jobs/job-state";
 import { AgentBlockView } from "./agent-block";
@@ -311,20 +312,122 @@ describe("summary, text, wait, handoff, unknown", () => {
     expect(screen.getByText("Ничего не нашлось.")).toBeInTheDocument();
   });
 
-  it("text: безопасный markdown и источники", () => {
-    setup({
-      type: "text",
-      id: ID(5),
-      at: AT,
-      markdown: "Следующая пара — **Алгоритмы** в 11:10. <script>alert(1)</script>",
-      sources: [{ title: "Расписание", url: "https://fakeuni.test/timetable", fetchedAt: AT }],
-    });
+  it("text: безопасный markdown, таблица, курсив и ссылки; источники сгруппированы по источнику", () => {
+    setup(
+      {
+        type: "text",
+        id: ID(5),
+        at: AT,
+        markdown:
+          "Следующая пара — **Алгоритмы** в 11:10, *аудитория 305*. <script>alert(1)</script>\n\n| Время | Предмет |\n|---|---|\n| 11:10 | **Алгоритмы** |\n\nСм. [расписание](https://fakeuni.test/timetable).",
+        sources: [
+          { title: "Расписание на сегодня", url: "https://fakeuni.test/timetable", fetchedAt: AT },
+          { title: "Расписание на неделю", url: "https://fakeuni.test/timetable/week", fetchedAt: AT },
+          { title: "Расписание на месяц", url: "https://fakeuni.test/timetable/month", fetchedAt: AT },
+        ],
+      },
+      {},
+      {
+        groupSources: (sources) =>
+          groupCitations(
+            sources,
+            [{ id: "C1", title: "Личный кабинет", origin: "https://fakeuni.test", spaceTitle: "ВШЭ" }],
+            () => null,
+          ),
+      },
+    );
     expect(document.querySelector("script")).toBeNull();
-    expect(screen.getByText("Алгоритмы").tagName).toBe("STRONG");
-    expect(screen.getByRole("link", { name: /Расписание/ })).toHaveAttribute(
+    expect(screen.getAllByText("Алгоритмы").some((node) => node.tagName === "STRONG")).toBe(true);
+    expect(screen.getByText("аудитория 305").tagName).toBe("EM");
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "расписание" })).toHaveAttribute(
       "href",
       "https://fakeuni.test/timetable",
     );
+    // Три страницы одного подключения — одна запись, подписанная названием источника, а не адресом сайта.
+    const sources = screen.getByRole("list", { name: "Источники" });
+    expect(within(sources).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(sources).getByText("Личный кабинет")).toBeInTheDocument();
+    expect(within(sources).getByText("ВШЭ")).toBeInTheDocument();
+    expect(within(sources).queryByText("fakeuni.test")).toBeNull();
+  });
+
+  it("text: внутренняя ссылка botai://threads/… открывает тред в приложении", async () => {
+    const open = vi.fn();
+    setup(
+      { type: "text", id: ID(5), at: AT, markdown: "Продолжим [в чате подключения](botai://threads/T1)." },
+      {},
+      {
+        resolveLink: (url) =>
+          url === "botai://threads/T1" ? { href: "/chat?thread=T1", onOpen: open } : null,
+      },
+    );
+    const link = screen.getByRole("link", { name: "в чате подключения" });
+    expect(link).toHaveAttribute("href", "/chat?thread=T1");
+    await userEvent.click(link);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it("text: быстрые ответы — поле блока, а не часть текста", () => {
+    setup({ type: "text", id: ID(5), at: AT, markdown: "Готово.", quickReplies: ["Да", "Нет"] });
+    expect(screen.getByText("Готово.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Да" })).toBeNull();
+  });
+
+  it("plan: шаги со своими состояниями словами", () => {
+    setup({
+      type: "plan",
+      id: ID(5),
+      at: AT,
+      title: "Как отвечу",
+      steps: [
+        { id: "a", title: "Собрать пары", state: "done" },
+        { id: "b", title: "Сравнить нагрузку", state: "active" },
+        { id: "c", title: "Ответить", state: "pending" },
+      ],
+    });
+    const list = screen.getByRole("list", { name: /План|Шаги/ });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByText(/выполнено 1 из 3/)).toBeInTheDocument();
+  });
+
+  it("attachment: файл открывается во вьюере по нажатию", async () => {
+    const ctx = setup(
+      {
+        type: "attachment",
+        id: ID(5),
+        at: AT,
+        attachmentId: "A1",
+        name: "график.pdf",
+        mime: "application/pdf",
+        size: 2048,
+        kind: "document",
+      },
+      {},
+      { openAttachment: vi.fn() },
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Открыть график\.pdf/ }));
+    expect(ctx.openAttachment).toHaveBeenCalledWith("A1");
+  });
+
+  it("task: карточка задачи этого чата показывает состояние без ссылки «в другой чат»", () => {
+    setup(
+      {
+        type: "task",
+        id: ID(5),
+        at: AT,
+        jobId: ID(9),
+        kind: "connect",
+        title: "Подключение ЦУ",
+        state: "running",
+        threadId: "T1",
+      },
+      {},
+      { threadId: "T1", taskState: () => "waiting_user" },
+    );
+    expect(screen.getByText("Подключение ЦУ")).toBeInTheDocument();
+    expect(screen.getByText("Ждёт вас")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть чат" })).toBeNull();
   });
 
   it("wait: без кнопок, срок текстом", () => {

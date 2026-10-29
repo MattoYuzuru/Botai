@@ -255,7 +255,7 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
   }
 
   const running = jobs.some((job) => !isTerminal(job.snapshot.state));
-  if (!running && awaitingReply(messages, pending, nowMs)) {
+  if (jobs.length === 0 && awaitingReply(messages, pending, nowMs)) {
     // Задание неизвестно (страницу перезагрузили, ответ потерялся), но вопрос свежий: ответ ещё может прийти.
     const last = messages.at(-1);
     const started = last ? num(last.createdAt) : nowMs;
