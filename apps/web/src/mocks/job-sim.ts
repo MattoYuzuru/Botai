@@ -2,7 +2,7 @@
  * Симулятор задания для мок-режима: ведёт журнал событий потока (contracts/events.md §1), ждёт ответов на блоки
  * и отдаёт события по `Last-Event-ID`. Секреты в журнал не попадают — как у настоящего сервера.
  */
-import type { AgentUiBlock } from "@/api/agent-ui.gen";
+import type { KnownBlock } from "@/features/jobs/blocks";
 
 export interface SimEvent {
   id: number;
@@ -66,7 +66,7 @@ export class JobSim {
     });
   }
 
-  block(block: AgentUiBlock): void {
+  block(block: KnownBlock): void {
     this.emit("block", block);
   }
 
@@ -75,7 +75,7 @@ export class JobSim {
   }
 
   /** Задаёт вопрос блоком и ждёт ответа; состояние задания — `waiting_user`. */
-  async ask(block: AgentUiBlock, stage: string): Promise<unknown> {
+  async ask(block: KnownBlock, stage: string): Promise<unknown> {
     const answer = new Promise<unknown>((resolve) => this.waiting.set(block.id, resolve));
     this.block(block);
     this.status(stage, "waiting_user");

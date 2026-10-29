@@ -1,6 +1,7 @@
 import { Badge, Button, Card, EmptyState, Icon, ListRow, useNow } from "@botai/design";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { addSourceDraft } from "@/features/chat/drafts";
 import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { AddDocumentSheet } from "../add-document-sheet";
@@ -37,7 +38,7 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
       actions={
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" asChild>
-            <Link to="/connect" search={{ space: ctx.scope.spaceId ?? undefined }}>
+            <Link to="/chat" search={{ draft: addSourceDraft(ctx.scope.spaces[0] ?? null) }}>
               <Icon name="plus" size={20} />
               Подключить источник
             </Link>

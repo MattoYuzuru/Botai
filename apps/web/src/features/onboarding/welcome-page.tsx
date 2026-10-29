@@ -1,6 +1,7 @@
 import { Button, Card, Icon, type IconName, Wordmark } from "@botai/design";
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { CONNECT_DRAFT } from "@/features/chat/drafts";
 
 interface Point {
   icon: IconName;
@@ -57,7 +58,9 @@ export function WelcomePage() {
 
       <div className="sticky bottom-0 mt-auto flex flex-col gap-2 bg-bg pt-3 pb-safe-4 xs:flex-row">
         <Button variant="primary" asChild className="xs:min-w-48">
-          <Link to="/connect">Подключить вуз</Link>
+          <Link to="/chat" search={{ draft: CONNECT_DRAFT }}>
+            Подключить вуз
+          </Link>
         </Button>
         <Button variant="ghost" asChild>
           <Link to="/">Позже</Link>

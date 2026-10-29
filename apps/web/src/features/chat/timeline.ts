@@ -1,43 +1,79 @@
 /**
- * Лента чата: из того, что лежит в истории на сервере, того, что ждёт отправки, и того, что приходит по потоку
- * задания прямо сейчас, собирается один список сообщений. Чистая функция: «сейчас» приходит аргументом.
+ * Лента чата: один тред — один таймлайн (§3.1). Из того, что лежит в истории на сервере, того, что ждёт отправки,
+ * и того, что приходит по потокам заданий прямо сейчас (ход агента и фоновые задачи), собирается один список.
+ * Чистая функция: «сейчас» приходит аргументом.
+ *
+ * Порядок — серверный: блок получает один ключ до и после сохранения, поэтому поток заданий только дополняет
+ * хвост и заменяет блок на месте (например, план обновляется тем же `id`), а ответ человека не переносит вопрос.
  */
 import { ApiError, humanMessage } from "@/api/errors";
 import type { Message } from "@/api/types";
+import { type AttachmentBlock, isTaskKind, type JobOut, type ThreadRuntime } from "@/api/v3";
 import { type ParsedBlock, parseBlock } from "@/features/jobs/blocks";
-import { isTerminal, type JobSnapshot, type StepSummary, thinkingSteps } from "@/features/jobs/job-state";
-import { resultConfidence } from "./confidence";
-import type { OutboxItem } from "./outbox";
+import {
+  initialJob,
+  isTerminal,
+  type JobSnapshot,
+  jobFailed,
+  jobProblem,
+  type StepSummary,
+  thinkingSteps,
+} from "@/features/jobs/job-state";
+import type { OutboxAttachment, OutboxItem } from "./outbox";
 
 export type UserStatus = "sent" | "sending" | "queued";
 
-export type TimelineItem =
-  | { kind: "user"; key: string; text: string; at: number; status: UserStatus }
-  | { kind: "agent"; key: string; blocks: ParsedBlock[]; at: number; jobId: string | null }
+/** Задание треда: ход агента (`chat`) или фоновая задача (`connect`, `repair`, `sync`, `ingest`). */
+export interface ThreadJob {
+  id: string;
+  kind: string;
+  connectionId: string | null;
+  snapshot: JobSnapshot;
+}
+
+export type Turn =
   | {
-      kind: "live";
+      kind: "user";
+      key: string;
+      text: string;
+      attachments: readonly (AttachmentBlock | OutboxAttachment)[];
+      at: number;
+      status: UserStatus;
+    }
+  | { kind: "block"; key: string; jobId: string | null; block: ParsedBlock; at: number }
+  | {
+      kind: "thinking";
       key: string;
       jobId: string | null;
-      at: number;
       steps: StepSummary[];
-      blocks: ParsedBlock[];
-      /** Идёт ли ещё работа агента. */
       running: boolean;
-      /** Когда работа закончилась, мс (для «Думал · 12 с»). */
       finishedAt?: number;
+    }
+  | {
+      kind: "failure";
+      key: string;
+      jobId: string;
       /** Человеческий текст сбоя; кодов в нём нет. */
-      failure: string | null;
-      /** Итог задания сообщает, что агент остановился не ответом. */
-      unsure: boolean;
+      text: string;
+      /** Источник можно перепроверить («Войти заново»). */
+      connectionId: string | null;
     };
+
+export interface Timeline {
+  turns: Turn[];
+  /** Быстрые ответы к последнему тексту агента, пока после него ничего нет. */
+  quickReplies: { key: string; options: readonly string[] } | null;
+}
 
 /** Как долго после последнего вопроса считаем, что ответ ещё может прийти (без известного задания). */
 export const AWAIT_REPLY_MS = 3 * 60_000;
 
-const num = (iso: string): number => {
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : 0;
+const stamp = (value: string | null | undefined): number | null => {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 };
+const num = (iso: string): number => stamp(iso) ?? 0;
 
 /** Текст сообщения человека: его текстовые блоки подряд. */
 export function userText(message: Message): string {
@@ -53,123 +89,208 @@ function parseBlocks(message: Message): ParsedBlock[] {
     .filter((block): block is ParsedBlock => block !== null);
 }
 
-/** Человеческий текст сбоя задания: код ошибки в интерфейс не попадает. */
+/**
+ * Человеческий текст сбоя задания: код ошибки в интерфейс не попадает. Остановка и вход, который не завершился,
+ * называются своими словами.
+ */
 export function failureText(job: JobSnapshot): string {
-  if (job.state === "cancelled") return "Ответ остановлен.";
-  const problem = job.problem;
+  if (job.state === "cancelled" && !job.problem) return "Остановлено. Уже найденные данные сохранены.";
+  const problem = jobProblem(job);
   if (!problem) return "Не удалось получить ответ. Спросите ещё раз чуть позже.";
+  if (problem.code === "login_failed" && !problem.detail) return "Вход не завершён. Можно войти заново.";
   return humanMessage(new ApiError(500, problem.code, problem.detail, problem.extra));
 }
 
-/** Когда пришёл последний блок задания: так «Думал · 12 с» замирает, а не тикает дальше. */
-function lastBlockAt(job: JobSnapshot, fallback: number): number {
-  const times = job.blocks.map((block) => (block.at ? num(block.at) : 0)).filter((ms) => ms > 0);
-  return times.length > 0 ? Math.max(...times) : fallback;
+/**
+ * Состояние задания из серверного состояния треда плюс то, что пришло по потоку. Серверное — основа после
+ * перезагрузки; поток добавляет свежие блоки и ответы. Незавершённое задание берёт у потока состояние и стадию,
+ * как только оттуда пришли события.
+ */
+export function mergeJob(saved: JobOut, live: JobSnapshot | undefined): JobSnapshot {
+  const current = live?.jobId === saved.id ? live : undefined;
+  const events = Boolean(
+    current && (current.lastEventId !== null || (isTerminal(current.state) && current.problem !== null)),
+  );
+  const savedTerminal = isTerminal(saved.state);
+  const error = saved.error;
+  const problem =
+    error && typeof error.code === "string"
+      ? { code: error.code, detail: typeof error.detail === "string" ? error.detail : "", extra: {} }
+      : null;
+  return {
+    ...initialJob(saved.id),
+    ...current,
+    state: !savedTerminal && events && current ? current.state : saved.state,
+    stage: !savedTerminal && events && current ? current.stage : saved.stage,
+    startedAt: current?.startedAt ?? stamp(saved.startedAt) ?? stamp(saved.createdAt),
+    problem: savedTerminal ? problem : (current?.problem ?? problem),
+    result: savedTerminal ? (saved.result ?? null) : (current?.result ?? saved.result ?? null),
+  };
 }
 
-/**
- * Блоки задания, которые сервер не сохраняет в истории (в ней остаётся только итоговый текст): готовый текст для
- * ручной отправки, одобренный запрос, сводка. Пока задание привязано к чату, они остаются в ленте над ответом.
- */
-export function keptBlocks(job: JobSnapshot): ParsedBlock[] {
-  return job.blocks.filter((block) => block.type !== "thinking" && block.type !== "text");
+/** Задания, поток которых нужен треду: ход агента и незавершённые задачи из серверного состояния. */
+export function runtimeJobs(runtime: ThreadRuntime | undefined): JobOut[] {
+  if (!runtime) return [];
+  const rows = new Map<string, JobOut>();
+  if (runtime.activeJob) rows.set(runtime.activeJob.id, runtime.activeJob);
+  for (const task of runtime.tasks) if (!isTerminal(task.state)) rows.set(task.id, task);
+  return [...rows.values()];
 }
 
 export interface TimelineInput {
   messages: readonly Message[];
   pending: readonly OutboxItem[];
-  job: JobSnapshot | null;
+  jobs: readonly ThreadJob[];
   nowMs: number;
 }
 
-export function buildTimeline({ messages, pending, job, nowMs }: TimelineInput): TimelineItem[] {
-  const items: TimelineItem[] = [];
+export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput): Timeline {
+  const turns: Turn[] = [];
+  const rows = new Map<string, number>();
+  const thoughts = new Map<string, Map<string, ParsedBlock>>();
+  const lastDurableAt = new Map<string, number>();
+  const jobById = new Map(jobs.map((job) => [job.id, job]));
+
+  const add = (block: ParsedBlock, jobId: string | null, fallback: string, live: boolean) => {
+    if (block.type === "thinking") {
+      if (!jobId) return;
+      let group = thoughts.get(jobId);
+      if (!group) {
+        group = new Map();
+        thoughts.set(jobId, group);
+        rows.set(`thinking:${jobId}`, turns.length);
+        turns.push({ kind: "thinking", key: `thinking:${jobId}`, jobId, steps: [], running: false });
+      }
+      group.set(block.id, block);
+      return;
+    }
+    const key = `block:${jobId ?? fallback}:${block.id}`;
+    const existing = rows.get(key);
+    const at = block.at ? num(block.at) : 0;
+    if (existing !== undefined) {
+      // Живой блок свежее сохранённого (план обновился, из карточки входа ушёл тикет); место остаётся прежним.
+      if (live) turns[existing] = { kind: "block", key, jobId, block, at };
+      return;
+    }
+    rows.set(key, turns.length);
+    turns.push({ kind: "block", key, jobId, block, at });
+  };
+
   for (const message of messages) {
+    const at = num(message.createdAt);
+    if (message.jobId && at > 0) {
+      lastDurableAt.set(message.jobId, Math.max(lastDurableAt.get(message.jobId) ?? at, at));
+    }
+    const blocks = parseBlocks(message);
     if (message.role === "user") {
-      items.push({
+      turns.push({
         kind: "user",
         key: message.id,
         text: userText(message),
-        at: num(message.createdAt),
+        attachments: blocks.filter((block): block is AttachmentBlock => block.type === "attachment"),
+        at,
         status: "sent",
       });
-    } else {
-      items.push({
-        kind: "agent",
-        key: message.id,
-        blocks: parseBlocks(message),
-        at: num(message.createdAt),
-        jobId: message.jobId,
-      });
+      continue;
     }
+    for (const block of blocks) add(block, message.jobId, message.id, false);
   }
+  for (const job of jobs) for (const block of job.snapshot.blocks) add(block, job.id, job.id, true);
+
+  // Шаги размышления каждого задания собираются в один свёрнутый блок «Думал · 12 с».
+  for (const [jobId, blocks] of thoughts) {
+    const index = rows.get(`thinking:${jobId}`);
+    if (index === undefined) continue;
+    const job = jobById.get(jobId);
+    const live = job ? !isTerminal(job.snapshot.state) : false;
+    // Заданий, о которых сервер больше не говорит, давно нет в работе: незавершённый шаг закрывается.
+    const snapshot: JobSnapshot = {
+      ...initialJob(jobId),
+      state: job ? job.snapshot.state : "done",
+      blocks: [...blocks.values()],
+    };
+    let finishedAt: number | undefined;
+    if (job && isTerminal(job.snapshot.state)) {
+      finishedAt = lastBlockAt(job.snapshot) ?? lastDurableAt.get(jobId);
+    } else if (!job) finishedAt = lastDurableAt.get(jobId);
+    turns[index] = {
+      kind: "thinking",
+      key: `thinking:${jobId}`,
+      jobId,
+      steps: thinkingSteps(snapshot),
+      running: live,
+      finishedAt,
+    };
+  }
+
+  // Задание идёт, а шагов ещё нет: честно говорим, что ждём, и не придумываем шаги.
+  for (const job of jobs) {
+    if (isTerminal(job.snapshot.state) || thoughts.has(job.id)) continue;
+    const waiting = job.snapshot.state === "waiting_user";
+    turns.push({
+      kind: "thinking",
+      key: `thinking:${job.id}`,
+      jobId: job.id,
+      steps: [
+        {
+          id: "waiting",
+          label: job.snapshot.stage ?? (job.kind === "chat" ? "Жду ответ агента" : "Думаю"),
+          state: waiting ? "waiting" : "running",
+          at: job.snapshot.startedAt ?? nowMs,
+        },
+      ],
+      running: true,
+    });
+  }
+
   for (const item of pending) {
-    items.push({
+    turns.push({
       kind: "user",
       key: `local-${item.id}`,
       text: item.text,
+      attachments: item.attachments,
       at: item.createdAt,
       status: item.status === "queued" ? "queued" : "sending",
     });
   }
 
-  const persisted = job
-    ? messages.some((message) => message.role === "agent" && message.jobId === job.jobId)
-    : false;
-  if (job && !persisted) {
-    const steps = thinkingSteps(job);
-    const blocks = job.blocks.filter((block) => block.type !== "thinking");
-    const running = !isTerminal(job.state);
-    const failure = job.state === "failed" || job.state === "cancelled" ? failureText(job) : null;
-    const started = job.startedAt ?? nowMs;
-    items.push({
-      kind: "live",
-      key: `live-${job.jobId}`,
-      jobId: job.jobId,
-      at: started,
-      // Задание ещё ничего не прислало: честно говорим, что ждём, а не придумываем шаги.
-      steps:
-        steps.length === 0 && running
-          ? [{ id: "waiting-for-agent", label: "Жду ответ агента", state: "running", at: started }]
-          : steps,
-      blocks,
-      running,
-      finishedAt: running ? undefined : lastBlockAt(job, nowMs),
-      failure,
-      unsure: job.state === "done" && resultConfidence(job.result) === "unsure",
-    });
-  } else if (job && persisted && isTerminal(job.state) && keptBlocks(job).length > 0) {
-    // Ответ уже в истории, но готовый текст для ручной отправки или одобренный запрос в ней не хранятся.
-    const at = items.findIndex((item) => item.kind === "agent" && item.jobId === job.jobId);
-    const kept: TimelineItem = {
-      kind: "live",
-      key: `kept-${job.jobId}`,
-      jobId: job.jobId,
-      at: job.startedAt ?? nowMs,
-      steps: [],
-      blocks: keptBlocks(job),
-      running: false,
-      failure: null,
-      unsure: false,
-    };
-    items.splice(at >= 0 ? at : items.length, 0, kept);
-  } else if (!job && awaitingReply(messages, pending, nowMs)) {
+  const running = jobs.some((job) => !isTerminal(job.snapshot.state));
+  if (!running && awaitingReply(messages, pending, nowMs)) {
     // Задание неизвестно (страницу перезагрузили, ответ потерялся), но вопрос свежий: ответ ещё может прийти.
     const last = messages.at(-1);
     const started = last ? num(last.createdAt) : nowMs;
-    items.push({
-      kind: "live",
-      key: "live-awaiting",
+    turns.push({
+      kind: "thinking",
+      key: "thinking:awaiting",
       jobId: null,
-      at: started,
       steps: [{ id: "waiting-for-agent", label: "Жду ответ агента", state: "running", at: started }],
-      blocks: [],
       running: true,
-      failure: null,
-      unsure: false,
     });
   }
-  return items;
+
+  for (const job of jobs) {
+    if (!jobFailed(job.snapshot) || job.snapshot.state === "queued") continue;
+    turns.push({
+      kind: "failure",
+      key: `failure:${job.id}`,
+      jobId: job.id,
+      text: failureText(job.snapshot),
+      connectionId: isTaskKind(job.kind) && job.kind !== "ingest" ? job.connectionId : null,
+    });
+  }
+
+  const last = turns.at(-1);
+  const quickReplies =
+    last?.kind === "block" && last.block.type === "text" && last.block.quickReplies && !running
+      ? { key: last.key, options: last.block.quickReplies }
+      : null;
+  return { turns, quickReplies };
+}
+
+/** Когда пришёл последний блок задания: так «Думал · 12 с» замирает, а не тикает дальше. */
+function lastBlockAt(job: JobSnapshot): number | undefined {
+  const times = job.blocks.map((block) => (block.at ? num(block.at) : 0)).filter((ms) => ms > 0);
+  return times.length > 0 ? Math.max(...times) : undefined;
 }
 
 /** Последний в истории — вопрос человека, ему меньше трёх минут, очереди нет: ответ, скорее всего, в пути. */
@@ -181,10 +302,4 @@ export function awaitingReply(
   if (pending.length > 0) return false;
   const last = messages.at(-1);
   return last?.role === "user" && nowMs - num(last.createdAt) < AWAIT_REPLY_MS;
-}
-
-/** Агент сейчас отвечает или ждёт человека: новое сообщение отправить нельзя (сервер ответит 409). */
-export function isReplying(job: JobSnapshot | null, awaiting: boolean): boolean {
-  if (job) return !isTerminal(job.state);
-  return awaiting;
 }

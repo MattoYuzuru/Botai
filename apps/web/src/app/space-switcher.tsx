@@ -2,6 +2,7 @@ import { type SwitcherSpace, UniversitySpaceSwitcher, useNow, useOnline } from "
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { connectionsQuery, spacesQuery, universitiesQuery } from "@/api/queries";
+import { CONNECT_DRAFT } from "@/features/chat/drafts";
 import { useActiveSpaceId, useActiveSpaceStore } from "./active-space";
 import { summarizeConnections } from "./space-status";
 
@@ -41,7 +42,7 @@ export function ConnectedSpaceSwitcher() {
       activeId={activeId}
       onChange={select}
       allowAll={spaces.length > 1}
-      onAdd={() => navigate({ to: "/connect" })}
+      onAdd={() => navigate({ to: "/chat", search: { draft: CONNECT_DRAFT } })}
       nowMs={nowMs}
     />
   );

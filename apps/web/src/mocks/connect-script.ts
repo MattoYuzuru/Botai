@@ -1,4 +1,4 @@
-import type { AgentUiBlock } from "@/api/agent-ui.gen";
+import type { KnownBlock } from "@/features/jobs/blocks";
 import type { MockDb } from "./db";
 import { ulid } from "./db";
 import { JobCancelledError, type JobSim } from "./job-sim";
@@ -49,7 +49,7 @@ export async function runConnect(
       "Жду логин",
     );
 
-    const passwordBlock = (question: string): AgentUiBlock => ({
+    const passwordBlock = (question: string): KnownBlock => ({
       type: "input",
       id: ulid(),
       at: at(),

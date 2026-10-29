@@ -9,7 +9,24 @@
  */
 import { isApiError, isNetworkError } from "@/api/errors";
 import type { Message, Thread } from "@/api/types";
-import type { MessageAccepted } from "./queries";
+import type { AttachmentKind, MessageAccepted } from "@/api/v3";
+
+/** Загруженное вложение, которое уйдёт с сообщением: имя и тип нужны, чтобы показать его в ленте до ответа сервера. */
+export interface OutboxAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: AttachmentKind;
+}
+
+/** Что уходит на сервер вместе с сообщением. `clientMessageId` — идентификатор элемента очереди (идемпотентность). */
+export interface OutboxPost {
+  text: string;
+  attachmentIds: string[];
+  clientMessageId: string;
+  targetJobId?: string;
+}
 
 export interface OutboxItem {
   /** Локальный идентификатор (до ответа сервера у сообщения своего id нет). */
@@ -19,6 +36,10 @@ export interface OutboxItem {
   threadId: string | null;
   spaceId: string | null;
   text: string;
+  /** Вложения уже загружены (`POST /attachments`), в сообщении уходят их идентификаторы. */
+  attachments: OutboxAttachment[];
+  /** Ответ на вопрос задачи, которую человек видел: сервер вернёт 409, если вопрос уже закрыт. */
+  targetJobId?: string;
   createdAt: number;
   /** `queued` — нет сети, ждёт её; `sending` — идёт отправка или короткая пауза перед следующей попыткой. */
   status: "queued" | "sending";
@@ -39,8 +60,8 @@ export interface OutboxDeps {
   online: () => boolean;
   /** Кто сейчас вошёл. `null` — сессии нет (очередь ждёт); сбой сети — исключение. */
   currentUserId: () => Promise<string | null>;
-  createThread: (spaceId: string | null) => Promise<Thread>;
-  postMessage: (threadId: string, text: string) => Promise<MessageAccepted>;
+  createThread: (spaceId: string | null, clientRequestId: string) => Promise<Thread>;
+  postMessage: (threadId: string, post: OutboxPost) => Promise<MessageAccepted>;
   listMessages: (threadId: string) => Promise<Message[]>;
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   setTimer: (run: () => void, ms: number) => unknown;
@@ -131,7 +152,12 @@ export class Outbox {
             typeof (item as OutboxItem).text === "string" &&
             typeof (item as OutboxItem).ownerId === "string",
         )
-        .map((item) => ({ ...item, status: "queued" as const, retryAt: null }));
+        .map((item) => ({
+          ...item,
+          attachments: Array.isArray(item.attachments) ? item.attachments : [],
+          status: "queued" as const,
+          retryAt: null,
+        }));
     } catch {
       return [];
     }
@@ -149,7 +175,13 @@ export class Outbox {
   /** Кладёт сообщение в очередь и пытается отправить сразу, если сеть есть. */
   send(
     text: string,
-    target: { ownerId: string; threadId: string | null; spaceId: string | null },
+    target: {
+      ownerId: string;
+      threadId: string | null;
+      spaceId: string | null;
+      attachments?: readonly OutboxAttachment[];
+      targetJobId?: string;
+    },
   ): OutboxItem {
     const item: OutboxItem = {
       id: this.deps.newId(),
@@ -157,6 +189,8 @@ export class Outbox {
       threadId: target.threadId,
       spaceId: target.spaceId,
       text,
+      attachments: [...(target.attachments ?? [])],
+      targetJobId: target.targetJobId,
       createdAt: this.deps.now(),
       status: this.deps.online() ? "sending" : "queued",
       attempts: 0,
@@ -266,7 +300,7 @@ export class Outbox {
     let threadId = item.threadId;
     try {
       if (!threadId) {
-        const thread = await this.deps.createThread(item.spaceId);
+        const thread = await this.deps.createThread(item.spaceId, item.id);
         if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
         threadId = thread.id;
         this.patch(item.id, { threadId });
@@ -282,7 +316,12 @@ export class Outbox {
         }
       }
       this.patch(item.id, { maybeSent: true });
-      const accepted = await this.deps.postMessage(threadId, item.text);
+      const accepted = await this.deps.postMessage(threadId, {
+        text: item.text,
+        attachmentIds: item.attachments.map((attachment) => attachment.id),
+        clientMessageId: item.id,
+        targetJobId: item.targetJobId,
+      });
       if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
       this.remove(item.id);
       this.emit({ type: "sent", item, threadId, message: accepted.message, jobId: accepted.jobId });
@@ -296,7 +335,9 @@ export class Outbox {
       if (isApiError(error)) {
         this.patch(item.id, { maybeSent: false });
         if (error.status === 409) {
-          // Ассистент ещё отвечает на прошлое сообщение: подождать и отправить, без шума.
+          // Вопрос задачи уже закрыт или агент ещё отвечает на прошлое сообщение: сообщение уйдёт обычным,
+          // сервер сам выберет, кому его отдать. Подождать и отправить, без шума.
+          if (item.targetJobId) this.patch(item.id, { targetJobId: undefined });
           this.retry(this.current(item), "sending", BUSY_DELAY_MS);
           return "retry";
         }

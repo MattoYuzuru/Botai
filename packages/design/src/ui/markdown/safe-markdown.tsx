@@ -131,7 +131,7 @@ function renderTable(block: Extract<Block, { type: "table" }>, resolveLink?: Lin
       data-md-table=""
       className="max-w-full overflow-x-auto rounded-md border border-border"
     >
-      <table className="w-full border-collapse type-ui">
+      <table className="w-full border-collapse type-ui [overflow-wrap:normal]">
         <thead className="bg-bg-subtle">
           <tr>
             {block.header.map((cell, column) => (

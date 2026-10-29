@@ -164,6 +164,8 @@
 
   /* Шаг сетки 4 px (styleguide §4). */
   --spacing: 0.25rem;
+  /* Высота верхней полосы чата и строки со знаком в рейле: их середины лежат на одной линии (§7). */
+  --spacing-topbar: 4rem;
 
   /* Шрифты грузятся локально из @fontsource-variable, внешних шрифтов нет (PWA работает офлайн). */
   --font-sans: "Geist Variable", -apple-system, system-ui, Roboto, "Segoe UI", sans-serif;
@@ -197,6 +199,8 @@
   --container-reading: var(--container-prose);
   --container-form: 27.5rem;
   --container-col: 46rem;
+  /* Колонка чата на весь экран (§3.9): сообщения и поле ввода по центру области справа от рейла. */
+  --container-chat: 48rem;
   --container-page: 72rem;
   --container-rail: 15rem;
   --container-panel: 26.25rem;

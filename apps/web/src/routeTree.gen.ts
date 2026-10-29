@@ -18,8 +18,6 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppScheduleRouteImport } from './routes/_app/schedule'
 import { Route as AppTasksRouteImport } from './routes/_app/tasks'
-import { Route as ConnectIndexRouteImport } from './routes/connect/index'
-import { Route as ConnectJobIdRouteImport } from './routes/connect/$jobId'
 import { Route as AppStudyIndexRouteImport } from './routes/_app/study/index'
 import { Route as AppStudyKindRouteImport } from './routes/_app/study/$kind'
 
@@ -67,16 +65,6 @@ const AppTasksRoute = AppTasksRouteImport.update({
   path: '/tasks',
   getParentRoute: () => AppRoute,
 } as any)
-const ConnectIndexRoute = ConnectIndexRouteImport.update({
-  id: '/connect/',
-  path: '/connect/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ConnectJobIdRoute = ConnectJobIdRouteImport.update({
-  id: '/connect/$jobId',
-  path: '/connect/$jobId',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AppStudyIndexRoute = AppStudyIndexRouteImport.update({
   id: '/study/',
   path: '/study/',
@@ -97,8 +85,6 @@ export interface FileRoutesByFullPath {
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
   '/tasks': typeof AppTasksRoute
-  '/connect/$jobId': typeof ConnectJobIdRoute
-  '/connect/': typeof ConnectIndexRoute
   '/study/$kind': typeof AppStudyKindRoute
   '/study/': typeof AppStudyIndexRoute
 }
@@ -110,9 +96,7 @@ export interface FileRoutesByTo {
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
   '/tasks': typeof AppTasksRoute
-  '/connect/$jobId': typeof ConnectJobIdRoute
   '/': typeof AppIndexRoute
-  '/connect': typeof ConnectIndexRoute
   '/study/$kind': typeof AppStudyKindRoute
   '/study': typeof AppStudyIndexRoute
 }
@@ -126,9 +110,7 @@ export interface FileRoutesById {
   '/_app/chat': typeof AppChatRoute
   '/_app/schedule': typeof AppScheduleRoute
   '/_app/tasks': typeof AppTasksRoute
-  '/connect/$jobId': typeof ConnectJobIdRoute
   '/_app/': typeof AppIndexRoute
-  '/connect/': typeof ConnectIndexRoute
   '/_app/study/$kind': typeof AppStudyKindRoute
   '/_app/study/': typeof AppStudyIndexRoute
 }
@@ -143,8 +125,6 @@ export interface FileRouteTypes {
     | '/chat'
     | '/schedule'
     | '/tasks'
-    | '/connect/$jobId'
-    | '/connect/'
     | '/study/$kind'
     | '/study/'
   fileRoutesByTo: FileRoutesByTo
@@ -156,9 +136,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/schedule'
     | '/tasks'
-    | '/connect/$jobId'
     | '/'
-    | '/connect'
     | '/study/$kind'
     | '/study'
   id:
@@ -171,9 +149,7 @@ export interface FileRouteTypes {
     | '/_app/chat'
     | '/_app/schedule'
     | '/_app/tasks'
-    | '/connect/$jobId'
     | '/_app/'
-    | '/connect/'
     | '/_app/study/$kind'
     | '/_app/study/'
   fileRoutesById: FileRoutesById
@@ -184,8 +160,6 @@ export interface RootRouteChildren {
   RegisterRoute: typeof RegisterRoute
   StyleguideRoute: typeof StyleguideRoute
   WelcomeRoute: typeof WelcomeRoute
-  ConnectJobIdRoute: typeof ConnectJobIdRoute
-  ConnectIndexRoute: typeof ConnectIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -253,20 +227,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTasksRouteImport
       parentRoute: typeof AppRoute
     }
-    '/connect/': {
-      id: '/connect/'
-      path: '/connect'
-      fullPath: '/connect/'
-      preLoaderRoute: typeof ConnectIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/connect/$jobId': {
-      id: '/connect/$jobId'
-      path: '/connect/$jobId'
-      fullPath: '/connect/$jobId'
-      preLoaderRoute: typeof ConnectJobIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_app/study/': {
       id: '/_app/study/'
       path: '/study'
@@ -310,8 +270,6 @@ const rootRouteChildren: RootRouteChildren = {
   RegisterRoute: RegisterRoute,
   StyleguideRoute: StyleguideRoute,
   WelcomeRoute: WelcomeRoute,
-  ConnectJobIdRoute: ConnectJobIdRoute,
-  ConnectIndexRoute: ConnectIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,4 +1,5 @@
-import type { IconName } from "@botai/design";
+import type { CitationGroup, LinkResolver } from "@botai/design";
+import type { TextSource } from "@/features/chat/citations";
 import type { AnswerValues } from "@/features/jobs/job-manager";
 import type { AnswerState } from "@/features/jobs/job-state";
 
@@ -30,11 +31,14 @@ export interface BlockContext {
    * (подключение вуза не оценивает уверенность).
    */
   confidence?: (markdown: string) => "ok" | "unsure";
-  /**
-   * Чат: внутренняя ссылка источника (`botai://documents/<id>`) открывается в приложении. Возвращает `null`,
-   * если адрес не внутренний; тогда источник рисуется как обычный (http(s) — в новой вкладке).
-   */
-  internalLink?: (
-    url: string,
-  ) => { href: string; label: string; icon?: IconName; onOpen?: () => void } | null;
+  /** Чат: внутренние ссылки текста (`botai://threads/…`, `botai://attachments/…`) открываются в приложении. */
+  resolveLink?: LinkResolver;
+  /** Чат: цитаты ответа сгруппированы по источнику (название источника, не адрес сайта). */
+  groupSources?: (sources: readonly TextSource[]) => readonly CitationGroup[];
+  /** Чат: вложение открывается во вьюере. */
+  openAttachment?: (id: string) => void;
+  /** Чат: открытый тред — карточка задачи из этого треда не ведёт «в другой чат». */
+  threadId?: string;
+  /** Чат: актуальное состояние задачи (из серверного состояния треда), если оно известно. */
+  taskState?: (jobId: string) => string | undefined;
 }

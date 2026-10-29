@@ -15,6 +15,7 @@ import { Link } from "@tanstack/react-router";
 import { sectionsQuery } from "@/api/queries";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
+import { CONNECT_DRAFT } from "@/features/chat/drafts";
 import { describeConnection } from "@/features/data/connection-status";
 import { resolveDataState } from "@/features/data/data-state";
 import { ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
@@ -73,7 +74,7 @@ export function StudyScreen() {
             <SpacePanel key={space.id} space={space} nowMs={nowMs} showTitle />
           ))}
           <Button variant="ghost" asChild className="self-start">
-            <Link to="/connect">
+            <Link to="/chat" search={{ draft: CONNECT_DRAFT }}>
               <Icon name="plus" size={20} />
               Подключить ещё вуз
             </Link>
