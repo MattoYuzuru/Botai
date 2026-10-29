@@ -135,6 +135,24 @@ describe("плоская source timeline", () => {
     }
   });
 
+  it("canonical GET сохраняет реальный порядок дополнительного вопроса перед принятым ответом", () => {
+    const clarification = block({ type: "text", id: ID(24), markdown: "Уточнение агента" });
+    const message = row(25, block({ type: "text", id: ID(26), markdown: "Ответ пользователя" }), "user");
+    const turns = connectionTurns([row(3, question), row(27, clarification), message], job, runtime, [
+      {
+        id: "local-attempt",
+        text: "Ответ пользователя",
+        at: Date.parse(AT),
+        precedingKeys: connectionTurns([], job, runtime).map((turn) => turn.key),
+        message,
+      },
+    ]);
+    expect(turns.filter((turn) => turn.kind === "user")).toHaveLength(1);
+    expect(
+      turns.findIndex((turn) => turn.kind === "block" && turn.block.id === clarification.id),
+    ).toBeLessThan(turns.findIndex((turn) => turn.kind === "user"));
+  });
+
   it("только pending matching Login может заменить durable placeholder, ticket не возрождается в history", () => {
     const id = ID(6);
     const placeholder = block({ type: "text", id, markdown: "Вход через браузер" });

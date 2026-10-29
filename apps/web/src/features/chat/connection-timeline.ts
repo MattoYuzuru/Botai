@@ -150,11 +150,17 @@ export function connectionTurns(
   for (const echo of echoes) {
     const key = `message:${echo.id}`;
     const existing = turns.findIndex((turn) => turn.key === key);
-    if (existing >= 0) turns.splice(existing, 1);
     // A thinking group keeps its key while new steps arrive, so it cannot
     // anchor a user's reply relative to future questions in that group.
     const preceding = new Set(echo.precedingKeys.filter((item) => !item.startsWith("thinking:")));
-    const after = turns.findLastIndex((turn) => preceding.has(turn.key));
+    let after = turns.findLastIndex((turn) => preceding.has(turn.key));
+    if (existing >= 0) {
+      // A real GET's canonical interleaving wins. Only an ACK-seeded cache row
+      // preceding its already visible question needs to move past that question.
+      if (existing > after) continue;
+      turns.splice(existing, 1);
+      after -= 1;
+    }
     turns.splice(after + 1, 0, {
       kind: "user",
       key,
