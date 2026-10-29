@@ -749,10 +749,10 @@ async def check_chat_answer(
         "Первая пара в понедельник — «Математический анализ» в 09:30, ауд. А-101 [1]."
     )
     (source,) = reply["sources"]  # a citation the model could not invent: the tool recorded it
-    assert source["title"] == "fakeuni.test"
+    assert source["title"] == "Личный кабинет"  # a name, not the host
     assert source["url"].startswith("https://fakeuni.test/api/v2/timetable")
     assert when(source["fetchedAt"]) == env.clock.now()
-    assert chat.result["sources"][0]["title"] == "fakeuni.test"
+    assert chat.result["sources"][0]["title"] == "Личный кабинет"
     assert chat.result["tools"] == ["get_schedule"]
 
     # the model was given the synced timetable of Monday from the database, and nothing else
