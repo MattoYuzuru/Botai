@@ -176,6 +176,16 @@ def session_storage_expiry(state: SessionState) -> datetime | None:
     return None if state.entry_url is not None else state.expires_hint
 
 
+def bearer_expired(
+    token: SecretStr, *, now: datetime, expires_hint: datetime | None = None
+) -> bool:
+    """Explicit and JWT expiry hints each independently prohibit replaying a saved token."""
+    expiry = jwt_expiry(token.get_secret_value())
+    return (expires_hint is not None and expires_hint <= now) or (
+        expiry is not None and expiry <= now
+    )
+
+
 def httpx_cookies(state: SessionState) -> httpx.Cookies:
     jar = httpx.Cookies()
     for c in state.cookies:

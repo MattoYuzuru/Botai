@@ -16,12 +16,14 @@ from urllib.parse import urlsplit
 from botai.browser.forms import CaptchaPage, ErrorPage, HardBlock, detect, has_credential_fields
 from botai.browser.probe import requires_authentication
 from botai.browser.read_capabilities import ReadEffectError
+from botai.browser.session import bearer_expired
 from botai.contracts.browser_plan import BrowserPlan
-from botai.core.browser import BrowserHandle, PageSnapshot
+from botai.core.browser import BrowserHandle, PageSnapshot, auth_origin
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.read_capabilities import ReadCapabilityBrowser
 from botai.sources.adapter import Problem, SessionExpired, SyncContext
 from botai.sources.extract import parse_html, select_items
+from botai.sources.session import known_expired
 from botai.sources.templates import render
 
 MAX_RENDERED_PAGES = 3
@@ -76,6 +78,7 @@ class RenderedPageReader:
                     step.value, now=self.ctx.now, tz=self.ctx.tz, params=values
                 )
         handle: BrowserHandle | None = None
+        self._check_session()
         if self.ctx.before_request is not None:
             await self.ctx.before_request()
         try:
@@ -126,6 +129,7 @@ class RenderedPageReader:
             raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Страница не принадлежит источнику")
         if self.ctx.browser is None:
             raise BotaiError(ErrorCode.RECIPE_REJECTED, "Чтение страницы в браузере недоступно")
+        self._check_session()
         if self.ctx.before_request is not None:
             await self.ctx.before_request()
         handle: BrowserHandle | None = None
@@ -170,6 +174,25 @@ class RenderedPageReader:
                 # Cleanup failure must not replace the original source/egress error.
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(handle.close(), timeout=1.0)
+
+    def _check_session(self) -> None:
+        state = self.ctx.session
+        if state is None:
+            return
+        if (
+            known_expired(state, self.ctx.now)
+            or any(
+                scope.origin == auth_origin(self.ctx.origin)
+                and bearer_expired(scope.token, now=self.ctx.now, expires_hint=scope.expires_hint)
+                for scope in state.bearer_scopes
+            )
+            or (
+                state.bearer is not None
+                and auth_origin(state.origin) == auth_origin(self.ctx.origin)
+                and bearer_expired(state.bearer, now=self.ctx.now)
+            )
+        ):
+            raise SessionExpired("rendered session is past its expiry hint", code="auth_missing")
 
     def _check_page(self, snapshot: PageSnapshot) -> None:
         if snapshot.url.startswith("chrome-error:"):

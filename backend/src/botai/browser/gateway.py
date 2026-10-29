@@ -52,6 +52,7 @@ from botai.browser.session import (
     MAX_STORAGE_KEY_CHARS,
     MAX_STORAGE_ORIGINS,
     MAX_STORAGE_VALUE_CHARS,
+    bearer_expired,
     bounded_browser_storage,
     jwt_expiry,
     storage_origin,
@@ -1442,7 +1443,9 @@ class PlaywrightGateway:
             primary = origin or (session.origin if session is not None else f"https://{hosts[0]}")
             injected_authorizations: dict[Request, str] = {}
             if session is not None:
-                injected_authorizations = await self._restore(context, session, allow_hosts=hosts)
+                injected_authorizations = await self._restore(
+                    context, session, allow_hosts=hosts, now=self._clock.now()
+                )
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
                 route_diagnostics = _browser_diagnostics(connection_id)
@@ -1484,15 +1487,38 @@ class PlaywrightGateway:
 
     @staticmethod
     async def _restore(
-        context: BrowserContext, session: SessionState, *, allow_hosts: Iterable[str] | None = None
+        context: BrowserContext,
+        session: SessionState,
+        *,
+        allow_hosts: Iterable[str] | None = None,
+        now: datetime | None = None,
     ) -> dict[Request, str]:
         injected_authorizations: dict[Request, str] = {}
+        now = now or datetime.now(UTC)
+        if session.expires_hint is not None and session.expires_hint <= now:
+            return injected_authorizations
+        expired_scopes = [
+            scope
+            for scope in session.bearer_scopes
+            if bearer_expired(scope.token, now=now, expires_hint=scope.expires_hint)
+        ]
+        expired_origins = {scope.origin for scope in expired_scopes}
+        expired_tokens = {scope.token.get_secret_value() for scope in expired_scopes}
+        primary = auth_origin(session.origin)
+        if session.bearer is not None and bearer_expired(session.bearer, now=now):
+            if primary is not None:
+                expired_origins.add(primary)
+            expired_tokens.add(session.bearer.get_secret_value())
         hosts = (
             tuple(allow_hosts)
             if allow_hosts is not None
             else ((urlsplit(session.origin).hostname or ""),)
         )
-        browser_storage = bounded_browser_storage(session.browser_storage, hosts)
+        browser_storage = [
+            entry
+            for entry in bounded_browser_storage(session.browser_storage, hosts)
+            if entry.origin not in expired_origins
+        ]
         diagnostic_event(
             "browser.restore",
             cookie_count=len(session.cookies),
@@ -1548,17 +1574,19 @@ class PlaywrightGateway:
                         "secure": c.secure,
                     }
                     for c in session.cookies
+                    if c.value.get_secret_value() not in expired_tokens
                 ]
             )
         scoped = {
             scope.origin: scope.token.get_secret_value()
             for scope in session.bearer_scopes
             if (urlsplit(scope.origin).hostname or "") in hosts
+            and scope.origin not in expired_origins
         }
-        primary = auth_origin(session.origin)
         if (
             session.bearer is not None
             and primary is not None
+            and primary not in expired_origins
             and (urlsplit(primary).hostname or "") in hosts
         ):
             scoped.setdefault(primary, session.bearer.get_secret_value())

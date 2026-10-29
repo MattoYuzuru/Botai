@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
@@ -93,7 +94,9 @@ class RecipeAdapter:
             )
         records: dict[tuple[str, str], Record] = {}
         outcomes: list[EndpointOutcome] = []
-        reader = RenderedPageReader(ctx)
+        reader = RenderedPageReader(
+            replace(ctx, session=None) if recipe.auth.type == "none" else ctx
+        )
         async with SourceClient(
             ctx, auth_type=recipe.auth.type, header_name=recipe.auth.header_name
         ) as client:
