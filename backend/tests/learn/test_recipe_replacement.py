@@ -224,9 +224,15 @@ async def test_complete_rendered_replacement_does_not_inherit_empty_session_bind
     assert len(checked) == 1
     assert spec["recipe"]["version"] == 2
     assert spec["recipe"]["auth"] == {"type": "cookie"}
-    request = spec["recipe"]["endpoints"][0]["request"]
+    request = next(
+        endpoint["request"]
+        for endpoint in spec["recipe"]["endpoints"]
+        if endpoint["kind"] == "scheduleEvents"
+    )
     assert request["render"] is True
     assert request["browserPlan"] == browser_plan
     assert "authBinding" not in request
+    if retain_browser_kind:
+        assert next(e for e in spec["recipe"]["endpoints"] if e["kind"] == "news") == old_news
     assert env.llm.requests == []
     assert await env.specs() == [(1, "active")]

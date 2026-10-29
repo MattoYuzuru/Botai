@@ -652,7 +652,9 @@ class Explorer:
             "Для этого сайта описание уже есть",
             "Подключаю по готовому описанию, без повторного разбора",
         )
-        if recipe_requires_session(scoped_spec(row.spec, scope)["recipe"]):
+        if self._prepared_session is None and recipe_requires_session(
+            scoped_spec(row.spec, scope)["recipe"]
+        ):
             # Reuse still needs this student's verified entry. A login landing/probe alone
             # may not load the SPA page that sends the recipe's bearer Authorization.
             await self._ensure_session(info)
