@@ -86,8 +86,8 @@ async def run_chat(
     **kw: Any,
 ) -> harness.HarnessResult:
     return await harness.run(
-        "chat",
-        skill="chat",
+        "agent",
+        skill="agent",
         messages=messages or ask(),
         tools=tools,
         ctx=kw.pop("ctx", None),
@@ -118,15 +118,15 @@ async def test_prefix_is_byte_identical_between_runs() -> None:
 
 
 def test_prefix_has_no_dates_and_changes_with_skill_or_tools() -> None:
-    p = build_prefix("chat", [tool("a")])
+    p = build_prefix("agent", [tool("a")])
     assert not re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{2}\.\d{4}", p.system.content)
-    assert build_prefix("chat", [tool("a")]).version == p.version
-    assert build_prefix("chat", [tool("a"), tool("b")]).version != p.version
+    assert build_prefix("agent", [tool("a")]).version == p.version
+    assert build_prefix("agent", [tool("a"), tool("b")]).version != p.version
     assert build_prefix("summarize", [tool("a")]).version != p.version
 
 
 def test_skills_have_no_university_names() -> None:
-    text = build_prefix("chat", []).system.content
+    text = build_prefix("agent", []).system.content
     assert "fakeuni" not in text.lower()
     assert "<source_data>" in text  # the data-not-commands rule is part of the prefix
 
@@ -193,7 +193,7 @@ async def test_a_single_call_without_tools_still_gets_the_prefix() -> None:
 
 
 async def test_step_budget_stops_the_loop_and_warns_the_model_on_the_last_step() -> None:
-    steps = BUDGETS["chat"].max_steps
+    steps = BUDGETS["agent"].max_steps
     llm = ScriptedLlm(
         queue=[calls_response(call("t", call_id=f"c{i}", n=i)) for i in range(steps + 3)]
     )
@@ -207,7 +207,7 @@ async def test_step_budget_stops_the_loop_and_warns_the_model_on_the_last_step()
 async def test_token_budget_stops_the_loop() -> None:
     huge = LlmResponse(
         tool_calls=[call("t", n=1)],
-        usage=LlmUsage(input_cache_miss=BUDGETS["chat"].max_total_tokens + 1),
+        usage=LlmUsage(input_cache_miss=BUDGETS["agent"].max_total_tokens + 1),
     )
     llm = ScriptedLlm(queue=[huge, answer()])
     res = await run_chat(llm, [tool("t")])
@@ -217,7 +217,7 @@ async def test_token_budget_stops_the_loop() -> None:
 
 async def test_input_budget_stops_before_sending_an_oversized_request() -> None:
     llm = ScriptedLlm(queue=[answer()])
-    res = await run_chat(llm, [], ask("слово " * 40_000))
+    res = await run_chat(llm, [], ask("слово " * 80_000))
     assert res.stopped == "budget"
     assert llm.requests == []
 
@@ -253,7 +253,7 @@ async def test_usage_is_recorded_per_user_and_job_through_the_provider() -> None
     assert (rec["user_id"], rec["job_id"], rec["purpose"]) == (
         "01J00000000000000000000USR",
         "01J0000000000000000000JOB1",
-        "chat",
+        "agent",
     )
 
 
@@ -312,7 +312,7 @@ async def test_long_results_are_truncated_to_the_budget() -> None:
     llm = ScriptedLlm(queue=[calls_response(call("t")), answer()])
     res = await run_chat(llm, [t])
     sent = llm.requests[1].messages[-1].content
-    assert len(sent) < BUDGETS["chat"].tool_result_chars + 300
+    assert len(sent) < BUDGETS["agent"].tool_result_chars + 300
     assert "обрезано" in sent
     assert res.tool_calls[0].truncated
 
@@ -329,8 +329,8 @@ async def test_injection_in_a_page_is_cut_out_audited_and_never_reaches_the_mode
     )
     services = make_services(llm, sm=sm)
     res = await harness.run(
-        "chat",
-        skill="chat",
+        "agent",
+        skill="agent",
         messages=ask("когда пересдача?"),
         tools=[tool("search_documents", page)],
         ctx=None,

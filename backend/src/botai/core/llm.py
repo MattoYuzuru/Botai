@@ -18,7 +18,7 @@ Role = Literal["system", "user", "assistant", "tool"]
 Tier = Literal["fast", "pro"]
 Thinking = Literal["enabled", "disabled"]
 Effort = Literal["low", "high", "max"]
-Purpose = Literal["chat", "classify", "learn", "repair", "extract", "summarize", "bench"]
+Purpose = Literal["agent", "classify", "learn", "repair", "extract", "summarize", "bench"]
 
 
 class LlmToolCall(BaseModel):
@@ -54,7 +54,7 @@ class LlmRequest(BaseModel):
     json_schema: dict[str, Any] | None = None  # ask for a JSON object matching this schema
     max_tokens: int = 2000
     temperature: float = 0.2
-    purpose: Purpose = "chat"  # for usage accounting and profiles
+    purpose: Purpose = "agent"  # for usage accounting and profiles
 
     def fingerprint(self) -> str:
         """Stable hash of what the model sees (purpose excluded)."""

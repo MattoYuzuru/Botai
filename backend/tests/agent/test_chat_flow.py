@@ -11,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent import chat
-from botai.agent.chat import INJECTION_NOTE, bound_connection_context, handle_chat
+from botai.agent.chat import INJECTION_NOTE, handle_chat
+from botai.agent.turn_context import turn_context
 from botai.agent.llm import DeepSeekProvider
 from botai.contracts.agent_ui import ThinkingBlock
 from botai.core.errors import BotaiError, ErrorCode
@@ -138,7 +139,7 @@ async def test_made_up_citations_are_dropped(sm: Sm, user_id: str) -> None:
 
 
 async def test_budget_exhaustion_is_an_honest_answer(sm: Sm, user_id: str) -> None:
-    llm = ScriptedLlm(queue=[step(call("get_courses", call_id=f"c{i}", n=i)) for i in range(10)])
+    llm = ScriptedLlm(queue=[step(call("get_courses", call_id=f"c{i}", n=i)) for i in range(40)])
     r = await make_rig(sm, user_id, llm)
     ctx, out = await r.ask("Расскажи всё про всё")
     assert text_block(ctx).markdown.startswith("Не знаю: мне не хватило шагов")
@@ -179,7 +180,7 @@ async def test_breakage_complaint_starts_a_repair_and_says_so(sm: Sm, user_id: s
     r = await make_rig(sm, user_id, ScriptedLlm(), conn_status="stale")
     r.llm._queue.extend(  # the connection id is only known now
         [
-            step(call("list_connections")),
+            step(call("list_universities")),
             step(
                 call("request_repair", connection_id=r.conn_id, reason="расписание не показывается")
             ),
@@ -196,7 +197,7 @@ async def test_breakage_complaint_starts_a_repair_and_says_so(sm: Sm, user_id: s
         user_id,
     )
     stages = [b.stage for b in ctx.blocks if isinstance(b, ThinkingBlock)]
-    assert stages == ["Проверяю подключения", "Запускаю починку"]
+    assert stages == ["Смотрю вузы и источники", "Запускаю починку"]
     assert "Запустил починку" in text_block(ctx).markdown
     assert out is not None
     assert out["steps"] == 3
@@ -222,7 +223,7 @@ async def test_explicit_browser_login_can_start_protected_connect_from_chat(
     r = await make_rig(sm, user_id, ScriptedLlm(), conn_status="needs_reauth")
     r.llm._queue.extend(
         [
-            step(call("list_connections")),
+            step(call("list_universities")),
             step(call("request_login", connection_id=r.conn_id)),
             final("Запросил защищённый вход. Введите данные в полях приложения, не в чате."),
         ]
@@ -237,9 +238,7 @@ async def test_explicit_browser_login_can_start_protected_connect_from_chat(
     assert "request_login" in {tool.name for tool in r.llm.requests[0].tools}
 
 
-async def test_bound_connection_context_contains_only_owned_ids_and_safe_status(
-    sm: Sm, user_id: str
-) -> None:
+async def test_turn_context_lists_only_own_sources_with_safe_status(sm: Sm, user_id: str) -> None:
     r = await make_rig(sm, user_id, ScriptedLlm(), conn_status="error")
     other = await add_user(sm, "unrelated-context")
     other_space = await add_space(sm, other)
@@ -249,14 +248,15 @@ async def test_bound_connection_context_contains_only_owned_ids_and_safe_status(
         conn = await session.get(Connection, r.conn_id)
         assert thread is not None
         assert conn is not None
-        thread.connect_context = {"connection_ids": [r.conn_id, foreign]}
         conn.error_code = "source_auth_required"
         conn.error_detail = "private-content-must-not-enter-context"
         await session.commit()
-        context = await bound_connection_context(r.services, user_id, thread)
+        context = (await turn_context(session, user_id, thread, NOW)).content
     assert r.conn_id in context
+    assert "botai://connections/" + r.conn_id in context
     assert "source_auth_required" in context
     assert foreign not in context
+    assert "Чужой источник" not in context
     assert "private-content-must-not-enter-context" not in context
     assert "fakeuni.test" not in context
 
@@ -417,7 +417,7 @@ async def test_tools_only_see_the_students_own_connections(sm: Sm, user_id: str)
     other = await add_user(sm, "other")
     foreign_space = await add_space(sm, other, "Чужой вуз")
     await add_connection(sm, other, foreign_space, "Чужое расписание", status="error")
-    llm = ScriptedLlm(queue=[step(call("list_connections")), final("Подключений нет.")])
+    llm = ScriptedLlm(queue=[step(call("list_universities")), final("Подключений нет.")])
     r = await make_rig(sm, user_id, llm)
     await r.ask("Что подключено?")
     tool_msg = next(m for m in llm.requests[1].messages if m.role == "tool")

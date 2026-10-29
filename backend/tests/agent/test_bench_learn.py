@@ -89,7 +89,7 @@ def test_the_plans_say_what_each_scenario_is() -> None:
 # --- the cell's profile drives learn and repair ---------------------------------------------------
 
 
-@pytest.mark.parametrize("purpose", ["learn", "repair", "chat"])
+@pytest.mark.parametrize("purpose", ["learn", "repair", "agent"])
 def test_the_cells_profile_drives_the_purpose(
     purpose: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

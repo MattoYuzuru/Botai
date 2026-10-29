@@ -1,46 +1,33 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from botai.contracts.specs import Kind
 from botai.core.api import ApiModel
 from botai.jobs.schemas import JobOut
-from botai.spaces.schemas import ConnectionKind, ConnectionOut
 
 ULID = r"^[0-9A-HJKMNP-TV-Z]{26}$"
-
-
-class ConnectContext(ApiModel):
-    university_id: str | None = Field(default=None, min_length=1, max_length=50)
-    entry_urls: list[Annotated[str, Field(max_length=1000)]] = Field(
-        default_factory=list, max_length=6
-    )
-    kind: ConnectionKind | None = None
-    title: str | None = Field(default=None, max_length=120)
-    requested_kinds: list[Kind] = Field(default_factory=lambda: ["scheduleEvents"])
-    absent_kinds: list[Kind] = Field(default_factory=list)
-    user_note: str = Field(default="", max_length=2000)
-
-    @model_validator(mode="after")
-    def distinct_kinds(self) -> ConnectContext:
-        if len(set(self.requested_kinds)) != len(self.requested_kinds) or len(
-            set(self.absent_kinds)
-        ) != len(self.absent_kinds):
-            raise ValueError("data kinds must be unique")
-        if set(self.requested_kinds) & set(self.absent_kinds):
-            raise ValueError("requested and absent kinds must be disjoint")
-        return self
+Attention = Literal["waiting_user", "running", "failed"]
 
 
 class ThreadCreate(ApiModel):
     space_id: str | None = None
     title: str | None = Field(default=None, max_length=200)
-    purpose: Literal["chat", "connect"] = "chat"
-    connect_context: ConnectContext | None = None
     client_request_id: str | None = Field(default=None, pattern=ULID)
+
+
+class ThreadPatch(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ActiveTask(ApiModel):
+    job_id: str
+    kind: Literal["connect", "repair", "sync", "ingest"]
+    connection_id: str | None
+    state: str
+    title: str
 
 
 class ThreadOut(ApiModel):
@@ -48,7 +35,11 @@ class ThreadOut(ApiModel):
     space_id: str | None
     title: str
     created_at: datetime
-    updated_at: datetime
+    last_message_at: datetime
+    unread: bool  # an agent message is newer than last_read_at
+    attention: Attention | None  # the active task or turn: waiting for the student, running, failed
+    active_task: ActiveTask | None
+    preview: str | None  # start of the last text message, up to 120 characters
 
 
 class MessageIn(ApiModel):
@@ -92,9 +83,11 @@ class DialogueReceipt(ApiModel):
 
 
 class ThreadRuntime(ApiModel):
-    purpose: Literal["chat", "connect"]
+    """The live state of a thread. `tasks` are its newest tasks; `active_job` is the one that
+    needs attention first (a task, else the running agent turn)."""
+
     active_job: JobOut | None
-    connection: ConnectionOut | None
+    tasks: list[JobOut]
     pending: list[PendingRef]
     receipts: list[DialogueReceipt]
 
@@ -118,6 +111,12 @@ class ContextOut(ApiModel):
     used: int
     segments: list[ContextSegment]
     sources: list[ContextSource]
+
+
+class MemoryNoteOut(ApiModel):
+    id: str
+    note: str
+    created_at: datetime
 
 
 class ApproveIn(ApiModel):

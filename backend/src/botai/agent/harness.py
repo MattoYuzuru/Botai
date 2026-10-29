@@ -43,8 +43,7 @@ log = logging.getLogger("botai.agent.harness")
 
 ToolFn = Callable[[dict[str, Any]], Awaitable[str]]
 
-TOOL_TIMEOUT_S = 20.0
-MAX_CALLS_PER_STEP = 8
+TOOL_TIMEOUT_S = 30.0
 WRAP_UP_NOTE = (
     "[система] Лимит шагов исчерпан. Больше инструменты не вызывайте: ответьте по уже "
     "полученным данным или честно скажите, чего не хватает."
@@ -60,12 +59,14 @@ class Budget:
     max_input_tokens: int | None  # estimate of one request's size
     max_output_tokens: int  # answer tokens per call (reasoning headroom is the provider's)
     tool_result_chars: int  # one tool result is cut to this
+    max_calls_per_step: int = 8  # tool calls run from one model answer; the rest are skipped
 
 
 BUDGETS: dict[str, Budget] = {
     "classify": Budget(1, 20_000, 8_000, 300, 4_000),
     "summarize": Budget(1, 80_000, 40_000, 1_500, 4_000),
-    "chat": Budget(6, 250_000, 32_000, 3_000, 8_000),
+    # The unified agent: many tool rounds per turn (connecting, browsing, tables), no thrift.
+    "agent": Budget(30, 1_200_000, 96_000, 8_000, 24_000, max_calls_per_step=16),
     "extract": Budget(3, 300_000, None, 4_000, 20_000),
     "repair": Budget(20, 500_000, None, 4_000, 20_000),
     "learn": Budget(40, 1_500_000, None, 4_000, 20_000),
@@ -78,6 +79,7 @@ class HarnessTool:
     spec: LlmTool
     run: ToolFn  # returns data for the model; wrapped as <source_data> by the harness
     stage: str | None = None  # short line for the student while it runs ("Ищу в расписании")
+    mutates: bool = False  # changes state: results seen before it are no longer current
 
 
 @dataclass(slots=True)
@@ -293,6 +295,8 @@ class _Run:
                 call.name, call.arguments, len(raw), estimate_tokens(wrapped), truncated, error
             )
         )
+        if tool.mutates:
+            self._seen.clear()  # a later identical read must see what this call changed
         self._seen[key] = wrapped
         return wrapped
 
@@ -376,10 +380,10 @@ async def run(
                     tool_calls=response.tool_calls,
                 )
             )
-            for call in response.tool_calls[:MAX_CALLS_PER_STEP]:
+            for call in response.tool_calls[: budget.max_calls_per_step]:
                 text = await state.call_tool(call)
                 convo.append(LlmMessage(role="tool", tool_call_id=call.id, content=text))
-            for call in response.tool_calls[MAX_CALLS_PER_STEP:]:
+            for call in response.tool_calls[budget.max_calls_per_step :]:
                 convo.append(
                     LlmMessage(
                         role="tool",

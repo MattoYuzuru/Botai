@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent.harness import HarnessTool
-from botai.agent.tools import TOOL_SPECS, ChatEnv, build_chat_tools
+from botai.agent.env import ChatEnv
+from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.core.jobs import JobKind
 from botai.core.llm import ScriptedLlm
 from botai.core.queue import InMemoryJobQueue
@@ -58,7 +59,7 @@ async def rig(
     return Rig(env, {t.spec.name: t for t in build_chat_tools(env)}, queue)
 
 
-def test_chat_agent_has_exactly_these_read_only_tools() -> None:
+def test_the_agent_has_exactly_these_tools() -> None:
     assert set(TOOL_SPECS) == {
         "get_schedule",
         "get_deadlines",
@@ -66,17 +67,37 @@ def test_chat_agent_has_exactly_these_read_only_tools() -> None:
         "get_grades",
         "get_people",
         "get_news",
-        "list_connections",
         "search_documents",
         "search_facts",
         "search_public_web",
         "request_repair",
         "request_login",
+        "list_universities",
+        "find_university",
+        "connect_source",
+        "add_document_url",
+        "task_status",
+        "sync_source",
+        "read_document",
+        "browse_source",
+        "fetch_public_page",
+        "remember",
+        "forget",
+        "update_plan",
+        "offer_choices",
+        "rename_thread",
     }
-    # T5: nothing that opens an address or sends data out.
     for spec in TOOL_SPECS.values():
-        assert "url" not in spec.parameters["properties"]
         assert spec.parameters["additionalProperties"] is False
+        # T5: a credential, cookie or code is never a parameter of any tool.
+        assert not set(spec.parameters["properties"]) & {"password", "code", "cookie", "token"}
+    # Only these four name an address; the others take ids of the student's own things.
+    assert {n for n, s in TOOL_SPECS.items() if "url" in s.parameters["properties"]} == {
+        "connect_source",
+        "add_document_url",
+        "browse_source",
+        "fetch_public_page",
+    }
     assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {"connection_id"}
 
 
@@ -157,15 +178,17 @@ async def test_deadlines_are_sorted_and_overdue_is_flagged(sm: Sm, user_id: str)
     assert "Сданная" in await r.call("get_deadlines", include_done=True)
 
 
-async def test_connections_list_has_ids_for_repair(sm: Sm, user_id: str) -> None:
+async def test_universities_list_has_ids_statuses_and_links(sm: Sm, user_id: str) -> None:
     space = await add_space(sm, user_id, "Вуз А")
     conn = await add_connection(
         sm, user_id, space, "Расписание ЛК", status="stale", error_code="recipe_drift"
     )
     r = await rig(sm, user_id)
-    text = await r.call("list_connections")
-    assert f"id={conn}" in text
-    assert "статус: stale (данные устарели)" in text
+    text = await r.call("list_universities")
+    assert "«Вуз А»" in text
+    assert f"connection_id={conn}" in text
+    assert f"botai://connections/{conn}" in text
+    assert "статус: данные устарели" in text
     assert "код ошибки: recipe_drift" in text
 
 

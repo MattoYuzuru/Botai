@@ -66,10 +66,9 @@ def retry_failures(payload: dict[str, Any], attempt: int) -> int:
 BUDGETS: dict[str, float] = {
     JobKind.SYNC.value: 120.0,
     JobKind.ACTION.value: 120.0,
-    JobKind.CHAT.value: 300.0,
+    JobKind.CHAT.value: 900.0,  # an agent turn of up to 30 model steps with tools
     JobKind.INGEST.value: 600.0,
     JobKind.CONNECT.value: 1800.0,
-    JobKind.LEARN.value: 1800.0,
     JobKind.REPAIR.value: 1800.0,
 }
 
@@ -156,9 +155,10 @@ class Worker:
         skipped_users: set[str] = set()
         async with self.services.db() as session:
             while True:
-                compatible = ~Job.payload.bool_op("?")("_research_engine")
-                if self.services.settings.botai_research_enabled:
-                    compatible = or_(compatible, Job.payload.contains({"_research_engine": 1}))
+                compatible = or_(
+                    ~Job.payload.bool_op("?")("_research_engine"),
+                    Job.payload.contains({"_research_engine": 1}),
+                )
                 active = aliased(Job)
                 busy = exists(
                     select(active.id).where(

@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.agent import conversations
 from botai.agent.chat import handle_chat
 from botai.contracts import schemas
 from botai.contracts.agent_ui import TextBlock
@@ -23,6 +24,12 @@ from tests.agent.seed import add_space
 from tests.agent.support import NOW, add_thread
 
 Sm = async_sessionmaker[AsyncSession]
+
+
+async def chat_jobs(api: Api) -> list[Job]:
+    async with api.sm() as session:
+        rows = await session.execute(select(Job).where(Job.kind == JobKind.CHAT.value))
+        return list(rows.scalars())
 
 
 async def test_the_chat_requires_a_session(sm: Sm) -> None:
@@ -83,11 +90,11 @@ async def test_posting_a_message_stores_it_and_queues_one_chat_job(api: Api) -> 
         assert message["blocks"][0]["markdown"] == "Что завтра?"
         assert schemas.errors("agent-ui.schema.json", message["blocks"][0]) == []
 
-        (job,) = api.queue.jobs
-        assert job["kind"] == JobKind.CHAT
-        assert accepted["jobId"] == job["id"]
-        assert (job["user_id"], job["thread_id"]) == (api.user_id, thread)
-        assert job["payload"] == {"thread_id": thread, "message_id": message["id"]}
+        (job,) = await chat_jobs(api)
+        assert job.kind == JobKind.CHAT
+        assert accepted["jobId"] == job.id
+        assert (job.user_id, job.thread_id) == (api.user_id, thread)
+        assert job.payload == {"thread_id": thread, "message_id": message["id"]}
 
         listed = (await client.get(f"/api/v1/chat/threads/{thread}/messages")).json()
         assert [m["id"] for m in listed] == [message["id"]]
@@ -100,9 +107,9 @@ async def test_the_reply_of_the_job_shows_up_in_the_thread(api: Api) -> None:
         accepted = (
             await client.post(f"/api/v1/chat/threads/{thread}/messages", json={"text": "Привет"})
         ).json()
-        job = api.queue.jobs[0]
-        ctx = InMemoryJobContext(user_id=api.user_id, job_id=job["id"])
-        await handle_chat(ctx, api.services, job["payload"])
+        (job,) = await chat_jobs(api)
+        ctx = InMemoryJobContext(user_id=api.user_id, job_id=job.id)
+        await handle_chat(ctx, api.services, job.payload)
 
         listed = (await client.get(f"/api/v1/chat/threads/{thread}/messages")).json()
     assert [m["role"] for m in listed] == ["user", "agent"]
@@ -169,18 +176,20 @@ async def test_a_second_message_waits_while_the_first_is_being_answered(api: Api
         )
     assert response.status_code == 409
     assert response.json()["code"] == "conflict"
-    assert api.queue.jobs == []
+    assert [job.state for job in await chat_jobs(api)] == ["running"]  # only the seeded one
     async with api.sm() as session:
         assert (await session.execute(select(ChatMessage))).scalars().all() == []
 
 
-async def test_a_message_without_a_job_is_not_left_behind(api: Api) -> None:
+async def test_a_message_without_a_job_is_not_left_behind(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
     thread = await add_thread(api.sm, api.user_id)
 
-    async def boom(*args: Any, **kwargs: Any) -> str:
+    async def boom(*args: Any, **kwargs: Any) -> Job:
         raise RuntimeError("queue is down")
 
-    api.services.queue.enqueue = boom  # type: ignore[method-assign]
+    monkeypatch.setattr(conversations, "enqueue_in_session", boom)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app, raise_app_exceptions=False),
         base_url="https://testserver",
@@ -201,7 +210,7 @@ async def test_a_foreign_thread_is_invisible(api: Api) -> None:
         post = await client.post(f"/api/v1/chat/threads/{theirs}/messages", json={"text": "эй"})
         assert post.status_code == 404
         assert (await client.get(f"/api/v1/chat/threads/{new_id()}/messages")).status_code == 404
-    assert api.queue.jobs == []
+    assert await chat_jobs(api) == []
 
 
 @pytest.mark.parametrize("text", ["", "я" * 8001])

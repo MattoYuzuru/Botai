@@ -329,7 +329,7 @@ _CODES: dict[str, set[str]] = {
         "progress",
         "warning",
     },
-    "purpose": {"classify", "chat", "learn", "repair", "extract"},
+    "purpose": {"classify", "agent", "learn", "repair", "extract"},
     "provider": {"exa", "deepseek"},
     "error_code": {code.value for code in ErrorCode},
     "lint_code": set(

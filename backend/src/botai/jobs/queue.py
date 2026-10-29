@@ -16,7 +16,10 @@ from botai.db.models import Job
 from botai.jobs.events import IN_FLIGHT, append_event, status_data
 from botai.jobs.notify import CHANNEL_JOBS
 
-SOURCE_KINDS = ("connect", "learn", "repair", "sync")
+# Tasks that drive a user's source browser: one at a time per user (see `Worker.claim`).
+SOURCE_KINDS = ("connect", "repair", "sync")
+# Everything long that a thread shows as a task card (its blocks are projected into the thread).
+TASK_KINDS = (*SOURCE_KINDS, "ingest")
 
 
 async def lock_sources(session: AsyncSession, connection_ids: Iterable[str]) -> None:

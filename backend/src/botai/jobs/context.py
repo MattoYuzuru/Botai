@@ -27,7 +27,7 @@ from botai.core.dialogue import DialogueTurn
 from botai.core.jobs import JobCancelled, JobClaimLost, JobInputChanged, JobState
 from botai.core.research import ResearchCheckpoint, ResearchUsage
 from botai.core.vault import CipherVault, SecretKind, TransactionalVault, Vault
-from botai.db.models import ChatThread, Connection, Job, JobAnswer
+from botai.db.models import Connection, Job, JobAnswer
 from botai.jobs import dialogue
 from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.events import TERMINAL, append_event, status_data
@@ -307,22 +307,6 @@ class PgJobContext:
                 dialogue.receipt(job, now=now, status="applied", message_id=message_id)
             for block_id in self._dialogue_blocks:
                 dialogue.complete_pending(job, block_id, now=now, status="applied")
-            if job.thread_id is not None:
-                thread = await session.scalar(
-                    select(ChatThread).where(
-                        ChatThread.id == job.thread_id, ChatThread.user_id == self.user_id
-                    )
-                )
-                if thread is not None:
-                    # Omitted mode is the legacy explicit/requested mode. Do not keep an old
-                    # auto-discovery marker after the student narrows the task.
-                    previous = {
-                        key: value
-                        for key, value in thread.connect_context.items()
-                        if key != "discovery_mode"
-                    }
-                    thread.connect_context = {**previous, **intent}
-                    thread.updated_at = now
             await session.commit()
         self._dialogue_delivered.clear()
         self._dialogue_blocks.clear()

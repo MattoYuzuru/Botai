@@ -16,7 +16,8 @@ from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Connection, Job, Space
-from botai.jobs.queue import PgJobQueue, enqueue_in_session
+from botai.jobs.events import IN_FLIGHT
+from botai.jobs.queue import SOURCE_KINDS, PgJobQueue, enqueue_in_session
 from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities
 from botai.spaces.schemas import (
@@ -216,11 +217,9 @@ def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
 
 
 async def _connect_retry_payload(
-    session: AsyncSession,
-    conn: Connection,
-    context: dict[str, Any] | None,
-    payload: dict[str, Any] | None,
+    session: AsyncSession, conn: Connection, payload: dict[str, Any] | None
 ) -> dict[str, Any]:
+    """A retried CONNECT keeps what the source's previous attempt was asked to learn."""
     previous = await session.scalar(
         select(Job)
         .where(
@@ -232,17 +231,7 @@ async def _connect_retry_payload(
         .limit(1)
     )
     prior = previous.payload if previous else {}
-    canonical = _same_origin_intent(context, conn.origin)
-    source_intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
-    context_urls = context.get("entry_urls") if context else None
-    foreign_context = isinstance(context_urls, list) and any(
-        url_origin(url) != conn.origin for value in context_urls if (url := navigation_url(value))
-    )
-    # A conversation may now point at a child source: its parent's own intent wins then.
-    if canonical and not canonical["entry_urls"] and foreign_context:
-        intent = source_intent
-    else:
-        intent = canonical or source_intent
+    intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
     result = {
         key: value
         for key, value in (payload or {}).items()
@@ -252,16 +241,14 @@ async def _connect_retry_payload(
     if entry and url_origin(entry) != conn.origin:
         entry = None
     if intent is not None:
-        if not intent["entry_urls"]:
-            intent["entry_urls"] = list(source_intent["entry_urls"]) if source_intent else []
-            if not intent["entry_urls"] and entry:
-                intent["entry_urls"] = [entry]
+        if not intent["entry_urls"] and entry:
+            intent["entry_urls"] = [entry]
         result["learning_intent"] = intent
         result["kinds"] = list(intent["requested_kinds"])
         if intent["entry_urls"]:
             result["url"] = intent["entry_urls"][0]
     else:
-        result["kinds"] = ["scheduleEvents", "deadlines"]  # Legacy REST before a chat context.
+        result["kinds"] = ["scheduleEvents", "deadlines"]  # REST entry point without a chat intent
         if entry:
             result["url"] = entry
     return result
@@ -296,23 +283,18 @@ async def enqueue_for_connection(
         kind = JobKind.CONNECT
     elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
-    from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
+    from botai.spaces.conversations import connection_thread, owned_thread
 
-    thread = await canonical_thread(session, user_id, conn.id)
-    bind_after_enqueue = False
-    if thread is None and thread_id is not None:
-        thread = await owned_thread(session, user_id, thread_id)
-        if manual_login:
-            # Worker terminal projection locks Job -> Thread. Keep this thread clean
-            # until enqueue has locked/selected the existing source job as well.
-            bind_after_enqueue = True
-        else:
-            bind_thread(thread, conn.id)
-    target_thread = thread.id if thread is not None else None
+    # The task shows up in the thread that asked for it; a plate without a thread uses the
+    # thread of the source's newest task.
+    if thread_id is not None:
+        await owned_thread(session, user_id, thread_id)
+        target_thread: str | None = thread_id
+    else:
+        existing_thread = await connection_thread(session, user_id, conn.id)
+        target_thread = existing_thread.id if existing_thread else None
     if kind == JobKind.CONNECT:
-        payload = await _connect_retry_payload(
-            session, conn, thread.connect_context if thread else None, payload
-        )
+        payload = await _connect_retry_payload(session, conn, payload)
     if manual_login and isinstance(queue, PgJobQueue):
         job = await enqueue_in_session(
             session,
@@ -326,8 +308,6 @@ async def enqueue_for_connection(
         )
         if target_thread is not None and job.thread_id is None:
             job.thread_id = target_thread
-        if bind_after_enqueue and thread is not None:
-            bind_thread(thread, conn.id)
         await session.commit()
         return job.id
     if manual_login:
@@ -336,8 +316,8 @@ async def enqueue_for_connection(
             .where(
                 Job.user_id == user_id,
                 Job.connection_id == conn.id,
-                Job.kind.in_(("connect", "learn", "repair", "sync")),
-                Job.state.in_(("queued", "running", "waiting_user")),
+                Job.kind.in_(SOURCE_KINDS),
+                Job.state.in_(sorted(IN_FLIGHT)),
             )
             .order_by(Job.created_at, Job.id)
             .limit(1)
@@ -346,12 +326,8 @@ async def enqueue_for_connection(
         if running is not None:
             if target_thread is not None and running.thread_id is None:
                 running.thread_id = target_thread
-            if bind_after_enqueue and thread is not None:
-                bind_thread(thread, conn.id)
             await session.commit()
             return running.id
-    if bind_after_enqueue and thread is not None:
-        bind_thread(thread, conn.id)
     await session.commit()  # the queue works in its own transaction
     job_id = await queue.enqueue(
         kind,
@@ -361,7 +337,7 @@ async def enqueue_for_connection(
         payload=payload,
         dedupe=True,
     )
-    # An existing deduplicated legacy job can predate its conversation.
+    # A deduplicated job may have been queued before any thread asked for it.
     if target_thread is not None:
         job = await session.scalar(
             select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()

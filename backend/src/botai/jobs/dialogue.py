@@ -53,6 +53,17 @@ def is_auth_input(block: AgentUiBlock) -> bool:
     )
 
 
+def channel_of(block: AgentUiBlock) -> str:
+    """How the student answers an asking block: see ThreadRuntime.pending[].channel."""
+    if block.type == "login":
+        return "manual"
+    if block.type == "approval":
+        return "approval"
+    if isinstance(block, InputBlock) and not block.secret and not is_auth_input(block):
+        return "dialogue"
+    return "native"
+
+
 def receipt(
     job: Job,
     *,
@@ -201,7 +212,8 @@ async def message_time(
 async def project_block(
     session: AsyncSession, job: Job, data: dict[str, Any], now: datetime
 ) -> None:
-    """One stable message per public block, committed with its SSE event; never credentials/tickets."""
+    """One stable message per public block of a task, committed with its SSE event; never
+    credentials or tickets. The thread's `last_message_at` follows the insert."""
     if job.thread_id is None or job.kind == "chat":
         return
     thread = await session.scalar(
@@ -237,8 +249,51 @@ async def project_block(
         )
     else:
         existing.blocks = [safe]  # creation time and message identity never move on a stage update
-    thread.updated_at = now
     await session.flush()
+
+
+# What the student reads when a task ends: (cancelled, failed, done) by kind.
+_TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
+    "connect": (
+        "Подключение отменено.",
+        "Подключение не завершено. Можно уточнить источник или продолжить настройку.",
+        "Источник подключён.",
+    ),
+    "repair": (
+        "Починка остановлена.",
+        "Починка не завершена. Прежние данные остаются доступными.",
+        "Починка завершена.",
+    ),
+    "sync": (
+        "Обновление остановлено.",
+        "Обновить данные не удалось. Прежние данные остаются доступными.",
+        "Данные источника обновлены.",
+    ),
+    "ingest": (
+        "Загрузка документа остановлена.",
+        "Документ добавить не удалось.",
+        "Документ добавлен.",
+    ),
+}
+_UNSETTLED = {"unresolved", "rolled_back", "skipped"}
+
+
+def terminal_text(job: Job) -> str:
+    cancelled, failed_text, done = _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
+    status = (job.result or {}).get("status")
+    failed = job.state == "failed" or status == "error"
+    if job.state == "cancelled":
+        return cancelled
+    if failed:
+        detail = (job.error or {}).get("detail")
+        return failed_text + (" " + detail[:500] if isinstance(detail, str) and detail else "")
+    if status == "continued":
+        return "Продолжаю подключение по новой ссылке в этом разговоре."
+    if status in _UNSETTLED:
+        return "Автоматическая настройка не завершена. Можно уточнить источник или продолжить."
+    if status == "healthy":
+        return "Источник работает, чинить нечего."
+    return done
 
 
 async def project_terminal(session: AsyncSession, job: Job, now: datetime) -> None:
@@ -253,26 +308,13 @@ async def project_terminal(session: AsyncSession, job: Job, now: datetime) -> No
         message_id = entry.get("message_id")
         if message_id and message_id not in set(state.get("applied_ids") or []):
             receipt(job, now=now, status="rejected", message_id=str(message_id))
-    failed = job.state in {"failed", "cancelled"} or (job.result or {}).get("status") == "error"
     state = state_of(job)
     block_id = state.get("terminal_block_id") or new_id()
     state["terminal_block_id"] = block_id
     save_state(job, state)
-    detail = (job.error or {}).get("detail")
-    text = (
-        "Подключение отменено."
-        if job.state == "cancelled"
-        else "Подключение не завершено. Можно уточнить источник или продолжить настройку."
-    )
-    if not failed:
-        result_status = (job.result or {}).get("status")
-        text = "Работа с источником завершена."
-        if result_status == "continued":
-            text = "Продолжаю подключение по новой ссылке в этом разговоре."
-        elif result_status in {"unresolved", "rolled_back", "skipped"}:
-            text = "Автоматическая настройка не завершена. Можно уточнить источник или продолжить настройку."
-    elif isinstance(detail, str) and detail:
-        text += " " + detail[:500]
     await project_block(
-        session, job, {"type": "text", "id": block_id, "at": iso(now), "markdown": text}, now
+        session,
+        job,
+        {"type": "text", "id": block_id, "at": iso(now), "markdown": terminal_text(job)},
+        now,
     )

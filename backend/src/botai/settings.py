@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_model_pro: str = "deepseek-v4-pro"
     # Profiles per purpose: "model:thinking:effort" (agent-harness.md §2). Benchmark tunes these.
     llm_profile_classify: str = "deepseek-flash:disabled:-"
-    llm_profile_chat: str = "deepseek-flash:enabled:low"
+    llm_profile_agent: str = "deepseek-flash:enabled:low"
     llm_profile_learn: str = "deepseek-flash:enabled:high"
     llm_profile_repair: str = "deepseek-flash:enabled:low"
     llm_profile_extract: str = "deepseek-flash:enabled:low"
@@ -74,10 +74,12 @@ class Settings(BaseSettings):
     session_cookie_name: str = "botai_session"
     session_ttl_days: int = 30
 
-    quota_tokens_per_day: int = 2_000_000
-    quota_requests_per_minute: int = 30
+    # One agent turn may use up to 1.2M tokens (30 model steps with tools), so a day allows many.
+    # The loop guard stays: the per-turn budget, the per-minute rate and the pool cap below.
+    quota_tokens_per_day: int = 20_000_000
+    quota_requests_per_minute: int = 90
     # Whole-pool daily spend cap on the shared key (security.md T7). 0 disables the cap.
-    quota_pool_usd_per_day: float = 3.0
+    quota_pool_usd_per_day: float = 20.0
     # Failed BotAI logins allowed per (client, e-mail) in a 15-minute window.
     login_failures_per_window: int = 10
 

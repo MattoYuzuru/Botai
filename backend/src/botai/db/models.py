@@ -25,10 +25,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    text,
+    event,
+    func,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.engine import Connection as SqlConnection
+from sqlalchemy.orm import Mapped, Mapper, mapped_column
 
 from botai.db.base import Base, pk_ulid, ts_now
 
@@ -364,7 +367,10 @@ class Fact(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_pick", "state", "run_after"),)
+    __table_args__ = (
+        Index("ix_jobs_pick", "state", "run_after"),
+        Index("ix_jobs_thread", "thread_id"),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     kind: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -451,6 +457,9 @@ class JobAnswer(Base):
 
 
 class ChatThread(Base):
+    """One conversation. It has no purpose: every thread talks to the same agent, and long tasks
+    (connect, repair, sync, ingest) show their blocks in the thread they were asked in."""
+
     __tablename__ = "chat_threads"
     __table_args__ = (
         UniqueConstraint(
@@ -463,18 +472,15 @@ class ChatThread(Base):
         String(26), ForeignKey("spaces.id", ondelete="SET NULL")
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="Новый чат")
-    purpose: Mapped[str] = mapped_column(
-        String(10), nullable=False, default="chat", server_default="chat"
-    )
-    connect_context: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
-    )
     client_request_id: Mapped[str | None] = mapped_column(String(26))
     summary: Mapped[str | None] = mapped_column(
         Text
     )  # rolling summary of old turns (agent-harness §3)
     created_at: Mapped[datetime] = ts_now()
-    updated_at: Mapped[datetime] = ts_now()
+    # Bumped by an insert of any ChatMessage (see `_bump_thread` below); orders the thread list.
+    last_message_at: Mapped[datetime] = ts_now()
+    # When the student last opened the thread; an agent message newer than this is unread.
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ChatMessage(Base):
@@ -496,6 +502,30 @@ class ChatMessage(Base):
     )  # AgentUiBlock[] (by_alias)
     job_id: Mapped[str | None] = mapped_column(String(26))
     client_message_id: Mapped[str | None] = mapped_column(String(26))
+    created_at: Mapped[datetime] = ts_now()
+
+
+@event.listens_for(ChatMessage, "after_insert")
+def _bump_thread(
+    _mapper: Mapper[ChatMessage], connection: SqlConnection, message: ChatMessage
+) -> None:
+    """A message in a thread moves `last_message_at` forward, whoever inserted it."""
+    at = message.__dict__.get("created_at")
+    connection.execute(
+        update(ChatThread)
+        .where(ChatThread.id == message.thread_id)
+        .values(last_message_at=func.greatest(ChatThread.last_message_at, at or func.now()))
+    )
+
+
+class UserMemory(Base):
+    """What the agent remembers about a student (group, programme, preferences, useful steps)."""
+
+    __tablename__ = "user_memory"
+    __table_args__ = (Index("ix_user_memory_user_created", "user_id", "created_at"),)
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    note: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = ts_now()
 
 

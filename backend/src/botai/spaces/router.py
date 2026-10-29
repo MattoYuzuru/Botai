@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from botai.agent import threads
 from botai.agent.schemas import ThreadOut
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
@@ -110,7 +111,7 @@ async def connection_conversation(
     thread = await conversations.attach_conversation(
         session, services, user.id, connection_id, body.job_id
     )
-    return ThreadOut.model_validate(thread)
+    return await threads.thread_out(session, thread)
 
 
 @router.delete("/connections/{connection_id}", status_code=204)

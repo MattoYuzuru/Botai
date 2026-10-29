@@ -224,7 +224,7 @@ PLAN: dict[str, list[Step | tuple[str, str, Any]]] = {
         ("final", "Заявление подают до 20 числа в личном кабинете [S1].", None),
     ],
     "Новости факультета не обновляются, посмотри, что случилось.": [
-        tool("list_connections"),
+        tool("list_universities"),
         ("repair", "request_repair", "Новости факультета"),
         ("final", "Запустил починку подключения «Новости факультета»; сообщу итог здесь.", None),
     ],
@@ -251,7 +251,7 @@ class Golden:
             return LlmResponse(content=name, usage=USAGE)
         if kind == "repair":
             listing = next(m.content for m in request.messages if m.role == "tool")
-            conn = re.search(rf"id=(\w{{26}}) \| «{extra}»", listing)
+            conn = re.search(rf"«{extra}»[^\n]*connection_id=(\w{{26}})", listing)
             assert conn, listing
             args = {"connection_id": conn.group(1), "reason": "новости не обновляются"}
             return LlmResponse(
@@ -298,7 +298,7 @@ async def test_a_perfect_agent_passes_all_ten_questions(
     by_case = {r.case: r for r in records}
     assert by_case["d1-schedule-tomorrow"].sources == 1
     assert by_case["u1-dormitory"].sources == 0
-    assert by_case["r1-breakage"].tools == ["list_connections", "request_repair"]
+    assert by_case["r1-breakage"].tools == ["list_universities", "request_repair"]
     assert by_case["i1-caught-injection"].tools == ["search_documents"]
 
 

@@ -110,7 +110,7 @@ def load_profiles(settings: Settings) -> dict[str, Profile]:
     return {
         "classify": classify,
         "summarize": classify,
-        "chat": parse_profile(settings.llm_profile_chat),
+        "agent": parse_profile(settings.llm_profile_agent),
         "learn": parse_profile(settings.llm_profile_learn),
         "repair": parse_profile(settings.llm_profile_repair),
         "extract": parse_profile(settings.llm_profile_extract),
