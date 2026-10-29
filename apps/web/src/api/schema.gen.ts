@@ -55,6 +55,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Attachment
+         * @description A file up to 20 MiB: image, PDF, DOCX, XLSX, CSV, text, HTML or audio. The type is read
+         *     from the bytes. The file stays unsent until a message carries it.
+         */
+        post: operations["upload_attachment_api_v1_attachments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Attachment */
+        get: operations["get_attachment_api_v1_attachments__attachment_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Attachment
+         * @description Only a file that no message carries yet.
+         */
+        delete: operations["delete_attachment_api_v1_attachments__attachment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attachments/{attachment_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Attachment Content
+         * @description The bytes, shown in place when a browser can show them safely (HTML never is), with
+         *     byte ranges so that audio can be played and sought on every browser.
+         */
+        get: operations["attachment_content_api_v1_attachments__attachment_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/invites": {
         parameters: {
             query?: never;
@@ -553,7 +616,10 @@ export interface paths {
         /** List Spaces */
         get: operations["list_spaces_api_v1_spaces_get"];
         put?: never;
-        /** Create Space */
+        /**
+         * Create Space
+         * @description The university's space of this student: 201 when made, 200 when it was already there.
+         */
         post: operations["create_space_api_v1_spaces_post"];
         delete?: never;
         options?: never;
@@ -589,11 +655,7 @@ export interface paths {
         /** List Connections */
         get: operations["list_connections_api_v1_spaces__space_id__connections_get"];
         put?: never;
-        /**
-         * Create Connection
-         * @description Creates the connection and enqueues a `connect` job (login + learn).
-         */
-        post: operations["create_connection_api_v1_spaces__space_id__connections_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -628,7 +690,7 @@ export interface paths {
         put?: never;
         /**
          * Upload Document
-         * @description PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB.
+         * @description PDF, DOCX, XLSX, CSV, HTML or text, up to 20 MiB.
          */
         post: operations["upload_document_api_v1_spaces__space_id__documents_upload_post"];
         delete?: never;
@@ -759,6 +821,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActiveTaskOut */
+        ActiveTaskOut: {
+            /** Jobid */
+            jobId: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "connect" | "repair" | "sync" | "ingest";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "waiting_user";
+        };
         /**
          * AnswerIn
          * @description Answer to an AgentUiBlock. For secret inputs the API seals `values` into the Vault
@@ -779,6 +856,41 @@ export interface components {
             /** Fieldshash */
             fieldsHash: string;
         };
+        /** AttachmentOut */
+        AttachmentOut: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Documentid */
+            documentId: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Ingest
+             * @enum {string}
+             */
+            ingest: "none" | "queued" | "indexed" | "failed";
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "document" | "audio" | "other";
+            /** Mime */
+            mime: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+        };
+        /** Body_upload_attachment_api_v1_attachments_post */
+        Body_upload_attachment_api_v1_attachments_post: {
+            /** File */
+            file: string;
+            /** Threadid */
+            threadId?: string | null;
+        };
         /** Body_upload_document_api_v1_spaces__space_id__documents_upload_post */
         Body_upload_document_api_v1_spaces__space_id__documents_upload_post: {
             /** File */
@@ -793,7 +905,7 @@ export interface components {
             /** Entryurls */
             entryUrls?: string[];
             /** Kind */
-            kind?: ("lms" | "schedule" | "portal" | "sheet" | "document" | "mail" | "other") | null;
+            kind?: ("portal" | "lms" | "schedule" | "site" | "sheet" | "doc" | "document" | "calendar" | "other") | null;
             /** Requestedkinds */
             requestedKinds?: ("courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news")[];
             /** Title */
@@ -806,19 +918,16 @@ export interface components {
              */
             userNote: string;
         };
-        /** ConnectionCreate */
-        ConnectionCreate: {
-            /** Kind */
-            kind?: ("lms" | "schedule" | "portal" | "sheet" | "document" | "mail" | "other") | null;
-            /** Title */
-            title?: string | null;
-            /** Url */
-            url?: string | null;
-        };
-        /** ConnectionOut */
+        /**
+         * ConnectionOut
+         * @description A source of a university.
+         */
         ConnectionOut: {
+            activeTask?: components["schemas"]["ActiveTaskOut"] | null;
             /** Adapter */
             adapter: string | null;
+            /** Entryurl */
+            entryUrl?: string | null;
             /** Errorcode */
             errorCode?: string | null;
             /** Errordetail */
@@ -831,7 +940,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "lms" | "schedule" | "portal" | "sheet" | "document" | "mail" | "other";
+            kind: "portal" | "lms" | "schedule" | "site" | "sheet" | "doc" | "document" | "calendar" | "other";
             /** Lastsyncat */
             lastSyncAt: string | null;
             /** Nextsyncat */
@@ -847,14 +956,10 @@ export interface components {
             status: "draft" | "learning" | "active" | "syncing" | "stale" | "needs_reauth" | "waiting_user" | "repairing" | "error" | "disabled";
             /** Storedsecrets */
             storedSecrets?: ("token" | "ical_url" | "api_key")[];
+            /** Threadid */
+            threadId?: string | null;
             /** Title */
             title: string;
-        };
-        /** ConnectionStarted */
-        ConnectionStarted: {
-            connection: components["schemas"]["ConnectionOut"];
-            /** Jobid */
-            jobId: string;
         };
         /**
          * ContextOut
@@ -1335,10 +1440,15 @@ export interface components {
             /** Universityid */
             universityId?: string | null;
         };
-        /** SpaceOut */
+        /**
+         * SpaceOut
+         * @description A university of the student (or "My materials", `universityId` null).
+         */
         SpaceOut: {
             /** Accenthue */
             accentHue: number;
+            /** Aliases */
+            aliases: string[];
             /**
              * Createdat
              * Format: date-time
@@ -1346,6 +1456,8 @@ export interface components {
             createdAt: string;
             /** Id */
             id: string;
+            /** Shorttitle */
+            shortTitle: string;
             /** Timezone */
             timeZone: string;
             /** Title */
@@ -1427,6 +1539,8 @@ export interface components {
         UniversityOut: {
             /** Accenthue */
             accentHue: number;
+            /** Aliases */
+            aliases: string[];
             /** Id */
             id: string;
             /** Origins */
@@ -1564,6 +1678,128 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_attachment_api_v1_attachments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_attachment_api_v1_attachments_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_attachment_api_v1_attachments__attachment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_attachment_api_v1_attachments__attachment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attachment_content_api_v1_attachments__attachment_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2518,6 +2754,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceOut"];
+                };
+            };
             /** @description Successful Response */
             201: {
                 headers: {
@@ -2620,41 +2865,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectionOut"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_connection_api_v1_spaces__space_id__connections_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                space_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConnectionCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConnectionStarted"];
                 };
             };
             /** @description Validation Error */

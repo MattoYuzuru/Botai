@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "ActiveTaskOut": {
+        "properties": {
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "connect",
+              "repair",
+              "sync",
+              "ingest"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_user"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "kind",
+          "state"
+        ],
+        "title": "ActiveTaskOut",
+        "type": "object"
+      },
       "AnswerIn": {
         "description": "Answer to an AgentUiBlock. For secret inputs the API seals `values` into the Vault\n(kind=transient) and stores nothing else.",
         "properties": {
@@ -55,6 +89,100 @@
           "fieldsHash"
         ],
         "title": "ApproveIn",
+        "type": "object"
+      },
+      "AttachmentOut": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "documentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documentid"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ingest": {
+            "enum": [
+              "none",
+              "queued",
+              "indexed",
+              "failed"
+            ],
+            "title": "Ingest",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "image",
+              "document",
+              "audio",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mime",
+          "size",
+          "kind",
+          "createdAt",
+          "documentId",
+          "ingest"
+        ],
+        "title": "AttachmentOut",
+        "type": "object"
+      },
+      "Body_upload_attachment_api_v1_attachments_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_api_v1_attachments_post",
         "type": "object"
       },
       "Body_upload_document_api_v1_spaces__space_id__documents_upload_post": {
@@ -115,12 +243,14 @@
             "anyOf": [
               {
                 "enum": [
+                  "portal",
                   "lms",
                   "schedule",
-                  "portal",
+                  "site",
                   "sheet",
+                  "doc",
                   "document",
-                  "mail",
+                  "calendar",
                   "other"
                 ],
                 "type": "string"
@@ -183,58 +313,19 @@
         "title": "ConnectContext",
         "type": "object"
       },
-      "ConnectionCreate": {
-        "properties": {
-          "kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "lms",
-                  "schedule",
-                  "portal",
-                  "sheet",
-                  "document",
-                  "mail",
-                  "other"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Kind"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "url": {
-            "anyOf": [
-              {
-                "maxLength": 1000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Url"
-          }
-        },
-        "title": "ConnectionCreate",
-        "type": "object"
-      },
       "ConnectionOut": {
+        "description": "A source of a university.",
         "properties": {
+          "activeTask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveTaskOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "adapter": {
             "anyOf": [
               {
@@ -245,6 +336,17 @@
               }
             ],
             "title": "Adapter"
+          },
+          "entryUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entryurl"
           },
           "errorCode": {
             "anyOf": [
@@ -278,12 +380,14 @@
           },
           "kind": {
             "enum": [
+              "portal",
               "lms",
               "schedule",
-              "portal",
+              "site",
               "sheet",
+              "doc",
               "document",
-              "mail",
+              "calendar",
               "other"
             ],
             "title": "Kind",
@@ -349,6 +453,17 @@
             "title": "Storedsecrets",
             "type": "array"
           },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -367,23 +482,6 @@
           "nextSyncAt"
         ],
         "title": "ConnectionOut",
-        "type": "object"
-      },
-      "ConnectionStarted": {
-        "properties": {
-          "connection": {
-            "$ref": "#/components/schemas/ConnectionOut"
-          },
-          "jobId": {
-            "title": "Jobid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "connection",
-          "jobId"
-        ],
-        "title": "ConnectionStarted",
         "type": "object"
       },
       "ContextOut": {
@@ -1768,10 +1866,18 @@
         "type": "object"
       },
       "SpaceOut": {
+        "description": "A university of the student (or \"My materials\", `universityId` null).",
         "properties": {
           "accentHue": {
             "title": "Accenthue",
             "type": "number"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
           },
           "createdAt": {
             "format": "date-time",
@@ -1780,6 +1886,10 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "shortTitle": {
+            "title": "Shorttitle",
             "type": "string"
           },
           "timeZone": {
@@ -1805,6 +1915,8 @@
         "required": [
           "id",
           "title",
+          "shortTitle",
+          "aliases",
           "universityId",
           "accentHue",
           "timeZone",
@@ -2043,6 +2155,13 @@
             "title": "Accenthue",
             "type": "number"
           },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -2078,6 +2197,7 @@
           "id",
           "title",
           "shortTitle",
+          "aliases",
           "origins",
           "accentHue"
         ],
@@ -2322,6 +2442,160 @@
         "summary": "Reject Action",
         "tags": [
           "agent"
+        ]
+      }
+    },
+    "/api/v1/attachments": {
+      "post": {
+        "description": "A file up to 20 MiB: image, PDF, DOCX, XLSX, CSV, text, HTML or audio. The type is read\nfrom the bytes. The file stays unsent until a message carries it.",
+        "operationId": "upload_attachment_api_v1_attachments_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_api_v1_attachments_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}": {
+      "delete": {
+        "description": "Only a file that no message carries yet.",
+        "operationId": "delete_attachment_api_v1_attachments__attachment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Attachment",
+        "tags": [
+          "attachments"
+        ]
+      },
+      "get": {
+        "operationId": "get_attachment_api_v1_attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/content": {
+      "get": {
+        "description": "The bytes, shown in place when a browser can show them safely (HTML never is), with\nbyte ranges so that audio can be played and sought on every browser.",
+        "operationId": "attachment_content_api_v1_attachments__attachment_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attachment Content",
+        "tags": [
+          "attachments"
         ]
       }
     },
@@ -3620,6 +3894,7 @@
         ]
       },
       "post": {
+        "description": "The university's space of this student: 201 when made, 200 when it was already there.",
         "operationId": "create_space_api_v1_spaces_post",
         "requestBody": {
           "content": {
@@ -3632,6 +3907,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceOut"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "201": {
             "content": {
               "application/json": {
@@ -3788,57 +4073,6 @@
         "tags": [
           "spaces"
         ]
-      },
-      "post": {
-        "description": "Creates the connection and enqueues a `connect` job (login + learn).",
-        "operationId": "create_connection_api_v1_spaces__space_id__connections_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "space_id",
-            "required": true,
-            "schema": {
-              "title": "Space Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConnectionCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConnectionStarted"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Connection",
-        "tags": [
-          "spaces"
-        ]
       }
     },
     "/api/v1/spaces/{space_id}/documents": {
@@ -3889,7 +4123,7 @@
     },
     "/api/v1/spaces/{space_id}/documents/upload": {
       "post": {
-        "description": "PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB.",
+        "description": "PDF, DOCX, XLSX, CSV, HTML or text, up to 20 MiB.",
         "operationId": "upload_document_api_v1_spaces__space_id__documents_upload_post",
         "parameters": [
           {
