@@ -72,26 +72,45 @@ TypeScript + React + Vite + Tailwind v4 на фронтенде, PostgreSQL (д�
 
 ```
 User ──1:N── Space(university) ──1:N── Connection(origin) ──1:1── Secret(encrypted)
-                   │                          │
-                   │                          └──N:1── Recipe(origin, revision)
-                   │
-                   ├──1:N── Course ──1:N── Assignment ──1:N── Deadline
-                   ├──1:N── ScheduleEvent (course?, teacher?, location?, source)
-                   ├──1:N── Grade
-                   ├──1:N── Person (преподаватель)
-                   ├──1:N── Document (файл/таблица/страница) ──1:N── Chunk(vector)
-                   └──1:N── Fact (подтверждённый ответ RAG + срок годности)
+  │                │                          │
+  │                │                          └──N:1── Recipe(origin, revision)
+  │                │
+  │                ├──1:N── Course ──1:N── Assignment ──1:N── Deadline
+  │                ├──1:N── ScheduleEvent (course?, teacher?, location?, source)
+  │                ├──1:N── Grade
+  │                ├──1:N── Person (преподаватель)
+  │                ├──1:N── Document (файл/таблица/страница) ──1:N── Chunk(vector)
+  │                └──1:N── Fact (подтверждённый ответ RAG + срок годности)
+  │
+  ├──1:N── ChatThread ──1:N── ChatMessage ──1:N── Attachment(bytes)
+  └──0:1── Space "Мои материалы" (без вуза): документы и вложения вне вуза
 ```
 
-Правила, общие для всех сущностей:
+Вуз и его источники ([план v3 §3.5](../plan/agent-hub-v3.md), ADR-0013):
 
-- `source_id`, `source_url`, `fetched_at` обязательны. Данных «ниоткуда» нет.
-- `external_id` уникален в паре `(connection_id, external_id)` — записи двух
-  вузов не сталкиваются.
-- Снимок пишется идемпотентно: повторный sync не создаёт дублей и не удаляет
-  прежний успешный снимок при частичной ошибке.
-- Таблица `secrets` хранит только шифртекст; расшифровка возможна только в
-  процессе, который держит мастер-ключ вне БД.
+- `Space` — **один вуз одного студента**: уникальны `(user_id, university_id)`, а пространство
+  «Мои материалы» (`university_id` пуст) — одно на пользователя; оба правила держат частичные
+  уникальные индексы. Название пространства — название вуза из справочника или выученной строки
+  `universities` («НИУ ВШЭ»), а не адрес сайта. `shortTitle` и `aliases` берутся оттуда же
+  (алиасы — из справочника имён `spaces/university-names.json`; ни адресов, ни интеграций
+  в нём нет). Создание пространства идемпотентно: `service.ensure_space`, `POST /spaces`.
+- `Connection` — **источник** вуза (кабинет, Smart LMS, документация, таблица, документ).
+  `title` человеческий: заданное имя, затем заголовок страницы, затем название вида, но не
+  голый хост. `kind` — `portal|lms|schedule|site|sheet|doc|document|calendar|other`
+  (`sheet` — таблица, `doc` — документ или страница по ссылке, `document` — загруженный
+  файл). `entry_url` — страница интерфейса источника без секретных query.
+- `ConnectionOut` отдаёт `threadId` (тред последней задачи источника, если он ещё есть) и
+  `activeTask {jobId, kind, state}`: плашки источников ведут в тред задачи.
+- `Attachment` — файл чата: байты в Postgres (`bytea`, до 20 МиБ), владелец обязателен, тип
+  определяется по байтам. Создаётся несвязанным (`POST /attachments`), связывается с сообщением
+  при отправке (`message_id`), удаляется вместе с тредом. Документное вложение индексирует
+  задание `INGEST`: оно читает байты из `attachments` и **сначала** пишет `Document`, текст и
+  `Chunk` (документ ищется и читается), и только потом задаёт вопросы о таблицах. Хранение,
+  отдача (`inline`, `private, no-store`, `nosniff`, HTML — только как текст-вложение) и квота —
+  в [контракте вложений](../plan/agent-hub-v3.md#36-вложения-и-документы-ws4).
+- Ссылки Google Docs/Sheets/Slides/Drive («доступ по ссылке») нормализуются в публичный
+  экспорт общим сервисом `sources/public_links.py`; закрытый документ — честная ошибка, а не
+  пустой результат.
 
 Полные схемы — [contracts.md](contracts.md).
 
