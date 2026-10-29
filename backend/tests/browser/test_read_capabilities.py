@@ -62,7 +62,7 @@ async def environment(
         if route.request.method != "GET":
             await route.fallback()
             return
-        await route.fulfill(content_type="text/html", body=html)
+        await route.fulfill(content_type="text/html; charset=utf-8", body=html)
 
     async def data(route: Route) -> None:
         if route.request.method != "GET":
@@ -270,7 +270,7 @@ async def test_same_origin_frame_replays_and_cross_origin_frame_is_not_a_capabil
 
         async def frame(route: Route) -> None:
             await route.fulfill(
-                content_type="text/html",
+                content_type="text/html; charset=utf-8",
                 body='<main><article class="lesson">Встроенная пара</article></main>',
             )
 
@@ -300,7 +300,7 @@ async def test_next_link_pagination_never_certifies_a_limit_or_cycle_as_complete
                 else ""
             )
             await route.fulfill(
-                content_type="text/html",
+                content_type="text/html; charset=utf-8",
                 body=f'<main><article class="lesson">Пара {value}</article>{link}</main>',
             )
 
