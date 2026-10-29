@@ -696,6 +696,7 @@ async def test_manual_login_returns_active_source_without_replacing_it(
                     id=new_id(),
                     at=env.clock.now(),
                     question="Пароль",
+                    required=True,
                     input_kind="password",
                     secret=True,
                 ),
