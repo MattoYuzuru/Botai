@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import (
@@ -145,7 +145,7 @@ def _browser_diagnostics(connection_id: str) -> dict[str, object]:
 def _initiator_url(request: Request) -> str | None:
     """The document of the frame that issued the request; a worker has no frame."""
     try:
-        url: object = request.frame.url
+        url = cast("object", request.frame.url)
     except PlaywrightError:
         return None
     return url if isinstance(url, str) and url else None
