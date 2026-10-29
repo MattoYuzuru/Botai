@@ -458,13 +458,20 @@ async def fetch_with_reauth(
             ],
         )
     adapter = AdapterFactory().create(effective)
+    auth = snap.spec.get("recipe", {}).get("auth", {})
+    needs_session = auth.get("type", "cookie") != "none"
+    if auth.get("type") == "session":
+        needs_session = any(
+            binding.get("cookies") is True or binding.get("bearer") == "observedAuthorization"
+            for binding in auth.get("bindings", {}).values()
+        )
     reauthed = False
     while True:
         try:
             if (
                 snap.adapter in ADAPTERS_NEEDING_BROWSER_SESSION
                 and sctx.session is None
-                and snap.spec.get("recipe", {}).get("auth", {}).get("type", "cookie") != "none"
+                and needs_session
             ):
                 raise SessionExpired("no session stored")
             return await adapter.fetch(sctx)

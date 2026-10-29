@@ -201,6 +201,7 @@ def test_weekly_requires_a_stable_declared_series_identity_and_title() -> None:
     data["identity"] = ["title"]
     assert lint_spec(spec, CTX).ok
     del data["fields"]["title"]
+    data["fields"]["description"] = {"path": "/description"}
     assert "field.missing_required" in lint_spec(spec, CTX).codes()
 
 

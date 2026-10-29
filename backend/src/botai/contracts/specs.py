@@ -221,6 +221,7 @@ def _scalar_sources(value: _M) -> list[JsonScalar | HtmlScalar]:
 
 class RecipeRequest(_M):
     render: bool = False
+    auth_binding: str | None = None
     method: Literal["GET", "POST"]
     read_only_post: bool = Field(default=False)
     path: str
@@ -266,14 +267,31 @@ class Endpoint(_M):
 
 class BootstrapStep(_M):
     id: str
+    auth_binding: str | None = None
     method: Literal["GET"]
     path: str
     extract: dict[str, str]
 
 
+class SessionBinding(_M):
+    cookies: bool
+    bearer: Literal["none", "observedAuthorization"]
+
+
 class RecipeAuth(_M):
-    type: Literal["cookie", "bearer", "none"]
+    type: Literal["cookie", "bearer", "none", "session"]
     header_name: str | None = Field(default=None)
+    version: Literal[1] | None = None
+    bindings: dict[str, SessionBinding] | None = Field(default=None, min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> Self:
+        if self.type == "session":
+            if self.version != 1 or not self.bindings or self.header_name is not None:
+                raise ValueError("session auth requires versioned executor bindings")
+        elif self.version is not None or self.bindings is not None:
+            raise ValueError("legacy auth does not accept executor bindings")
+        return self
 
 
 class RecipeValidation(_M):
@@ -303,6 +321,18 @@ class Recipe(_M):
     def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
         if self.version == 1:
+            auth = data.get("auth")
+            if isinstance(auth, dict):
+                auth.pop("version", None)
+                auth.pop("bindings", None)
+            for step in data.get("bootstrap", []):
+                step.pop("authBinding", None)
+                step.pop("auth_binding", None)
+            for endpoint in data.get("endpoints", []):
+                request = endpoint.get("request")
+                if isinstance(request, dict):
+                    request.pop("authBinding", None)
+                    request.pop("auth_binding", None)
             # Added defaults must not become explicit v2 syntax in a typed v1 round trip.
             for endpoint in data.get("endpoints", []):
                 response = endpoint.get("response")
@@ -317,7 +347,21 @@ class Recipe(_M):
 
     @model_validator(mode="after")
     def validate_data_version(self) -> Self:
+        if self.auth.type == "session":
+            if self.version != 2:
+                raise ValueError("executor bindings require recipe v2")
+            bindings = self.auth.bindings or {}
+            if any(step.auth_binding not in bindings for step in self.bootstrap) or any(
+                endpoint.request.auth_binding not in bindings
+                for endpoint in self.endpoints
+                if not endpoint.request.render
+            ):
+                raise ValueError("request refers to an unknown auth binding")
         if self.version == 1:
+            if any("auth_binding" in step.model_fields_set for step in self.bootstrap) or any(
+                "auth_binding" in endpoint.request.model_fields_set for endpoint in self.endpoints
+            ):
+                raise ValueError("request auth bindings require recipe v2")
             for endpoint in self.endpoints:
                 response = endpoint.response
                 if (

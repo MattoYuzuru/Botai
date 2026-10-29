@@ -11,7 +11,7 @@ from pydantic import SecretStr, ValidationError
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobDeferred, JobInputChanged
 from botai.core.llm import LlmMessage, LlmRequest, LlmResponse, LlmUsage, ScriptedLlm
-from botai.core.research import ResearchCheckpoint
+from botai.core.research import ResearchCheckpoint, ResearchUsage
 from botai.jobs.research import ResearchConflict
 from botai.learn.author import Candidate
 from botai.learn.intent import LearningIntent
@@ -196,3 +196,50 @@ async def test_invalid_checkpoint_is_rejected_without_exposing_its_content() -> 
                 "html": marker,
             }
         )
+
+
+@dataclass
+class BudgetMemoryContext(MemoryContext):
+    usage: ResearchUsage | None = None
+
+    async def load_research_usage(self) -> ResearchUsage | None:
+        return self.usage
+
+    async def save_research_with_usage(
+        self, payload: SecretStr, *, intent_key: str, expected_revision: int, usage: ResearchUsage
+    ) -> ResearchCheckpoint:
+        checkpoint = await self.save_research(
+            payload, intent_key=intent_key, expected_revision=expected_revision
+        )
+        self.usage = usage
+        return checkpoint
+
+
+async def test_expired_knowledge_does_not_reset_job_budget_or_uncertain_reservations() -> None:
+    ctx = BudgetMemoryContext()
+    settings = Settings(_env_file=None, botai_research_max_tokens=1000)
+    ledger = await load(ctx, settings)
+    ledger.state.other_tokens = 900
+    ledger.state.memory.steps = 7
+    ledger.state.memory.requests = 11
+    ledger.state.memory.frontier = [ORIGIN + "/section"]
+    with pytest.raises(asyncio.CancelledError):
+        async with ledger.operation("author", reserve_tokens=100):
+            raise asyncio.CancelledError
+    assert ctx.usage is not None
+    assert ctx.usage.tokens == 1000
+    assert ctx.usage.active_ms > 0
+    ctx.stored = None  # knowledge TTL/maintenance, but the Job survives
+    restored = await load(ctx, settings)
+    assert restored.state.tokens == 1000
+    assert restored.state.active_ms == ctx.usage.active_ms
+    assert restored.state.memory.steps == 7
+    assert restored.state.other_requests == 11
+    assert restored.state.memory.frontier == []
+    provider = ScriptedLlm()
+    with pytest.raises(BotaiError) as failure:
+        await restored.llm(provider).complete(
+            LlmRequest(messages=[LlmMessage(role="user", content="structure")], max_tokens=10)
+        )
+    assert failure.value.code == ErrorCode.QUOTA_EXCEEDED
+    assert provider.requests == []

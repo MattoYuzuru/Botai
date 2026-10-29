@@ -89,6 +89,7 @@ class Observations:
     stop_reason: str = ""
     # Executor-owned navigation target, never rendered or supplied to a model.
     auth_target_url: str | None = field(default=None, repr=False)
+    request_facts: dict[str, ObservedRequest] = field(default_factory=dict, repr=False)
 
     @property
     def empty(self) -> bool:
@@ -98,15 +99,15 @@ class Observations:
         """The bundle as the model sees it, wrapped so that it reads as data."""
         parts = [f'<observation origin="{self.origin}">']
         headers: list[str] = []
-        for page in self.pages:
+        for index, page in enumerate(self.pages):
             links = "; ".join(f"{text} -> {path}" for text, path in page.links)
             headers.append(
-                f"[page] {page.url[:600]} | title: {page.title}\n"
+                f"[page] {page.url[:600]} | title: {page.title}; evidenceRef={page.reference or f'p{index}'}\n"
                 + (f"  links: {links[:400]}\n" if links else "")
             )
-        for call in self.calls:
+        for index, call in enumerate(self.calls):
             headers.append(
-                f"[request] {call.method} {call.url[:600]} -> {call.status} {call.content_type}\n"
+                f"[request] {call.method} {call.url[:600]} -> {call.status} {call.content_type}; evidenceRef={call.reference or f'r{index}'}\n"
             )
         # Every entry has a share after header costs. A large SPA cannot hide all later XHRs,
         # and the bundle never cuts a JSON document halfway through a field.
@@ -463,7 +464,11 @@ def observations_of(
             )
         )
         texts.append(redactor.text(snap.text or _plain(snap.html), 1500) or "")
-    for call in kept:
+    for index, call in enumerate(kept):
+        reference = (
+            call_refs.get(request_key(call)) if call_refs is not None else None
+        ) or f"r{index}"
+        obs.request_facts[reference] = call.model_copy(deep=True)
         body = body_view(redactor, call.response_sample)
         diagnostic_event(
             "observe.call",
@@ -485,9 +490,23 @@ def observations_of(
                 status=call.status,
                 content_type=(call.response_content_type or "").split(";")[0],
                 body=body,
-                reference=call_refs.get(request_key(call)) if call_refs is not None else None,
+                reference=reference,
             )
         )
+    for index, (_, snapshot) in enumerate(snapshots):
+        document = next(
+            (
+                call
+                for call in reversed(log_entries)
+                if call.method == "GET"
+                and call.resource_type == "document"
+                and call.url == snapshot.url
+            ),
+            None,
+        )
+        if document is not None:
+            reference = page_refs[index] if index < len(page_refs) else f"p{index}"
+            obs.request_facts[reference] = document.model_copy(deep=True)
     obs.observed = set(redactor.observed)
     obs.injections = redactor.injections
     obs.plain_text = "\n".join(t for t in texts if t)

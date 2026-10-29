@@ -122,7 +122,9 @@ class RecipeAdapter:
         for step in self.recipe.bootstrap:
             try:
                 url = self._url(step.path, ctx, params)
-                response = await client.request("GET", url)
+                response = await client.request(
+                    "GET", url, auth_binding=self._binding(step.auth_binding)
+                )
                 doc = response.json() if response.status_code == 200 else MISSING
             except (TemplateError, ValueError, RecursionError):
                 failed.update(step.extract)
@@ -135,6 +137,16 @@ class RecipeAdapter:
                 else:
                     params[name] = text
         return params, failed
+
+    def _binding(self, identifier: str | None) -> dict[str, Any] | None:
+        if self.recipe.auth.type != "session":
+            return None
+        binding = (self.recipe.auth.bindings or {}).get(identifier or "")
+        if binding is None:
+            raise BotaiError(
+                ErrorCode.RECIPE_REJECTED, "Не найдена проверенная привязка авторизации"
+            )
+        return binding.model_dump()
 
     # --- endpoint ----------------------------------------------------------------------------
 
@@ -221,8 +233,15 @@ class RecipeAdapter:
                 )
             else:
                 response = await client.request(
-                    req.method, url, params=page_query, json=body if req.method == "POST" else None
+                    req.method,
+                    url,
+                    params=page_query,
+                    json=body if req.method == "POST" else None,
+                    auth_binding=self._binding(req.auth_binding),
                 )
+            outcome.status = response.status_code
+            outcome.transport = "browser" if req.render else "http"
+            outcome.binding_id = req.auth_binding
             if response.status_code in (404, 410):
                 return fail("not_found", str(response.url))
             if response.status_code >= 400:
@@ -238,9 +257,9 @@ class RecipeAdapter:
                     remaining_instances=MAX_INSTANCES - len(collected),
                 )
             except ExpressionError as exc:
-                return fail(exc.problem, str(response.url))  # type: ignore[arg-type]
+                return fail(exc.problem, str(response.url))
             if isinstance(parsed, str):
-                return fail(parsed, str(response.url))  # type: ignore[arg-type]
+                return fail(parsed, str(response.url))
             raw_count, page_records, doc, page_nodes, page_leaves = parsed
             nodes_seen += page_nodes
             leaves_seen += page_leaves
@@ -248,7 +267,7 @@ class RecipeAdapter:
             outcome.items_seen = seen
             outcome.items_valid = len(collected)
             if len(collected) + len(page_records) > MAX_ITEMS_PER_ENDPOINT:
-                return fail("limit", str(response.url))  # type: ignore[arg-type]
+                return fail("limit", str(response.url))
             page_digest = hashlib.sha256(response.content).hexdigest()
             ids = {r.external_id for r in page_records}
             if (
@@ -257,7 +276,7 @@ class RecipeAdapter:
                 and (page_digest in previous_pages or (ids and not ids.difference(unique_ids)))
             ):
                 # Keep usable records, but never mark an unfinished walk as a complete snapshot.
-                outcome.ok, outcome.problem = False, "no_progress"  # type: ignore[assignment]
+                outcome.ok, outcome.problem = False, "no_progress"
                 return outcome, collected
             previous_pages.add(page_digest)
             unique_ids.update(ids)
@@ -282,7 +301,7 @@ class RecipeAdapter:
         outcome.items_seen = seen
         outcome.items_valid = len(collected)
         if not complete:
-            outcome.ok, outcome.problem = False, "limit"  # type: ignore[assignment]
+            outcome.ok, outcome.problem = False, "limit"
         elif seen == 0 or (self.recipe.version == 2 and not leaves_seen):
             outcome.problem = "empty"
         elif not collected and not (

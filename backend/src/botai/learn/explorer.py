@@ -203,10 +203,24 @@ class Explorer:
     async def _canary(
         self, spec: dict[str, Any], sctx: SyncContext, *, require: Collection[Kind]
     ) -> CanaryReport:
+        capture = spec.get("recipe", {}).get("version") == 2
+
+        async def check() -> CanaryReport:
+            if capture:
+                return await run_canary(spec, sctx, require=require, capture_failures=True)
+            return await run_canary(spec, sctx, require=require)
+
         if self._research is None:
-            return await run_canary(spec, sctx, require=require)
+            return await check()
         async with self._research.operation("verify"):
-            return await run_canary(spec, sctx, require=require)
+            report = await check()
+        if (
+            capture
+            and any(finding.retryable for finding in report.findings)
+            and self._research.remaining_seconds() > 0
+        ):
+            raise JobDeferred("Источник временно недоступен, продолжу проверку", delay_seconds=60)
+        return report
 
     async def _ensure_session(
         self,
@@ -916,6 +930,25 @@ class Explorer:
     async def _observe(
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
+        research = self._research
+        if research is not None:
+            state = research.state
+            if research.remaining_seconds() <= 0:
+                raise BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Исследование достигло общего бюджета времени"
+                )
+            if (
+                state.memory.requests + state.other_requests
+                >= self.services.settings.botai_research_max_requests
+            ):
+                raise BotaiError(
+                    ErrorCode.SOURCE_RATE_LIMITED, "Исследование достигло общего бюджета чтений"
+                )
+            if state.tokens >= self.services.settings.botai_research_max_tokens:
+                state.memory.exhausted = True
+                state.memory.stop_reason = "token_budget"
+                await research.save()
+                return Observations(origin=info.origin, limited=True, stop_reason="token_budget")
         stage = await self.ui.stage("Смотрю страницы кабинета")
         entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
         start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
@@ -1292,7 +1325,7 @@ class Explorer:
             if report.ok:
                 return (bound, report), findings
             # The source responded: changing auth cannot repair a schema/field mismatch.
-            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.problems)
+            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
             break
         return None, findings
 

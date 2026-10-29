@@ -25,7 +25,7 @@ from botai.core.clock import Clock
 from botai.core.diagnostics import bind_diagnostics, diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.jobs import JobCancelled, JobClaimLost, JobInputChanged, JobState
-from botai.core.research import ResearchCheckpoint
+from botai.core.research import ResearchCheckpoint, ResearchUsage
 from botai.core.vault import CipherVault, SecretKind, TransactionalVault, Vault
 from botai.db.models import ChatThread, Connection, Job, JobAnswer
 from botai.jobs import dialogue
@@ -144,6 +144,31 @@ class PgJobContext:
             raise ValueError("the Vault does not support encrypted research checkpoints")
         return await ResearchStore(self._db, self._vault, self._clock, ttl=self._research_ttl).save(
             self, payload, intent_key=intent_key, expected_revision=expected_revision
+        )
+
+    async def load_research_usage(self) -> ResearchUsage | None:
+        from botai.jobs.research import ResearchStore
+
+        if not isinstance(self._vault, CipherVault):
+            raise ValueError("the Vault does not support encrypted research checkpoints")
+        return await ResearchStore(
+            self._db, self._vault, self._clock, ttl=self._research_ttl
+        ).load_usage(self)
+
+    async def save_research_with_usage(
+        self,
+        payload: SecretStr,
+        *,
+        intent_key: str,
+        expected_revision: int,
+        usage: ResearchUsage,
+    ) -> ResearchCheckpoint:
+        from botai.jobs.research import ResearchStore
+
+        if not isinstance(self._vault, CipherVault):
+            raise ValueError("the Vault does not support encrypted research checkpoints")
+        return await ResearchStore(self._db, self._vault, self._clock, ttl=self._research_ttl).save(
+            self, payload, intent_key=intent_key, expected_revision=expected_revision, usage=usage
         )
 
     async def put_secret(
