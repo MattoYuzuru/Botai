@@ -325,6 +325,8 @@ class RecipeAdapter:
             previous_pages.add(page_digest)
             unique_ids.update(ids)
             window_ids.append(frozenset(ids))
+            if window is not None:
+                outcome.window_items.append(len(page_records))
             collected.extend(page_records)
             if window is not None:
                 complete = page_index + 1 == pages  # an empty window does not end the walk

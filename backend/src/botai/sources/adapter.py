@@ -151,6 +151,7 @@ class EndpointOutcome:
     status: int | None = None
     binding_id: str | None = None
     windows: int = 0  # date windows answered by a dateWindow endpoint
+    window_items: list[int] = field(default_factory=list[int])  # records of each window
 
     @property
     def structural(self) -> bool:

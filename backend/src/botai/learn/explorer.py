@@ -50,7 +50,7 @@ from botai.core.research import ResearchContext
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db import models as m
-from botai.learn import revisions
+from botai.learn import horizon, revisions
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import (
     AuthorError,
@@ -74,6 +74,7 @@ from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandida
 from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
+from botai.learn.sitemap import save_site_map
 from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
 from botai.search import institutional_search_query
 from botai.sources.adapter import SessionExpired, SyncContext
@@ -161,6 +162,7 @@ class Explorer:
         self._request_facts: dict[str, ObservedRequest] = {}
         self._browser_plans: dict[str, BrowserPlan] = {}
         self._browser_plan_urls: dict[str, str] = {}
+        self._horizon_asked: set[Kind] = set()
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -811,6 +813,10 @@ class Explorer:
                     found = await self._author_and_verify(
                         kind, text, lint_ctx, sctx, info, revision, digest
                     )
+                    if found is not None:
+                        found = await self._thin_horizon(
+                            kind, found, redactor, sctx, info, revision, digest, lint_ctx
+                        )
                     if await self._drain(redactor):
                         break  # A clarification during a canary must affect the final selection.
                     if found is not None:
@@ -1110,6 +1116,10 @@ class Explorer:
         self._request_facts = obs.request_facts
         self._browser_plans = obs.browser_plans
         self._browser_plan_urls = obs.browser_plan_urls
+        if obs.sitemap and not obs.auth_required and not obs.bot_protection:
+            async with self.services.db() as db, db.begin():
+                await guard_job(self.ctx, db, check_input=True)
+                await save_site_map(db, info.origin, obs.sitemap, self.services.clock.now())
         return obs
 
     async def _probe_context(
@@ -1318,6 +1328,7 @@ class Explorer:
             elif auth_type == "bearer" and state.cookies:
                 variants.append(replace(candidate, auth={"type": "cookie"}))
         findings: list[str] = []
+        empty_window = False
         for bound in variants:
             spec = candidate_spec(
                 bound,
@@ -1393,8 +1404,96 @@ class Explorer:
                 return (bound, report), findings
             # The source responded: changing auth cannot repair a schema/field mismatch.
             findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
+            empty_window = any(finding.code == "empty_result" for finding in report.findings)
             break
+        wide = self._walk_candidate(candidate, info) if empty_window else None
+        if wide is not None:
+            # The read answered but its window was empty (a holiday, a control week): the
+            # neighbouring windows may hold the schedule.
+            checked, more = await self._verify_candidate(
+                kind, wide, index, sctx, info, revision, digest, lint_ctx
+            )
+            findings.extend(more)
+            if checked is not None:
+                return checked, findings
         return None, findings
+
+    def _walk_candidate(self, candidate: Candidate, info: ConnInfo) -> Candidate | None:
+        wide = horizon.walked(candidate.endpoint, self.services.clock.now(), info.tz)
+        return replace(candidate, endpoint=wide) if wide is not None else None
+
+    async def _thin_horizon(
+        self,
+        kind: Kind,
+        found: Chosen,
+        redactor: Redactor,
+        sctx: SyncContext,
+        info: ConnInfo,
+        revision: int,
+        digest: str,
+        lint_ctx: LintContext,
+    ) -> Chosen | None:
+        """A date window with almost nothing in it is read over its neighbours; if it stays thin,
+        the student is asked in plain words (FR-039). None: the answer sent the search elsewhere."""
+        if kind in self._horizon_asked or not horizon.moves_date(found.candidate.endpoint):
+            return found
+        count = found.report.count(kind)
+        if count > horizon.SPARSE:
+            return found
+        if not horizon.is_walk(found.candidate.endpoint):
+            wide = self._walk_candidate(found.candidate, info)
+            if wide is None:
+                return found  # neighbouring windows cannot be read, so there is nothing to ask
+            stage = await self.ui.stage("Проверяю соседние недели")
+            checked, _ = await self._verify_candidate(
+                kind, wide, 0, sctx, info, revision, digest, lint_ctx
+            )
+            if checked is not None and checked[1].count(kind) > count:
+                found = Chosen(kind, checked[0], checked[1], found.comparison)
+                count = found.report.count(kind)
+                await stage.finish("ok", f"Найдено записей: {count}")
+            else:
+                await stage.finish("skipped", "Соседние недели ничего не добавили")
+        if count > horizon.SPARSE:
+            return found
+        self._horizon_asked.add(kind)
+        now = self.services.clock.now()
+        endpoint = found.candidate.endpoint
+        per_window: list[int] = []
+        if found.report.result is not None:
+            per_window = next(
+                (
+                    o.window_items
+                    for o in found.report.result.outcomes
+                    if o.kind == kind and o.window_items
+                ),
+                [],
+            )
+        span = horizon.covered(endpoint, now, info.tz)
+        window = endpoint.get("pagination") or {}
+        question = horizon.thin_question(
+            count,
+            kind_forms=("занятие", "занятия", "занятий")
+            if kind == "scheduleEvents"
+            else ("запись", "записи", "записей"),
+            span=span,
+            per_window=per_window,
+            unit="неделям" if window.get("stepDays") == 7 else "периодам",
+        )
+        diagnostic_event(
+            "learn.thin_horizon", kind=kind, record_count=count, window_count=len(per_window)
+        )
+        before = self.intent
+        answer = await self.ui.ask_learning_turn(question)
+        if not answer:
+            return found
+        await self._turn(answer, redactor)
+        redirected = (
+            self.intent.entry_urls != before.entry_urls
+            or self.intent.requested_kinds != before.requested_kinds
+            or self.intent.absent_kinds != before.absent_kinds
+        )
+        return None if redirected else found
 
     async def _pick(self, kind: Kind, verified: list[Chosen], tz: ZoneInfo) -> Chosen:
         """One candidate. A repair prefers the one that reads the confirmed data again; several

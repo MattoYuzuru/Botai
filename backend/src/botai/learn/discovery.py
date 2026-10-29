@@ -560,6 +560,7 @@ class ObservationSession:
             visited_count=len(self.visited),
             page_refs=tuple(ordered_pages),
             call_refs={request_key(self.calls[ref]): ref for ref in ordered_calls},
+            known_links=list(self.links.values()),
         )
         # Auth/refusal evidence is a stop condition, never an optional planner-selected page.
         obs.auth_required = self.auth_required
