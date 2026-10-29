@@ -105,6 +105,7 @@ class Redactor:
         values = [cookie.value.get_secret_value() for cookie in state.cookies]
         if state.bearer is not None:
             values.append(state.bearer.get_secret_value())
+        values.extend(scope.token.get_secret_value() for scope in state.bearer_scopes)
         for origin in state.browser_storage:
             for store in (origin.local_storage, origin.session_storage):
                 values.extend(value.get_secret_value() for value in store.values())

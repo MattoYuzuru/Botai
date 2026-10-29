@@ -425,3 +425,6 @@ async def test_one_endpoint_cannot_flood_the_database_with_items() -> None:
     )
     assert len(result.records) == 5000
     assert result.outcomes[0].items_seen == 6000
+    assert result.outcomes[0].ok is False
+    assert result.outcomes[0].problem == "limit"
+    assert result.complete_kinds() == set()

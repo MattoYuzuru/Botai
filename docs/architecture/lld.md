@@ -7,7 +7,9 @@
 Принятое дополнение от 29.10.2026 — [LLD длительного исследования](source-research.md):
 Job claim fencing, зашифрованный checkpoint, frontier и кандидаты после перезапуска,
 кооперативное продолжение и общие бюджеты. [План](../plan/source-research-refactor.md)
-разделяет целевую архитектуру и реализованные этапы.
+разделяет целевую архитектуру и реализованные этапы. [Factory v2](factory-v2.md) описывает
+новые per-request auth bindings, deterministic data DSL и verified browser replay;
+[ADR-0012](../adr/0012-verified-source-factory-v2.md) фиксирует совместимость и producer gate.
 
 ## 1. Раскладка репозитория
 

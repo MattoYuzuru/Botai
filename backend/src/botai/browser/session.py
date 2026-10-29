@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import SecretStr
 
-from botai.core.browser import SessionOriginStorage, SessionState
+from botai.core.browser import SessionOriginStorage, SessionState, auth_origin
 
 MAX_STORAGE_ORIGINS = 12
 MAX_STORAGE_ENTRIES = 64
@@ -131,6 +131,16 @@ def encode_session(state: SessionState) -> str:
                 for c in state.cookies
             ],
             "bearer": state.bearer.get_secret_value() if state.bearer else None,
+            "entry_url": state.entry_url.get_secret_value() if state.entry_url else None,
+            "bearer_scopes": [
+                {
+                    "origin": scope.origin,
+                    "token": scope.token.get_secret_value(),
+                    "captured_at": scope.captured_at.isoformat(),
+                    "expires_hint": scope.expires_hint.isoformat() if scope.expires_hint else None,
+                }
+                for scope in state.bearer_scopes
+            ],
             "captured_at": state.captured_at.isoformat(),
             "expires_hint": state.expires_hint.isoformat() if state.expires_hint else None,
             "browser_storage": [
@@ -156,6 +166,26 @@ def decode_session(raw: str) -> SessionState:
     return SessionState.model_validate_json(raw)
 
 
+def with_confirmed_entry(state: SessionState, entry_url: str) -> SessionState:
+    """Called only after LoginFlow independently verified the owner's actual entry page."""
+    return SessionState.model_validate({**state.model_dump(), "entry_url": SecretStr(entry_url)})
+
+
+def session_storage_expiry(state: SessionState) -> datetime | None:
+    """Private acquisition context outlives authentication; individual credentials still expire."""
+    return None if state.entry_url is not None else state.expires_hint
+
+
+def bearer_expired(
+    token: SecretStr, *, now: datetime, expires_hint: datetime | None = None
+) -> bool:
+    """Explicit and JWT expiry hints each independently prohibit replaying a saved token."""
+    expiry = jwt_expiry(token.get_secret_value())
+    return (expires_hint is not None and expires_hint <= now) or (
+        expiry is not None and expiry <= now
+    )
+
+
 def httpx_cookies(state: SessionState) -> httpx.Cookies:
     jar = httpx.Cookies()
     for c in state.cookies:
@@ -163,9 +193,15 @@ def httpx_cookies(state: SessionState) -> httpx.Cookies:
     return jar
 
 
-def request_headers(state: SessionState) -> dict[str, str]:
+def request_headers(state: SessionState, *, url: str | None = None) -> dict[str, str]:
     """Headers a sync request must carry besides cookies."""
-    if state.bearer is None:
+    origin = auth_origin(url or state.origin)
+    if origin is None:
+        return {}
+    for scope in state.bearer_scopes:
+        if scope.origin == origin:
+            return {"authorization": f"Bearer {scope.token.get_secret_value()}"}
+    if state.bearer is None or auth_origin(state.origin) != origin:
         return {}
     return {"authorization": f"Bearer {state.bearer.get_secret_value()}"}
 

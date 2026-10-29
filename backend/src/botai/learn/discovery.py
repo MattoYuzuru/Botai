@@ -10,22 +10,32 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from botai.browser.probe import requires_authentication
+from botai.browser.read_capabilities import ReadEffectError
 from botai.browser.read_views import ReadView, ReadViewBrowser
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.llm import LlmFixtureMissing, LlmProvider, LlmRequest, LlmResponse
+from botai.core.read_capabilities import ReadCapability, ReadCapabilityBrowser
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import parse_json
 from botai.learn.intent import LearningIntent
-from botai.learn.memory import DiscoveryMemory, MemoryLimits, NegativeReason, StopReason
+from botai.learn.memory import (
+    DiscoveryMemory,
+    MemoryLimits,
+    NegativeReason,
+    PortableBrowserPlan,
+    StopReason,
+)
 from botai.learn.observe import (
     MAX_CALLS,
     Observations,
@@ -59,6 +69,7 @@ class DiscoveryBudget:
     seconds: float = 90.0
     tokens: int = 150_000
     links_per_page: int = 80
+    capabilities: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +78,7 @@ class Decision:
     ref: str | None
     discoveries: tuple[Kind, ...]
     evidence: tuple[str, ...]
+    value_ref: str | None = None
 
 
 @dataclass(slots=True)
@@ -86,6 +98,8 @@ class ObservationSession:
     shapes: set[str] = field(default_factory=set, repr=False)
     delta: list[str] = field(default_factory=list)
     views: dict[str, ReadView] = field(default_factory=dict, repr=False)
+    capabilities: dict[str, ReadCapability] = field(default_factory=dict, repr=False)
+    portable_plans: dict[str, PortableBrowserPlan] = field(default_factory=dict, repr=False)
     current_links: list[str] = field(default_factory=list)
     failures: set[str] = field(default_factory=set)
     network_auth_required: bool = False
@@ -136,6 +150,7 @@ class ObservationSession:
         new_shape = shape not in self.shapes
         self.shapes.add(shape)
         self.views.clear()
+        self.capabilities.clear()
         self.current_links.clear()
         if requires_authentication(snap) or snap.captcha_suspected:
             self.auth_target_url = self.current_requested_url
@@ -150,6 +165,11 @@ class ObservationSession:
                 self.links[link_ref] = (label, target)
                 self.current_links.append(link_ref)
                 known.add(target)
+        if self.budget.capabilities and isinstance(self.handle, ReadCapabilityBrowser):
+            for i, capability in enumerate(await self.handle.read_capabilities()):
+                if i >= 24:
+                    break
+                self.capabilities[f"c{self.revision}-{i}"] = capability
         if isinstance(self.handle, ReadViewBrowser):
             for i, view in enumerate(await self.handle.read_views()):
                 if i >= 24:
@@ -243,6 +263,26 @@ class ObservationSession:
             "views": [
                 {"ref": ref, "label": r.text(view.label, 100)} for ref, view in self.views.items()
             ],
+            "capabilities": [
+                {
+                    "ref": ref,
+                    "kind": capability.kind,
+                    "label": r.text(capability.label, 120),
+                    "values": [
+                        {"ref": value.ref, "label": r.text(value.label, 120)}
+                        for value in capability.values
+                    ],
+                }
+                for ref, capability in self.capabilities.items()
+            ],
+            "browserPlans": [
+                {
+                    "ref": ref,
+                    "operations": [step.op for step in portable.plan.steps],
+                    "frameDepth": len(portable.plan.frame_path),
+                }
+                for ref, portable in self.portable_plans.items()
+            ],
             "responses": [
                 {
                     "ref": ref,
@@ -260,7 +300,7 @@ class ObservationSession:
         if not isinstance(data, dict):
             raise ValueError("invalid observation plan")
         data = cast(dict[str, Any], data)
-        if set(data) - {"stateRef", "action", "ref", "discoveries", "evidenceRefs"}:
+        if set(data) - {"stateRef", "action", "ref", "discoveries", "evidenceRefs", "valueRef"}:
             raise ValueError("invalid observation plan fields")
         if type(data.get("stateRef")) is not int or data["stateRef"] != self.revision:
             raise ValueError("stale observation plan")
@@ -269,6 +309,7 @@ class ObservationSession:
             "navigate",
             "inspect",
             "activate",
+            "use",
             "finish",
         }:
             raise ValueError("invalid observation action")
@@ -283,6 +324,18 @@ class ObservationSession:
             raise ValueError("unknown evidence reference")
         elif action == "activate" and ref not in self.views:
             raise ValueError("unknown view reference")
+        elif action == "use" and ref not in self.capabilities:
+            raise ValueError("unknown capability reference")
+        value_ref = data.get("valueRef")
+        if value_ref is not None and not isinstance(value_ref, str):
+            raise ValueError("invalid capability value reference")
+        if action == "use":
+            capability = self.capabilities[cast(str, ref)]
+            options = {option.ref for option in capability.values}
+            if (options and value_ref not in options) or (not options and value_ref is not None):
+                raise ValueError("unknown capability value reference")
+        elif value_ref is not None:
+            raise ValueError("this action does not accept a value reference")
         evidence = data.get("evidenceRefs", [])
         if (
             not isinstance(evidence, list)
@@ -301,7 +354,13 @@ class ObservationSession:
             or (kinds and not evidence)
         ):
             raise ValueError("invalid discovered kinds")
-        return Decision(action, ref, tuple(cast(list[Kind], kinds)), tuple(evidence))
+        return Decision(
+            action,
+            ref,
+            tuple(cast(list[Kind], kinds)),
+            tuple(evidence),
+            value_ref,
+        )
 
     async def apply(self, decision: Decision) -> bool:
         ref = decision.ref
@@ -309,6 +368,40 @@ class ObservationSession:
             return False
         if decision.action == "navigate":
             return await self.visit(self.links[ref][1])
+        if decision.action == "use":
+            if not isinstance(self.handle, ReadCapabilityBrowser):
+                return False
+            capability = self.capabilities.get(ref)
+            if capability is None:
+                return False
+            try:
+                result = await self.handle.apply_read_capability(
+                    capability.ref, value_ref=decision.value_ref
+                )
+            except ReadEffectError:
+                self.failures.add("no_progress")
+                return False
+            changed = await self.capture(result.snapshot)
+            portable = PortableBrowserPlan(
+                start_url=result.start_url, result_url=result.snapshot.url, plan=result.plan
+            )
+            if (
+                navigation_url(portable.start_url) == portable.start_url
+                and url_origin(portable.start_url) == self.origin
+                and navigation_url(portable.result_url) == portable.result_url
+                and url_origin(portable.result_url) == self.origin
+                and not _browser_plan_contains_secret(portable.plan, self.redactor)
+                and not any(
+                    self.redactor.contains_secret_address(url)
+                    for url in (portable.start_url, portable.result_url)
+                )
+            ):
+                key = next(
+                    (f"bp{i}" for i in range(8) if f"bp{i}" not in self.portable_plans), None
+                )
+                if key is not None:
+                    self.portable_plans[key] = portable
+            return changed
         if decision.action == "activate":
             if not isinstance(self.handle, ReadViewBrowser):
                 return False
@@ -352,6 +445,16 @@ class ObservationSession:
         obs.auth_target_url = (
             self.auth_target_url if obs.auth_required or obs.bot_protection else None
         )
+        obs.browser_plans = {
+            ref: portable.plan.model_copy(deep=True)
+            for ref, portable in self.portable_plans.items()
+        }
+        obs.browser_plan_urls = {
+            ref: portable.start_url for ref, portable in self.portable_plans.items()
+        }
+        obs.browser_plan_results = {
+            ref: portable.result_url for ref, portable in self.portable_plans.items()
+        }
         for ref, detail in self.details.items():
             if ref in self.pages:
                 for page in obs.pages:
@@ -504,6 +607,9 @@ async def adaptive_observe(
                     obs.pages = list(pages.values())[:6]
                     obs.calls = list(calls.values())[:MAX_CALLS]
                     obs.observed.update(retained.observed)
+                    obs.browser_plans = retained.browser_plans
+                    obs.browser_plan_urls = retained.browser_plan_urls
+                    obs.browser_plan_results = retained.browser_plan_results
                     obs.plain_text = (retained.plain_text + "\n" + obs.plain_text)[:8000]
                     obs.auth_required = obs.auth_required or retained.auth_required
                     obs.bot_protection = obs.bot_protection or retained.bot_protection
@@ -572,6 +678,81 @@ class _SliceExpired(Exception):
     pass
 
 
+_CSS_ESCAPE = re.compile(r"[0-9a-fA-F]{1,6}(?:\s)?")
+_GENERATED_POSITION = re.compile(r":nth-of-type\([1-9][0-9]*\)")
+_DATE_BINDING = re.compile(r"^\{(?:today|weekStart|(?:plusDays|minusDays):[0-9]{1,3})\}$")
+
+
+def _selector_secret_text(selector: str) -> str:
+    """Ignore generated positions, preserving IDs/attribute values and decoding CSS escapes.
+
+    A regex over the whole selector would also erase a literal ':nth-of-type(1)' inside an
+    attribute or an escaped ID. Those are source values and must retain their secret check.
+    """
+    parts: list[str] = []
+    index, brackets = 0, 0
+    quote: str | None = None
+    while index < len(selector):
+        char = selector[index]
+        if char == "\\" and index + 1 < len(selector):
+            escaped = _CSS_ESCAPE.match(selector, index + 1)
+            if escaped is not None:
+                point = int(escaped[0].strip(), 16)
+                parts.append(chr(point) if 0 < point <= 0x10FFFF else "\ufffd")
+                index = escaped.end()
+            else:
+                parts.append(selector[index + 1])
+                index += 2
+            continue
+        if quote is not None:
+            parts.append(char)
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+            parts.append(char)
+        elif char == "[":
+            brackets += 1
+            parts.append(char)
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+            parts.append(char)
+        elif brackets == 0 and (position := _GENERATED_POSITION.match(selector, index)):
+            index = position.end()
+            continue
+        else:
+            parts.append(char)
+        index += 1
+    return "".join(parts)
+
+
+def _browser_plan_contains_secret(plan: BrowserPlan, redactor: Redactor) -> bool:
+    """Check only source-derived descriptor values, never trusted JSON keys or constants."""
+    steps = [*plan.steps, *([plan.pagination.next] if plan.pagination else [])]
+    targets = [plan.empty_target]
+    frames = list(plan.frame_path)
+    for step in steps:
+        targets.extend([step.target, step.region])
+        frames.extend(step.frame_path)
+        if step.value is not None:
+            # ISO date templates are executable bindings generated by the trusted compiler;
+            # their numeric offsets are not option values or observed credential fragments.
+            binding = step.op == "set_date" and _DATE_BINDING.fullmatch(step.value)
+            if not binding and redactor.contains_secret(step.value):
+                return True
+    for target in targets:
+        if target is not None and any(
+            redactor.contains_secret(value)
+            for value in (_selector_secret_text(target.selector), target.label, target.controls)
+        ):
+            return True
+    return any(
+        redactor.contains_secret(value)
+        for frame in frames
+        for value in (_selector_secret_text(frame.selector), frame.name, frame.title)
+    )
+
+
 def _sanitize_memory_addresses(memory: DiscoveryMemory, redactor: Redactor) -> bool:
     """Remove protected values before any checkpoint or replay, never persist deny-set values."""
     omitted = False
@@ -593,6 +774,17 @@ def _sanitize_memory_addresses(memory: DiscoveryMemory, redactor: Redactor) -> b
         else:
             negatives.append(outcome)
     memory.negative_outcomes = negatives
+    plans = {
+        ref: portable
+        for ref, portable in memory.browser_plans.items()
+        if not _browser_plan_contains_secret(portable.plan, redactor)
+        and not any(
+            redactor.contains_secret_address(url)
+            for url in (portable.start_url, portable.result_url)
+        )
+    }
+    omitted = omitted or len(plans) != len(memory.browser_plans)
+    memory.browser_plans = plans
     return omitted
 
 
@@ -646,8 +838,10 @@ class _MemorySlice:
     async def commit(self) -> None:
         self.account()
         state, memory = self.state, self.memory
+        memory.browser_plans = dict(state.portable_plans)
         if _sanitize_memory_addresses(memory, state.redactor):
             self.reject_address()
+        state.portable_plans = dict(memory.browser_plans)
         memory.merge_urls(
             "visited", [url for url in sorted(state.visited) if self.allowed_address(url)]
         )
@@ -740,7 +934,9 @@ async def _resumable_observe(
     memory.generations += 1
     memory.resume_needed = False
     memory.exhausted = False
-    state = ObservationSession(handle, origin, redactor, budget)
+    state = ObservationSession(
+        handle, origin, redactor, budget, portable_plans=dict(memory.browser_plans)
+    )
     # Runtime references are rebuilt. In particular an old stateRef cannot accidentally match
     # the first page of a new handle, even when both happen to contain a link named l0.
     state.revision = generation * 1000

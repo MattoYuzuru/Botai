@@ -9,9 +9,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from botai.core.errors import BotaiError, ErrorCode
 
@@ -49,6 +50,11 @@ class ObservedRequest(BaseModel):
     request_content_type: str | None = None
     response_content_type: str | None = None
     response_sample: str | None = None  # truncated body, in memory only, for learning
+    evidence_id: str | None = None
+    has_cookie: bool = False
+    has_authorization: bool = False
+    authorization_scheme: Literal["none", "bearer", "other"] = "none"
+    auth_proven: bool = False  # complete request headers inspected by the executor
 
 
 class SessionCookie(BaseModel):
@@ -69,15 +75,74 @@ class SessionOriginStorage(BaseModel):
     session_storage: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
 
 
+def auth_origin(url: str) -> str | None:
+    """Exact HTTPS credential audience, including a nondefault port; never a host suffix."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        if parts.scheme != "https" or not host or parts.username or parts.password:
+            return None
+        port = parts.port
+        if port is not None and not 1 <= port <= 65535:
+            return None
+        host = host.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        return None
+    if ":" in host:  # preserve brackets for a parsed IPv6 address; egress still denies literals
+        host = f"[{host}]"
+    return f"https://{host}" + (f":{port}" if port not in (None, 443) else "")
+
+
+class SessionBearer(BaseModel):
+    """A bearer the browser actually sent, bound to its exact observed HTTPS origin."""
+
+    origin: str
+    token: SecretStr = Field(repr=False, min_length=1, max_length=32_768)
+    captured_at: datetime
+    expires_hint: datetime | None = None
+
+    @field_validator("origin")
+    @classmethod
+    def plain_origin(cls, value: str) -> str:
+        origin = auth_origin(value)
+        parts = urlsplit(value)
+        if origin is None or parts.path not in ("", "/") or parts.query or parts.fragment:
+            raise ValueError("a bearer audience must be a plain HTTPS origin")
+        return origin
+
+
 class SessionState(BaseModel):
     """What gets sealed into the Vault as kind=session (security.md §3)."""
 
     origin: str
     cookies: list[SessionCookie] = Field(default_factory=list)
     bearer: SecretStr | None = None
+    bearer_scopes: list[SessionBearer] = Field(default_factory=list, repr=False, max_length=12)
     captured_at: datetime
     expires_hint: datetime | None = None
     browser_storage: list[SessionOriginStorage] = Field(default_factory=list, repr=False)
+    entry_url: SecretStr | None = Field(default=None, repr=False, min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def unique_bearer_audiences(self) -> SessionState:
+        if len({scope.origin for scope in self.bearer_scopes}) != len(self.bearer_scopes):
+            raise ValueError("a session has conflicting bearer audiences")
+        if self.entry_url is not None:
+            entry = self.entry_url.get_secret_value()
+            if (
+                not entry
+                or len(entry) > 2000
+                or entry != entry.strip()
+                or "\\" in entry
+                or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in entry)
+                or urlsplit(entry).username is not None
+                or auth_origin(entry) is None
+                or auth_origin(entry) != auth_origin(self.origin)
+            ):
+                raise ValueError(
+                    "the private acquisition entry must be a bounded same-origin HTTPS URL"
+                )
+        return self
 
 
 class BrowserHandle(Protocol):

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from botai.contracts.schemas import validator
 from botai.contracts.specs import Kind
+from botai.core.browser import ObservedRequest
 from botai.core.llm import LlmMessage, LlmRequest
 from botai.sources.vocab import KIND_LABELS, REQUIRED, VOCAB
 
@@ -107,6 +109,7 @@ def task_prompt(
     *,
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
+    factory_v2: bool = False,
 ) -> str:
     """The kind-specific task. With `previous` it is a repair of an endpoint that stopped working."""
     required = sorted(REQUIRED[kind])
@@ -121,9 +124,12 @@ def task_prompt(
         .replace("{{required}}", ", ".join(f"`{r}`" for r in required))
         .replace("{{feedback}}", _feedback_note(feedback))
         .replace("{{problem}}", PROBLEMS.get(problem or "", "сайт отвечает не так, как описано"))
+        .replace("{{factory_rules}}", _factory_rules() if factory_v2 else "")
     )
     if previous is not None:
         text = text.replace("{{previous}}", json.dumps(previous, ensure_ascii=False, indent=1))
+        if factory_v2:
+            text += "\n\n" + _factory_rules()
     return text.strip()
 
 
@@ -133,11 +139,80 @@ def _recipe_defs() -> dict[str, Any]:
     return schema["$defs"]
 
 
-def author_schema(kind: Kind) -> dict[str, Any]:
+def _factory_rules() -> str:
+    return (
+        "### Проверенные ссылки фабрики\n\n"
+        "Для HTTP укажи endpoint.requestEvidenceId из наблюдаемого успешного запроса; "
+        "каждый bootstrap тоже требует свой requestEvidenceId. Это поля верхнего уровня "
+        "эндпоинта/шага, а не request. Не придумывай ссылки. Сервер сам привязывает cookie и bearer; "
+        "authBinding, browserPlan, имена заголовков, storage keys и значения секретов не задавай. "
+        "Старое поле auth не выбирает авторизацию в этом режиме.\n"
+        "Для чтения отрисованного HTML выбери endpoint.browserPlanRef из проверенных планов. "
+        "Только GET+HTML без body: сервер подставит исходную страницу и проверенные действия. "
+        "Не совмещай browserPlanRef и requestEvidenceId. Простой render=true допустим лишь "
+        "с requestEvidenceId наблюдаемого document-запроса той же страницы.\n"
+        "Схема также описывает вложенные collections, ссылки from на именованный контекст, "
+        "составление даты и времени compose и ограниченное разворачивание недельного расписания "
+        "expand. Применяй их только когда такая структура подтверждена наблюдением."
+    )
+
+
+def _reachable_defs(schema: dict[str, Any], definitions: dict[str, Any]) -> dict[str, Any]:
+    def refs(node: Any) -> set[str]:
+        if isinstance(node, dict):
+            result = set().union(*(refs(value) for value in node.values()))
+            reference = node.get("$ref", "")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                result.add(reference.removeprefix("#/$defs/"))
+            return result
+        if isinstance(node, list):
+            return set().union(*(refs(value) for value in node))
+        return set()
+
+    pending, included = refs(schema), set()
+    while pending:
+        name = pending.pop()
+        if name not in included:
+            included.add(name)
+            pending.update(refs(definitions[name]) - included)
+    return {name: definitions[name] for name in sorted(included)}
+
+
+def _reference_schema(keys: set[str]) -> dict[str, Any]:
+    return {"type": "string", "enum": sorted(keys)} if keys else {"not": {}}
+
+
+def author_schema(
+    kind: Kind,
+    *,
+    factory_v2: bool = False,
+    request_facts: Mapping[str, ObservedRequest] | None = None,
+    browser_plans: Mapping[str, object] | None = None,
+    browser_plan_urls: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """The model answers with candidates for one kind, shaped by the recipe contract."""
     defs = copy.deepcopy(_recipe_defs())
-    defs["endpoint"]["properties"]["kind"] = {"const": kind}
-    return {
+    endpoint_name = "endpointV2" if factory_v2 else "endpoint"
+    bootstrap_name = "bootstrapStepV2" if factory_v2 else "bootstrapStep"
+    endpoint = defs[endpoint_name]
+    endpoint["properties"]["kind"] = {"const": kind}
+    if factory_v2:
+        request_refs = _reference_schema(set(request_facts or {}))
+        plan_refs = _reference_schema(set(browser_plans or {}) & set(browser_plan_urls or {}))
+        request = endpoint["properties"]["request"]
+        request["properties"].pop("authBinding", None)
+        request["properties"].pop("browserPlan", None)
+        request["allOf"] = [
+            rule for rule in request.get("allOf", []) if "browserPlan" not in json.dumps(rule)
+        ]
+        endpoint["properties"]["requestEvidenceId"] = request_refs
+        endpoint["properties"]["browserPlanRef"] = plan_refs
+        endpoint["oneOf"] = [{"required": ["requestEvidenceId"]}, {"required": ["browserPlanRef"]}]
+        bootstrap = defs[bootstrap_name]
+        bootstrap["properties"].pop("authBinding", None)
+        bootstrap["properties"]["requestEvidenceId"] = copy.deepcopy(request_refs)
+        bootstrap["required"].append("requestEvidenceId")
+    schema: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
         "required": ["found", "endpoints"],
@@ -147,12 +222,12 @@ def author_schema(kind: Kind) -> dict[str, Any]:
             "endpoints": {
                 "type": "array",
                 "maxItems": MAX_CANDIDATES,
-                "items": {"$ref": "#/$defs/endpoint"},
+                "items": {"$ref": f"#/$defs/{endpoint_name}"},
             },
             "bootstrap": {
                 "type": "array",
                 "maxItems": 4,
-                "items": {"$ref": "#/$defs/bootstrapStep"},
+                "items": {"$ref": f"#/$defs/{bootstrap_name}"},
             },
             "auth": {
                 "type": "object",
@@ -169,8 +244,9 @@ def author_schema(kind: Kind) -> dict[str, Any]:
                 "items": {"type": "string", "maxLength": 200},
             },
         },
-        "$defs": defs,
     }
+    schema["$defs"] = _reachable_defs(schema, defs)
+    return schema
 
 
 def author_request(
@@ -180,14 +256,24 @@ def author_request(
     *,
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
+    factory_v2: bool = False,
+    request_facts: Mapping[str, ObservedRequest] | None = None,
+    browser_plans: Mapping[str, object] | None = None,
+    browser_plan_urls: Mapping[str, str] | None = None,
 ) -> LlmRequest:
-    task = task_prompt(kind, feedback, previous=previous, problem=problem)
+    task = task_prompt(kind, feedback, previous=previous, problem=problem, factory_v2=factory_v2)
     return LlmRequest(
         messages=[
             LlmMessage(role="system", content=system_prompt()),
             LlmMessage(role="user", content=f"{observation}\n\n{task}"),
         ],
-        json_schema=author_schema(kind),
+        json_schema=author_schema(
+            kind,
+            factory_v2=factory_v2,
+            request_facts=request_facts,
+            browser_plans=browser_plans,
+            browser_plan_urls=browser_plan_urls,
+        ),
         max_tokens=4000,
         temperature=0.1,
         purpose="learn" if previous is None else "repair",
@@ -243,8 +329,9 @@ def discovery_request(observation: dict[str, Any], intent: object) -> LlmRequest
             "required": ["stateRef", "action", "ref", "discoveries", "evidenceRefs"],
             "properties": {
                 "stateRef": {"type": "integer", "minimum": 0},
-                "action": {"enum": ["navigate", "inspect", "activate", "finish"]},
+                "action": {"enum": ["navigate", "inspect", "activate", "use", "finish"]},
                 "ref": {"type": ["string", "null"], "maxLength": 12},
+                "valueRef": {"type": ["string", "null"], "maxLength": 40},
                 "discoveries": {
                     "type": "array",
                     "maxItems": len(KIND_LABELS),

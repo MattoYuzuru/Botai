@@ -18,7 +18,13 @@ from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobClaimLost, JobDeferred, JobInputChanged
 from botai.core.llm import LlmProvider, LlmRequest, LlmResponse
-from botai.core.research import ResearchConflict, ResearchContext, ResearchFormatError
+from botai.core.research import (
+    ResearchBudgetContext,
+    ResearchConflict,
+    ResearchContext,
+    ResearchFormatError,
+    ResearchUsage,
+)
 from botai.core.vault import VaultError
 from botai.learn.author import Candidate
 from botai.learn.intent import LearningIntent
@@ -135,6 +141,9 @@ class ResearchLedger:
         key, hosts_key = intent_key(intent), digest(sorted(allow_hosts))
         try:
             checkpoint = await ctx.load_research()
+            usage = (
+                await ctx.load_research_usage() if isinstance(ctx, ResearchBudgetContext) else None
+            )
             old = (
                 ResearchProgress.model_validate_json(checkpoint.payload.get_secret_value())
                 if checkpoint is not None
@@ -193,8 +202,12 @@ class ResearchLedger:
                 origin=origin,
                 intent_key=key,
                 allow_hosts_key=hosts_key,
-                memory=DiscoveryMemory(origin=origin, intent_key=key),
-                other_tokens=initial_tokens,
+                memory=DiscoveryMemory(
+                    origin=origin, intent_key=key, steps=usage.steps if usage else 0
+                ),
+                other_tokens=initial_tokens + (usage.tokens if usage else 0),
+                other_active_ms=usage.active_ms if usage else 0,
+                other_requests=usage.requests if usage else 0,
             )
         return cls(ctx, state, checkpoint.revision if checkpoint else 0, settings)
 
@@ -210,11 +223,23 @@ class ResearchLedger:
     async def save(self) -> None:
         self.state.memory.validate_for(self.state.origin, self.state.intent_key)
         try:
-            checkpoint = await self.ctx.save_research(
-                SecretStr(self.state.model_dump_json()),
-                intent_key=self.state.intent_key,
-                expected_revision=self.revision,
-            )
+            payload = SecretStr(self.state.model_dump_json())
+            if isinstance(self.ctx, ResearchBudgetContext):
+                checkpoint = await self.ctx.save_research_with_usage(
+                    payload,
+                    intent_key=self.state.intent_key,
+                    expected_revision=self.revision,
+                    usage=ResearchUsage(
+                        tokens=self.state.tokens + self.state.pending_tokens,
+                        active_ms=self.state.active_ms + self.state.pending_active_ms,
+                        requests=self.state.memory.requests + self.state.other_requests,
+                        steps=self.state.memory.steps,
+                    ),
+                )
+            else:
+                checkpoint = await self.ctx.save_research(
+                    payload, intent_key=self.state.intent_key, expected_revision=self.revision
+                )
         except ResearchConflict:
             raise JobDeferred("Продолжаю с обновлённого состояния") from None
         except (ValueError, VaultError, ResearchFormatError):

@@ -51,7 +51,7 @@ from botai.sources.adapter import (
 )
 from botai.sources.factory import AdapterFactory
 from botai.sources.scope import read_scope, scoped_spec
-from botai.sources.session import load_session
+from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import REQUIRED
 
 log = logging.getLogger(__name__)
@@ -458,13 +458,14 @@ async def fetch_with_reauth(
             ],
         )
     adapter = AdapterFactory().create(effective)
+    needs_session = recipe_requires_session(effective.get("recipe", {}))
     reauthed = False
     while True:
         try:
             if (
                 snap.adapter in ADAPTERS_NEEDING_BROWSER_SESSION
                 and sctx.session is None
-                and snap.spec.get("recipe", {}).get("auth", {}).get("type", "cookie") != "none"
+                and needs_session
             ):
                 raise SessionExpired("no session stored")
             return await adapter.fetch(sctx)

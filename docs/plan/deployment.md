@@ -25,6 +25,39 @@ Migration additive: добавляется `job_research_checkpoints`, суще�
 [source-research](../architecture/source-research.md). Подготовка этих файлов не означает,
 что новый путь включён или живые источники перепроверены.
 
+## Rollout factory v2: reader до producer
+
+BOTAI_FACTORY_V2_ENABLED=false — producer gate, отдельный от BOTAI_RESEARCH_ENABLED.
+Compose интеграционной ветки передаёт его API/worker/proxy с default false; .env.example
+содержит выключенный пример. Чтение сохранённых v1/v2 работает при выключенном producer.
+Ни контрактный PR, ни foundation release сами по себе не разрешают включение нового producer.
+Worker получает 45 с на остановку контейнера при внутреннем shutdown grace 20 с: это даёт
+время завершить/отменить задачи и сохранить checkpoint до принудительного завершения.
+
+1. Финальный интегрированный SHA проходит полный CI (включая generation, PG/Chromium/proxy,
+   factory v2 E2E, web и guards). До зелёного результата rollout v2 не считать готовым.
+2. Проверить wiring BOTAI_FACTORY_V2_ENABLED в API/worker и operator configuration, без
+   печати compose.vars/app.secrets. Сначала выпустить reader с producer off; сверить revision
+   labels, health, миграцию и сохранность старых v1-подключений.
+3. Подготовить rollback-образ, который тоже понимает recipe v2, engine marker и cumulative
+   Job usage. До включения producer старый pre-v2 rollback возможен только при отсутствии
+   активированных v2 и с учётом требований ADR-0011 к незавершённым runs.
+4. После проверки reader отдельной операторской операцией на **том же проверенном v2-образе**
+   включить producer и research flags. Под server deploy lock сохранить защищённую прежнюю
+   конфигурацию с flags off, дождаться остановки worker, атомарно изменить vars, поднять
+   процессы и проверить фактические flags, image revision и health. При отказе вернуть
+   прежние vars и тот же совместимый образ; значения секретов не печатать.
+5. Владелец выполняет ограниченный L3: вход, canary, нормализованный экран, повторный sync.
+   Fixture success или API health не подтверждают поддержку университета.
+
+При проблеме отключение producer прекращает выпуск новых v2, **но не переводит уже
+активированные v2 на v1**. Такие подключения продолжают требовать совместимого reader.
+Откат на pre-v2 binary требует остановки/парковки этих подключений или адресного возврата
+проверенных v1-ревизий с сохранением domain snapshots. Сохранить таблицу checkpoint, usage
+в Job и activation receipts; TTL cleanup знаний не является возвратом budget или rollback.
+Автоматический backup/health rollback не решает семантическую несовместимость reader.
+Фактический выпуск/откат фиксируется по SHA; этот раздел не утверждает, что flags включены.
+
 ## Что сделано на сервере (2026-10-27)
 
 | Что | Где |

@@ -21,7 +21,7 @@ from botai.browser.egress import Egress
 from botai.browser.forms import has_credential_fields, looks_personal, safe_path
 from botai.browser.session import httpx_cookies, request_headers
 from botai.contracts.specs import LoginPreset
-from botai.core.browser import ObservedRequest, PageSnapshot, SessionState
+from botai.core.browser import ObservedRequest, PageSnapshot, SessionState, auth_origin
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import RetryPolicy, build_client, request_with_retries
@@ -79,8 +79,18 @@ async def _status(
         allow_hosts=hosts,
         proxy_url=creds.url,
         cookies=httpx_cookies(state) if state else None,
-        headers=request_headers(state) if state else None,
+        headers=request_headers(state, url=url) if state else None,
     ) as client:
+        audience = auth_origin(url)
+
+        async def scope_credentials(request: httpx.Request) -> None:
+            if auth_origin(str(request.url)) != audience:
+                request.extensions["botai_probe_crossed"] = True
+            if request.extensions.get("botai_probe_crossed"):
+                request.headers.pop("cookie", None)
+                request.headers.pop("authorization", None)
+
+        client.event_hooks["request"].append(scope_credentials)
         return await request_with_retries(
             client, "GET", url, policy=POLICY, budget_s=BUDGET_S, follow_redirects=follow
         )

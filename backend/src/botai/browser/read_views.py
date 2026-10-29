@@ -14,7 +14,7 @@ from botai.core.browser import PageSnapshot
 from botai.core.errors import BotaiError, ErrorCode
 
 MAX_READ_VIEWS = 12
-_DESTRUCTIVE = re.compile(
+UNSAFE_CONTROL_LABEL = re.compile(
     r"logout|sign[ -]?out|log[ -]?in|sign[ -]?in|password|delete|remove|unsubscribe|"
     r"submit|send|save|create|edit|pay|purchase|выйти|выход|войти|вход|парол|удал|"
     r"отпис|отправ|сохран|созда|измен|оплат|купить",
@@ -111,8 +111,8 @@ class ReadViewRegistry:
                     not isinstance(label, str)
                     or not isinstance(controls, str)
                     or not isinstance(selector, str)
-                    or _DESTRUCTIVE.search(label)
-                    or _DESTRUCTIVE.search(controls)
+                    or UNSAFE_CONTROL_LABEL.search(label)
+                    or UNSAFE_CONTROL_LABEL.search(controls)
                 ):
                     continue
                 element = await page.query_selector(selector)

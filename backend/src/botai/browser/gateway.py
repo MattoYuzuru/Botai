@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +44,7 @@ from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.forms import CaptchaPage, PushWait, detect, has_credential_fields
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
+from botai.browser.read_capabilities import ReadCapabilityRegistry
 from botai.browser.read_views import ReadView, ReadViewRegistry
 from botai.browser.session import (
     MAX_STORAGE_BYTES,
@@ -51,20 +52,25 @@ from botai.browser.session import (
     MAX_STORAGE_KEY_CHARS,
     MAX_STORAGE_ORIGINS,
     MAX_STORAGE_VALUE_CHARS,
+    bearer_expired,
     bounded_browser_storage,
     jwt_expiry,
     storage_origin,
 )
+from botai.contracts.browser_plan import BrowserPlan
 from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
+    SessionBearer,
     SessionCookie,
     SessionOriginStorage,
     SessionState,
+    auth_origin,
 )
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_context, diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.read_capabilities import ReadActionResult, ReadCapability
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +256,9 @@ class PlaywrightHandle:
         capture: CaptureConfig,
         clock: Clock,
         read_only: bool = False,
+        injected_authorizations: dict[Request, str] | None = None,
+        confirmed_entry_url: SecretStr | None = None,
+        restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -258,24 +267,36 @@ class PlaywrightHandle:
         self.connection_id = connection_id
         self._diagnostic_facts = _browser_diagnostics(connection_id)
         self._read_view_registry = ReadViewRegistry()
+        self._read_capability_registry = ReadCapabilityRegistry(page, now=clock.now)
+        self._retired_capability_tasks: set[asyncio.Task[None]] = set()
         self.allow_hosts = tuple(allow_hosts)
         self.origin = origin
         self._capture = capture
         self._clock = clock
         self.read_only = read_only
+        self._confirmed_entry_url = confirmed_entry_url
         self._entry_guarded = False
         self._entry_verifying = 0
         self._auth_epochs: dict[Frame, int] = {}
         self._auth_permits: dict[Frame, _AuthPermit] = {}
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
+        self._request_versions: dict[Request, int] = {}
+        self._injected_authorizations = (
+            injected_authorizations if injected_authorizations is not None else {}
+        )
         self._samples: set[asyncio.Task[None]] = set()
+        self._auth_captures: set[asyncio.Task[None]] = set()
         self._inflight: set[Request] = set()
         self._last_activity = monotonic()
         self._activity_generation = 0
         self._sampled = 0
         self._failed_diagnostics = 0
-        self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
+        self._bearer: dict[str, str] = {}  # exact origin -> last bearer the browser sent
+        self._bearer_versions: dict[str, tuple[int, int]] = {}
+        self._bearer_captured_at: dict[str, datetime] = {}
+        self._restored_bearers = dict(restored_bearers or {})
+        self._request_serial = 0
         self._observation_bearers: set[str] = set()
         self._observation_bearer_bytes = 0
         self._secret_inventory_failed = False
@@ -541,7 +562,13 @@ class PlaywrightHandle:
         page.on("framenavigated", self._revoke_auth_document)
         page.on("framedetached", self._forget_auth_document)
         self._read_view_registry.invalidate()
+        old = self._read_capability_registry
+        old.invalidate()
+        cleanup = asyncio.create_task(old.aclose())
+        self._retired_capability_tasks.add(cleanup)
+        cleanup.add_done_callback(self._retired_capability_tasks.discard)
         self._page = page
+        self._read_capability_registry = ReadCapabilityRegistry(page, now=self._clock.now)
         self._navigation_request = None
         self._navigation_error = None
         for callback in list(self._page_callbacks):
@@ -560,26 +587,16 @@ class PlaywrightHandle:
                     self._navigation_request = request
                     self._navigation_error = None
         host = urlsplit(request.url).hostname
+        self._request_serial += 1
+        serial = self._request_serial
         if host:
             self._visited.setdefault(host.lower(), None)
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("bearer ") and host.lower() in self.allow_hosts:
-                token = auth[7:].strip()
-                self._bearer[host.lower()] = token
-                if token not in self._observation_bearers:
-                    try:
-                        size = len(token.encode("utf-8"))
-                    except UnicodeError:
-                        self._secret_inventory_failed = True
-                    else:
-                        if (
-                            len(self._observation_bearers) >= 4096
-                            or self._observation_bearer_bytes + size > 1_048_576
-                        ):
-                            self._secret_inventory_failed = True
-                        else:
-                            self._observation_bearers.add(token)
-                            self._observation_bearer_bytes += size
+            self._remember_bearer(
+                request.url,
+                request.headers.get("authorization", ""),
+                serial,
+                injected=request in self._injected_authorizations,
+            )
         if request.resource_type not in _OBSERVED_TYPES or len(self._log) >= MAX_LOG:
             return
         entry = ObservedRequest(
@@ -587,9 +604,14 @@ class PlaywrightHandle:
             url=request.url,
             resource_type=request.resource_type,
             request_content_type=request.headers.get("content-type"),
+            evidence_id=f"r{serial}",
         )
         self._log.append(entry)
         self._entries[request] = entry
+        self._request_versions[request] = serial
+        task = asyncio.get_running_loop().create_task(self._capture_auth(request, entry, serial))
+        self._auth_captures.add(task)
+        task.add_done_callback(self._auth_captures.discard)
         self._diagnostic(
             "browser.request",
             connection_id=self.connection_id,
@@ -599,11 +621,94 @@ class PlaywrightHandle:
             **url_facts(request.url),
         )
 
+    def _remember_bearer(
+        self, url: str, authorization: str, serial: int, *, injected: bool
+    ) -> None:
+        origin = auth_origin(url)
+        host = (urlsplit(url).hostname or "").lower()
+        if origin is None or host not in self.allow_hosts:
+            return
+        if authorization:
+            self._remember_secret(authorization)
+            self._remember_secret(authorization.partition(" ")[2].strip())
+        if not authorization.lower().startswith("bearer "):
+            return
+        token = authorization[7:].strip()
+        if not token:
+            return
+        if len(token) > 32_768:
+            self._secret_inventory_failed = True
+            return
+        # The application's own credential supersedes the saved fallback, even when a later
+        # request omitted its header or asynchronous header capture completes out of order.
+        version = (0 if injected else 1, serial)
+        if version >= self._bearer_versions.get(origin, (-1, 0)):
+            self._bearer[origin] = token
+            self._bearer_versions[origin] = version
+            self._bearer_captured_at[origin] = self._clock.now()
+
+    def _remember_secret(self, token: str) -> None:
+        if token and token not in self._observation_bearers:
+            try:
+                size = len(token.encode("utf-8"))
+            except UnicodeError:
+                self._secret_inventory_failed = True
+                return
+            if (
+                len(self._observation_bearers) >= 4096
+                or self._observation_bearer_bytes + size > 1_048_576
+            ):
+                self._secret_inventory_failed = True
+            else:
+                self._observation_bearers.add(token)
+                self._observation_bearer_bytes += size
+
+    async def _capture_auth(self, request: Request, entry: ObservedRequest, serial: int) -> None:
+        try:
+            async with asyncio.timeout(2.0):
+                headers = await request.all_headers()
+            authorization = self._injected_authorizations.get(
+                request, headers.get("authorization", "")
+            ).strip()
+            entry.has_cookie = bool(headers.get("cookie", "").strip())
+            for pair in headers.get("cookie", "").split(";"):
+                self._remember_secret(pair.partition("=")[2].strip().strip('"'))
+            entry.has_authorization = bool(authorization)
+            entry.authorization_scheme = (
+                "bearer"
+                if authorization.lower().startswith("bearer ") and authorization[7:].strip()
+                else "other"
+                if authorization
+                else "none"
+            )
+            self._remember_bearer(
+                request.url,
+                authorization,
+                serial,
+                injected=request in self._injected_authorizations,
+            )
+            entry.auth_proven = True
+        except (PlaywrightError, TimeoutError):
+            # Without a complete inventory, reflected headers may not be passed to the model.
+            self._secret_inventory_failed = True
+
     def _on_response(self, response: Response) -> None:
         entry = self._entries.get(response.request)
         if entry is None:
             return
         entry.status = response.status
+        injected = self._injected_authorizations.get(response.request)
+        if injected is not None:
+            # Playwright's original all_headers() omits executor route overrides. A completed
+            # response ties the exact injected header to this one request, not to session presence.
+            entry.has_authorization = True
+            entry.authorization_scheme = "bearer"
+            self._remember_bearer(
+                response.request.url,
+                injected,
+                self._request_versions[response.request],
+                injected=True,
+            )
         content_type = response.headers.get("content-type")
         entry.response_content_type = content_type
         self._diagnostic(
@@ -677,8 +782,9 @@ class PlaywrightHandle:
             self._activity_generation += 1
 
     async def network_log(self) -> list[ObservedRequest]:
-        if self._samples:
-            await asyncio.wait(list(self._samples), timeout=2.0)
+        pending = self._samples | self._auth_captures
+        if pending:
+            await asyncio.wait(list(pending), timeout=2.0)
         return [e.model_copy() for e in self._log]
 
     # -- actions -----------------------------------------------------------------------------
@@ -702,6 +808,7 @@ class PlaywrightHandle:
 
     async def goto(self, url: str) -> PageSnapshot:
         self._read_view_registry.invalidate()
+        self._read_capability_registry.reset()
         started = monotonic()
         self._diagnostic(
             "browser.navigation.start",
@@ -752,6 +859,7 @@ class PlaywrightHandle:
 
     async def snapshot(self) -> PageSnapshot:
         self._read_view_registry.invalidate()
+        self._read_capability_registry.invalidate()
         last: PlaywrightError | None = None
         for _ in range(4):
             page = self._page
@@ -781,6 +889,7 @@ class PlaywrightHandle:
         ) from last
 
     async def fill(self, selector: str, value: str) -> None:
+        self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
@@ -791,12 +900,36 @@ class PlaywrightHandle:
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
             ) from None
 
+    async def read_capabilities(self) -> list[ReadCapability]:
+        if not self.read_only or self.closed:
+            return []
+        return await self._read_capability_registry.discover()
+
+    async def apply_read_capability(
+        self, ref: str, *, value_ref: str | None = None
+    ) -> ReadActionResult:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "Действие недоступно для чтения")
+        self._read_view_registry.invalidate()
+        return await self._read_capability_registry.apply(ref, value_ref=value_ref)
+
+    async def replay_browser_plan(
+        self, plan: BrowserPlan, *, values: Mapping[str, str], items_selector: str
+    ) -> list[PageSnapshot]:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "План недоступен для чтения")
+        self._read_view_registry.invalidate()
+        return await self._read_capability_registry.replay(
+            plan, values=values, items_selector=items_selector
+        )
+
     async def read_views(self) -> list[ReadView]:
         if not self.read_only or self.closed:
             return []
         return await self._read_view_registry.discover(self._page)
 
     async def activate_read_view(self, ref: str) -> PageSnapshot:
+        self._read_capability_registry.invalidate()
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
         panel_id = self._read_view_registry.panel_id(self._page, ref)
@@ -862,6 +995,7 @@ class PlaywrightHandle:
                 await monitor.dispose()
 
     async def click(self, selector: str) -> PageSnapshot:
+        self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
@@ -912,6 +1046,10 @@ class PlaywrightHandle:
         The caller applies its two-second deadline and the cumulative redaction byte bound.
         """
         try:
+            if self._auth_captures:
+                _, pending = await asyncio.wait(list(self._auth_captures), timeout=2.0)
+                if pending:
+                    self._secret_inventory_failed = True
             if self._secret_inventory_failed:
                 raise ValueError("incomplete bearer inventory")
             values = [SecretStr(value) for value in self._observation_bearers]
@@ -978,6 +1116,8 @@ class PlaywrightHandle:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single
         explicitly named key). Bounded browser storage stays only in the encrypted session,
         separate from bearer discovery and from observations supplied to the model."""
+        if self._auth_captures:
+            await asyncio.wait(list(self._auth_captures), timeout=2.0)
         hosts = self._cookie_hosts()
         cookies: list[SessionCookie] = []
         for c in await self.context.cookies():
@@ -997,22 +1137,34 @@ class PlaywrightHandle:
                 )
             )
         bearer: str | None = None
+        bearer_scopes: list[SessionBearer] = []
         source = self._capture.bearer_from
+        now = self._clock.now()
         if source == "authorizationHeader":
-            primary = (urlsplit(self.origin).hostname or "").lower()
-            # the origin's own; failing that, the one token the browser sent anywhere (an API
-            # host next to the page host). Two different tokens: no guess.
-            sent = set(self._bearer.values())
-            bearer = self._bearer.get(primary) or (next(iter(sent)) if len(sent) == 1 else None)
+            primary = auth_origin(self.origin)
+            bearer = self._bearer.get(primary) if primary is not None else None
+            for origin, token in self._bearer.items():
+                if (
+                    auth_origin(origin) != origin
+                    or (urlsplit(origin).hostname or "") not in self.allow_hosts
+                ):
+                    continue
+                bearer_scopes.append(
+                    SessionBearer(
+                        origin=origin,
+                        token=SecretStr(token),
+                        captured_at=self._bearer_captured_at.get(origin, now),
+                        expires_hint=self._bearer_expiry(origin, token),
+                    )
+                )
         elif source in ("localStorage", "sessionStorage") and self._capture.bearer_key:
             bearer = await self._bearer_from_storage(source, self._capture.bearer_key)
-        now = self._clock.now()
         expiries = [datetime.fromtimestamp(c.expires, UTC) for c in cookies if c.expires]
         hint: datetime | None = None
         if cookies and len(expiries) == len(cookies):
             hint = min(expiries)
         if bearer:
-            exp = jwt_expiry(bearer)
+            exp = self._bearer_expiry(auth_origin(self.origin) or "", bearer)
             if exp is not None and (hint is None or exp < hint):
                 hint = exp
         browser_storage = await self._export_browser_storage()
@@ -1028,10 +1180,19 @@ class PlaywrightHandle:
             origin=self.origin,
             cookies=cookies,
             bearer=SecretStr(bearer) if bearer else None,
+            bearer_scopes=bearer_scopes,
             captured_at=now,
             expires_hint=hint,
             browser_storage=browser_storage,
+            entry_url=self._confirmed_entry_url,
         )
+
+    def _bearer_expiry(self, origin: str, token: str) -> datetime | None:
+        expiries = [jwt_expiry(token)]
+        restored = self._restored_bearers.get(origin)
+        if restored is not None and restored[0].get_secret_value() == token:
+            expiries.append(restored[1])
+        return min((expiry for expiry in expiries if expiry is not None), default=None)
 
     async def _export_browser_storage(self) -> list[SessionOriginStorage]:
         entries: dict[str, SessionOriginStorage] = {}
@@ -1080,7 +1241,7 @@ class PlaywrightHandle:
             self.closed = True
             if self._reaper is not None and self._reaper is not asyncio.current_task():
                 self._reaper.cancel()
-            for task in list(self._samples):
+            for task in list(self._samples | self._auth_captures):
                 task.cancel()
             self._closing = asyncio.create_task(self._finish_close())
         # A fetch deadline may stop waiting for cleanup. The context and its pool slot still
@@ -1089,6 +1250,10 @@ class PlaywrightHandle:
 
     async def _finish_close(self) -> None:
         try:
+            with contextlib.suppress(PlaywrightError, TimeoutError):
+                async with asyncio.timeout(2):
+                    await self._read_capability_registry.aclose()
+                    await asyncio.gather(*self._retired_capability_tasks, return_exceptions=True)
             with contextlib.suppress(PlaywrightError, TimeoutError):
                 async with asyncio.timeout(10):
                     await self.context.close()
@@ -1303,8 +1468,11 @@ class PlaywrightGateway:
             )
             context.set_default_timeout(ACTION_TIMEOUT_MS)
             primary = origin or (session.origin if session is not None else f"https://{hosts[0]}")
+            injected_authorizations: dict[Request, str] = {}
             if session is not None:
-                await self._restore(context, session, allow_hosts=hosts)
+                injected_authorizations = await self._restore(
+                    context, session, allow_hosts=hosts, clock=self._clock
+                )
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
                 route_diagnostics = _browser_diagnostics(connection_id)
@@ -1321,6 +1489,21 @@ class PlaywrightGateway:
                     await context.close()
             self._slots.release()
             raise
+        restored_bearers: dict[str, tuple[SecretStr, datetime | None]] = {}
+        if session is not None:
+            for scope in session.bearer_scopes:
+                expiry = min(
+                    (
+                        value
+                        for value in (scope.expires_hint, session.expires_hint)
+                        if value is not None
+                    ),
+                    default=None,
+                )
+                restored_bearers[scope.origin] = (scope.token, expiry)
+            audience = auth_origin(session.origin)
+            if session.bearer is not None and audience is not None:
+                restored_bearers.setdefault(audience, (session.bearer, session.expires_hint))
         handle = PlaywrightHandle(
             gateway=self,
             context=context,
@@ -1332,6 +1515,13 @@ class PlaywrightGateway:
             capture=capture or CaptureConfig(),
             clock=self._clock,
             read_only=read_only,
+            injected_authorizations=injected_authorizations,
+            restored_bearers=restored_bearers,
+            confirmed_entry_url=(
+                session.entry_url
+                if session is not None and auth_origin(primary) == auth_origin(session.origin)
+                else None
+            ),
         )
         self._handles.add(handle)
         self._by_user[user_id] = handle
@@ -1340,14 +1530,46 @@ class PlaywrightGateway:
 
     @staticmethod
     async def _restore(
-        context: BrowserContext, session: SessionState, *, allow_hosts: Iterable[str] | None = None
-    ) -> None:
+        context: BrowserContext,
+        session: SessionState,
+        *,
+        allow_hosts: Iterable[str] | None = None,
+        now: datetime | None = None,
+        clock: Clock | None = None,
+    ) -> dict[Request, str]:
+        injected_authorizations: dict[Request, str] = {}
+        read_now = clock.now if clock is not None else SystemClock().now
+        if clock is None and now is not None:
+            fixed_now = now
+
+            def read_now() -> datetime:
+                return fixed_now
+
+        now = read_now()
+        if session.expires_hint is not None and session.expires_hint <= now:
+            return injected_authorizations
+        expired_scopes = [
+            scope
+            for scope in session.bearer_scopes
+            if bearer_expired(scope.token, now=now, expires_hint=scope.expires_hint)
+        ]
+        expired_origins = {scope.origin for scope in expired_scopes}
+        expired_tokens = {scope.token.get_secret_value() for scope in expired_scopes}
+        primary = auth_origin(session.origin)
+        if session.bearer is not None and bearer_expired(session.bearer, now=now):
+            if primary is not None:
+                expired_origins.add(primary)
+            expired_tokens.add(session.bearer.get_secret_value())
         hosts = (
             tuple(allow_hosts)
             if allow_hosts is not None
             else ((urlsplit(session.origin).hostname or ""),)
         )
-        browser_storage = bounded_browser_storage(session.browser_storage, hosts)
+        browser_storage = [
+            entry
+            for entry in bounded_browser_storage(session.browser_storage, hosts)
+            if entry.origin not in expired_origins
+        ]
         diagnostic_event(
             "browser.restore",
             cookie_count=len(session.cookies),
@@ -1403,20 +1625,46 @@ class PlaywrightGateway:
                         "secure": c.secure,
                     }
                     for c in session.cookies
+                    if c.value.get_secret_value() not in expired_tokens
                 ]
             )
-        if session.bearer is not None:
-            bearer = session.bearer.get_secret_value()
-            primary = urlsplit(session.origin)
-            pattern = f"{primary.scheme}://{primary.hostname}/**"
+        scoped = {
+            scope.origin: scope.token.get_secret_value()
+            for scope in session.bearer_scopes
+            if (urlsplit(scope.origin).hostname or "") in hosts
+            and scope.origin not in expired_origins
+        }
+        scoped_hints = {scope.origin: scope.expires_hint for scope in session.bearer_scopes}
+        if (
+            session.bearer is not None
+            and primary is not None
+            and primary not in expired_origins
+            and (urlsplit(primary).hostname or "") in hosts
+        ):
+            scoped.setdefault(primary, session.bearer.get_secret_value())
+        if scoped:
 
             async def add_authorization(route: Route) -> None:
                 headers = route.request.headers
                 # The application may have refreshed its token since restoration. Its own
                 # credentials take precedence over the saved fallback, including other schemes.
-                if "authorization" in headers:
+                audience = auth_origin(route.request.url) or ""
+                bearer = scoped.get(audience)
+                at = read_now()
+                expired = (session.expires_hint is not None and session.expires_hint <= at) or (
+                    bearer is not None
+                    and bearer_expired(
+                        SecretStr(bearer), now=at, expires_hint=scoped_hints.get(audience)
+                    )
+                )
+                if "authorization" in headers or bearer is None or expired:
                     await route.continue_()
                 else:
-                    await route.continue_(headers={**headers, "authorization": f"Bearer {bearer}"})
+                    authorization = f"Bearer {bearer}"
+                    # This is execution metadata, kept private. Without a matching completed
+                    # response it cannot be accepted as evidence by the factory compiler.
+                    injected_authorizations[route.request] = authorization
+                    await route.continue_(headers={**headers, "authorization": authorization})
 
-            await context.route(pattern, add_authorization)
+            await context.route("**/*", add_authorization)
+        return injected_authorizations

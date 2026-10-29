@@ -13,7 +13,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.ids import new_id
-from botai.core.research import ResearchCheckpoint
+from botai.core.research import ResearchCheckpoint, ResearchUsage
 from botai.core.vault import InMemoryVault, SealedSecret, SecretKind, VaultError
 from botai.db.models import Connection, Job, JobResearchCheckpoint, SecretRow, User
 from botai.jobs.research import (
@@ -389,3 +389,37 @@ async def test_checkpoint_cascades_with_its_owner(env: Env, owner: str) -> None:
             await session.execute(delete(User).where(User.id == ctx.user_id))
     async with env.sm() as session:
         assert await session.get(JobResearchCheckpoint, ctx.job_id) is None
+
+
+async def test_nonsecret_usage_survives_knowledge_ttl_and_failed_cas(env: Env) -> None:
+    ctx = await context(env)
+    research = store(env)
+    usage = ResearchUsage(tokens=500, active_ms=1200, requests=20, steps=4)
+    assert await research.load_usage(ctx) is None
+    await research.save(ctx, SecretStr(MARKER), intent_key=INTENT, expected_revision=0, usage=usage)
+    with pytest.raises(ResearchConflict):
+        await research.save(
+            ctx,
+            SecretStr("late"),
+            intent_key=INTENT,
+            expected_revision=0,
+            usage=ResearchUsage(tokens=1),
+        )
+    assert await research.load_usage(ctx) == usage
+    env.advance(hours=25)
+    assert await research.load(ctx) is None
+    assert await research.load_usage(ctx) == usage
+    async with env.sm() as session:
+        job = await session.get(Job, ctx.job_id)
+        assert job is not None
+        assert MARKER not in str(job.payload)
+        assert job.payload["_research_usage"] == {
+            "tokens": 500,
+            "active_ms": 1200,
+            "requests": 20,
+            "steps": 4,
+        }
+    await research.save(
+        ctx, SecretStr("fresh knowledge"), intent_key=INTENT, expected_revision=0, usage=usage
+    )
+    assert await research.load_usage(ctx) == usage

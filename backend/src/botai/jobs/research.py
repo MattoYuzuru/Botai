@@ -7,6 +7,7 @@ It never copies plaintext to Job payload/result, events, diagnostics or the norm
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from pydantic import SecretStr
@@ -15,7 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.clock import Clock
 from botai.core.execution import GuardedJobContext
-from botai.core.research import ResearchCheckpoint, ResearchConflict, ResearchFormatError
+from botai.core.research import (
+    ResearchCheckpoint,
+    ResearchConflict,
+    ResearchFormatError,
+    ResearchUsage,
+)
 from botai.core.vault import CipherVault, SealedSecret, SecretKind
 from botai.db.models import Job, JobResearchCheckpoint
 
@@ -61,6 +67,25 @@ class ResearchStore:
             self._payload_value(payload)
             return ResearchCheckpoint(row.revision, row.intent_key, payload)
 
+    async def load_usage(self, ctx: GuardedJobContext) -> ResearchUsage | None:
+        async with self._db() as session, session.begin():
+            await ctx.assert_current(session)
+            job = await self._check_job(session, ctx)
+            raw = job.payload.get("_research_usage")
+            if raw is None:
+                return None
+            if not isinstance(raw, dict) or set(raw) != {
+                "tokens",
+                "active_ms",
+                "requests",
+                "steps",
+            }:
+                raise ResearchFormatError("unsupported research usage")
+            try:
+                return ResearchUsage(**raw)
+            except (TypeError, ValueError):
+                raise ResearchFormatError("invalid research usage") from None
+
     async def save(
         self,
         ctx: GuardedJobContext,
@@ -68,6 +93,7 @@ class ResearchStore:
         *,
         intent_key: str,
         expected_revision: int,
+        usage: ResearchUsage | None = None,
     ) -> ResearchCheckpoint:
         value = self._payload_value(payload)
         if not _INTENT_KEY.fullmatch(intent_key):
@@ -111,7 +137,11 @@ class ResearchStore:
             row.expires_at = now + self._ttl
             session.add(row)
             # Routing ownership is published atomically with the first durable checkpoint.
-            job.payload = {**job.payload, "_research_engine": FORMAT_VERSION}
+            job.payload = {
+                **job.payload,
+                "_research_engine": FORMAT_VERSION,
+                **({"_research_usage": asdict(usage)} if usage is not None else {}),
+            }
         return ResearchCheckpoint(revision, intent_key, payload)
 
     @staticmethod

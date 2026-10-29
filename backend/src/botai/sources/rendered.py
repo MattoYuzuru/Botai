@@ -9,14 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Mapping
+from typing import cast
 from urllib.parse import urlsplit
 
 from botai.browser.forms import CaptchaPage, ErrorPage, HardBlock, detect, has_credential_fields
 from botai.browser.probe import requires_authentication
-from botai.core.browser import BrowserHandle, PageSnapshot
+from botai.browser.read_capabilities import ReadEffectError
+from botai.browser.session import bearer_expired
+from botai.contracts.browser_plan import BrowserPlan
+from botai.core.browser import BrowserHandle, PageSnapshot, auth_origin
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.read_capabilities import ReadCapabilityBrowser
 from botai.sources.adapter import Problem, SessionExpired, SyncContext
 from botai.sources.extract import parse_html, select_items
+from botai.sources.session import known_expired
+from botai.sources.templates import render
 
 MAX_RENDERED_PAGES = 3
 MAX_RENDERED_SECONDS = 30.0
@@ -41,6 +49,74 @@ class RenderedPageReader:
         self._pages = 0
         self._deadline = asyncio.get_running_loop().time() + MAX_RENDERED_SECONDS
 
+    async def read_many(
+        self,
+        url: str,
+        items_selector: str,
+        *,
+        plan: BrowserPlan | None = None,
+        values: Mapping[str, str],
+    ) -> list[PageSnapshot]:
+        if plan is None:
+            return [await self.read(url, items_selector)]
+        remaining = MAX_RENDERED_PAGES - self._pages
+        if remaining <= 0 or asyncio.get_running_loop().time() >= self._deadline:
+            raise RenderedPageError(cast(Problem, "limit"))
+        if _origin(url) != self.ctx.origin:
+            raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Страница не принадлежит источнику")
+        if self.ctx.browser is None:
+            raise BotaiError(ErrorCode.RECIPE_REJECTED, "Чтение страницы в браузере недоступно")
+        plan = BrowserPlan.model_validate(plan.model_dump(by_alias=True))
+        if plan.pagination is not None:
+            plan.pagination.max_pages = min(plan.pagination.max_pages, remaining)
+        reserved_pages = plan.pagination.max_pages if plan.pagination else 1
+        self._pages += reserved_pages
+        resolved = dict(values)
+        for step in plan.steps:
+            if step.op == "set_date" and step.value is not None:
+                resolved[step.value] = render(
+                    step.value, now=self.ctx.now, tz=self.ctx.tz, params=values
+                )
+        handle: BrowserHandle | None = None
+        self._check_session()
+        if self.ctx.before_request is not None:
+            await self.ctx.before_request()
+        try:
+            async with asyncio.timeout_at(self._deadline - 1.0):
+                handle = await self.ctx.browser.open(
+                    user_id=self.ctx.user_id,
+                    connection_id=self.ctx.connection_id,
+                    allow_hosts=self.ctx.allow_hosts,
+                    session=self.ctx.session,
+                    read_only=True,
+                    background=True,
+                )
+                snapshot = await handle.goto(url)
+                self._check_page(snapshot)
+                if not isinstance(handle, ReadCapabilityBrowser):
+                    raise BotaiError(
+                        ErrorCode.RECIPE_REJECTED,
+                        "Источник требует неподдерживаемых действий браузера",
+                    )
+                snapshots = await handle.replay_browser_plan(
+                    plan, values=resolved, items_selector=items_selector
+                )
+                if not snapshots or len(snapshots) > reserved_pages:
+                    raise RenderedPageError(cast(Problem, "limit"))
+                for snapshot in snapshots:
+                    self._check_page(snapshot)
+                self._pages -= reserved_pages - len(snapshots)
+                return snapshots
+        except ReadEffectError as error:
+            reason = error.reason if error.reason in {"limit", "no_progress"} else "selector"
+            raise RenderedPageError(cast(Problem, reason)) from None
+        except TimeoutError:
+            raise RenderedPageError(cast(Problem, "limit")) from None
+        finally:
+            if handle is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(handle.close(), timeout=1.0)
+
     async def read(self, url: str, items_selector: str) -> PageSnapshot:
         loop = asyncio.get_running_loop()
         if self._pages >= MAX_RENDERED_PAGES or loop.time() >= self._deadline:
@@ -53,6 +129,7 @@ class RenderedPageReader:
             raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Страница не принадлежит источнику")
         if self.ctx.browser is None:
             raise BotaiError(ErrorCode.RECIPE_REJECTED, "Чтение страницы в браузере недоступно")
+        self._check_session()
         if self.ctx.before_request is not None:
             await self.ctx.before_request()
         handle: BrowserHandle | None = None
@@ -98,6 +175,25 @@ class RenderedPageReader:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(handle.close(), timeout=1.0)
 
+    def _check_session(self) -> None:
+        state = self.ctx.session
+        if state is None:
+            return
+        if (
+            known_expired(state, self.ctx.now)
+            or any(
+                scope.origin == auth_origin(self.ctx.origin)
+                and bearer_expired(scope.token, now=self.ctx.now, expires_hint=scope.expires_hint)
+                for scope in state.bearer_scopes
+            )
+            or (
+                state.bearer is not None
+                and auth_origin(state.origin) == auth_origin(self.ctx.origin)
+                and bearer_expired(state.bearer, now=self.ctx.now)
+            )
+        ):
+            raise SessionExpired("rendered session is past its expiry hint", code="auth_missing")
+
     def _check_page(self, snapshot: PageSnapshot) -> None:
         if snapshot.url.startswith("chrome-error:"):
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Страница источника не загрузилась")
@@ -122,3 +218,8 @@ class RenderedPageReader:
             or tree.css_first("input[type=password]") is not None
         ):
             raise SessionExpired("rendered page requires login")
+
+
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"

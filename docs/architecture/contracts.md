@@ -113,6 +113,15 @@ type Provenance = {
 Рецепт — один из четырёх видов спецификации адаптера (`recipe`, `moodle_ws`, `ical`,
 `document`), см. [`adapter-spec.schema.json`](../../contracts/adapter-spec.schema.json).
 
+### Версия 2
+
+V1 остаётся строгим исходным контрактом. V2 добавляет per-request authBinding, compiler-owned
+Cookie/Bearer policy, nested collections/from, dateTime composition, bounded weekly expansion
+и portable browserPlan. Новый reader принимает обе версии; producer включается отдельно
+BOTAI_FACTORY_V2_ENABLED (default false). Значения credentials и временные evidence refs
+в recipe не сохраняются. Подробности — [контракт v2](../../contracts/recipe-v2.md) и
+[реализация/границы](factory-v2.md). REST/SSE и доменные сущности этим этапом не меняются.
+
 ### Жизненный цикл ревизии
 
 `draft` → `canary` (прогон на сессии автора, сравнение с подтверждённым итогом)

@@ -33,10 +33,11 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import ValidationError
 
-from botai.browser.session import EntrySessionProvider, encode_session
+from botai.browser.session import EntrySessionProvider, encode_session, session_storage_expiry
 from botai.contracts.agent_ui import SummaryGroup
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
-from botai.core.browser import SessionState
+from botai.core.browser import ObservedRequest, SessionState
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -66,6 +67,7 @@ from botai.learn.intent import LearningIntent, apply_intent, intent_request, pre
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
+from botai.learn.policies import bind_parts
 from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandidate, intent_key
 from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
@@ -85,7 +87,7 @@ from botai.sources.runner import (
     sync_connection,
 )
 from botai.sources.scope import scoped_spec
-from botai.sources.session import load_session
+from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
 
 log = logging.getLogger(__name__)
@@ -142,6 +144,7 @@ class Explorer:
         self._initial_note_pending = False
         self._previous_status: str | None = None
         self._reauth_attempted = False
+        self._canary_session_checked: set[str] = set()
         self._observed_session: SessionState | None = None
         self._observation_limited = False
         self._verification_failed = False
@@ -153,6 +156,9 @@ class Explorer:
         self._manual_connect = False
         self._prepared_session: SessionState | None = None
         self._research: ResearchLedger | None = None
+        self._request_facts: dict[str, ObservedRequest] = {}
+        self._browser_plans: dict[str, BrowserPlan] = {}
+        self._browser_plan_urls: dict[str, str] = {}
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -203,10 +209,24 @@ class Explorer:
     async def _canary(
         self, spec: dict[str, Any], sctx: SyncContext, *, require: Collection[Kind]
     ) -> CanaryReport:
+        capture = spec.get("recipe", {}).get("version") == 2
+
+        async def check() -> CanaryReport:
+            if capture:
+                return await run_canary(spec, sctx, require=require, capture_failures=True)
+            return await run_canary(spec, sctx, require=require)
+
         if self._research is None:
-            return await run_canary(spec, sctx, require=require)
+            return await check()
         async with self._research.operation("verify"):
-            return await run_canary(spec, sctx, require=require)
+            report = await check()
+        if (
+            capture
+            and any(finding.retryable for finding in report.findings)
+            and self._research.remaining_seconds() > 0
+        ):
+            raise JobDeferred("Источник временно недоступен, продолжу проверку", delay_seconds=60)
+        return report
 
     async def _ensure_session(
         self,
@@ -632,6 +652,12 @@ class Explorer:
             "Для этого сайта описание уже есть",
             "Подключаю по готовому описанию, без повторного разбора",
         )
+        if self._prepared_session is None and recipe_requires_session(
+            scoped_spec(row.spec, scope)["recipe"]
+        ):
+            # Reuse still needs this student's verified entry. A login landing/probe alone
+            # may not load the SPA page that sends the recipe's bearer Authorization.
+            await self._ensure_session(info)
         host = urlsplit(info.origin).hostname or ""
         await self._set(
             info.connection_id,
@@ -722,7 +748,7 @@ class Explorer:
             await self._research_for(info)
             if self._research is not None:
                 sctx.before_request = self._research.before_request
-            obs = await self._observe(info, session, redactor, extra)
+            obs = await self._observe(info, sctx.session or session, redactor, extra)
             if obs.limited and not self._observation_limited:
                 await ui.say(
                     "Пока не удалось полностью проверить источник: исследование достигло "
@@ -916,6 +942,26 @@ class Explorer:
     async def _observe(
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
+        self._request_facts, self._browser_plans, self._browser_plan_urls = {}, {}, {}
+        research = self._research
+        if research is not None:
+            state = research.state
+            if research.remaining_seconds() <= 0:
+                raise BotaiError(
+                    ErrorCode.SOURCE_UNAVAILABLE, "Исследование достигло общего бюджета времени"
+                )
+            if (
+                state.memory.requests + state.other_requests
+                >= self.services.settings.botai_research_max_requests
+            ):
+                raise BotaiError(
+                    ErrorCode.SOURCE_RATE_LIMITED, "Исследование достигло общего бюджета чтений"
+                )
+            if state.tokens >= self.services.settings.botai_research_max_tokens:
+                state.memory.exhausted = True
+                state.memory.stop_reason = "token_budget"
+                await research.save()
+                return Observations(origin=info.origin, limited=True, stop_reason="token_budget")
         stage = await self.ui.stage("Смотрю страницы кабинета")
         entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
         start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
@@ -952,6 +998,7 @@ class Explorer:
                     intent=self.intent,
                     llm=self.services.llm,
                     budget=DiscoveryBudget(
+                        capabilities=settings.botai_factory_v2_enabled,
                         steps=settings.botai_research_slice_steps if research else 10,
                         seconds=min(
                             settings.botai_research_slice_seconds, research.remaining_seconds()
@@ -1001,7 +1048,7 @@ class Explorer:
                         info.connection_id,
                         SecretKind.SESSION,
                         encode_session(refreshed),
-                        expires_at=refreshed.expires_hint,
+                        expires_at=session_storage_expiry(refreshed),
                     )
                     session = refreshed
             finally:
@@ -1053,6 +1100,9 @@ class Explorer:
                         },
                     )
                 )
+        self._request_facts = obs.request_facts
+        self._browser_plans = obs.browser_plans
+        self._browser_plan_urls = obs.browser_plan_urls
         return obs
 
     async def _restore_candidate(
@@ -1116,6 +1166,15 @@ class Explorer:
         feedback: list[str] | None = None
         candidate_count = 0
         for attempt in range(MAX_CANARY_AUTHOR_ROUNDS):
+            factory_kwargs: dict[str, Any] = {}
+            if self.services.settings.botai_factory_v2_enabled:
+                factory_kwargs = {
+                    "factory_v2": True,
+                    "request_facts": self._request_facts,
+                    "browser_plans": self._browser_plans,
+                    "browser_plan_urls": self._browser_plan_urls,
+                    "time_zone": info.tz,
+                }
             try:
                 authored = await author_kind(
                     self._llm(),
@@ -1129,6 +1188,7 @@ class Explorer:
                     previous=previous,
                     problem=problem,
                     verification_feedback=feedback,
+                    **factory_kwargs,
                 )
             except AuthorError:
                 self._verification_failed = True
@@ -1266,6 +1326,28 @@ class Explorer:
             diagnostic_event("canary.candidate", phase="request", **facts)
             try:
                 report = await self._canary(spec, sctx, require={kind})
+                if (
+                    spec["recipe"]["version"] == 2
+                    and info.connection_id not in self._canary_session_checked
+                    and any(
+                        finding.code
+                        in {
+                            "auth_missing",
+                            "auth_rejected",
+                            "auth_scope_mismatch",
+                            "login_redirect",
+                        }
+                        for finding in report.findings
+                    )
+                ):
+                    self._canary_session_checked.add(info.connection_id)
+                    async with self.services.db() as db:
+                        await guard_job(self.ctx, db, check_input=True)
+                    # Endpoint refusal is not a request to log in. The session provider checks
+                    # the independent entry/probe, preserving a healthy human login (force=False).
+                    sctx.session = await self._ensure_session(info, force=False)
+                    self._observed_session = sctx.session
+                    report = await self._canary(spec, sctx, require={kind})
             except SessionExpired:
                 diagnostic_event(
                     "canary.candidate",
@@ -1292,7 +1374,7 @@ class Explorer:
             if report.ok:
                 return (bound, report), findings
             # The source responded: changing auth cannot repair a schema/field mismatch.
-            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.problems)
+            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
             break
         return None, findings
 
@@ -1375,16 +1457,32 @@ class Explorer:
         require: list[Kind] = []
         retained_kinds: set[Kind] = set()
         scope = self._data_scope()
+        bound_mode = any(
+            value.candidate.auth.get("type") == "session" for value in chosen.values()
+        ) or (
+            base_spec is not None
+            and base_spec["recipe"]["auth"].get("type") == "session"
+            and any(endpoint["kind"] not in chosen for endpoint in base_spec["recipe"]["endpoints"])
+        )
+        bindings: dict[str, dict[str, Any]] = {}
         if base_spec is not None:
             base = base_spec["recipe"]
             endpoints = [e for e in copy.deepcopy(base["endpoints"]) if e["kind"] not in chosen]
-            bootstrap = copy.deepcopy(base.get("bootstrap", []))
+            bootstrap = copy.deepcopy(base.get("bootstrap", [])) if endpoints else []
+            if bound_mode:
+                bindings.update(bind_parts(base["auth"], endpoints, bootstrap))
             retained_kinds = {e["kind"] for e in endpoints}
             if endpoints:
                 auth_options.append(copy.deepcopy(base["auth"]))
             require = [k for k in base["validation"]["requireKinds"] if k not in chosen]
         for kind, ch in chosen.items():
-            merged = merge_bootstrap(bootstrap, copy.deepcopy(ch.candidate.bootstrap))
+            candidate_bootstrap = copy.deepcopy(ch.candidate.bootstrap)
+            candidate_endpoint = copy.deepcopy(ch.candidate.endpoint)
+            if bound_mode:
+                bindings.update(
+                    bind_parts(ch.candidate.auth, [candidate_endpoint], candidate_bootstrap)
+                )
+            merged = merge_bootstrap(bootstrap, candidate_bootstrap)
             if merged is None:
                 await self.ui.note(
                     f"Пропускаю: {KIND_LABELS[kind].lower()}",
@@ -1393,7 +1491,7 @@ class Explorer:
                 )
                 continue
             bootstrap = merged
-            endpoint = copy.deepcopy(ch.candidate.endpoint)
+            endpoint = candidate_endpoint
             endpoint["id"] = f"{kind}1"
             endpoints.append(endpoint)
             require.append(kind)
@@ -1406,6 +1504,20 @@ class Explorer:
         if not endpoints:
             await stage.finish("failed")
             return None
+        if bound_mode:
+            referenced_bindings = {step["authBinding"] for step in bootstrap}
+            referenced_bindings.update(
+                endpoint["request"]["authBinding"]
+                for endpoint in endpoints
+                if not endpoint["request"].get("render")
+            )
+            bindings = {key: value for key, value in bindings.items() if key in referenced_bindings}
+            auth_options = (
+                [{"type": "session", "version": 1, "bindings": bindings}]
+                if bindings
+                # Only browser requests survive: their own session supplies authentication.
+                else [{"type": "cookie"}]
+            )
         problems: list[str] = []
         for auth in auth_options:
             spec = build_spec(

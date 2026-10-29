@@ -15,6 +15,12 @@
 Любой вуз и любой документ подключаются **спецификацией**, а не кодом. Агент один раз пишет
 спецификацию, дальше sync идёт без модели. Если вуз что-то поменял — агент сам чинит.
 
+Дополнение 29.10.2026: [factory v2](../../architecture/factory-v2.md) и
+[ADR-0012](../../adr/0012-verified-source-factory-v2.md) описывают реализованное ограниченное
+подмножество auth/data/browser. V1 читается без изменений; v2 producer по умолчанию выключен,
+общий CI и выпуск ещё проверяются. Claim/checkpoint/usage — по
+[LLD исследования](../../architecture/source-research.md), без новой очереди.
+
 ## Срезы
 
 1. **Фабрика и адаптеры** (`sources/factory.py`, `sources/adapters/`): протокол `SourceAdapter`
@@ -28,7 +34,7 @@
    строк студента — по параметру профиля. Все HTTP — через `core.http` (`build_client` с
    allowlist подключения и `egress_proxy_url`, `request_with_retries`), сессия — из Vault.
 2. **Runner, Normalizer, sync** (`sources/runner.py`, `sources/normalize.py`, обработчик
-   `JobKind.SYNC` в `sources/handlers.py`): идемпотентный upsert в таблицы домена по
+   `JobKind.SYNC` в `sources/runner.py`): идемпотентный upsert в таблицы домена по
    `(connection_id, external_id)`; `external_id` из поля или хеша `identity`; `seen_at`; записи,
    не встреченные в полном успешном прогоне, помечаются (не удаляются молча); частичная ошибка не
    трогает прежний снимок. Признак протухания сессии (401/403/редирект на вход по пресету) →
@@ -38,18 +44,16 @@
    запрет личных значений: e-mail, телефоны, JWT, числа из ≥ 6 цифр, любая строка, равная
    наблюдавшемуся значению из ответов этого пользователя; запрет абсолютных URL, `..`, хостов вне
    origin; имена параметров по схеме. Отказ — `recipe_rejected` с причинами без значений.
-4. **Explorer** (`learn/explorer.py`, обработчик `JobKind.CONNECT` и `LEARN` в
-   `learn/handlers.py`). Модель здесь — **автор спецификации**, а не свободный браузерный агент:
-   (а) `services.sessions.ensure` → сессия; (б) детерминированный обход: стартовая страница,
-   ссылки меню с того же origin (ограничение по числу), сбор `network_log` и снимков; (в)
-   редактирование наблюдений: личные значения → плейсхолдеры, обрезка; (г) `services.llm.complete`
-   с `purpose="learn"` и `json_schema` спецификации — по одному виду данных за вызов (расписание,
-   дедлайны, …), промпты — в `learn/prompts/*.md`, без названий вузов; (д) lint → canary на этой
-   сессии → `SummaryBlock` «вот что собрано» и `ChoiceBlock`/`ConfirmBlock` для сомнительного
-   (поток рассуждения — `ThinkingBlock` на каждом этапе); (е) подтверждение → ревизия `active`,
-   подключение `active`, первый sync. Ничего не нашёл — честный вопрос пользователю
-   (`InputBlock` «дай ссылку на страницу с дедлайнами»). Реестр вуза: название, origins,
-   предупреждение о сторонних клиентах, если агент его нашёл на сайте.
+4. **Explorer** (learn/explorer.py и learn/handlers.py): защищённый вход → адаптивный
+   discovery с current DOM/network refs → отредактированные наблюдения → author по одному
+   виду данных → compiler при v2 → schema/lint → scoped canary → summary/подтверждение →
+   активная ревизия и первый sync. Planner выбирает только зарегистрированные read capabilities;
+   author не пишет parser code. V2 compiler сам связывает HTTP-запросы с auth evidence или
+   переносит проверенный native browser plan; Cookie/Bearer values остаются в Vault.
+   После отказов кандидатов автор получает bounded static feedback и один дополнительный
+   canary-раунд, до вопроса о недостающей ссылке. Неполнота не объявляется отсутствием данных.
+   При включённом research engine frontier/proposals сохраняются в зашифрованном checkpoint;
+   новый runtime заново canary, а cumulative Job usage переживает TTL знаний.
 5. **Ревизии, canary, откат, repair** (`learn/revisions.py`, обработчик `JobKind.REPAIR`): одна
    активная ревизия на `(origin, adapter)`; canary — прогон новой ревизии на сессии автора и
    сравнение ключевых полей с последним подтверждённым снимком; repair — сравнение наблюдаемых

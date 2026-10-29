@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.specs import Kind
 from botai.core.diagnostics import diagnostic_event
+from botai.core.errors import BotaiError, ErrorCode
 from botai.sources import normalize
 from botai.sources.adapter import AdapterResult, Record, SessionExpired, SyncContext
 from botai.sources.extract import collapse
@@ -44,12 +45,59 @@ KEY_COLUMNS: dict[Kind, tuple[str, ...]] = {
 _FUTURE_COLUMN: dict[Kind, str] = {"scheduleEvents": "starts_at", "deadlines": "due_at"}
 
 
+CanaryCode = Literal[
+    "auth_missing",
+    "auth_rejected",
+    "auth_scope_mismatch",
+    "login_redirect",
+    "transport_timeout",
+    "rate_limited",
+    "response_status",
+    "response_format",
+    "items_path_missing",
+    "selector_missing",
+    "required_fields_missing",
+    "normalization_rejected",
+    "empty_result",
+    "limit",
+    "no_progress",
+    "unsupported_capability",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CanaryFinding:
+    """Only static reasons and structural counters; never URLs, bodies or exception text."""
+
+    code: CanaryCode
+    kind: Kind | None = None
+    transport: Literal["http", "browser"] = "http"
+    status: int | None = None
+    retryable: bool = False
+    items_seen: int = 0
+    items_valid: int = 0
+
+    def feedback(self) -> str:
+        return (
+            f"{self.kind or 'source'}: {self.code}; transport={self.transport}; "
+            f"status={self.status if self.status is not None else 'unknown'}; "
+            f"retryable={str(self.retryable).lower()}; "
+            f"items_seen={self.items_seen}; items_valid={self.items_valid}"
+        )
+
+
 @dataclass(slots=True)
 class CanaryReport:
     ok: bool
     result: AdapterResult | None = None
     valid: dict[Kind, list[Record]] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)  # codes and kinds, never values
+    findings: list[CanaryFinding] = field(default_factory=list)
+
+    def feedback(self) -> list[str]:
+        return list(
+            dict.fromkeys([*self.problems, *(finding.feedback() for finding in self.findings)])
+        )
 
     def count(self, kind: Kind) -> int:
         return len(self.valid.get(kind, []))
@@ -80,24 +128,83 @@ def valid_records(result: AdapterResult, tz: ZoneInfo) -> dict[Kind, list[Record
 
 
 async def run_canary(
-    spec: dict[str, Any], sctx: SyncContext, *, require: Collection[Kind]
+    spec: dict[str, Any],
+    sctx: SyncContext,
+    *,
+    require: Collection[Kind],
+    capture_failures: bool = False,
 ) -> CanaryReport:
     """Fetch with the candidate. Session expiry and transport errors propagate to the caller."""
     started = time.monotonic()
     diagnostic_event("canary.start", required_count=len(require))
     try:
         result = await AdapterFactory().create(spec).fetch(sctx)
-    except SessionExpired:
+    except SessionExpired as exc:
         diagnostic_event("canary.failed", reason="session_expired")
-        raise
+        if not capture_failures:
+            raise
+        finding = CanaryFinding(code=exc.code, status=exc.status)
+        return CanaryReport(ok=False, problems=[finding.feedback()], findings=[finding])
+    except BotaiError as exc:
+        diagnostic_event("canary.failed", reason="fetch_failed")
+        if not capture_failures or exc.code not in {
+            ErrorCode.SOURCE_UNAVAILABLE,
+            ErrorCode.SOURCE_RATE_LIMITED,
+            ErrorCode.RECIPE_REJECTED,
+            ErrorCode.EGRESS_BLOCKED,
+        }:
+            raise
+        code: CanaryCode = (
+            "rate_limited"
+            if exc.code == ErrorCode.SOURCE_RATE_LIMITED
+            else "transport_timeout"
+            if exc.code == ErrorCode.SOURCE_UNAVAILABLE
+            else "unsupported_capability"
+        )
+        finding = CanaryFinding(code=code, retryable=code in {"rate_limited", "transport_timeout"})
+        return CanaryReport(ok=False, problems=[finding.feedback()], findings=[finding])
     except Exception:
         diagnostic_event("canary.failed", reason="fetch_failed")
         raise
     valid = valid_records(result, sctx.tz)
+    codes: dict[str, CanaryCode] = {
+        "not_found": "response_status",
+        "status": "response_status",
+        "format": "response_format",
+        "selector": "selector_missing",
+        "bootstrap": "items_path_missing",
+        "fields": "required_fields_missing",
+        "limit": "limit",
+        "no_progress": "no_progress",
+        "unsupported_capability": "unsupported_capability",
+    }
+    findings = [
+        CanaryFinding(
+            code=codes.get(outcome.problem or "", "response_format"),
+            kind=outcome.kind,
+            transport=outcome.transport,
+            status=outcome.status,
+            items_seen=outcome.items_seen,
+            items_valid=outcome.items_valid,
+        )
+        for outcome in result.outcomes
+        if outcome.structural or not outcome.ok
+    ]
     problems = [f"{o.kind or o.endpoint_id}: {o.problem}" for o in result.structural_problems()]
     for kind in sorted(require):
         if not valid.get(kind):
             problems.append(f"{kind}: no valid records")
+            outcomes = [outcome for outcome in result.outcomes if outcome.kind == kind]
+            findings.append(
+                CanaryFinding(
+                    code="normalization_rejected"
+                    if any(record.kind == kind for record in result.records)
+                    else "empty_result",
+                    kind=kind,
+                    items_seen=sum(outcome.items_seen for outcome in outcomes),
+                    items_valid=0,
+                )
+            )
     diagnostic_event(
         "canary.complete",
         record_count=len(result.records),
@@ -108,7 +215,9 @@ async def run_canary(
         elapsed_ms=round((time.monotonic() - started) * 1000),
         outcome="accepted" if not problems else "rejected",
     )
-    return CanaryReport(ok=not problems, result=result, valid=valid, problems=problems)
+    return CanaryReport(
+        ok=not problems, result=result, valid=valid, problems=problems, findings=findings
+    )
 
 
 # --- comparison with the last confirmed snapshot ----------------------------------------------

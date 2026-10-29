@@ -33,9 +33,22 @@ Problem = Literal[
     "fields",  # items found but none yields the required fields
     "empty",  # structure is fine, zero items
     "profile_missing",  # a table filter needs a profile value the user has not given
+    "limit",  # bounded traversal stopped before completeness was established
+    "no_progress",  # pagination repeated a previously seen result
+    "unsupported_capability",  # a verified reader cannot execute the requested operation
 ]
 STRUCTURAL_PROBLEMS: frozenset[str] = frozenset(
-    {"not_found", "status", "format", "selector", "bootstrap", "fields"}
+    {
+        "not_found",
+        "status",
+        "format",
+        "selector",
+        "bootstrap",
+        "fields",
+        "limit",
+        "no_progress",
+        "unsupported_capability",
+    }
 )
 
 
@@ -46,10 +59,23 @@ class SessionExpired(Exception):
     link (`token`).
     """
 
-    def __init__(self, reason: str, *, reauth: Literal["login", "token"] = "login") -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        reauth: Literal["login", "token"] = "login",
+        code: Literal[
+            "auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"
+        ] = "auth_rejected",
+        status: int | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.reauth = reauth
+        self.code: Literal[
+            "auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"
+        ] = code
+        self.status = status
 
 
 class NeedsUserInput(Exception):
@@ -120,6 +146,9 @@ class EndpointOutcome:
     items_valid: int = 0
     problem: Problem | None = None
     source_url: str = ""
+    transport: Literal["http", "browser"] = "http"
+    status: int | None = None
+    binding_id: str | None = None
 
     @property
     def structural(self) -> bool:
