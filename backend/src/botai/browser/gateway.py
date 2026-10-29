@@ -252,6 +252,7 @@ class PlaywrightHandle:
         capture: CaptureConfig,
         clock: Clock,
         read_only: bool = False,
+        injected_authorizations: dict[Request, str] | None = None,
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -271,6 +272,10 @@ class PlaywrightHandle:
         self._auth_permits: dict[Frame, _AuthPermit] = {}
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
+        self._request_versions: dict[Request, int] = {}
+        self._injected_authorizations = (
+            injected_authorizations if injected_authorizations is not None else {}
+        )
         self._samples: set[asyncio.Task[None]] = set()
         self._auth_captures: set[asyncio.Task[None]] = set()
         self._inflight: set[Request] = set()
@@ -582,6 +587,7 @@ class PlaywrightHandle:
         )
         self._log.append(entry)
         self._entries[request] = entry
+        self._request_versions[request] = serial
         task = asyncio.get_running_loop().create_task(self._capture_auth(request, entry, serial))
         self._auth_captures.add(task)
         task.add_done_callback(self._auth_captures.discard)
@@ -635,7 +641,9 @@ class PlaywrightHandle:
         try:
             async with asyncio.timeout(2.0):
                 headers = await request.all_headers()
-            authorization = headers.get("authorization", "").strip()
+            authorization = self._injected_authorizations.get(
+                request, headers.get("authorization", "")
+            ).strip()
             entry.has_cookie = bool(headers.get("cookie", "").strip())
             for pair in headers.get("cookie", "").split(";"):
                 self._remember_secret(pair.partition("=")[2].strip().strip('"'))
@@ -658,6 +666,15 @@ class PlaywrightHandle:
         if entry is None:
             return
         entry.status = response.status
+        injected = self._injected_authorizations.get(response.request)
+        if injected is not None:
+            # Playwright's original all_headers() omits executor route overrides. A completed
+            # response ties the exact injected header to this one request, not to session presence.
+            entry.has_authorization = True
+            entry.authorization_scheme = "bearer"
+            self._remember_bearer(
+                response.request.url, injected, self._request_versions[response.request]
+            )
         content_type = response.headers.get("content-type")
         entry.response_content_type = content_type
         self._diagnostic(
@@ -1377,8 +1394,9 @@ class PlaywrightGateway:
             )
             context.set_default_timeout(ACTION_TIMEOUT_MS)
             primary = origin or (session.origin if session is not None else f"https://{hosts[0]}")
+            injected_authorizations: dict[Request, str] = {}
             if session is not None:
-                await self._restore(context, session, allow_hosts=hosts)
+                injected_authorizations = await self._restore(context, session, allow_hosts=hosts)
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
                 route_diagnostics = _browser_diagnostics(connection_id)
@@ -1406,6 +1424,7 @@ class PlaywrightGateway:
             capture=capture or CaptureConfig(),
             clock=self._clock,
             read_only=read_only,
+            injected_authorizations=injected_authorizations,
         )
         self._handles.add(handle)
         self._by_user[user_id] = handle
@@ -1415,7 +1434,8 @@ class PlaywrightGateway:
     @staticmethod
     async def _restore(
         context: BrowserContext, session: SessionState, *, allow_hosts: Iterable[str] | None = None
-    ) -> None:
+    ) -> dict[Request, str]:
+        injected_authorizations: dict[Request, str] = {}
         hosts = (
             tuple(allow_hosts)
             if allow_hosts is not None
@@ -1501,6 +1521,11 @@ class PlaywrightGateway:
                 if "authorization" in headers or bearer is None:
                     await route.continue_()
                 else:
-                    await route.continue_(headers={**headers, "authorization": f"Bearer {bearer}"})
+                    authorization = f"Bearer {bearer}"
+                    # This is execution metadata, kept private. Without a matching completed
+                    # response it cannot be accepted as evidence by the factory compiler.
+                    injected_authorizations[route.request] = authorization
+                    await route.continue_(headers={**headers, "authorization": authorization})
 
             await context.route("**/*", add_authorization)
+        return injected_authorizations
