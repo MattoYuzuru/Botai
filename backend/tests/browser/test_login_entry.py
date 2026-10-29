@@ -655,6 +655,29 @@ async def test_get_completion_cannot_leave_a_stale_auth_window_after_same_url_do
         await handle.close()
 
 
+async def test_fields_the_flow_is_filling_keep_a_learned_login_the_detector_would_not_see(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.side_effects["posts"]
+    post = "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
+    try:
+        async with handle.read_only_entry():
+            snap = await handle.goto(ORIGIN + "/")  # a catalogue: one search field, no credentials
+        assert not has_credential_fields(snap)
+        async with handle.auth_step():
+            assert await handle.page.evaluate(post) is False  # nothing says this is a login
+        assert guest_stack.side_effects["posts"] == before
+        async with handle.auth_step(fields=["#q"]):  # a learned step names this very field
+            assert await handle.page.evaluate(post) is True
+        assert guest_stack.side_effects["posts"] == before + 1
+    finally:
+        await handle.close()
+
+
 async def test_a_document_post_ends_the_step_and_the_next_document_has_no_window(
     guest_stack: GuestStack, trust_fakeuni: Path
 ) -> None:
