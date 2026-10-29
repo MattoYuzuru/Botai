@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -16,6 +17,21 @@ from botai.jobs.events import IN_FLIGHT, append_event, status_data
 from botai.jobs.notify import CHANNEL_JOBS
 
 SOURCE_KINDS = ("connect", "learn", "repair", "sync")
+
+
+async def lock_sources(session: AsyncSession, connection_ids: Iterable[str]) -> None:
+    """Acquire source groups before existing Connection/Job row locks, in stable order.
+
+    Callers that bind or continue a connection use this before locking its rows. New,
+    uncommitted connections are not visible to competing producers yet.
+    """
+    with session.no_autoflush:
+        for connection_id in sorted(set(connection_ids)):
+            await session.execute(
+                select(
+                    func.pg_advisory_xact_lock(func.hashtextextended(f"source:{connection_id}", 0))
+                )
+            )
 
 
 class PgJobQueue:
@@ -70,12 +86,7 @@ async def enqueue_in_session(
     if connection_id and kind.value in SOURCE_KINDS:
         # Scheduler and explicit source actions share this lock before any Job row lock.
         # A requested human login must not race another source browser into existence.
-        with session.no_autoflush:
-            await session.execute(
-                select(
-                    func.pg_advisory_xact_lock(func.hashtextextended(f"source:{connection_id}", 0))
-                )
-            )
+        await lock_sources(session, [connection_id])
         incoming_manual = kind == JobKind.CONNECT and (payload or {}).get("manual_login") is True
         query = select(Job).where(
             Job.user_id == user_id,

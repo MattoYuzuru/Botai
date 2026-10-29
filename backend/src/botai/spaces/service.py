@@ -299,9 +299,15 @@ async def enqueue_for_connection(
     from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
 
     thread = await canonical_thread(session, user_id, conn.id)
+    bind_after_enqueue = False
     if thread is None and thread_id is not None:
         thread = await owned_thread(session, user_id, thread_id)
-        bind_thread(thread, conn.id)
+        if manual_login:
+            # Worker terminal projection locks Job -> Thread. Keep this thread clean
+            # until enqueue has locked/selected the existing source job as well.
+            bind_after_enqueue = True
+        else:
+            bind_thread(thread, conn.id)
     target_thread = thread.id if thread is not None else None
     if kind == JobKind.CONNECT:
         payload = await _connect_retry_payload(
@@ -320,6 +326,8 @@ async def enqueue_for_connection(
         )
         if target_thread is not None and job.thread_id is None:
             job.thread_id = target_thread
+        if bind_after_enqueue and thread is not None:
+            bind_thread(thread, conn.id)
         await session.commit()
         return job.id
     if manual_login:
@@ -333,12 +341,17 @@ async def enqueue_for_connection(
             )
             .order_by(Job.created_at, Job.id)
             .limit(1)
+            .with_for_update()
         )
         if running is not None:
             if target_thread is not None and running.thread_id is None:
                 running.thread_id = target_thread
+            if bind_after_enqueue and thread is not None:
+                bind_thread(thread, conn.id)
             await session.commit()
             return running.id
+    if bind_after_enqueue and thread is not None:
+        bind_thread(thread, conn.id)
     await session.commit()  # the queue works in its own transaction
     job_id = await queue.enqueue(
         kind,

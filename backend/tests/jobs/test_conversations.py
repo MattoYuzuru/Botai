@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterable
 from datetime import timedelta
 from typing import Any
 
 import httpx
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.tools import ChatEnv, request_login, request_repair
 from botai.contracts.agent_ui import InputBlock, LoginBlock, TextBlock, ThinkingBlock
@@ -18,10 +20,13 @@ from botai.core.jobs import JobCancelled, JobKind
 from botai.core.vault import SecretKind
 from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, Space, University
 from botai.jobs import dialogue
+from botai.jobs import queue as queue_module
 from botai.jobs.context import PgJobContext
 from botai.jobs.events import append_event, purge_finished
 from botai.jobs.notify import Notifier
 from botai.learn.intent import LearningIntent
+from botai.spaces import conversations as source_conversations
+from botai.spaces import service as source_service
 from botai.spaces.conversations import bind_bootstrap, continue_source
 from tests.jobs.env import Env
 
@@ -752,6 +757,143 @@ async def test_manual_login_rejects_foreign_missing_and_disabled_connections(env
             == 0
         )
     assert (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).status_code == 200
+
+
+@pytest.mark.parametrize("competing_kind", [JobKind.CONNECT, JobKind.SYNC])
+async def test_continuation_waits_for_source_group_before_locking_existing_child(
+    env: Env, monkeypatch: pytest.MonkeyPatch, competing_kind: JobKind
+) -> None:
+    _client, user, thread, parent_job = await start(env, context={"entryUrls": [URL]})
+    parent, _ = await bind_bootstrap(ctx(env, user, parent_job), env.services, {})
+    child_url = "https://child.fakeuni.test/courses?week=4"
+    child_id = new_id()
+    async with env.sm() as session:
+        parent_row = await session.get(Connection, parent)
+        assert parent_row is not None
+        session.add(
+            Connection(
+                id=child_id,
+                user_id=user,
+                space_id=parent_row.space_id,
+                origin="https://child.fakeuni.test",
+                title="Child",
+                kind="other",
+                status="draft",
+            )
+        )
+        await session.commit()
+    real_lock = queue_module.lock_sources
+    requesting = asyncio.Event()
+    async with env.sm() as producer:
+        await real_lock(producer, [child_id])
+
+        async def observed_lock(session: AsyncSession, ids: Iterable[str]) -> None:
+            ids = tuple(ids)
+            if session is not producer and child_id in ids:
+                requesting.set()
+            await real_lock(session, ids)
+
+        monkeypatch.setattr(queue_module, "lock_sources", observed_lock)
+        monkeypatch.setattr(source_conversations, "lock_sources", observed_lock)
+        continuation = asyncio.create_task(
+            continue_source(
+                ctx(env, user, parent_job, parent), env.services, parent, child_url, INTENT
+            )
+        )
+        try:
+            await asyncio.wait_for(requesting.wait(), 2)
+            async with env.sm() as observer:
+                # NOWAIT is the assertion: waiting for a source group must not already
+                # hold the child row that a queued job's FK needs in KEY SHARE mode.
+                row = await observer.scalar(
+                    select(Connection).where(Connection.id == child_id).with_for_update(nowait=True)
+                )
+                assert row is not None
+                await observer.commit()
+            queued = await queue_module.enqueue_in_session(
+                producer,
+                competing_kind,
+                user_id=user,
+                connection_id=child_id,
+                thread_id=thread,
+                payload={"manual_login": True} if competing_kind == JobKind.CONNECT else {},
+                now=env.clock.now(),
+            )
+            await producer.commit()
+            result = await asyncio.wait_for(continuation, 2)
+        finally:
+            if not continuation.done():
+                continuation.cancel()
+                await asyncio.gather(continuation, return_exceptions=True)
+    assert result["connectionId"] == child_id
+    if competing_kind == JobKind.CONNECT:
+        assert result["jobId"] == queued.id
+    continued = await env.job(result["jobId"])
+    assert continued.thread_id == thread
+    assert (await env.job(parent_job)).payload["continuation_job_id"] == continued.id
+
+
+async def test_manual_login_defers_legacy_thread_binding_until_existing_job_is_unlocked(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = env.new_client()
+    user = (await env.account(client)).id
+    _, connection = await env.connection(user, status="active")
+    thread_id = (await client.post("/api/v1/chat/threads", json={})).json()["id"]
+    old_id = await env.services.queue.enqueue(
+        JobKind.SYNC, user_id=user, connection_id=connection, thread_id=thread_id
+    )
+    real_lock = queue_module.lock_sources
+    requesting = asyncio.Event()
+
+    async def observed_lock(session: AsyncSession, ids: Iterable[str]) -> None:
+        requesting.set()
+        await real_lock(session, ids)
+
+    monkeypatch.setattr(queue_module, "lock_sources", observed_lock)
+    async with env.sm() as finishing:
+        old = await finishing.scalar(select(Job).where(Job.id == old_id).with_for_update())
+        assert old is not None
+
+        async def login() -> str:
+            async with env.sm() as session:
+                return await source_service.enqueue_for_connection(
+                    session,
+                    env.services.queue,
+                    user,
+                    connection,
+                    JobKind.CONNECT,
+                    thread_id=thread_id,
+                    payload={"manual_login": True},
+                    now=env.clock.now(),
+                )
+
+        pending = asyncio.create_task(login())
+        try:
+            await asyncio.wait_for(requesting.wait(), 2)
+            async with env.sm() as observer:
+                row = await observer.scalar(
+                    select(ChatThread)
+                    .where(ChatThread.id == thread_id)
+                    .with_for_update(nowait=True)
+                )
+                assert row is not None
+                await observer.commit()
+            # Match worker terminal projection's Job -> Thread order.
+            await finishing.scalar(
+                select(ChatThread).where(ChatThread.id == thread_id).with_for_update()
+            )
+            old.state = "done"
+            await finishing.commit()
+            resumed_id = await asyncio.wait_for(pending, 2)
+        finally:
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    assert resumed_id != old_id
+    resumed = await env.job(resumed_id)
+    assert resumed.payload["manual_login"] is True
+    assert resumed.thread_id == thread_id
 
 
 async def test_attach_replays_safe_legacy_updates_and_rejects_mismatch_disabled(env: Env) -> None:
