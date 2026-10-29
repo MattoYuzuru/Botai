@@ -17,7 +17,9 @@ import httpx
 
 from botai.contracts.specs import (
     Endpoint,
+    HtmlField,
     HtmlResponse,
+    JsonField,
     JsonResponse,
     Pagination,
     Recipe,
@@ -33,10 +35,20 @@ from botai.sources.adapter import (
     SessionExpired,
     SyncContext,
 )
+from botai.sources.expressions import (
+    MAX_COLLECTION_NODES,
+    MAX_INSTANCES,
+    MAX_LEAVES,
+    ExpressionError,
+    collect,
+    expand_weekly,
+    field_value,
+)
 from botai.sources.extract import (
     MISSING,
     apply_transform,
     html_value,
+    parse_datetime,
     parse_html,
     resolve,
     select_items,
@@ -182,7 +194,11 @@ class RecipeAdapter:
         seen = 0
         offset = 0
         cursor: str | None = None
-        previous_ids: tuple[str, ...] | None = None
+        previous_pages: set[str] = set()
+        unique_ids: set[str] = set()
+        nodes_seen = 0
+        leaves_seen = 0
+        complete = False
         outcome.source_url = url
         for page_index in range(pages):
             page_query = {**query, **self._page_params(pagination, page_index, offset, cursor)}
@@ -190,7 +206,11 @@ class RecipeAdapter:
                 assert isinstance(endpoint.response, HtmlResponse)
                 request = httpx.Request("GET", url, params=page_query)
                 try:
-                    snapshot = await reader.read(str(request.url), endpoint.response.items_selector)
+                    selector = endpoint.response.items_selector
+                    if selector is None:
+                        assert endpoint.response.collections is not None
+                        selector = endpoint.response.collections[0].selector
+                    snapshot = await reader.read(str(request.url), selector)
                 except RenderedPageError as exc:
                     return fail(exc.problem, str(request.url))
                 response = httpx.Response(
@@ -208,37 +228,66 @@ class RecipeAdapter:
             if response.status_code >= 400:
                 return fail("status", str(response.url))
             outcome.source_url = str(response.url)
-            parsed = self._parse(endpoint, response, ctx)
+            try:
+                parsed = self._parse(
+                    endpoint,
+                    response,
+                    ctx,
+                    remaining_nodes=MAX_COLLECTION_NODES - nodes_seen,
+                    remaining_leaves=MAX_LEAVES - leaves_seen,
+                    remaining_instances=MAX_INSTANCES - len(collected),
+                )
+            except ExpressionError as exc:
+                return fail(exc.problem, str(response.url))  # type: ignore[arg-type]
             if isinstance(parsed, str):
                 return fail(parsed, str(response.url))  # type: ignore[arg-type]
-            raw_count, page_records, doc = parsed
+            raw_count, page_records, doc, page_nodes, page_leaves = parsed
+            nodes_seen += page_nodes
+            leaves_seen += page_leaves
             seen += raw_count
+            outcome.items_seen = seen
+            outcome.items_valid = len(collected)
+            if len(collected) + len(page_records) > MAX_ITEMS_PER_ENDPOINT:
+                return fail("limit", str(response.url))  # type: ignore[arg-type]
+            page_digest = hashlib.sha256(response.content).hexdigest()
+            ids = {r.external_id for r in page_records}
+            if (
+                page_index
+                and raw_count
+                and (page_digest in previous_pages or (ids and not ids.difference(unique_ids)))
+            ):
+                # Keep usable records, but never mark an unfinished walk as a complete snapshot.
+                outcome.ok, outcome.problem = False, "no_progress"  # type: ignore[assignment]
+                return outcome, collected
+            previous_pages.add(page_digest)
+            unique_ids.update(ids)
             collected.extend(page_records)
-            ids = tuple(r.external_id for r in page_records[:5])
             if pagination is None or pagination.type == "none" or raw_count == 0:
+                complete = True
                 break
-            if previous_ids is not None and ids and ids == previous_ids:
-                break  # the server ignores the page parameter: do not loop
-            previous_ids = ids
             limit = pagination.limit
             if limit and raw_count < limit:
+                complete = True
                 break
             if pagination.type == "offset":
                 offset += raw_count
             if pagination.type == "cursor":
                 cursor = _next_cursor(doc, pagination)
                 if cursor is None:
+                    complete = True
                     break
-            if pagination.total_path and _reached_total(doc, pagination, len(collected)):
+            if pagination.total_path and _reached_total(doc, pagination, seen):
+                complete = True
                 break
-            if len(collected) >= MAX_ITEMS_PER_ENDPOINT:
-                break
-        collected = collected[:MAX_ITEMS_PER_ENDPOINT]
         outcome.items_seen = seen
         outcome.items_valid = len(collected)
-        if seen == 0:
+        if not complete:
+            outcome.ok, outcome.problem = False, "limit"  # type: ignore[assignment]
+        elif seen == 0 or (self.recipe.version == 2 and not leaves_seen):
             outcome.problem = "empty"
-        elif not collected:
+        elif not collected and not (
+            self.recipe.version == 2 and endpoint.response.expand is not None
+        ):
             return fail("fields", outcome.source_url)
         return outcome, collected
 
@@ -268,39 +317,129 @@ class RecipeAdapter:
     # --- parsing -----------------------------------------------------------------------------
 
     def _parse(
-        self, endpoint: Endpoint, response: httpx.Response, ctx: SyncContext
-    ) -> tuple[int, list[Record], Any] | str:
+        self,
+        endpoint: Endpoint,
+        response: httpx.Response,
+        ctx: SyncContext,
+        *,
+        remaining_nodes: int = MAX_COLLECTION_NODES,
+        remaining_leaves: int = MAX_LEAVES,
+        remaining_instances: int = MAX_INSTANCES,
+    ) -> tuple[int, list[Record], Any, int, int] | str:
         spec = endpoint.response
         source_url = str(response.url)
+        if self.recipe.version == 2:
+            if isinstance(spec, JsonResponse):
+                try:
+                    document = response.json()
+                except (ValueError, RecursionError):
+                    _raise_if_login_page(response)
+                    return "format"
+            else:
+                if "json" in response.headers.get("content-type", ""):
+                    return "format"
+                document = parse_html(response.text)
+            page = collect(
+                document,
+                spec,
+                remaining_nodes=remaining_nodes,
+                remaining_leaves=remaining_leaves,
+            )
+            if not page.root_count and isinstance(spec, HtmlResponse):
+                _raise_if_login_page(response, tree_has_password=_has_password(document))
+            records: list[Record] = []
+            for bindings in page.items:
+                fields = {
+                    name: field_value(expression, bindings, ctx.tz)
+                    for name, expression in spec.fields.items()
+                    if name in VOCAB[endpoint.kind]
+                }
+                # In v2 an explicitly declared identity is authoritative, including parent fields.
+                if endpoint.kind == "scheduleEvents" and spec.expand is None:
+                    start = parse_datetime(fields.get("startsAt"), ctx.tz)
+                    end = parse_datetime(fields.get("endsAt"), ctx.tz)
+                    if start is not None and end is not None and end <= start:
+                        raise ExpressionError("fields")
+                record = _make_record(
+                    endpoint, spec.identity, dict(fields), source_url, prefer_identity=True
+                )
+                if record is None:
+                    raise ExpressionError("fields")
+                if spec.expand is None:
+                    records.append(record)
+                else:
+                    for occurrence in expand_weekly(
+                        spec.expand,
+                        bindings,
+                        now=ctx.now,
+                        remaining_instances=remaining_instances - len(records),
+                    ):
+                        instance_id = hashlib.sha256(
+                            json.dumps(
+                                [
+                                    "weekly-v1",
+                                    endpoint.kind,
+                                    record.external_id,
+                                    occurrence.local_date.isoformat(),
+                                    occurrence.local_time.isoformat(),
+                                    spec.expand.time_zone,
+                                ],
+                                ensure_ascii=False,
+                            ).encode()
+                        ).hexdigest()
+                        records.append(
+                            Record(
+                                kind=endpoint.kind,
+                                external_id=instance_id,
+                                fields={
+                                    **record.fields,
+                                    "startsAt": occurrence.starts_at,
+                                    "endsAt": occurrence.ends_at,
+                                },
+                                source_url=source_url,
+                            )
+                        )
+                if len(records) > remaining_instances:
+                    raise ExpressionError("limit")
+            if len({r.external_id for r in records}) != len(records):
+                raise ExpressionError("fields")
+            return page.root_count, records, document, page.nodes_seen, len(page.items)
         if isinstance(spec, JsonResponse):
             try:
                 doc: Any = response.json()
             except (ValueError, RecursionError):
                 _raise_if_login_page(response)
                 return "format"
+            assert spec.items_path is not None
             items = resolve(doc, spec.items_path)
             if items is MISSING or not isinstance(items, list):
                 return "format"
+            if len(items) > remaining_leaves:
+                raise ExpressionError("limit")
             records = [
                 rec
                 for raw in items
                 if (rec := _json_record(endpoint, spec, raw, source_url, ctx)) is not None
             ]
-            return len(items), records, doc
+            return len(items), records, doc, len(items), len(items)
         assert isinstance(spec, HtmlResponse)
         content_type = response.headers.get("content-type", "")
         if "json" in content_type and "html" not in content_type:
             return "format"
         tree = parse_html(response.text)
+        assert spec.items_selector is not None
         nodes = select_items(tree, spec.items_selector)
         if not nodes:
             _raise_if_login_page(response, tree_has_password=_has_password(tree))
-            return 0, [], None
+            return 0, [], None, 0, 0
+        if len(nodes) > remaining_leaves:
+            raise ExpressionError("limit")
         records = []
         for node in nodes:
             fields: dict[str, Any] = {}
             ok = True
             for name, hf in spec.fields.items():
+                assert isinstance(hf, HtmlField)  # v1 is checked by Recipe's version gate.
                 if name not in VOCAB[endpoint.kind]:
                     continue
                 value = html_value(
@@ -317,7 +456,7 @@ class RecipeAdapter:
                 fields[name] = value
             if ok and (rec := _make_record(endpoint, spec.identity, fields, source_url)):
                 records.append(rec)
-        return len(nodes), records, None
+        return len(nodes), records, None, len(nodes), len(nodes)
 
 
 def _has_password(tree: Any) -> bool:
@@ -368,6 +507,7 @@ def _json_record(
     fields: dict[str, Any] = {}
     allowed = VOCAB[endpoint.kind]
     for name, jf in spec.fields.items():
+        assert isinstance(jf, JsonField)  # v1 is checked by Recipe's version gate.
         if name not in allowed:
             continue
         value = resolve(raw, jf.path)
@@ -381,17 +521,26 @@ def _json_record(
 
 
 def _make_record(
-    endpoint: Endpoint, identity: list[str] | None, fields: dict[str, Any], source_url: str
+    endpoint: Endpoint,
+    identity: list[str] | None,
+    fields: dict[str, Any],
+    source_url: str,
+    *,
+    prefer_identity: bool = False,
 ) -> Record | None:
     external = fields.pop("externalId", None)
-    if external is not None and not isinstance(external, (dict, list)):
+    if (
+        external is not None
+        and not isinstance(external, (dict, list))
+        and not (prefer_identity and identity)
+    ):
         external_id = str(external).strip()[:200]
     else:
         external_id = ""
     if not external_id:
         if not identity:
             return None
-        parts = [fields.get(name) for name in identity]
+        parts = [external if name == "externalId" else fields.get(name) for name in identity]
         if any(p is None for p in parts):
             return None
         digest = hashlib.sha256(
