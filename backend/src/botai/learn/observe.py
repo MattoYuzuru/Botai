@@ -87,6 +87,8 @@ class Observations:
     planner_tokens: int = 0
     limited: bool = False
     stop_reason: str = ""
+    # Executor-owned navigation target, never rendered or supplied to a model.
+    auth_target_url: str | None = field(default=None, repr=False)
 
     @property
     def empty(self) -> bool:
@@ -413,6 +415,15 @@ def observations_of(
     )
     network_auth, network_failure = data_response_health(log_entries, origin)
     obs.auth_required = obs.auth_required or network_auth
+    if obs.auth_required or obs.bot_protection:
+        obs.auth_target_url = next(
+            (
+                requested
+                for requested, snap in snapshots
+                if requires_authentication(snap) or snap.captcha_suspected
+            ),
+            snapshots[-1][0] if snapshots else None,
+        )
     obs.limited = network_failure
     obs.stop_reason = (
         "authentication" if obs.auth_required else "data_request_failed" if network_failure else ""
