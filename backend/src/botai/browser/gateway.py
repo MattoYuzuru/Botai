@@ -153,7 +153,7 @@ class CaptureConfig:
     bearer_key: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class _AuthPermit:
     page: Page
     epoch: int
