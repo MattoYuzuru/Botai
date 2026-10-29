@@ -55,6 +55,9 @@ def test_v1_typed_round_trip_does_not_invent_v2_syntax() -> None:
     assert "collections" not in dumped["recipe"]["endpoints"][0]["response"]
     assert "from" not in dumped["recipe"]["endpoints"][0]["response"]["fields"]["title"]
     assert RecipeSpec.model_validate(dumped) == spec
+    assert spec.recipe.model_dump(include={"endpoints": {"__all__": {"id"}}}) == {
+        "endpoints": [{"id": "timetable"}, {"id": "deadlines"}]
+    }
 
 
 @pytest.mark.parametrize("extra", [{"from": "item"}, {"from": "root"}])

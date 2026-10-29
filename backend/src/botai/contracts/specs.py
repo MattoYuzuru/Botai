@@ -305,10 +305,12 @@ class Recipe(_M):
         if self.version == 1:
             # Added defaults must not become explicit v2 syntax in a typed v1 round trip.
             for endpoint in data.get("endpoints", []):
-                response = endpoint["response"]
+                response = endpoint.get("response")
+                if not isinstance(response, dict):
+                    continue
                 response.pop("collections", None)
                 response.pop("expand", None)
-                for field in response["fields"].values():
+                for field in response.get("fields", {}).values():
                     field.pop("from", None)
                     field.pop("from_", None)
         return data

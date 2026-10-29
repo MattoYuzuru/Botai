@@ -277,7 +277,10 @@ async def test_series_outside_the_requested_horizon_is_valid_empty_data() -> Non
 async def test_recurrence_cap_rejects_entire_endpoint_including_previous_series() -> None:
     endpoint = recurring_endpoint()
     endpoint["response"]["expand"]["maxOccurrences"] = 2
-    result = await fetch(endpoint, recurring_data())
+    data = recurring_data()
+    earlier_valid = {**data["series"][0], "id": "short-series", "until": "2026-10-27"}
+    data["series"].insert(0, earlier_valid)
+    result = await fetch(endpoint, data)
     assert result.records == []
     assert result.outcomes[0].problem == "limit"
     assert result.complete_kinds() == set()
