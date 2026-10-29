@@ -13,6 +13,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from botai.agent.router import router as agent_router
+from botai.attachments.limits import UploadSizeLimit
 from botai.attachments.router import router as attachments_router
 from botai.auth.router import router as auth_router
 from botai.browser.router import router as browser_router
@@ -84,6 +85,8 @@ def create_app() -> FastAPI:
             )
         response.headers["x-request-id"] = request_id
         return response
+
+    app.add_middleware(UploadSizeLimit)  # outermost: refuses an oversized upload unread
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
