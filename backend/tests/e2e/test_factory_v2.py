@@ -382,10 +382,12 @@ async def test_observed_cookie_bearer_nested_schedule_replays_for_new_runtime_an
             queued = await alice.client.post(f"/api/v1/connections/{alice.connection_id}/sync")
             assert queued.status_code == 202
             claim = await replay.claim()
-            assert claim is not None and claim.id == queued.json()["jobId"]
+            assert claim is not None
+            assert claim.id == queued.json()["jobId"]
             await asyncio.wait_for(replay.run_job(claim), 60)
             refreshed = await env.job(claim.id)
-            assert refreshed.result is not None and refreshed.result["status"] == "ok"
+            assert refreshed.result is not None
+            assert refreshed.result["status"] == "ok"
             cookie_refreshed, bearer_refreshed = await stored_session(env, alice)
             assert cookie_refreshed != cookie_a
             assert bearer_refreshed != bearer_a
