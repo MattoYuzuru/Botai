@@ -246,8 +246,6 @@ async def test_observed_cookie_bearer_nested_schedule_replays_for_new_runtime_an
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = stack.env
-    env.settings.botai_research_enabled = True
-    env.settings.botai_factory_v2_enabled = True
     monkeypatch.setattr(fakeuni_login, "OTP_REQUIRED", False)
     monkeypatch.setattr(fakeuni_login, "ROOT_TARGET", factory_uni.ENTRY_PATH)
     author = FactoryLlm()

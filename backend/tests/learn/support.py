@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
@@ -17,7 +19,7 @@ from botai.contracts.agent_ui import (
 )
 from botai.core.browser import FakeBrowserGateway, FakePage, ObservedRequest
 from botai.core.jobs import InMemoryJobContext, JobState
-from botai.core.llm import LlmResponse, LlmUsage
+from botai.core.llm import LlmRequest, LlmResponse, LlmUsage, ScriptedLlm
 from tests.fakeuni import api as fakeuni_api
 from tests.fakeuni import data
 from tests.fakeuni.login import COOKIE
@@ -62,7 +64,23 @@ async def fake_site(app: object, *, home_extra: str = "") -> FakeBrowserGateway:
             resource_type="xhr",
             response_content_type="application/json",
             response_sample=body,
+            auth_proven=True,
+            has_cookie=True,
         )
+
+    def document(path: str) -> list[ObservedRequest]:
+        """The page itself, as a real browser logs it, so that an HTML endpoint has evidence."""
+        return [
+            ObservedRequest(
+                method="GET",
+                url=f"{ORIGIN}{path}",
+                status=200,
+                resource_type="document",
+                response_content_type="text/html",
+                auth_proven=True,
+                has_cookie=True,
+            )
+        ]
 
     xhr = [
         req("/api/v2/me", me),
@@ -72,8 +90,10 @@ async def fake_site(app: object, *, home_extra: str = "") -> FakeBrowserGateway:
     pages = {
         f"{ORIGIN}/": FakePage(shell, "Личный кабинет", requests=xhr),
         f"{ORIGIN}/app": FakePage(shell, "Личный кабинет", requests=xhr),
-        f"{ORIGIN}/news": FakePage(news, "Новости"),
-        f"{ORIGIN}/portal/deadlines": FakePage(table, "Задания"),
+        f"{ORIGIN}/news": FakePage(news, "Новости", requests=document("/news")),
+        f"{ORIGIN}/portal/deadlines": FakePage(
+            table, "Задания", requests=document("/portal/deadlines")
+        ),
         # The synthetic menu has a dead documentation link. A real Chromium navigation
         # receives the source's 404 page; it is not a missing FakeBrowser fixture/transport.
         f"{ORIGIN}/api/docs": FakePage("<main>Страница не найдена</main>", "Not Found"),
@@ -101,6 +121,59 @@ def answer(
         content=json.dumps(body, ensure_ascii=False),
         usage=LlmUsage(input_cache_miss=1200, output=300, model="scripted"),
     )
+
+
+_OBSERVED_REQUEST = re.compile(
+    r"^\[request\] (?P<method>[A-Z]+) (?P<url>\S+) -> (?P<status>\d+)\b.*evidenceRef=(?P<ref>\w+)$",
+    re.MULTILINE,
+)
+
+
+def cite_evidence(request: LlmRequest, response: LlmResponse) -> LlmResponse:
+    """Fill in `requestEvidenceId` the way a real author does: by naming the observed request an
+    endpoint (or a bootstrap step) reads. A scripted answer stays free of per-run reference ids."""
+    try:
+        body = json.loads(response.content)
+    except ValueError:
+        return response
+    if not isinstance(body, dict) or not isinstance(body.get("endpoints"), list):
+        return response
+    text = "\n".join(message.content for message in request.messages)
+    observed = [
+        (urlsplit(m["url"]), m["ref"])
+        for m in _OBSERVED_REQUEST.finditer(text)
+        if m["method"] == "GET" and m["status"].startswith("2")
+    ]
+
+    def cite(step: dict[str, Any]) -> None:
+        if "requestEvidenceId" in step or "browserPlanRef" in step:
+            return
+        spec = step.get("request", step)
+        keys = {k for k in (spec.get("query") or {})}
+        candidates = [(u, ref) for u, ref in observed if u.path == spec.get("path")]
+        exact = [(u, ref) for u, ref in candidates if {k for k, _ in parse_qsl(u.query)} == keys]
+        # A model that invents an address still has to cite some observed request.
+        chosen = (exact or candidates or observed or [(None, None)])[0][1]
+        if chosen is not None:
+            step["requestEvidenceId"] = chosen
+
+    for endpoint in body["endpoints"]:
+        if isinstance(endpoint, dict):
+            cite(endpoint)
+    for step in body.get("bootstrap") or []:
+        if isinstance(step, dict):
+            cite(step)
+    return response.model_copy(update={"content": json.dumps(body, ensure_ascii=False)})
+
+
+class EvidenceLlm(ScriptedLlm):
+    """A scripted author whose endpoints cite the observed request they read."""
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        response = await super().complete(request)
+        if request.purpose in {"learn", "repair"}:
+            return cite_evidence(request, response)
+        return response
 
 
 def timetable_answer() -> LlmResponse:

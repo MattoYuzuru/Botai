@@ -64,6 +64,8 @@ def schedule_browser() -> FakeBrowserGateway:
                         status=200,
                         response_content_type="application/json",
                         response_sample=json.dumps({"items": data.timetable()}, ensure_ascii=False),
+                        auth_proven=True,
+                        has_cookie=True,
                     )
                 ],
             )

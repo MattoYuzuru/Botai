@@ -253,7 +253,7 @@ async def test_the_plan_must_be_well_formed(decision: dict[str, Any]) -> None:
     snap = await handle.goto(f"{ORIGIN}/")
     state = ObservationSession(handle, ORIGIN, Redactor(), DiscoveryBudget())
     await state.capture(snap)
-    with pytest.raises(ValueError, match="probe|overrides|reference"):
+    with pytest.raises(ValueError, match=r"probe|overrides|reference"):
         state.decision(
             {
                 "stateRef": state.revision,

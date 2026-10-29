@@ -55,11 +55,7 @@ class Settings(BaseSettings):
     botai_diagnostics_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=104857600)
     botai_diagnostics_backup_count: int = Field(default=2, ge=0, le=10)
 
-    # Staged rollout of the private, versioned research engine (ADR-0011).
-    botai_research_enabled: bool = False
-    botai_factory_v2_enabled: bool = (
-        False  # producer gate only; persisted v2 recipes remain readable
-    )
+    # Private, versioned research engine (ADR-0011) and its limits.
     botai_research_slice_seconds: float = Field(default=90, gt=0, le=300)
     botai_research_slice_steps: int = Field(default=10, ge=1, le=50)
     botai_research_max_seconds: float = Field(default=1800, gt=0, le=21600)

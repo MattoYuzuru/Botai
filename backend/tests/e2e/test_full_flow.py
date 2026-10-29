@@ -221,15 +221,12 @@ async def test_a_student_connects_a_university_and_asks_about_it(
     await check_isolation(env, connection_id, anna.connect_job, thread["id"])
 
 
-@pytest.mark.parametrize("research_enabled", [False, True])
 async def test_chat_source_url_native_login_clarification_sync_and_reply_share_one_thread(
     stack: Stack,
     wiretap: WireTap,
-    research_enabled: bool,
 ) -> None:
     """Real TCP API/worker/Chromium/proxy; only fakeuni and the model are synthetic."""
     env = stack.env
-    env.settings.botai_research_enabled = research_enabled
     entry = "https://fakeuni.test/app?begin_date=2026-10-26"
     clarification = "Ссылка уже правильная. Дедлайнов тут нет."
     classifier = LlmResponse(

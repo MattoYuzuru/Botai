@@ -37,7 +37,6 @@ ENTRY = data.ORIGIN + "/app"
 
 async def configured_learner(stack: Stack, email: str):
     env = stack.env
-    env.settings.botai_research_enabled = True
     learner = await Campus(env).enrol(email, url=ENTRY)
     async with env.sm() as session, session.begin():
         job = await session.get(m.Job, learner.connect_job)

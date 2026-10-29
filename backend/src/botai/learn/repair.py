@@ -38,9 +38,11 @@ from botai.db import models as m
 from botai.learn import revisions
 from botai.learn.author import author_digest, iso_z, merge_bootstrap
 from botai.learn.canary import CanaryReport, load_baseline, run_canary
+from botai.learn.compiler import needs_recipe_v2
 from botai.learn.explorer import TOKEN_BUDGET, Chosen, Explorer, kinds_text
 from botai.learn.intent import LearningIntent
 from botai.learn.lint import LintContext, lint_spec
+from botai.learn.policies import bind_parts
 from botai.sources import schedule
 from botai.sources.adapter import SessionExpired
 from botai.sources.runner import (
@@ -489,13 +491,30 @@ def _merge(
     spec: dict[str, Any], fixed: dict[Kind, Chosen], revision: int, now: Any, digest: str
 ) -> tuple[dict[str, Any] | None, list[Kind]]:
     """The old spec with the fixed endpoints swapped in. A fix whose bootstrap contradicts the
-    spec's own is dropped (and reported), the others go ahead."""
+    spec's own is dropped (and reported), the others go ahead.
+
+    Fixed endpoints carry executor-compiled auth bindings. The endpoints that stay keep the
+    authority they always had, now written as bindings too, and the recipe-wide policy is
+    rebuilt from the bindings that are still referenced."""
     new = copy.deepcopy(spec)
     recipe = new["recipe"]
     bootstrap: list[dict[str, Any]] = list(recipe.get("bootstrap", []))
     dropped: list[Kind] = []
+    bound = recipe["auth"].get("type") == "session" or any(
+        c.candidate.auth.get("type") == "session" for c in fixed.values()
+    )
+    bindings: dict[str, dict[str, Any]] = {}
+    if bound:
+        retained = [e for e in recipe["endpoints"] if e["kind"] not in fixed]
+        bindings.update(bind_parts(recipe["auth"], retained, bootstrap))
     for kind in list(fixed):
-        merged = merge_bootstrap(bootstrap, copy.deepcopy(fixed[kind].candidate.bootstrap))
+        candidate_bootstrap = copy.deepcopy(fixed[kind].candidate.bootstrap)
+        replacement = copy.deepcopy(fixed[kind].candidate.endpoint)
+        if bound:
+            bindings.update(
+                bind_parts(fixed[kind].candidate.auth, [replacement], candidate_bootstrap)
+            )
+        merged = merge_bootstrap(bootstrap, candidate_bootstrap)
         if merged is None:
             dropped.append(kind)
             del fixed[kind]
@@ -503,16 +522,29 @@ def _merge(
         bootstrap = merged
         for i, endpoint in enumerate(recipe["endpoints"]):
             if endpoint["kind"] == kind:
-                replacement = copy.deepcopy(fixed[kind].candidate.endpoint)
                 replacement["id"] = endpoint["id"]
                 recipe["endpoints"][i] = replacement
-        auths = {tuple(sorted(c.candidate.auth.items())) for c in fixed.values()}
-        if len(auths) == 1 and fixed[kind].candidate.auth != recipe["auth"]:
-            recipe["auth"] = copy.deepcopy(fixed[kind].candidate.auth)
+        if not bound:
+            auths = {tuple(sorted(c.candidate.auth.items())) for c in fixed.values()}
+            if len(auths) == 1 and fixed[kind].candidate.auth != recipe["auth"]:
+                recipe["auth"] = copy.deepcopy(fixed[kind].candidate.auth)
     if not fixed:
         return None, dropped
     if bootstrap:
         recipe["bootstrap"] = bootstrap
+    if bound:
+        referenced = {step.get("authBinding") for step in bootstrap}
+        referenced.update(
+            e["request"].get("authBinding")
+            for e in recipe["endpoints"]
+            if not e["request"].get("render")
+        )
+        live = {name: value for name, value in bindings.items() if name in referenced}
+        recipe["auth"] = (
+            {"type": "session", "version": 1, "bindings": live} if live else {"type": "cookie"}
+        )
+    if needs_recipe_v2(recipe["endpoints"], bootstrap, recipe["auth"]):
+        recipe["version"] = 2
     recipe["revision"] = revision
     recipe["learnedAt"] = iso_z(now)
     recipe["learnedByDigest"] = digest

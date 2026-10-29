@@ -70,7 +70,8 @@ async def test_events_of_all_spaces_in_time_order_with_provenance(
         None,
         None,
     )
-    assert first["links"] == [] and first["attributes"] == []
+    assert first["links"] == []
+    assert first["attributes"] == []
     assert second["provenance"]["spaceId"] == w.space_b
     assert second["teacher"] == "Петров"
     assert second["format"] == "online"

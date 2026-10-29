@@ -132,7 +132,7 @@ async def test_successful_learning_explains_lint_retry_canary_and_selection(
     make_env: EnvFactory, events: list[Event]
 ) -> None:
     leaky = recipes.timetable_endpoint()
-    leaky["request"]["query"]["owner"] = "private.student@fakeuni.test"
+    leaky["response"]["fields"]["location"] = {"path": "/place/private.student@fakeuni.test"}
     env = await make_env(
         [ls.answer([leaky], reasoning=PRIVATE), ls.timetable_answer(), ls.deadlines_answer()]
     )
@@ -158,7 +158,7 @@ async def test_learning_trace_is_persisted_with_correlation_and_structural_facts
     job_id = "01M61YP9N7N1HHQRCCVJRGS74K"
     thread_id = "01M61JYBYEVF5H75AQB8YB69F4"
     leaky = recipes.timetable_endpoint()
-    leaky["request"]["query"]["owner"] = "private.student@fakeuni.test"
+    leaky["response"]["fields"]["location"] = {"path": "/place/private.student@fakeuni.test"}
     env = await make_env(
         [ls.answer([leaky], reasoning=PRIVATE), ls.timetable_answer(), ls.deadlines_answer()],
         home_extra=PRIVATE,

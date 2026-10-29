@@ -188,9 +188,7 @@ class Explorer:
         return self.services.settings.botai_research_max_tokens if self._research else TOKEN_BUDGET
 
     async def _research_for(self, info: ConnInfo) -> None:
-        if not self.services.settings.botai_research_enabled or not isinstance(
-            self.ctx, ResearchContext
-        ):
+        if not isinstance(self.ctx, ResearchContext):
             return
         if self._research is not None and self._research.state.intent_key == intent_key(
             self.intent
@@ -1011,7 +1009,6 @@ class Explorer:
                         info.tz,
                     ),
                     budget=DiscoveryBudget(
-                        capabilities=settings.botai_factory_v2_enabled,
                         steps=settings.botai_research_slice_steps if research else 10,
                         seconds=min(
                             settings.botai_research_slice_seconds, research.remaining_seconds()
@@ -1194,15 +1191,6 @@ class Explorer:
         feedback: list[str] | None = None
         candidate_count = 0
         for attempt in range(MAX_CANARY_AUTHOR_ROUNDS):
-            factory_kwargs: dict[str, Any] = {}
-            if self.services.settings.botai_factory_v2_enabled:
-                factory_kwargs = {
-                    "factory_v2": True,
-                    "request_facts": self._request_facts,
-                    "browser_plans": self._browser_plans,
-                    "browser_plan_urls": self._browser_plan_urls,
-                    "time_zone": info.tz,
-                }
             try:
                 authored = await author_kind(
                     self._llm(),
@@ -1216,7 +1204,10 @@ class Explorer:
                     previous=previous,
                     problem=problem,
                     verification_feedback=feedback,
-                    **factory_kwargs,
+                    request_facts=self._request_facts,
+                    browser_plans=self._browser_plans,
+                    browser_plan_urls=self._browser_plan_urls,
+                    time_zone=info.tz,
                 )
             except AuthorError:
                 self._verification_failed = True
@@ -1313,100 +1304,79 @@ class Explorer:
         digest: str,
         lint_ctx: LintContext,
     ) -> tuple[tuple[Candidate, CanaryReport] | None, list[str]]:
-        """Try an authored read and at most one supported alternative auth binding.
+        """Run one compiled candidate on the student's session.
 
         A refused HTTP replay is evidence about this candidate, not proof that the browser
         login expired. Credentials remain executor-owned and are never part of feedback.
         """
-        variants = [candidate]
         rendered = candidate.endpoint.get("request", {}).get("render") is True
         state = sctx.session
-        if not rendered and state is not None and state.origin == info.origin:
-            auth_type = candidate.auth.get("type")
-            if auth_type == "cookie" and state.bearer is not None:
-                variants.append(replace(candidate, auth={"type": "bearer"}))
-            elif auth_type == "bearer" and state.cookies:
-                variants.append(replace(candidate, auth={"type": "cookie"}))
         findings: list[str] = []
-        empty_window = False
-        for bound in variants:
-            spec = candidate_spec(
-                bound,
-                origin=info.origin,
-                revision=revision,
-                now=self.services.clock.now(),
-                digest=digest,
-                index=index,
-            )
-            # Auth alternatives can only change a supported mode; recheck the complete spec
-            # before any request so it retains the same origin, paths and read-only boundary.
-            lint = lint_spec(spec, lint_ctx)
-            if not lint.ok:
-                findings.extend(lint.reasons())
-                continue
-            facts = {
-                "kind": kind,
-                "candidate_index": index,
-                "auth_type": bound.auth.get("type"),
-                "transport": "rendered" if rendered else "http",
-                "rendered": rendered,
-                "bearer_present": state is not None and state.bearer is not None,
-            }
-            diagnostic_event("canary.candidate", phase="request", **facts)
-            try:
+        spec = candidate_spec(
+            candidate,
+            origin=info.origin,
+            revision=revision,
+            now=self.services.clock.now(),
+            digest=digest,
+            index=index,
+        )
+        lint = lint_spec(spec, lint_ctx)
+        if not lint.ok:
+            return None, lint.reasons()
+        facts = {
+            "kind": kind,
+            "candidate_index": index,
+            "auth_type": candidate.auth.get("type"),
+            "transport": "rendered" if rendered else "http",
+            "rendered": rendered,
+            "bearer_present": state is not None and state.bearer is not None,
+        }
+        diagnostic_event("canary.candidate", phase="request", **facts)
+        try:
+            report = await self._canary(spec, sctx, require={kind})
+            if info.connection_id not in self._canary_session_checked and any(
+                finding.code
+                in {"auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"}
+                for finding in report.findings
+            ):
+                self._canary_session_checked.add(info.connection_id)
+                async with self.services.db() as db:
+                    await guard_job(self.ctx, db, check_input=True)
+                # Endpoint refusal is not a request to log in. The session provider checks
+                # the independent entry/probe, preserving a healthy human login (force=False).
+                sctx.session = await self._ensure_session(info, force=False)
+                self._observed_session = sctx.session
                 report = await self._canary(spec, sctx, require={kind})
-                if (
-                    spec["recipe"]["version"] == 2
-                    and info.connection_id not in self._canary_session_checked
-                    and any(
-                        finding.code
-                        in {
-                            "auth_missing",
-                            "auth_rejected",
-                            "auth_scope_mismatch",
-                            "login_redirect",
-                        }
-                        for finding in report.findings
-                    )
-                ):
-                    self._canary_session_checked.add(info.connection_id)
-                    async with self.services.db() as db:
-                        await guard_job(self.ctx, db, check_input=True)
-                    # Endpoint refusal is not a request to log in. The session provider checks
-                    # the independent entry/probe, preserving a healthy human login (force=False).
-                    sctx.session = await self._ensure_session(info, force=False)
-                    self._observed_session = sctx.session
-                    report = await self._canary(spec, sctx, require={kind})
-            except SessionExpired:
-                diagnostic_event(
-                    "canary.candidate",
-                    phase="response",
-                    outcome="rejected",
-                    reason="session_expired",
-                    **facts,
-                )
-                findings.append(
-                    f"вариант {index + 1}: доступ к данным не воспроизведён "
-                    f"с авторизацией {bound.auth.get('type')}. "
-                    "Это не доказывает потерю входа в браузере; проверь наблюдаемый запрос "
-                    "или предложи render=true для подтверждённого HTML DOM."
-                )
-                continue
+        except SessionExpired:
             diagnostic_event(
                 "canary.candidate",
                 phase="response",
-                outcome="accepted" if report.ok else "rejected",
-                reason="ok" if report.ok else "canary_rejected",
-                problem_count=len(report.problems),
+                outcome="rejected",
+                reason="session_expired",
                 **facts,
             )
-            if report.ok:
-                return (bound, report), findings
-            # The source responded: changing auth cannot repair a schema/field mismatch.
-            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
-            empty_window = any(finding.code == "empty_result" for finding in report.findings)
-            break
-        wide = self._walk_candidate(candidate, info) if empty_window else None
+            return None, [
+                f"вариант {index + 1}: доступ к данным не воспроизведён "
+                f"с авторизацией {candidate.auth.get('type')}. "
+                "Это не доказывает потерю входа в браузере; проверь наблюдаемый запрос "
+                "или предложи render=true для подтверждённого HTML DOM."
+            ]
+        diagnostic_event(
+            "canary.candidate",
+            phase="response",
+            outcome="accepted" if report.ok else "rejected",
+            reason="ok" if report.ok else "canary_rejected",
+            problem_count=len(report.problems),
+            **facts,
+        )
+        if report.ok:
+            return (candidate, report), findings
+        findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
+        wide = (
+            self._walk_candidate(candidate, info)
+            if any(finding.code == "empty_result" for finding in report.findings)
+            else None
+        )
         if wide is not None:
             # The read answered but its window was empty (a holiday, a control week): the
             # neighbouring windows may hold the schedule.
@@ -1709,8 +1679,6 @@ class Explorer:
         await self.ui.summary(title, groups)
 
     async def _resume_activation(self, info: ConnInfo) -> dict[str, Any] | None:
-        if not self.services.settings.botai_research_enabled:
-            return None
         async with self.services.db() as db, db.begin():
             conn = await guard_source_write(db, self.ctx, info.user_id, info.connection_id)
             if conn is None or conn.status == "disabled":

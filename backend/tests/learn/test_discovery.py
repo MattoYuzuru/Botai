@@ -268,6 +268,8 @@ async def test_general_connect_discovers_courses_and_keeps_recipe_confirmation(
                         resource_type="xhr",
                         response_content_type="application/json",
                         response_sample=body,
+                        auth_proven=True,
+                        has_cookie=True,
                     )
                 ],
             )
@@ -275,7 +277,7 @@ async def test_general_connect_discovers_courses_and_keeps_recipe_confirmation(
         NOW,
         ORIGIN,
     )
-    llm = ScriptedLlm(
+    llm = ls.EvidenceLlm(
         queue=[ls.answer([endpoint])],
         discovery_queue=[plan(1, "finish", kinds=["courses"], evidence=["r0"])],
     )
