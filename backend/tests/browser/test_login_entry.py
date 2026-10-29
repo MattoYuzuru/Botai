@@ -20,12 +20,12 @@ from botai.browser.egress import ProxyEgress
 from botai.browser.forms import has_credential_fields
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
 from botai.browser.login import LoginFlow
-from botai.browser.presets import InMemoryLoginStore
+from botai.browser.presets import ConnectionInfo, InMemoryLoginStore
 from botai.browser.probe import requires_authentication
 from botai.browser.proxy import EgressProxy
 from botai.browser.session import EntrySessionProvider, decode_session, encode_session
 from botai.contracts.agent_ui import InputBlock, LoginBlock, TextBlock
-from botai.core.browser import SessionState
+from botai.core.browser import PageSnapshot, SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled
@@ -57,6 +57,7 @@ class GuestStack:
     visited: list[str]
     sessions: set[str]
     side_effects: dict[str, int]
+    root_destination: list[str]
 
     def rig(self, human: Any = None) -> Rig:
         user, conn = new_id(), new_id()
@@ -82,6 +83,7 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
     visited: list[str] = []
     sessions: set[str] = set()
     side_effects = {"posts": 0, "sockets": 0}
+    root_destination: list[str] = []
 
     def page(body: str, *, student: bool = False) -> HTMLResponse:
         script = (
@@ -102,9 +104,11 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
         response.set_cookie("client_device", GUEST, secure=True, httponly=True)
         return response
 
-    @app.get("/")
-    async def public() -> HTMLResponse:
+    @app.get("/", response_model=None)
+    async def public() -> HTMLResponse | RedirectResponse:
         visited.append("/")
+        if root_destination:
+            return RedirectResponse(root_destination[0], status_code=302)
         return page(
             '<h1>Открытый каталог</h1><form action="/search"><label for="q">Поиск курсов</label>'
             '<input id="q" type="search" name="q"><button>Найти</button></form>'
@@ -240,7 +244,7 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
     egress = ProxyEgress(PROXY_SECRET, proxy=proxy)
     gateway = PlaywrightGateway(egress, sandbox=False, ignore_https_errors=True)
     try:
-        yield GuestStack(gateway, egress, visited, sessions, side_effects)
+        yield GuestStack(gateway, egress, visited, sessions, side_effects, root_destination)
     finally:
         await gateway.aclose()
         await proxy.close()
@@ -503,6 +507,67 @@ async def test_real_deep_portal_script_never_writes_during_login_entry_verificat
     )
     assert [kind for kind, _ in student.asked] == ["login", "password", "code"]
     assert deep.STATE.writes == before
+
+
+async def test_generic_root_after_native_login_can_reach_the_real_cabinet_without_a_screen(
+    make_rig: Callable[..., Rig],  # noqa: F811
+) -> None:
+    rig = make_rig()
+    student = Student()
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=ORIGIN + "/"
+    )
+    assert [kind for kind, _ in student.asked] == ["login", "password", "code"]
+    assert any(cookie.name == "FAKEUNI_SESSION" for cookie in state.cookies)
+    assert not rig.screens.links
+
+
+@pytest.mark.parametrize(
+    ("entry", "allowed"),
+    [
+        (ORIGIN, True),
+        (ORIGIN + "/", True),
+        (ORIGIN + "/?view=private", False),
+        (ORIGIN + "/#private", False),
+    ],
+)
+def test_generic_root_exception_keeps_query_fragment_and_stored_redirects_strict(
+    entry: str, allowed: bool
+) -> None:
+    info = ConnectionInfo(ORIGIN, ("fakeuni.test",))
+    cabinet = PageSnapshot(url=ORIGIN + "/app", text="Мои курсы")
+    assert LoginFlow._entry_ready(info, None, cabinet, entry, allow_generic_root=True) is allowed
+    assert not LoginFlow._entry_ready(info, None, cabinet, entry)
+
+
+async def test_stored_guest_root_to_public_redirect_never_inherits_the_native_login_exception(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    preset = preset_dict(ORIGIN + "/")
+    preset["success"]["probe"]["url"] = ORIGIN + "/api/client-bootstrap"
+    rig.store.seed_preset(ORIGIN, preset)
+    sealed = encode_session(await guest_session(rig))
+    await rig.vault.put(rig.user, rig.conn, SecretKind.SESSION, sealed)
+    guest_stack.root_destination.append("/landing")
+    running = asyncio.create_task(
+        rig.flow.ensure_for_entry(
+            rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=ORIGIN + "/"
+        )
+    )
+    try:
+        async with asyncio.timeout(5):
+            while not rig.screens.links:
+                assert not running.done()
+                await asyncio.sleep(0.05)
+        assert not running.done()
+        saved = await rig.vault.get(rig.user, rig.conn, SecretKind.SESSION)
+        assert saved is not None
+        assert saved.get_secret_value() == sealed
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        guest_stack.root_destination.clear()
 
 
 async def test_soft_refusal_does_not_authorize_background_writes_from_a_human_screen(

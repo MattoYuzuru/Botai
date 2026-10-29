@@ -373,6 +373,7 @@ class LoginFlow:
         login_paths: Sequence[str] = (),
         *,
         human_confirmed: bool = False,
+        allow_generic_root: bool = False,
     ) -> bool:
         if (
             storage_origin(snap.url, (urlsplit(info.origin).hostname or "",)) != info.origin
@@ -384,9 +385,16 @@ class LoginFlow:
         # A guest bootstrap session may turn a protected link into a public
         # catalogue. A material redirect is not browser authorization evidence.
         # Query canonicalization and a trailing slash do not change the view.
-        requested_path = unquote(urlsplit(entry_url).path).rstrip("/") or "/"
+        requested = urlsplit(entry_url)
+        requested_path = unquote(requested.path).rstrip("/") or "/"
         actual_path = unquote(urlsplit(snap.url).path).rstrip("/") or "/"
-        if not human_confirmed and actual_path != requested_path:
+        generic_root = (
+            allow_generic_root
+            and requested.path in {"", "/"}
+            and not requested.query
+            and not requested.fragment
+        )
+        if not human_confirmed and not generic_root and actual_path != requested_path:
             return False
         path = urlsplit(snap.url).path
         known = preset.expired.get("redirectPathPrefix", []) if preset else []
@@ -672,7 +680,13 @@ class LoginFlow:
                 p for p in run.recorder.login_paths if p not in {private_path, run.entry_form_path}
             ]
             if not self._entry_ready(
-                run.info, run.preset, fresh, run.entry_url, paths, human_confirmed=force
+                run.info,
+                run.preset,
+                fresh,
+                run.entry_url,
+                paths,
+                human_confirmed=force,
+                allow_generic_root=bool(run.submitted or run.push_confirmed),
             ):
                 run.verified_page = page_signature(fresh)
                 return None
