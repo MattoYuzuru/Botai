@@ -8,6 +8,8 @@
 * `/captcha/login`: a form with a captcha stand-in iframe that a human has to tick.
 * `/sso/start` → `id.fakeuni.test/sso/login` → `/sso/callback`: login on a second host.
 * `/blocked`: the site refuses the visit (bot protection page).
+* `/cu/app` → `id.fakeuni.test/cu/realms/...` → `/cu/login-actions/authenticate`: a Keycloak-like
+  JS login in three steps (e-mail, password, SMS code); see the section below.
 
 Wrong credentials re-render the same form with an error, like real sites. Every successful path
 ends with the `FAKEUNI_SESSION` cookie on fakeuni.test. Nothing here resembles a real university.
@@ -247,6 +249,189 @@ async def kc_submit(
         # the refusal is shown at /kc/auth/authenticate, not at /kc/auth
         return HTMLResponse(_kc_form(_error("Неверный логин или пароль")), status_code=401)
     return _start_session()
+
+
+# --- Keycloak-like JS login: e-mail, then password, then an SMS code ---------------------------
+#
+# The cabinet `/cu/app` sends a visitor to the identity host. Its e-mail page is a form with *no*
+# `action`: a script checks the login with a POST to another host and path, then sets the action to
+# `/cu/login-actions/authenticate?session_code=…&execution=…&client_id=…&tab_id=…&client_data=…`
+# and submits. The page also posts "telemetry" on load, which nobody asked for. The password and
+# code steps are ordinary forms with the same kind of action. Every page gets a fresh session code.
+
+CU_LOGIN_HOST = "https://id.fakeuni.test"
+CU_CHECK_ORIGIN = "https://fakeuni.test"  # where the page's own login check is posted
+CU_ACTION_ORIGIN = ""  # prefix of the action the script sets: "" is the page's own host
+_CU_FLOWS: dict[str, dict[str, str]] = {}
+_CU_CODES: set[str] = set()
+
+
+class CuStats:
+    """What actually reached the server: a blocked request never shows up here."""
+
+    def __init__(self) -> None:
+        self.checks = 0
+        self.telemetry = 0
+        self.submissions: list[str] = []
+
+    def reset(self) -> None:
+        self.checks = self.telemetry = 0
+        self.submissions.clear()
+
+
+CU = CuStats()
+
+
+def cu_reset() -> None:
+    CU.reset()
+    _CU_FLOWS.clear()
+    _CU_CODES.clear()
+
+
+def _cu_action(stage: str, user: str = "") -> str:
+    """A page of the flow, registered under a fresh session code (Keycloak style)."""
+    code = secrets.token_urlsafe(18)
+    _CU_FLOWS[code] = {"stage": stage, "user": user}
+    return (
+        f"/cu/login-actions/authenticate?session_code={code}&execution={secrets.token_hex(8)}"
+        f"&client_id=cabinet&tab_id={secrets.token_urlsafe(8)}&client_data={secrets.token_urlsafe(24)}"
+    )
+
+
+def _cu_email_page(error: str = "") -> str:
+    action = CU_ACTION_ORIGIN + _cu_action("email")
+    return _page(
+        "Вход — Фейкуни ID",
+        f"""{error}<form id="cu-form" method="post">
+  <label for="cu-login">Почта</label><input id="cu-login" name="username" type="email" autocomplete="username">
+  <button id="cu-next" type="submit">Далее</button>
+</form><p id="cu-note"></p>
+<script>
+fetch('{CU_CHECK_ORIGIN}/cu/api/telemetry', {{method: 'POST'}}).catch(() => {{}});
+const form = document.getElementById('cu-form');
+form.addEventListener('submit', async (event) => {{
+  event.preventDefault();
+  let known = false;
+  try {{
+    const answer = await fetch('{CU_CHECK_ORIGIN}/cu/api/check-login', {{
+      method: 'POST', headers: {{'content-type': 'application/json'}},
+      body: JSON.stringify({{login: form.elements.username.value}}),
+    }});
+    known = (await answer.json()).known === true;
+  }} catch (_) {{}}
+  if (!known) {{ document.getElementById('cu-note').textContent = 'Не удалось проверить почту'; return; }}
+  form.action = {json.dumps(action)};
+  form.submit();
+}});
+</script>""",
+    )
+
+
+def _cu_password_page(user: str, error: str = "") -> str:
+    return _page(
+        "Вход — пароль",
+        f"""{error}<form id="cu-password-form" method="post" action="{escape(_cu_action("password", user))}">
+  <label for="cu-password">Пароль</label><input id="cu-password" name="password" type="password" autocomplete="current-password">
+  <button id="cu-login-submit" type="submit">Войти</button>
+</form>""",
+    )
+
+
+def _cu_otp_page(user: str, error: str = "") -> str:
+    return _page(
+        "Вход — код из SMS",
+        f"""{error}<p class="hint">Код отправлен на s***@fakeuni.test</p>
+<form id="cu-otp-form" method="post" action="{escape(_cu_action("otp", user))}">
+  <label for="cu-otp">Код из SMS</label><input id="cu-otp" name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+  <button id="cu-otp-submit" type="submit">Подтвердить</button>
+</form>""",
+    )
+
+
+@router.get("/cu/app", response_model=None)
+async def cu_app(request: Request) -> HTMLResponse | RedirectResponse:
+    if not is_logged_in(request):
+        return RedirectResponse(
+            f"{CU_LOGIN_HOST}/cu/realms/fakeuni/protocol/openid-connect/auth"
+            "?client_id=cabinet&redirect_uri=https%3A%2F%2Ffakeuni.test%2Fcu%2Fcallback"
+            "&response_type=code&scope=openid&state=" + secrets.token_hex(6),
+            status_code=302,
+        )
+    return HTMLResponse(
+        "<!doctype html><title>Кабинет ЦУ</title><main><h1>Мои занятия</h1>"
+        "<article>Семинар по тестированию</article></main><script>"
+        "fetch('/api/v2/me').catch(() => {});"
+        "fetch('/cu/api/telemetry', {method: 'POST'}).catch(() => {});</script>"
+    )
+
+
+@router.get("/cu/realms/fakeuni/protocol/openid-connect/auth", response_class=HTMLResponse)
+async def cu_login_page() -> str:
+    return _cu_email_page()
+
+
+_CU_CORS = {
+    "access-control-allow-origin": CU_LOGIN_HOST,
+    "access-control-allow-headers": "content-type",
+    "access-control-allow-methods": "POST",
+}
+
+
+@router.options("/cu/api/check-login")
+async def cu_check_login_preflight() -> Response:
+    """The login check is cross-origin and sends JSON: the browser asks first."""
+    return Response(status_code=204, headers=_CU_CORS)
+
+
+@router.post("/cu/api/check-login")
+async def cu_check_login(request: Request) -> JSONResponse:
+    CU.checks += 1
+    known = (await request.json()).get("login") == data.USERNAME
+    return JSONResponse({"known": known}, headers=_CU_CORS)
+
+
+@router.post("/cu/api/telemetry")
+async def cu_telemetry() -> Response:
+    CU.telemetry += 1
+    return Response(status_code=204)
+
+
+@router.post("/cu/login-actions/authenticate", response_model=None)
+async def cu_authenticate(
+    session_code: str,
+    username: str | None = Form(None),
+    password: str | None = Form(None),
+    otp: str | None = Form(None),
+) -> HTMLResponse | RedirectResponse:
+    flow = _CU_FLOWS.pop(session_code, None)
+    if flow is None:
+        return HTMLResponse(_cu_email_page(_error("Сессия входа устарела")), status_code=400)
+    stage, user = flow["stage"], flow["user"]
+    CU.submissions.append(stage)
+    if stage == "email":
+        if username != data.USERNAME:
+            ATTEMPTS.append(("cu", "user"))
+            return HTMLResponse(_cu_email_page(_error("Пользователь не найден")), status_code=401)
+        return HTMLResponse(_cu_password_page(username or ""))
+    if stage == "password":
+        if password != data.PASSWORD:
+            ATTEMPTS.append(("cu", "user"))
+            return HTMLResponse(_cu_password_page(user, _error("Неверный пароль")), status_code=401)
+        return HTMLResponse(_cu_otp_page(user))
+    if otp != data.OTP:
+        ATTEMPTS.append(("cu", "otp"))
+        return HTMLResponse(_cu_otp_page(user, _error("Неверный код")), status_code=401)
+    code = secrets.token_hex(8)
+    _CU_CODES.add(code)
+    return RedirectResponse(f"https://fakeuni.test/cu/callback?code={code}", status_code=303)
+
+
+@router.get("/cu/callback", response_model=None)
+async def cu_callback(code: str) -> RedirectResponse | HTMLResponse:
+    if code not in _CU_CODES:
+        return HTMLResponse(_error("Код входа недействителен"), status_code=400)
+    _CU_CODES.discard(code)
+    return _start_session("/cu/app")
 
 
 # --- push approval ----------------------------------------------------------------------------

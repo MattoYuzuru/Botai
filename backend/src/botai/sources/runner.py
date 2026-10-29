@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.specs import Kind
@@ -440,6 +441,41 @@ class SyncOutcome:
         }
 
 
+# A login that stops here is the student's to resume: `needs_reauth`, no retries, no scheduler.
+# The guard refusing a request of the login is not the site being down (a retry would be refused
+# the same way), and the student can finish the step on the fallback screen.
+REAUTH_STOPS = frozenset(
+    {ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION, ErrorCode.LOGIN_GUARD_REFUSED}
+)
+
+
+async def bind_login_to_source_thread(ctx: JobContext, services: Services, snap: Snapshot) -> None:
+    """A dead session logs in again inside this very sync job: from the stored password, with no
+    question, or with a code or a push approval that only the student can give. That job is
+    scheduled and has no conversation, so the question would wait where nobody looks. Moving it to
+    the conversation of the source makes its blocks, and the attention they ask for, appear there.
+
+    A job that already belongs to a conversation keeps it. Which conversation belongs to a source
+    is decided by `spaces.conversations.canonical_thread`, the conversation owner's function."""
+    from botai.spaces.conversations import canonical_thread
+
+    try:
+        async with services.db() as db, db.begin():
+            job = await db.scalar(
+                select(m.Job)
+                .where(m.Job.id == ctx.job_id, m.Job.user_id == snap.user_id)
+                .with_for_update()
+            )
+            if job is None or job.thread_id is not None:
+                return
+            await guard_job(ctx, db)
+            thread = await canonical_thread(db, snap.user_id, snap.connection_id)
+            if thread is not None:
+                job.thread_id = thread.id
+    except SQLAlchemyError:
+        log.warning("sync job %s could not be bound to its source conversation", ctx.job_id)
+
+
 async def fetch_with_reauth(
     ctx: JobContext,
     services: Services,
@@ -487,12 +523,13 @@ async def fetch_with_reauth(
                 services, snap.connection_id, snap.user_id, status="needs_reauth", ctx=ctx
             )
             await ctx.status("Вхожу заново")
+            await bind_login_to_source_thread(ctx, services, snap)
             try:
                 sctx.session = await services.sessions.ensure(
                     ctx, user_id=snap.user_id, connection_id=snap.connection_id, force=True
                 )
             except BotaiError as err:
-                if err.code not in {ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION}:
+                if err.code not in REAUTH_STOPS:
                     raise
                 await set_connection(
                     services,

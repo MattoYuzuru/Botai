@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -15,9 +14,9 @@ import pytest
 import uvicorn
 from fastapi import FastAPI, Form, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Request as BrowserRequest
 
+from botai.browser import gateway
 from botai.browser.egress import ProxyEgress
 from botai.browser.forms import has_credential_fields
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
@@ -625,9 +624,8 @@ async def test_spa_auth_fetch_can_complete_without_granting_its_data_page_a_writ
     assert guest_stack.side_effects == before
 
 
-@pytest.mark.parametrize("document", [False, True], ids=["xhr-post", "document-post"])
-async def test_get_completion_cannot_leave_a_stale_auth_permit_after_same_url_dom_change(
-    guest_stack: GuestStack, trust_fakeuni: Path, document: bool
+async def test_get_completion_cannot_leave_a_stale_auth_window_after_same_url_dom_change(
+    guest_stack: GuestStack, trust_fakeuni: Path
 ) -> None:
     rig = guest_stack.rig()
     handle = await rig.gateway.open(
@@ -645,21 +643,42 @@ async def test_get_completion_cannot_leave_a_stale_auth_permit_after_same_url_do
         async with handle.page.expect_event(
             "requestfailed", predicate=lambda request: request.url == ORIGIN + "/data-write"
         ) as refused:
-            if document:
-                # Chromium's blocked document can replace the evaluated renderer.
-                with contextlib.suppress(PlaywrightError):
-                    await handle.page.evaluate(
-                        "()=>{const f=document.createElement('form');f.method='POST';"
-                        "f.action='/data-write';document.body.append(f);f.submit();}"
-                    )
-            else:
-                assert (
-                    await handle.page.evaluate(
-                        "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
-                    )
-                    is False
+            assert (
+                await handle.page.evaluate(
+                    "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
                 )
+                is False
+            )
         assert (await refused.value).method == "POST"
+        assert guest_stack.side_effects == before
+    finally:
+        await handle.close()
+
+
+async def test_a_document_post_ends_the_step_and_the_next_document_has_no_window(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.side_effects.copy()
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ENTRY)
+        async with handle.auth_step(fields=["#u", "#p"]):
+            await handle.fill("#u", data.USERNAME)
+            await handle.fill("#p", data.PASSWORD)
+            await handle.click('button[type="submit"]')
+        assert handle.page.url.endswith("/landing")
+        assert not handle._auth_windows
+        # the landing page of the new document wants to write: no step, no window
+        assert (
+            await handle.page.evaluate(
+                "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
+            )
+            is False
+        )
         assert guest_stack.side_effects == before
     finally:
         await handle.close()
@@ -719,7 +738,7 @@ async def test_title_only_email_auth_context_is_preserved_for_both_post_kinds(
         assert has_credential_fields(snap)
         assert not has_credential_fields(snap.model_copy(update={"title": ""}))
         await handle.fill("#email", data.USERNAME)
-        async with handle.auth_document():
+        async with handle.auth_step(fields=["#email"]):
             if document:
                 await handle.click("button")
             else:
@@ -736,7 +755,7 @@ async def test_title_only_email_auth_context_is_preserved_for_both_post_kinds(
         await handle.close()
 
 
-async def test_unmatched_document_post_keeps_the_permit_for_the_auth_form(
+async def test_refused_document_post_keeps_the_window_for_the_auth_form(
     guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = guest_stack.rig()
@@ -755,22 +774,21 @@ async def test_unmatched_document_post_keeps_the_permit_for_the_auth_form(
             await handle.goto(ORIGIN + "/email-entry")
         await handle.fill("#email", data.USERNAME)
         monkeypatch.setattr(handle, "_diagnostic", emit)
-        unmatched = Mock(spec=BrowserRequest)
-        unmatched.frame = handle.page.main_frame
-        unmatched.method = "POST"
-        unmatched.url = ORIGIN + "/data-write?private=private-auth-fixture"
-        unmatched.is_navigation_request.return_value = True
-        async with handle.auth_document():
-            assert not await handle._entry_auth_allowed(cast(BrowserRequest, unmatched))
-            # The unmatched request never reaches the server. The real matching
-            # browser navigation must still have its one permitted submission.
+        foreign = Mock(spec=BrowserRequest)
+        foreign.frame = handle.page.main_frame
+        foreign.method = "POST"
+        foreign.url = "https://elsewhere.fakeuni.test/data-write?private=private-auth-fixture"
+        foreign.is_navigation_request.return_value = True
+        async with handle.auth_step(fields=["#email"]):
+            assert not await handle._entry_auth_allowed(cast(BrowserRequest, foreign))
+            # The refused request never reaches a server. The real submission, to a host the
+            # connection logs in at, still has its step.
             await handle.click("button")
         assert guest_stack.visited.count("/api/email-step") == before + 1
         assert guest_stack.side_effects == side_effects
         refused = [facts for name, facts in events if name == "browser.auth_permit_refused"]
         assert len(refused) == 1
-        assert refused[0]["reason"] == "auth_action_mismatch"
-        assert any(name == "browser.auth_action" for name, _ in events)
+        assert refused[0]["reason"] == "auth_host_not_allowed"
         encoded = json.dumps(events)
         assert "private-auth-fixture" not in encoded
         assert data.USERNAME not in encoded
@@ -791,13 +809,13 @@ async def test_auth_submission_preserves_current_navigation_failure_and_ignores_
             await handle.goto(ORIGIN + "/email-entry")
         stale = BotaiError(ErrorCode.EGRESS_BLOCKED, "Прежняя навигация была отклонена")
         handle._navigation_error = stale
-        async with handle.auth_document():
+        async with handle.auth_step():
             pass
 
         failure = BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Текущая навигация была отклонена")
 
         async def fail_navigation() -> None:
-            async with handle.auth_document():
+            async with handle.auth_step():
                 handle._navigation_request = cast(BrowserRequest, Mock(spec=BrowserRequest))
                 handle._navigation_error = failure
 
@@ -808,9 +826,10 @@ async def test_auth_submission_preserves_current_navigation_failure_and_ignores_
         await handle.close()
 
 
-async def test_concurrent_auth_requests_cannot_consume_the_same_permit_twice(
-    guest_stack: GuestStack, trust_fakeuni: Path
+async def test_concurrent_auth_requests_share_the_budget_of_one_window(
+    guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(gateway, "AUTH_WINDOW_POSTS", 2)
     rig = guest_stack.rig()
     handle = await rig.gateway.open(
         user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
@@ -823,17 +842,16 @@ async def test_concurrent_auth_requests_cannot_consume_the_same_permit_twice(
         request.method = "POST"
         request.url = ORIGIN + "/api/email-step"
         request.is_navigation_request.return_value = False
-        async with handle.auth_document():
+        async with handle.auth_step(fields=["#email"]):
             results = await asyncio.gather(
-                handle._entry_auth_allowed(cast(BrowserRequest, request)),
-                handle._entry_auth_allowed(cast(BrowserRequest, request)),
+                *(handle._entry_auth_allowed(cast(BrowserRequest, request)) for _ in range(3))
             )
-        assert sorted(results) == [False, True]
+        assert sorted(results) == [False, True, True]
     finally:
         await handle.close()
 
 
-async def test_navigation_during_an_auth_scan_cannot_restore_the_revoked_permit(
+async def test_navigation_during_an_auth_scan_cannot_restore_the_revoked_window(
     guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = guest_stack.rig()
@@ -857,7 +875,7 @@ async def test_navigation_during_an_auth_scan_cannot_restore_the_revoked_permit(
             await scan_released.wait()
             return await original_evaluate(script)
 
-        async with handle.auth_document():
+        async with handle.auth_step(fields=["#email"]):
             monkeypatch.setattr(frame, "evaluate", paused_scan)
             checking = asyncio.create_task(
                 handle._entry_auth_allowed(cast(BrowserRequest, request))
@@ -867,7 +885,7 @@ async def test_navigation_during_an_auth_scan_cannot_restore_the_revoked_permit(
             handle._revoke_auth_document(frame)
             scan_released.set()
             assert await checking is False
-            assert frame not in handle._auth_permits
+            assert frame not in handle._auth_windows
     finally:
         await handle.close()
 

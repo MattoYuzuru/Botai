@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.clock import FrozenClock
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.core.queue import InMemoryJobQueue
 from botai.core.vault import InMemoryVault, SecretKind
@@ -267,7 +269,9 @@ async def test_session_still_rejected_after_login_needs_the_user_not_a_loop(env:
     assert conn["next_sync_at"] is None  # the scheduler stops polling until a new login
 
 
-@pytest.mark.parametrize("code", [ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION])
+@pytest.mark.parametrize(
+    "code", [ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION, ErrorCode.LOGIN_GUARD_REFUSED]
+)
 async def test_login_that_cannot_be_automated_stops_without_retries(
     env: Env, code: ErrorCode
 ) -> None:
@@ -279,6 +283,75 @@ async def test_login_that_cannot_be_automated_stops_without_retries(
     assert conn["error_code"] == code.value
     assert conn["next_sync_at"] is None
     assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
+
+
+async def bound_sync_job(env: Env, *, thread_id: str | None) -> tuple[str, InMemoryJobContext]:
+    """A scheduled sync as the worker holds it: a running job row, with or without a conversation."""
+    job = m.Job(
+        id=new_id(),
+        user_id=env.seeded.user_id,
+        kind="sync",
+        state="running",
+        connection_id=env.seeded.connection_id,
+        thread_id=thread_id,
+        payload={},
+        run_after=NOW,
+    )
+    env.db.add(job)
+    await env.db.commit()
+    ctx = InMemoryJobContext(
+        user_id=env.seeded.user_id, connection_id=env.seeded.connection_id, job_id=job.id
+    )
+    return job.id, ctx
+
+
+async def job_thread(env: Env, job_id: str) -> str | None:
+    env.db.expire_all()
+    return await env.db.scalar(select(m.Job.thread_id).where(m.Job.id == job_id))
+
+
+async def test_a_login_inside_a_scheduled_sync_moves_the_job_to_its_sources_conversation(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-login may ask the student for a code: its blocks must appear where they look."""
+    source_thread = SimpleNamespace(id=new_id())
+
+    async def canonical_thread(*_: object) -> SimpleNamespace:
+        return source_thread
+
+    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    result = await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
+    assert result["status"] == "ok"
+    assert await job_thread(env, job_id) == source_thread.id
+
+
+async def test_a_sync_that_needs_no_login_does_not_borrow_a_conversation(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def canonical_thread(*_: object) -> SimpleNamespace:
+        raise AssertionError("no login, no conversation")
+
+    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    result = await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
+    assert result["status"] == "ok"
+    assert await job_thread(env, job_id) is None
+
+
+async def test_a_job_that_already_has_a_conversation_keeps_it_through_a_login(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def canonical_thread(*_: object) -> SimpleNamespace:
+        raise AssertionError("the job already has its conversation")
+
+    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+    own = new_id()
+    job_id, ctx = await bound_sync_job(env, thread_id=own)
+    fakeuni_api.expire_sessions()
+    await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
+    assert await job_thread(env, job_id) == own
 
 
 async def test_session_past_its_expiry_hint_costs_no_request_before_login(env: Env) -> None:

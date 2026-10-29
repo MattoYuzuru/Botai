@@ -646,7 +646,10 @@ class LoginFlow:
                 )
             else:
                 assert isinstance(detection, ErrorPage)
-                raise self._navigation_failure(run)
+                failure = self._navigation_failure(run)
+                if failure.code != ErrorCode.LOGIN_GUARD_REFUSED:
+                    raise failure
+                outcome = await self._guard_fallback(run, failure)
             if isinstance(outcome, SessionState):
                 return outcome
             snap = outcome
@@ -657,6 +660,34 @@ class LoginFlow:
         if failure is not None:
             return failure
         return BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Страница входа вуза не открылась")
+
+    async def _guard_fallback(self, run: _Run, refusal: BotaiError) -> Outcome:
+        """Our guard stopped a request of the login. The site works; what the page sent is not
+        something we can verify. Say that, and give the human the fallback screen on a fresh copy
+        of the page: the refused submission never reached the site, so nothing there has changed."""
+        diagnostic_event(
+            "auth.guard_refused",
+            connection_id=run.connection_id,
+            error_code=refusal.code.value,
+            fallback=self._screens is not None and run.entry_url is not None,
+        )
+        if self._screens is None or run.entry_url is None:
+            raise refusal
+        await run.job.emit(
+            TextBlock(
+                id=new_id(),
+                at=self._clock.now(),
+                markdown="Сайт вуза работает, но отправил форму входа способом, который Ботай "
+                "не пропустил: мы отправляем данные только на адреса входа, которые вы уже "
+                "разрешили. Открываю запасной экран: завершите шаг там.",
+            )
+        )
+        async with run.handle.read_only_entry():
+            snap = await run.handle.goto(run.entry_url)
+        run.last_signature = None  # the site did not refuse anything: not a failed attempt
+        return await self._human(
+            run, snap, hint="Завершите этот шаг входа на экране. Дальше продолжим в полях Ботай."
+        )
 
     # -- success -------------------------------------------------------------------------------
 
@@ -840,10 +871,14 @@ class LoginFlow:
     async def _form(self, run: _Run, step: FormStep) -> Outcome:
         failed = await self._register(run, step)
         try:
-            await self._fill(run, step, failed=failed)
-            return await self._submit(run, step)
+            answers = await self._answers(run, step, failed=failed)
+            return await self._submit(run, step, answers)
         except _ManualRequested:
             return await self._manual_screen(run)
+        except BotaiError as exc:
+            if exc.code != ErrorCode.LOGIN_GUARD_REFUSED:
+                raise
+            return await self._guard_fallback(run, exc)
 
     async def _register(self, run: _Run, step: FormStep) -> bool:
         """Count this submission; True if the page is the one we just submitted (it refused)."""
@@ -875,13 +910,24 @@ class LoginFlow:
             )
         return failed
 
-    async def _fill(self, run: _Run, step: FormStep, *, failed: bool) -> None:
+    async def _answers(
+        self, run: _Run, step: FormStep, *, failed: bool
+    ) -> list[tuple[StepField, str]]:
+        """Every value of the step first, typing after: the page's scripts and the guard's window
+        belong to the moment the step is complete, not to the minutes the student takes to answer."""
         host = urlsplit(step.url).hostname or ""
         attempt = run.attempts.get(step.signature, 1)
+        answers: list[tuple[StepField, str]] = []
         for f in step.fields:
             value = await self._value_for(run, f, host=host, failed=failed, attempt=attempt)
             if run.manual_requested:
                 raise _ManualRequested
+            answers.append((f, value))
+        return answers
+
+    @staticmethod
+    async def _type(run: _Run, answers: Sequence[tuple[StepField, str]]) -> None:
+        for f, value in answers:
             await run.handle.fill(f.selector, value)
 
     async def _native_answer[T](self, run: _Run, ask: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -1006,12 +1052,17 @@ class LoginFlow:
             autocomplete=autocomplete,
         )
 
-    async def _submit(self, run: _Run, step: FormStep) -> PageSnapshot:
+    async def _submit(
+        self, run: _Run, step: FormStep, answers: Sequence[tuple[StepField, str]] = ()
+    ) -> PageSnapshot:
+        """Type the step's values and send the form, inside one window of the guard: a check of
+        the login the page runs after typing and the submission itself are both part of the step."""
         if run.manual_requested:
             raise _ManualRequested
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
-        async with run.handle.auth_document():
+        async with run.handle.auth_step(fields=[f.selector for f in step.fields]):
+            await self._type(run, answers)
             if step.submit:
                 try:
                     await run.handle.click(step.submit)
@@ -1060,7 +1111,9 @@ class LoginFlow:
             # the student's fields can still be native: fill them, the human does the check
             failed = await self._register(run, found)
             try:
-                await self._fill(run, found, failed=failed)
+                answers = await self._answers(run, found, failed=failed)
+                async with run.handle.auth_step(fields=[f.selector for f in found.fields]):
+                    await self._type(run, answers)
             except _ManualRequested:
                 return await self._manual_screen(run)
             pending = found
