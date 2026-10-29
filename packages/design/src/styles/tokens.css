@@ -407,6 +407,13 @@
     color-mix(in oklab, var(--palette-slate-600) 30%, transparent),
     color-mix(in oklab, var(--palette-slate-300) 24%, transparent)
   );
+  --scrollbar-thumb-hover: light-dark(
+    color-mix(in oklab, var(--palette-slate-600) 52%, transparent),
+    color-mix(in oklab, var(--palette-slate-300) 44%, transparent)
+  );
+  /* Прокрутка (styleguide §7): один тонкий бегунок без дорожки и стрелок. Размер — для WebKit и Radix. */
+  --scrollbar-size: 0.5rem;
+  --scrollbar-track: transparent;
 }
 
 /*
@@ -453,6 +460,7 @@
       inset 0 1px 0 transparent;
     --selection: color-mix(in oklab, var(--palette-hse-500) 22%, transparent);
     --scrollbar-thumb: color-mix(in oklab, var(--palette-slate-600) 30%, transparent);
+    --scrollbar-thumb-hover: color-mix(in oklab, var(--palette-slate-600) 52%, transparent);
   }
 }
 

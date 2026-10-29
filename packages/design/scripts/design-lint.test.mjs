@@ -5,7 +5,7 @@ const rules = (path, source) => lintSource(path, source).map((problem) => proble
 const APP = "apps/web/src/screens/today.tsx";
 
 describe("design-lint: каждое правило §10 из стайлгайда есть", () => {
-  it("реестр правил содержит все 28 имён", () => {
+  it("реестр правил содержит все 29 имён", () => {
     const expected = [
       "native-control",
       "raw-color",
@@ -19,6 +19,7 @@ describe("design-lint: каждое правило §10 из стайлгайд�
       "inline-visual-style",
       "browser-dialog",
       "raw-scroll",
+      "raw-scrollbar",
       "vh-unit",
       "no-safe-area",
       "viewport-lock",
@@ -124,6 +125,21 @@ describe("design-lint: правила", () => {
     expect(rules(APP, '<div className="h-full overflow-y-auto" />')).toContain("raw-scroll");
     expect(rules("apps/web/src/a.css", ".x { overflow-x: auto }")).toContain("raw-scroll");
     expect(rules(APP, '<div className="overflow-hidden" />')).toEqual([]);
+  });
+
+  it("raw-scrollbar", () => {
+    expect(rules("apps/web/src/a.css", ".x::-webkit-scrollbar { width: 4px }")).toContain("raw-scrollbar");
+    expect(rules("apps/web/src/a.css", ".x { scrollbar-width: none }")).toContain("raw-scrollbar");
+    expect(rules("apps/web/src/a.css", ".x { scrollbar-color: red blue }")).toContain("raw-scrollbar");
+    expect(rules("apps/web/src/a.css", "html { scrollbar-gutter: stable }")).toContain("raw-scrollbar");
+    expect(rules(APP, '<div className="no-scrollbar" />')).toContain("raw-scrollbar");
+    expect(rules(APP, '<div className="scrollbar-hide" />')).toContain("raw-scrollbar");
+    expect(rules(APP, '<div className="[scrollbar-width:none]" />')).toContain("raw-scrollbar");
+    expect(rules(APP, '<div className="[&::-webkit-scrollbar]:hidden" />')).toContain("raw-scrollbar");
+    expect(rules(APP, '<div className="h-full" />')).toEqual([]);
+    // Токены бегунка и сама дизайн-система правилом не затрагиваются.
+    expect(rules("packages/design/src/styles/base.css", "* { scrollbar-width: thin }")).toEqual([]);
+    expect(rules("packages/design/src/ui/scroll-area/scroll-area.tsx", "bg-(--scrollbar-thumb)")).toEqual([]);
   });
 
   it("vh-unit", () => {

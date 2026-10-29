@@ -11,8 +11,10 @@ export interface ScrollAreaProps extends ComponentProps<typeof ScrollAreaPrimiti
 }
 
 /**
- * Единственная разрешённая прокручиваемая область (design-lint: raw-scroll). Нативная прокрутка
- * и инерция сохраняются, полоса тонкая и появляется при наведении.
+ * Единственная разрешённая прокручиваемая область внутри экрана (design-lint: raw-scroll); сама страница
+ * прокручивается документом с тем же тонким бегунком (`base.css`). Нативная прокрутка и инерция сохраняются.
+ * Бегунок из токенов `--scrollbar-*`: тонкий, у самого края, без дорожки и рамок; по умолчанию появляется
+ * при наведении и прокрутке (`type="hover"`).
  */
 export function ScrollArea({
   className,
@@ -20,11 +22,12 @@ export function ScrollArea({
   viewportRef,
   onViewportScroll,
   orientation = "vertical",
+  type = "hover",
   children,
   ...props
 }: ScrollAreaProps) {
   return (
-    <ScrollAreaPrimitive.Root className={cn("relative overflow-hidden", className)} {...props}>
+    <ScrollAreaPrimitive.Root type={type} className={cn("relative overflow-hidden", className)} {...props}>
       <ScrollAreaPrimitive.Viewport
         ref={viewportRef}
         onScroll={onViewportScroll}
@@ -34,12 +37,13 @@ export function ScrollArea({
       </ScrollAreaPrimitive.Viewport>
       <ScrollAreaPrimitive.Scrollbar
         orientation={orientation}
+        data-scrollbar={orientation}
         className={cn(
-          "flex touch-none select-none p-0.5 transition-opacity duration-base",
-          orientation === "vertical" ? "h-full w-2.5" : "h-2.5 flex-col",
+          "flex touch-none bg-(--scrollbar-track) select-none p-0 transition-opacity duration-base",
+          orientation === "vertical" ? "h-full w-(--scrollbar-size)" : "h-(--scrollbar-size) flex-col",
         )}
       >
-        <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-border-strong hover:bg-control" />
+        <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full border-2 border-transparent bg-(--scrollbar-thumb) bg-clip-padding hover:bg-(--scrollbar-thumb-hover)" />
       </ScrollAreaPrimitive.Scrollbar>
     </ScrollAreaPrimitive.Root>
   );

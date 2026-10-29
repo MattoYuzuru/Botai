@@ -624,3 +624,43 @@ describe("типографика", () => {
     expect(size("ui")).toBe(15);
   });
 });
+
+describe("прокрутка (styleguide §7)", () => {
+  it("токены бегунка: размер, дорожка и пара светлая/тёмная для бегунка и наведения", () => {
+    expect(palette["--scrollbar-size"]).toBe("0.5rem");
+    expect(palette["--scrollbar-track"]).toBe("transparent");
+    for (const name of ["--scrollbar-thumb", "--scrollbar-thumb-hover"]) {
+      expect(palette[name], name).toContain("light-dark(");
+    }
+  });
+
+  it("запасной блок без light-dark() содержит бегунок и его наведение", () => {
+    const start = tokensCss.indexOf("@supports not (color: light-dark(white, black))");
+    const fallback = tokensCss.slice(start);
+    expect(fallback).toContain("--scrollbar-thumb:");
+    expect(fallback).toContain("--scrollbar-thumb-hover:");
+  });
+
+  it("наведение заметнее покоя: у бегунка больше непрозрачность в обеих темах", () => {
+    const alpha = (value: string, theme: "light" | "dark") => {
+      const [light, dark] = splitTopLevel(/^light-dark\((.*)\)$/.exec(value)?.[1] ?? "", ",");
+      return Number(/(\d+)%/.exec((theme === "light" ? light : dark) ?? "")?.[1]);
+    };
+    for (const theme of ["light", "dark"] as const) {
+      expect(alpha(palette["--scrollbar-thumb-hover"] as string, theme)).toBeGreaterThan(
+        alpha(palette["--scrollbar-thumb"] as string, theme),
+      );
+    }
+  });
+
+  it("base.css: один стиль — стандартные свойства, WebKit только запасным вариантом, без дорожки и стрелок", () => {
+    expect(baseCss).toContain("scrollbar-width: thin");
+    expect(baseCss).toContain("scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)");
+    expect(baseCss).toContain("@supports not (scrollbar-width: thin)");
+    expect(baseCss).toContain("::-webkit-scrollbar-button");
+    expect(baseCss).toContain("(hover: none)");
+    // В покое бегунок вложенной области прозрачен, страница (:root) и наведение показывают его.
+    expect(baseCss).toMatch(/\*\s*\{[^}]*scrollbar-color: transparent var\(--scrollbar-track\)/);
+    expect(baseCss).toMatch(/:root,\s*\*:hover\s*\{[^}]*scrollbar-color: var\(--scrollbar-thumb\)/);
+  });
+});
