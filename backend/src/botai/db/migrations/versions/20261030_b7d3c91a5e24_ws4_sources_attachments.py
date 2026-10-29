@@ -98,12 +98,13 @@ def upgrade() -> None:
             "'calendar','other')"
         )
     )
+    bare = r"'^(https?://)?(www\.)?|/+$'"  # scheme, "www." and trailing slashes do not make a name
     for kind, title in KIND_TITLES.items():
         op.execute(
             sa.text(
-                "UPDATE connections SET title = :title WHERE kind = :kind AND ("
-                "lower(title) = regexp_replace(lower(origin), '^https?://', '') "
-                "OR lower(title) = regexp_replace(lower(origin), '^https?://(www\\.)?', ''))"
+                "UPDATE connections SET title = :title WHERE kind = :kind AND "
+                f"regexp_replace(lower(title), {bare}, '', 'g') = "
+                f"regexp_replace(lower(origin), {bare}, '', 'g')"
             ).bindparams(title=title, kind=kind)
         )
 

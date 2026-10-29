@@ -180,6 +180,7 @@ async def test_search_ranks_the_candidates_a_name_may_mean(tx_sessionmaker: Sm) 
         by_site = await universities.search(s, "lk.poly.example")
         nothing = await universities.search(s, "ничего подобного")
         empty = await universities.search(s, "  ")
+        limited = await universities.search(s, "университет", limit=3)
     top = by_alias[0]
     assert (top.id, top.title, top.short_title, top.score) == (
         "vysshaya-shkola-ekonomiki",
@@ -198,7 +199,7 @@ async def test_search_ranks_the_candidates_a_name_may_mean(tx_sessionmaker: Sm) 
     assert [c.id for c in by_site] == ["learned-poly"]
     assert nothing == []
     assert empty == []
-    assert len(await universities.search(tx_sessionmaker and s, "университет", limit=3)) <= 3
+    assert 0 < len(limited) <= 3
 
 
 async def test_searching_saves_nothing(tx_sessionmaker: Sm) -> None:
