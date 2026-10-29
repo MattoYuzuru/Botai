@@ -64,7 +64,7 @@ class PlanAuthor(ScriptedLlm):
     async def complete(self, request: LlmRequest) -> LlmResponse:
         self.requests.append(request)
         assert request.purpose == "learn"
-        assert len(self.requests) == 1
+        assert len(self.requests) == 1, request.messages[1].content.split("</observation>")[-1]
         text = request.messages[1].content
         references = re.findall(r"^\[browserPlan\] (bp[0-9]+) \|", text, flags=re.MULTILINE)
         assert references, "the author must see a plan produced by the real native capability"
