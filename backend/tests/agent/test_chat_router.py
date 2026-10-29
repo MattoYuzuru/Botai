@@ -219,3 +219,38 @@ async def test_message_text_is_validated(api: Api, text: str) -> None:
     async with api.client() as client:
         response = await client.post(f"/api/v1/chat/threads/{thread}/messages", json={"text": text})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://lk.fakeuni.test/?access_token=eyJabcdefghijklmnop.abcdefghijklmnop.abcdefghijklmnop",
+        "https://lk.fakeuni.test/#/callback?code=SECRETVALUE12345",
+        "https://user:pw@lk.fakeuni.test/",
+        "https://lk.fakeuni.test/?session=abc",
+    ],
+)
+async def test_a_link_with_a_secret_never_reaches_the_history_or_the_model(
+    api: Api, link: str
+) -> None:
+    thread = await add_thread(api.sm, api.user_id)
+    async with api.client() as client:
+        response = await client.post(
+            f"/api/v1/chat/threads/{thread}/messages", json={"text": f"вот моя страница {link}"}
+        )
+    assert response.status_code == 422
+    assert "SECRETVALUE" not in response.text
+    async with api.sm() as session:
+        assert (await session.execute(select(ChatMessage))).scalars().all() == []
+    assert await chat_jobs(api) == []
+
+
+async def test_ordinary_links_in_a_message_are_kept_as_written(api: Api) -> None:
+    thread = await add_thread(api.sm, api.user_id)
+    text = (
+        "Смотри http://example.org/a?q=1 и https://lk.fakeuni.test/schedule?begin_date=2026-10-26"
+    )
+    async with api.client() as client:
+        response = await client.post(f"/api/v1/chat/threads/{thread}/messages", json={"text": text})
+    assert response.status_code == 202
+    assert response.json()["message"]["blocks"][0]["markdown"] == text

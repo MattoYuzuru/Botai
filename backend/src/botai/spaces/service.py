@@ -169,8 +169,8 @@ async def create_connection(
             JobKind.CONNECT,
             user_id=user_id,
             connection_id=conn.id,
-            # Keep the pre-chat REST entry point's original data selection explicit.
-            # Chat bootstrap supplies its own schedule-only LearningIntent instead.
+            # Keep the REST entry point's original data selection explicit. The agent connects
+            # through `connect_source`, which supplies its own LearningIntent instead.
             payload={
                 **({"url": url, "kind": body.kind} if url or body.kind else {}),
                 "kinds": ["scheduleEvents", "deadlines"],

@@ -171,7 +171,7 @@ BOTAI_FACTORY_V2_ENABLED (default false). Значения credentials и вре
 
 ```ts
 type AgentUiBlock =
-  | { type: "text";     id: string; markdown: string }
+  | { type: "text";     id: string; markdown: string; quickReplies?: string[] }
   | { type: "thinking"; id: string; stage: string; detail?: string; at: string }
   | { type: "choice";   id: string; question: string; mode: "single" | "multi";
       options: { value: string; label: string; hint?: string }[]; required: boolean }
@@ -185,10 +185,21 @@ type AgentUiBlock =
   | { type: "approval"; id: string; proposal: ActionProposal }
   | { type: "wait";     id: string; message: string; expiresAt?: string }
   | { type: "handoff";  id: string; title: string; url: string; text: string }
-  | { type: "login";    id: string; connectionId: string; ticket: string; wsUrl: string };
+  | { type: "login";    id: string; connectionId: string; ticket: string; wsUrl: string }
+  | { type: "plan";     id: string; title: string;
+      steps: { id: string; title: string; state: "pending" | "active" | "done" | "skipped" }[] }
+  | { type: "task";     id: string; jobId: string; kind: "connect" | "repair" | "sync" | "ingest";
+      title: string; state: string; threadId: string; connectionId?: string }
+  | { type: "attachment"; id: string; attachmentId: string; name: string; mime: string;
+      size: number; kind: "image" | "document" | "audio" | "other" };
 
 type AgentUiAnswer = { blockId: string; values: string[] | string | boolean };
 ```
+
+`quickReplies` (≤4 по ≤60 знаков) — кнопки быстрых ответов под последним ответом; `plan` обновляется
+блоком с тем же `id`; `task` — карточка фоновой задачи, ведущая в тред, где она живёт; `attachment` —
+вложение сообщения студента. В `markdown` допустимы GFM-таблицы и блок кода ` ```chart ` с JSON
+графика; ссылки приложения — `botai://threads|connections|documents|attachments/{id}`.
 
 Правила: `secret: true` — значение идёт API → Vault → воркер, мимо LLM и событий; `login` —
 только запасной экран; `handoff` — write-действие, которое студент отправит сам. Клиент никогда не исполняет код из блока; `markdown` рендерится без
@@ -269,7 +280,7 @@ type ActionProposal = {
 
 ## 8. Журнал изменений контракта
 
-Расширение бесед и runtime — [contracts/conversation.md](../../contracts/conversation.md). Старые API/SSE/WS остаются совместимыми.
+Тред, маршрутизация сообщений и runtime — [contracts/conversation.md](../../contracts/conversation.md). SSE/WS задач без изменений; `purpose` и `connectContext` тредов удалены.
 Сброс личных данных и клиентской очереди — [contracts/account-reset.md](../../contracts/account-reset.md).
 
 | Дата | Что | Почему |
@@ -279,3 +290,4 @@ type ActionProposal = {
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
+| 2026-10-30 | Единый тред (ADR-0013): удалены `purpose`/`connectContext` и `ThreadRuntime.purpose/connection`; `ThreadOut` получил `lastMessageAt`, `unread`, `attention`, `activeTask`, `preview` (убран `updatedAt`); `GET` списка возвращает все треды; новые `PATCH`/`DELETE` треда, `POST …/read`, `GET/DELETE /me/memory`; `runtime` = `{activeJob, tasks, pending, receipts}`; блоки `plan`, `task`, `attachment`, `text.quickReplies` | Агент хаба v3; ломает фронтенд чата (WS5: типы `ThreadOut`, `ThreadRuntime`, моки), сводку тредов в «Учёбе»; пользователей нет, совместимость не требуется |

@@ -1064,6 +1064,25 @@ async def test_cross_host_continuation_is_same_chat_but_separate_connection_and_
     assert state["activeJob"]["id"] == child.id
     assert state["activeJob"]["connectionId"] == result["connectionId"]
     assert {t["id"] for t in state["tasks"]} >= {child.id, parent_job}
+    stale = {
+        "text": "Новое уточнение старому заданию",
+        "targetJobId": parent_job,
+        "clientMessageId": new_id(),
+    }
+    stale_response = await client.post(f"/api/v1/chat/threads/{thread}/messages", json=stale)
+    assert stale_response.status_code == 409  # the parent handed its work to the child
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ChatMessage)
+                .where(
+                    ChatMessage.thread_id == thread,
+                    ChatMessage.client_message_id == stale["clientMessageId"],
+                )
+            )
+            == 0
+        )
     current = await client.post(
         f"/api/v1/chat/threads/{thread}/messages",
         json={
