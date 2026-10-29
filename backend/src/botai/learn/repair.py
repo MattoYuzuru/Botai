@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
@@ -35,16 +36,17 @@ from botai.core.http import RetryPolicy
 from botai.core.jobs import JobCancelled, JobClaimLost, JobContext
 from botai.core.services import Services
 from botai.db import models as m
-from botai.learn import revisions
-from botai.learn.author import author_digest, iso_z, merge_bootstrap
-from botai.learn.canary import CanaryReport, load_baseline, run_canary
+from botai.learn import horizon, revisions
+from botai.learn.author import Candidate, author_digest, iso_z, merge_bootstrap
+from botai.learn.canary import CanaryReport, compare, load_baseline, run_canary
 from botai.learn.compiler import needs_recipe_v2
 from botai.learn.explorer import TOKEN_BUDGET, Chosen, Explorer, kinds_text
 from botai.learn.intent import LearningIntent
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.policies import bind_parts
 from botai.sources import schedule
-from botai.sources.adapter import SessionExpired
+from botai.sources.adapter import AdapterResult, SessionExpired
+from botai.sources.factory import AdapterFactory
 from botai.sources.runner import (
     Drift,
     Snapshot,
@@ -91,8 +93,15 @@ def endpoint_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     added = [n for n in new_fields if n not in old_fields]
     if added:
         lines.append("добавлены поля: " + ", ".join(f"«{n}»" for n in added[:6]))
-    if (old.get("pagination") or {}) != (new.get("pagination") or {}):
-        lines.append("постраничная выдача")
+    old_page, new_page = old.get("pagination") or {}, new.get("pagination") or {}
+    if old_page != new_page:
+        if new_page.get("type") == "dateWindow":
+            lines.append(
+                f"горизонт чтения: {new_page['windows']} окон по {new_page['stepDays']} дн., "
+                "а не одно окно"
+            )
+        else:
+            lines.append("постраничная выдача")
     return lines
 
 
@@ -149,9 +158,70 @@ class Repairer(Explorer):
             counts = await baseline_counts(db, snap.connection_id, snap.last_sync_at)
             keys = await load_baseline(db, snap.connection_id, snap.last_sync_at, now)
         verdict = assess(scoped_spec(snap.spec, snap.data_scope), fetched, counts)
-        if not verdict.drift:
+        drift = [*verdict.drift, *await self._horizon_gaps(snap, sctx, fetched, verdict.drift)]
+        if not drift:
             return await self._healthy(snap, mode, reason)
-        return await self._fix(snap, sctx, verdict.drift, keys, reason)
+        return await self._fix(snap, sctx, drift, keys, reason)
+
+    async def _horizon_gaps(
+        self, snap: Snapshot, sctx: Any, fetched: AdapterResult, known: list[Drift]
+    ) -> list[Drift]:
+        """A recipe that reads one window of dates is healthy in shape and still wrong: the
+        neighbouring windows hold what it never sees (FR-039, F-03). The same endpoint is read
+        over its neighbours; if that gives clearly more, the horizon is the defect."""
+        now = self.services.clock.now()
+        spec = scoped_spec(snap.spec, snap.data_scope)
+        skip = {d.kind for d in known}
+        gaps: list[Drift] = []
+        for endpoint in spec["recipe"]["endpoints"]:
+            kind: Kind = endpoint["kind"]
+            wide = horizon.walked(endpoint, now, snap.tz)
+            if kind in skip or wide is None:
+                continue
+            probe = copy.deepcopy(spec)
+            probe["recipe"]["endpoints"] = [wide]
+            probe["recipe"]["version"] = 2
+            try:
+                result = await AdapterFactory().create(scoped_spec(probe, (kind,))).fetch(sctx)
+            except (SessionExpired, BotaiError):
+                continue  # nothing to compare with: leave the verdict to the ordinary check
+            if any(not outcome.ok for outcome in result.outcomes):
+                continue  # the source ignores the moved date, or fails: no evidence of a gap
+            current, wider = fetched.count(kind), result.count(kind)
+            if wider > current and (current <= horizon.SPARSE or wider >= 2 * current):
+                gaps.append(Drift(endpoint["id"], kind, "horizon"))
+        return gaps
+
+    async def _widened(
+        self,
+        kind: Kind,
+        snap: Snapshot,
+        endpoint: dict[str, Any],
+        sctx: Any,
+        revision: int,
+        digest: str,
+        lint_ctx: LintContext,
+        keys: dict[Kind, Counter[tuple[str, ...]]],
+    ) -> Chosen | None:
+        """The stored endpoint read over neighbouring windows: no model, same auth and fields."""
+        wide = horizon.walked(endpoint, self.services.clock.now(), snap.tz)
+        if wide is None:
+            return None
+        candidate = Candidate(
+            kind,
+            wide,
+            copy.deepcopy(snap.spec["recipe"].get("bootstrap", [])),
+            snap.spec["recipe"]["auth"],
+        )
+        checked, _ = await self._verify_candidate(
+            kind, candidate, 0, sctx, snap, revision, digest, lint_ctx
+        )
+        if checked is None:
+            return None
+        bound, report = checked
+        return Chosen(
+            kind, bound, report, compare(kind, keys.get(kind), report.valid.get(kind, []), snap.tz)
+        )
 
     async def _record_canary(self, snap: Snapshot, *, ok: bool) -> None:
         async with self.services.db() as db, db.begin():
@@ -232,7 +302,13 @@ class Repairer(Explorer):
             if obs.empty or self.tokens > TOKEN_BUDGET:
                 unresolved.append(kind)
                 continue
-            chosen = await self._author_and_verify(
+            chosen = (
+                await self._widened(
+                    kind, snap, endpoints[kind], sctx, revision, digest, lint_ctx, keys
+                )
+                if problem == "horizon"
+                else None
+            ) or await self._author_and_verify(
                 kind,
                 text,
                 lint_ctx,

@@ -64,6 +64,7 @@ from botai.learn.author import (
 )
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
 from botai.learn.discovery import DiscoveryBudget, ProbeKit, adaptive_observe
+from botai.learn.entry import entry_queries, rank_entries
 from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
@@ -76,7 +77,7 @@ from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
 from botai.learn.sitemap import save_site_map
 from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
-from botai.search import institutional_search_query
+from botai.search.service import SearchResult
 from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
@@ -580,31 +581,9 @@ class Explorer:
             if len(known) == 1:
                 origin = known[0]
         if origin is None and self.services.search is not None:
-            query = institutional_search_query(public_title)
-            if query is not None:
-                result = await self.services.search.search(
-                    query,
-                    budget=self.services.search.budget(),
-                    user_id=self.ctx.user_id,
-                    job_id=self.ctx.job_id,
-                )
-                if result.results:
-                    # Search output is untrusted. Show only validated citation URLs with
-                    # provenance, never titles/snippets as instructions or an egress grant.
-                    candidates = "\n".join(
-                        f"- <{hit.url}> (поиск: {hit.provider})" for hit in result.results
-                    )
-                    await self.ui.say(
-                        "Публичный поиск нашёл возможные сайты:\n\n"
-                        + candidates
-                        + "\n\nЭто ещё не подтверждает доступ к вашим данным. "
-                        "Пришлите точную ссылку на сайт, который нужно подключить."
-                    )
-                elif result.status in {"unavailable", "budget"}:
-                    await self.ui.say(
-                        "Публичный поиск сейчас недоступен. Подключение можно продолжить "
-                        "по вашей ссылке на сайт."
-                    )
+            await self._suggest_entries(info, public_title)
+            if self.intent.entry_urls:
+                origin = url_origin(self.intent.entry_urls[0])
         for _ in range(2):
             if origin is not None:
                 break
@@ -624,6 +603,49 @@ class Explorer:
             info.connection_id, origin=origin, allow_hosts=hosts, title=info.title or host
         )
         return origin
+
+    async def _suggest_entries(self, info: ConnInfo, title: str) -> None:
+        """Offer public candidates for the entry page and let the student choose one (FR-038).
+
+        A hit is an untrusted citation, shown by address only. It becomes the entry of the
+        connection when the student picks it, which is what grants its host, nothing else does.
+        """
+        search = self.services.search
+        if search is None:
+            return
+        queries = entry_queries(title)
+        if not queries:
+            return
+        budget = search.budget()
+        results: list[SearchResult] = []
+        unavailable = False
+        for query in queries:
+            response = await search.search(
+                query, budget=budget, user_id=self.ctx.user_id, job_id=self.ctx.job_id
+            )
+            results.extend(response.results)
+            unavailable = unavailable or (
+                not response.results and response.status in {"unavailable", "budget"}
+            )
+        candidates = rank_entries(results)
+        if not candidates:
+            if unavailable:
+                await self.ui.say(
+                    "Публичный поиск сейчас недоступен. Подключение можно продолжить "
+                    "по вашей ссылке на сайт."
+                )
+            return
+        picked = await self.ui.choose(
+            "Поиск нашёл возможные адреса. Это лишь предложение: ваши данные он не открывает. "
+            "Какой адрес подключить?",
+            [
+                (str(index), candidate.label[:120], f"поиск: {candidate.provider}")
+                for index, candidate in enumerate(candidates)
+            ]
+            + [("other", "Другой адрес", "Пришлю ссылку сама")],
+        )
+        if picked is not None and picked.isdigit() and int(picked) < len(candidates):
+            await self._turn(candidates[int(picked)].url, await self._redactor(info))
 
     # --- reuse (FR-009) ----------------------------------------------------------------------
 
