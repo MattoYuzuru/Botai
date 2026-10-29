@@ -98,6 +98,8 @@ compose), Explorer, sync, repair, домен и чат. Студента игр�
 | Сессия браузера после рестарта | E2E: cookies + localStorage/sessionStorage → настоящий Vault → новый Chromium; API-проба 200 без storage не подтверждает страницу браузера |
 | Отражённые секреты сессии | `tests/learn/test_session_redaction.py`: cookies, bearer и вложенные storage-значения не попадают в planner/author, в том числе после refresh/reauth; ошибка экспорта останавливает наблюдение до модели |
 | MFA, потеря сессии, повторный вход | `tests/e2e/test_full_flow.py` и `tests/browser/test_login.py`: свой пароль из Vault, человек вводит код, sync не вызывает модель |
+| Гостевая API-проба и исходная страница входа | `tests/browser/test_login_entry.py`, `tests/learn/test_login_entry.py`: guest200/bare401 не заменяют вход; path/query и более глубокий отказ передаются LoginFlow, приватный путь не попадает в общий пресет |
+| Ручной вход из чата и очередь | `tests/agent/test_chat_flow.py`, `tests/jobs/test_queue.py`, `tests/jobs/test_conversations.py`: owned ID, CONNECT в том же разговоре, сохранение intent/scope, дедупликация и порядок блокировок |
 | CAPTCHA | E2E: реальный ScreenRegistry, `waiting_user`, никакой отправки формы/решения, отмена закрывает экран и удаляет временные секреты; сами кадры/ввод — `tests/browser/test_screen.py` |
 | Canary, сохранение, повторное исполнение и экраны | E2E: активная ревизия, `/schedule`, `/today`, `/courses`, происхождение, стабильные ID и следующий sync без модели |
 | Персональная область общей спецификации | `tests/learn/test_explorer.py`, `tests/sources/test_scope.py`: shared recipe, новый более широкий рецепт, ограниченный fetch/canary, повторная проверка при записи |
