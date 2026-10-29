@@ -63,11 +63,24 @@ Docker Compose передаёт его API, воркеру и прокси. Фа
 признак редиректа и отказа replay, а адрес оставляет отпечатком. Отказ отдельного replay
 ещё не доказывает потерю браузерного входа.
 
-`browser.auth_permit` и `browser.auth_permit_refused` показывают выдачу/расход разрешения
-формы и статическую причину отказа: read-only, отсутствие permit, смена контекста,
-несовпадение action, исчезновение auth UI, ошибка scan или уже использованное разрешение.
-`browser.auth_action` содержит только отпечатки разрешённых actions; количество и усечение
-показываются отдельно. Поля формы, query values и ввод не записываются.
+`browser.auth_permit` и `browser.auth_permit_refused` показывают окно шага входа
+([security.md](../architecture/security.md) §0.2). `browser.auth_permit` с `phase=request` — окно
+открыто для auth-фрейма (`window_ms`, `allow_host_count`), `outcome=rejected` с причиной — не
+открыто. С `phase=response` — POST пропущен: `navigation` отличает отправку формы от XHR/fetch,
+`post_count` — сколько запросов уже взяло окно. `browser.auth_permit_refused` — POST отклонён,
+запрос до сервера не дошёл. Причины (`reason`): `auth_read_only` (входная страница ещё проверяется),
+`auth_no_permit` (нет окна: шага человека не было), `auth_window_expired` (окно старше 15 с),
+`auth_context_changed` (документ или страница сменились), `auth_host_not_allowed` (хост не из
+входа подключения), `auth_window_exhausted` (больше четырёх POST на окно), `auth_ui_missing`
+(фрейм больше не показывает вход), `auth_scan_failed` (не удалось проверить фрейм). Пример разбора:
+`auth_no_permit` или `auth_read_only` на POST при загрузке страницы — телеметрия, её остановка
+нормальна; `auth_host_not_allowed` перед `request_failed` с `blocked_by_client=true` и
+`navigation=true` — форма отправлялась на чужой хост. Поля формы, query values и ввод не
+записываются; адреса — только отпечатками.
+
+`auth.guard_refused` фиксирует, что guard остановил запрос входа и поток открыл запасной экран
+(`fallback=true`) либо завершился с `error_code=login_guard_refused`. Этот код означает отказ нашего
+guard, а не недоступность сайта: для недоступного сайта остаётся `source_unavailable`.
 
 Для нового движка `learn.research_saved` содержит ревизию checkpoint, фазу,
 накопительные шаги/токены/время/чтения, размер frontier по счётчику и число неопределённых

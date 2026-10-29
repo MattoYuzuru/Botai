@@ -177,9 +177,13 @@ class _AuthWindow:
     epoch: int
     url: str
     hosts: frozenset[str]
+    suffixes: tuple[str, ...]
     selectors: frozenset[str]
     expires: float
     posts: int = 0
+
+    def allows(self, host: str) -> bool:
+        return host in self.hosts or any(host.endswith("." + suffix) for suffix in self.suffixes)
 
 
 def _auth_ui_present(snap: PageSnapshot, selectors: frozenset[str] = frozenset()) -> bool:
@@ -299,6 +303,7 @@ class PlaywrightHandle:
         injected_authorizations: dict[Request, str] | None = None,
         confirmed_entry_url: SecretStr | None = None,
         restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
+        suffixes: Sequence[str] = (),
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -310,6 +315,7 @@ class PlaywrightHandle:
         self._read_capability_registry = ReadCapabilityRegistry(page, now=clock.now)
         self._retired_capability_tasks: set[asyncio.Task[None]] = set()
         self.allow_hosts = tuple(allow_hosts)
+        self._suffixes = tuple(suffix.lower() for suffix in suffixes)
         self.origin = origin
         self._capture = capture
         self._clock = clock
@@ -427,7 +433,7 @@ class PlaywrightHandle:
                 or frame.url != window.url
             ):
                 return self._auth_refused(request, "auth_context_changed")
-            if (urlsplit(request.url).hostname or "").lower() not in window.hosts:
+            if not window.allows((urlsplit(request.url).hostname or "").lower()):
                 return self._auth_refused(request, "auth_host_not_allowed")
             if window.posts >= AUTH_WINDOW_POSTS:
                 return self._auth_refused(request, "auth_window_exhausted")
@@ -504,8 +510,9 @@ class PlaywrightHandle:
                 **url_facts(url),
             )
             return None
-        # The login hosts the connection already trusts, and the frame's own: the user is told
-        # which one they are typing into, and the page reached it through the same proxy grant.
+        # The login hosts the connection already trusts (and, on a first login, the subdomains
+        # its proxy grant follows the site to), and the frame's own: the user is told which one
+        # they are typing into, and the page reached it through the same proxy grant.
         hosts = set(self.allow_hosts)
         if frame_host := (urlsplit(url).hostname or "").lower():
             hosts.add(frame_host)
@@ -514,6 +521,7 @@ class PlaywrightHandle:
             epoch=epoch,
             url=url,
             hosts=frozenset(hosts),
+            suffixes=self._suffixes,
             selectors=selectors,
             expires=monotonic() + AUTH_WINDOW_S,
         )
@@ -1597,6 +1605,7 @@ class PlaywrightGateway:
             read_only=read_only,
             injected_authorizations=injected_authorizations,
             restored_bearers=restored_bearers,
+            suffixes=suffixes,
             confirmed_entry_url=(
                 session.entry_url
                 if session is not None and auth_origin(primary) == auth_origin(session.origin)

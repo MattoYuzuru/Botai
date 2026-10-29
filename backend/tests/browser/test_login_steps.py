@@ -21,6 +21,7 @@ from playwright.async_api import Error as PlaywrightError
 from botai.browser import gateway
 from botai.browser.egress import ProxyEgress
 from botai.browser.gateway import (
+    PlaywrightGateway,
     PlaywrightHandle,
     guard_refusal_error,
     map_navigation_error,
@@ -39,6 +40,7 @@ from tests.browser.test_login import (
     Rig,
     Student,
     make_rig,  # noqa: F401 - fixture
+    preset_dict,
     works,
 )
 from tests.fakeuni import data, login
@@ -58,14 +60,24 @@ def new_rig(make_rig: Callable[..., Rig]) -> Callable[..., Rig]:  # noqa: F811
     return make_rig
 
 
-async def open_entry(rig: Rig, *, suffixes: tuple[str, ...] = ()) -> PlaywrightHandle:
+CU_HOSTS = ("fakeuni.test", "id.fakeuni.test")
+
+
+async def open_entry(
+    rig: Rig, *, hosts: tuple[str, ...] = ("fakeuni.test",), suffixes: tuple[str, ...] = ()
+) -> PlaywrightHandle:
     return await rig.gateway.open(
         user_id=rig.user,
         connection_id=rig.conn,
-        allow_hosts=("fakeuni.test",),
+        allow_hosts=hosts,
         origin=ORIGIN,
         suffixes=suffixes,
     )
+
+
+def know_cu_hosts(rig: Rig) -> None:
+    """A learned preset names the login hosts, so a first login's subdomain rule is not in play."""
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/", hosts=CU_HOSTS))
 
 
 def record_guard(handle: PlaywrightHandle, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
@@ -83,6 +95,15 @@ def trace_rows(directory: Path) -> list[dict[str, Any]]:
         json.loads(line)
         for path in directory.glob("*.jsonl*")
         for line in path.read_text().splitlines()
+    ]
+
+
+def leaked_files(directory: Path, markers: tuple[bytes, ...]) -> list[Path]:
+    """The browser's own temporary files (profile, caches) that hold a marker."""
+    return [
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and any(marker in path.read_bytes() for marker in markers)
     ]
 
 
@@ -161,25 +182,53 @@ async def test_a_refused_code_is_asked_again_on_the_multi_step_form(
     assert login.CU.submissions == ["email", "password", "otp", "otp"]
 
 
-async def test_no_secret_reaches_events_logs_preset_or_vault_on_the_multi_step_form(
-    new_rig: Callable[..., Rig], caplog: pytest.LogCaptureFixture
+async def test_a_refused_password_is_asked_again_on_the_multi_step_form(
+    new_rig: Callable[..., Rig],
 ) -> None:
     rig = new_rig()
-    ctx = rig.ctx(Student())
-    with caplog.at_level(logging.DEBUG):
-        state = await rig.flow.ensure_for_entry(
-            ctx, user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
-        )
+    student = Student(wrong_passwords=1)
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
     assert await works(state)
-    markers = (data.PASSWORD.encode(), data.OTP.encode())
-    events = json.dumps([b.model_dump(mode="json", by_alias=True) for b in ctx.blocks]).encode()
-    assert not any(m in events for m in markers)
-    logs = "\n".join(r.getMessage() for r in caplog.records).encode()
-    assert not any(m in logs for m in markers)
-    assert not any(m in json.dumps(rig.store.presets).encode() for m in markers)
-    for sealed in rig.vault.raw().values():
-        blob = sealed.ciphertext + sealed.wrapped_dek + sealed.nonce
-        assert not any(m in blob for m in markers)
+    assert student.count("password") == 2
+    assert login.CU.submissions == ["email", "password", "password", "otp"]
+
+
+async def test_no_secret_reaches_events_logs_preset_vault_or_disk_on_the_multi_step_form(
+    egress_access: ProxyEgress,
+    new_rig: Callable[..., Rig],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    private_gateway = PlaywrightGateway(
+        egress_access, sandbox=False, ignore_https_errors=True, tmp_dir=tmp_path / "chromium"
+    )
+    try:
+        rig = new_rig(gw=private_gateway)
+        ctx = rig.ctx(Student())
+        with caplog.at_level(logging.DEBUG):
+            state = await rig.flow.ensure_for_entry(
+                ctx, user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+            )
+        assert await works(state)
+        markers = (data.PASSWORD.encode(), data.OTP.encode())
+        blocks = [b.model_dump(mode="json", by_alias=True) for b in ctx.blocks]
+        assert not any(m in json.dumps(blocks).encode() for m in markers)
+        logs = "\n".join(r.getMessage() for r in caplog.records).encode()
+        assert not any(m in logs for m in markers)
+        assert not any(m in json.dumps(rig.store.presets).encode() for m in markers)
+        assert not any(m in repr(ctx.statuses).encode() for m in markers)
+        for sealed in rig.vault.raw().values():
+            blob = sealed.ciphertext + sealed.wrapped_dek + sealed.nonce
+            assert not any(m in blob for m in markers)
+    finally:
+        await private_gateway.aclose()
+    leaked = [
+        str(p.relative_to(tmp_path))
+        for p in leaked_files(tmp_path / "chromium", (data.PASSWORD.encode(), data.OTP.encode()))
+    ]
+    assert leaked == []
 
 
 async def test_every_guard_decision_of_the_login_is_traced_without_values(
@@ -235,7 +284,7 @@ async def test_a_post_without_a_user_step_is_refused_and_never_reaches_the_site(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = new_rig()
-    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    handle = await open_entry(rig, hosts=CU_HOSTS)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
@@ -255,7 +304,7 @@ async def test_the_page_checks_the_login_and_submits_inside_the_step_whatever_it
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = new_rig()
-    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    handle = await open_entry(rig, hosts=CU_HOSTS)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
@@ -280,7 +329,7 @@ async def test_each_step_has_its_own_window(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = new_rig()
-    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    handle = await open_entry(rig, hosts=CU_HOSTS)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
@@ -304,9 +353,7 @@ async def test_a_host_the_connection_does_not_log_in_at_is_refused_inside_the_wi
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = new_rig()
-    # the proxy would let the identity host through (a first login follows subdomains): the
-    # guard is what says the page may not post there
-    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    handle = await open_entry(rig)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
@@ -319,6 +366,29 @@ async def test_a_host_the_connection_does_not_log_in_at_is_refused_inside_the_wi
             )
         assert login.CU.telemetry == 0
         assert refusals(events) == ["auth_host_not_allowed"]
+        # the guard said no before the proxy was asked
+        (failed,) = [e for e in events if e["event"] == "browser.request_failed"]
+        assert failed["blocked_by_client"] is True
+        assert failed["proxy_failed"] is False
+    finally:
+        await handle.close()
+
+
+async def test_on_a_first_login_the_subdomains_the_proxy_follows_the_site_to_are_login_hosts(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        async with handle.auth_step(fields=["#u", "#p"]):
+            await handle.fill("#u", data.USERNAME)
+            # cross-origin without CORS headers: the page cannot read the answer, the site got it
+            await handle.page.evaluate(POST_JS, "https://id.fakeuni.test/cu/api/telemetry")
+        assert login.CU.telemetry == 1
+        assert "auth_host_not_allowed" not in refusals(events)
     finally:
         await handle.close()
 
@@ -387,7 +457,7 @@ async def test_a_submission_to_a_foreign_host_is_login_guard_refused_not_an_outa
 ) -> None:
     monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
     rig = new_rig()
-    handle = await open_entry(rig, suffixes=("fakeuni.test",))
+    handle = await open_entry(rig, hosts=CU_HOSTS)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
@@ -445,6 +515,7 @@ async def test_flow_reports_guard_refusal_as_such_without_a_fallback_screen(
 ) -> None:
     monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
     rig = new_rig()
+    know_cu_hosts(rig)
     flow = flow_without_screen(rig, egress_access)
     student = Student()
     with pytest.raises(BotaiError) as raised:
@@ -460,6 +531,24 @@ async def test_flow_reports_guard_refusal_as_such_without_a_fallback_screen(
     assert not await rig.vault.has(rig.user, rig.conn, SecretKind.SESSION)
 
 
+async def test_guard_refusal_does_not_cost_the_stored_password(
+    new_rig: Callable[..., Rig], egress_access: ProxyEgress, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.LOGIN, data.USERNAME)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.PASSWORD, data.PASSWORD)
+    with pytest.raises(BotaiError) as raised:
+        await flow_without_screen(rig, egress_access).ensure_for_entry(
+            rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert raised.value.code == ErrorCode.LOGIN_GUARD_REFUSED
+    # the site never saw the form: this is not a refused password
+    assert await rig.vault.has(rig.user, rig.conn, SecretKind.PASSWORD)
+    assert login.CU.submissions == []
+
+
 async def test_guard_refusal_opens_the_fallback_screen_and_says_the_site_works(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -469,6 +558,7 @@ async def test_guard_refusal_opens_the_fallback_screen_and_says_the_site_works(
         await link.close("synthetic: the student leaves")
 
     rig = new_rig(human=human)
+    know_cu_hosts(rig)
     ctx = rig.ctx(Student())
     with pytest.raises(JobCancelled):
         await rig.flow.ensure_for_entry(
@@ -496,6 +586,7 @@ async def test_after_the_fallback_screen_the_flow_goes_on_in_native_fields(
         await handle.page.click("#cu-next")
 
     rig = new_rig(human=human)
+    know_cu_hosts(rig)
     student = Student()
     state = await rig.flow.ensure_for_entry(
         rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
@@ -507,13 +598,14 @@ async def test_after_the_fallback_screen_the_flow_goes_on_in_native_fields(
     assert login.CU.telemetry == 0
 
 
-async def test_a_step_check_posted_to_an_unknown_host_does_not_pass_either(
+async def test_a_login_check_posted_to_a_foreign_host_does_not_pass_either(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # the page's own login check goes to a host the connection never logs in at: nothing posts it,
     # the page says it could not check, and the form stays (a refusal like any other, asked again)
     monkeypatch.setattr(login, "CU_CHECK_ORIGIN", "https://elsewhere.fakeuni.test")
     rig = new_rig()
+    know_cu_hosts(rig)
     student = Student()
     with pytest.raises(BotaiError) as raised:
         await rig.flow.ensure_for_entry(

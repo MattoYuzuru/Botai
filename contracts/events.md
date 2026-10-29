@@ -48,7 +48,7 @@ ticket, expiresAt}`. Тикет одноразовый, живёт 60 с, гас
 | `needs` | `what: "mfa"\|"captcha"\|"choice"\|"input", hint` | Что должен сделать человек |
 | `success` | `{}` | Признак входа сработал, состояние сессии снято |
 | `expired` | `{reason}` | TTL сессии истёк, контекст уничтожен |
-| `error` | problem+json | Ошибка; `source_bot_protection` означает «нужен человек», автоповторов нет |
+| `error` | problem+json | Ошибка; `source_bot_protection` означает «нужен человек», автоповторов нет; `login_guard_refused` — наш guard остановил запрос входа, сайт работает |
 
 ### Клиент → сервер
 

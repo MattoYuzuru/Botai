@@ -871,8 +871,7 @@ class LoginFlow:
     async def _form(self, run: _Run, step: FormStep) -> Outcome:
         failed = await self._register(run, step)
         try:
-            answers = await self._answers(run, step, failed=failed)
-            return await self._submit(run, step, answers)
+            return await self._enter(run, step, failed=failed, submit=True)
         except _ManualRequested:
             return await self._manual_screen(run)
         except BotaiError as exc:
@@ -910,25 +909,25 @@ class LoginFlow:
             )
         return failed
 
-    async def _answers(
-        self, run: _Run, step: FormStep, *, failed: bool
-    ) -> list[tuple[StepField, str]]:
-        """Every value of the step first, typing after: the page's scripts and the guard's window
-        belong to the moment the step is complete, not to the minutes the student takes to answer."""
+    async def _enter(
+        self, run: _Run, step: FormStep, *, failed: bool, submit: bool
+    ) -> PageSnapshot:
+        """Ask for the values of the step and type them, one by one: what the student has given
+        stays on the page when they take the screen. Each value is a step of its own for the
+        guard (the page may react to it); the last one is typed inside the step that sends the
+        form, so the page's login check and the submission share one window."""
         host = urlsplit(step.url).hostname or ""
         attempt = run.attempts.get(step.signature, 1)
-        answers: list[tuple[StepField, str]] = []
-        for f in step.fields:
+        selectors = [f.selector for f in step.fields]
+        for index, f in enumerate(step.fields):
             value = await self._value_for(run, f, host=host, failed=failed, attempt=attempt)
             if run.manual_requested:
                 raise _ManualRequested
-            answers.append((f, value))
-        return answers
-
-    @staticmethod
-    async def _type(run: _Run, answers: Sequence[tuple[StepField, str]]) -> None:
-        for f, value in answers:
-            await run.handle.fill(f.selector, value)
+            if submit and index == len(step.fields) - 1:
+                return await self._submit(run, step, [(f, value)])
+            async with run.handle.auth_step(fields=selectors):
+                await run.handle.fill(f.selector, value)
+        return await run.handle.snapshot()
 
     async def _native_answer[T](self, run: _Run, ask: Callable[[], Coroutine[Any, Any, T]]) -> T:
         if self._screens is None:
@@ -1062,7 +1061,8 @@ class LoginFlow:
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
         async with run.handle.auth_step(fields=[f.selector for f in step.fields]):
-            await self._type(run, answers)
+            for f, value in answers:
+                await run.handle.fill(f.selector, value)
             if step.submit:
                 try:
                     await run.handle.click(step.submit)
@@ -1111,9 +1111,7 @@ class LoginFlow:
             # the student's fields can still be native: fill them, the human does the check
             failed = await self._register(run, found)
             try:
-                answers = await self._answers(run, found, failed=failed)
-                async with run.handle.auth_step(fields=[f.selector for f in found.fields]):
-                    await self._type(run, answers)
+                await self._enter(run, found, failed=failed, submit=False)
             except _ManualRequested:
                 return await self._manual_screen(run)
             pending = found
