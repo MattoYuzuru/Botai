@@ -283,7 +283,7 @@ async def enqueue_for_connection(
         kind = JobKind.CONNECT
     elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
-    from botai.spaces.conversations import connection_thread, owned_thread
+    from botai.spaces.conversations import adopt_job, connection_thread, owned_thread
 
     # The task shows up in the thread that asked for it; a plate without a thread uses the
     # thread of the source's newest task.
@@ -307,7 +307,7 @@ async def enqueue_for_connection(
             now=now or SystemClock().now(),
         )
         if target_thread is not None and job.thread_id is None:
-            job.thread_id = target_thread
+            await adopt_job(session, job, target_thread, now or SystemClock().now())
         await session.commit()
         return job.id
     if manual_login:
@@ -325,7 +325,7 @@ async def enqueue_for_connection(
         )
         if running is not None:
             if target_thread is not None and running.thread_id is None:
-                running.thread_id = target_thread
+                await adopt_job(session, running, target_thread, now or SystemClock().now())
             await session.commit()
             return running.id
     await session.commit()  # the queue works in its own transaction
@@ -343,7 +343,7 @@ async def enqueue_for_connection(
             select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
         )
         if job is not None and job.thread_id is None:
-            job.thread_id = target_thread
+            await adopt_job(session, job, target_thread, now or SystemClock().now())
             await session.commit()
     return job_id
 

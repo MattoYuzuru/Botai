@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent import chat
 from botai.agent.chat import INJECTION_NOTE, handle_chat
-from botai.agent.turn_context import turn_context
 from botai.agent.llm import DeepSeekProvider
+from botai.agent.turn_context import turn_context
 from botai.contracts.agent_ui import ThinkingBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id

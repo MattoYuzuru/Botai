@@ -7,8 +7,10 @@ asked: `jobs.thread_id` is that thread and the task's blocks are projected into 
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
@@ -20,12 +22,13 @@ from botai.core.execution import guard_job
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
-from botai.db.models import ChatThread, Connection, Job, JobAnswer, JobEvent, Space
+from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, JobEvent, Space
 from botai.jobs import dialogue
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import enqueue_in_session, lock_sources
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.intent import prepare_turn
+from botai.learn.redact import JWT, LONG_TOKEN, secret_query_key
 from botai.sources.vocab import KIND_LABELS
 
 _BLOCK = TypeAdapter(AgentUiBlock)
@@ -55,6 +58,30 @@ def safe_text(text: str) -> str:
     if len(value) > 8000:
         raise BotaiError(ErrorCode.VALIDATION, "Сообщение слишком длинное")
     return value
+
+
+_URL_IN_MESSAGE = re.compile(r"https?://[^\s<>\"'`]+")
+
+
+def reject_secret_links(text: str) -> str:
+    """Refuse a message whose link carries a secret (token, code, credentials) before it is stored.
+    The text itself is kept as the student wrote it."""
+    for match in _URL_IN_MESSAGE.finditer(text):
+        parts = urlsplit(match.group(0).rstrip(".,;:!?)]}»"))
+        fragment_query = (
+            parts.fragment.partition("?")[2] if "?" in parts.fragment else parts.fragment
+        )
+        pairs = [*parse_qsl(parts.query, keep_blank_values=True), *parse_qsl(fragment_query)]
+        if (
+            parts.username is not None
+            or parts.password is not None
+            or any(secret_query_key(k) or JWT.search(v) or LONG_TOKEN.search(v) for k, v in pairs)
+        ):
+            raise BotaiError(
+                ErrorCode.VALIDATION,
+                "Ссылка содержит недопустимые или секретные параметры. Пришлите обычную ссылку",
+            )
+    return text
 
 
 def normalize_context(data: dict[str, Any]) -> dict[str, Any]:
@@ -130,24 +157,32 @@ async def connection_thread(
     )
 
 
-async def thread_connection_ids(session: AsyncSession, user_id: str, thread_id: str) -> list[str]:
-    """Connections that have tasks in this thread, newest first."""
-    rows = await session.execute(
-        select(Job.connection_id)
-        .where(
-            Job.user_id == user_id,
-            Job.thread_id == thread_id,
-            Job.connection_id.is_not(None),
-        )
-        .group_by(Job.connection_id)
-        .order_by(Job.connection_id)
-    )
-    return [str(row[0]) for row in rows]
-
-
-def _new_thread(user_id: str, space_id: str | None, title: str) -> ChatThread:
+def _new_thread(user_id: str, space_id: str | None, title: str, now: datetime) -> ChatThread:
     return ChatThread(
-        id=new_id(), user_id=user_id, space_id=space_id, title=title[:200].strip() or "Новый чат"
+        id=new_id(),
+        user_id=user_id,
+        space_id=space_id,
+        title=title[:200].strip() or "Новый чат",
+        created_at=now,
+        last_message_at=now,
+    )
+
+
+async def _empty_thread(
+    session: AsyncSession, user_id: str, space_id: str, title: str
+) -> ChatThread | None:
+    """A thread opened for a source plate and never written to: asking again reuses it."""
+    return await session.scalar(
+        select(ChatThread)
+        .where(
+            ChatThread.user_id == user_id,
+            ChatThread.space_id == space_id,
+            ChatThread.title == title[:200],
+            ~select(ChatMessage.id).where(ChatMessage.thread_id == ChatThread.id).exists(),
+            ~select(Job.id).where(Job.thread_id == ChatThread.id).exists(),
+        )
+        .order_by(ChatThread.created_at.desc(), ChatThread.id.desc())
+        .limit(1)
     )
 
 
@@ -180,15 +215,23 @@ async def attach_conversation(
         thread = await connection_thread(session, user_id, conn.id)
     now = services.clock.now()
     if thread is None:
-        thread = _new_thread(user_id, conn.space_id, conn.title)
+        thread = await _empty_thread(session, user_id, conn.space_id, conn.title)
+    if thread is None:
+        thread = _new_thread(user_id, conn.space_id, conn.title, now)
         session.add(thread)
         await session.flush()
     if job is not None and job.thread_id is None:
-        job.thread_id = thread.id
-        await _project_history(session, job)
-        await dialogue.project_terminal(session, job, now)
+        await adopt_job(session, job, thread.id, now)
     await session.commit()
     return thread
+
+
+async def adopt_job(session: AsyncSession, job: Job, thread_id: str, now: datetime) -> None:
+    """Show a task that was started outside any thread in `thread_id`: its earlier public blocks,
+    the question it waits on and, if it already ended, its closing line are replayed there."""
+    job.thread_id = thread_id
+    await _project_history(session, job)
+    await dialogue.project_terminal(session, job, now)
 
 
 async def _project_history(session: AsyncSession, job: Job) -> None:
@@ -292,10 +335,13 @@ async def continue_source(
         if thread_id is None:
             thread = await connection_thread(session, ctx.user_id, parent.id)
             if thread is None:
-                thread = _new_thread(ctx.user_id, parent.space_id, parent.title)
+                thread = _new_thread(
+                    ctx.user_id, parent.space_id, parent.title, services.clock.now()
+                )
                 session.add(thread)
-                await session.flush([thread])
-            thread_id = job.thread_id = thread.id
+                await session.flush()
+            thread_id = thread.id
+            await adopt_job(session, job, thread_id, services.clock.now())
         with session.no_autoflush:
             child_job = await enqueue_in_session(
                 session,
@@ -347,5 +393,5 @@ async def _child_connection(
         )
         session.add(conn)
         await lock_sources(session, [conn.id])
-        await session.flush([conn])
+        await session.flush()
     return conn

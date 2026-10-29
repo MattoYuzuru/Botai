@@ -12,7 +12,7 @@ import re
 from typing import Any, get_args
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent import scope
@@ -264,6 +264,12 @@ async def _exists(env: ChatEnv, session: AsyncSession, conn: Connection) -> str:
         )
         job = await _load_job(session, env.user_id, task.job_id)
         _task_card(env, job, task.kind, task.title, conn.id)
+    if conn.status == "disabled":
+        lines.append(
+            "Источник отключён студентом: заново подключить его через агента нельзя, "
+            "он включается в списке источников приложения."
+        )
+        return "\n".join(lines)
     lines.append(
         "Спросите студента, что сделать: перепроверить данные сейчас (sync_source), починить "
         "(request_repair) или войти заново (request_login); предложите варианты через "
@@ -295,6 +301,14 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
     host = urlsplit(url).hostname or ""
 
     async with env.services.db() as session:
+        # Two turns asking for the same site at once must end with one source, not two.
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"source-origin:{env.user_id}:{origin}", 0)
+                )
+            )
+        )
         existing = await scope.find_source(session, env.user_id, origin)
         if existing is not None:
             return await _exists(env, session, existing)

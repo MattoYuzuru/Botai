@@ -15,24 +15,23 @@ from botai.browser.presets import PgLoginStore
 from botai.browser.probe import probe_ok, requires_authentication
 from botai.browser.screen import ScreenRegistry
 from botai.browser.session import decode_session, encode_session
-from botai.core.ids import new_id
 from botai.core.llm import LlmRequest, LlmResponse, ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.db import models as m
 from tests.browser.test_login import FAST
 from tests.e2e.support import (
-    Asked,
-    Attendance,
     Campus,
     Learner,
     Stack,
     Student,
     WireTap,
+    connect_in_thread,
     dump_database,
     sent_to_models,
 )
 from tests.e2e.test_full_flow import (
     CLASSES,
+    CONNECT_QUESTIONS,
     Secrets,
     check_no_marker_anywhere,
     check_nothing_leaked,
@@ -69,15 +68,14 @@ class DeepPlanner(ScriptedLlm):
     """Choose only server-owned refs. Fail immediately if a real browser observation is stale."""
 
     def __init__(self, *, restricted: bool) -> None:
+        # Only the student's note is classified; a bare link of the task needs no model.
         classification = LlmResponse(
             content=json.dumps(
                 {
                     "linkIndices": [],
-                    "kinds": ["scheduleEvents"] if restricted else [],
-                    "absentKinds": ["courses", "deadlines"] if restricted else ["deadlines"],
-                    "note": "Только расписание"
-                    if restricted
-                    else "Подключить доступные учебные данные",
+                    "kinds": ["scheduleEvents"],
+                    "absentKinds": ["courses", "deadlines"],
+                    "note": "Только расписание",
                 },
                 ensure_ascii=False,
             )
@@ -89,7 +87,7 @@ class DeepPlanner(ScriptedLlm):
         answers = [classification, warning, schedule]
         if not restricted:
             # Explorer preserves the first discovered type's order.
-            answers = [classification, warning, ls.answer([courses_endpoint()]), schedule]
+            answers = [warning, ls.answer([courses_endpoint()]), schedule]
         super().__init__(queue=answers)
         self.seen: list[dict[str, Any]] = []
         self.old_page: str | None = None
@@ -176,45 +174,19 @@ async def test_chat_connect_deep_spa_canary_persistence_and_model_free_sync(
     start_worker(env, llm)
     friend = env.new_client()
     account = await env.account(friend)
-    response = await friend.post("/api/v1/chat/threads", json={"purpose": "connect"})
+    response = await friend.post("/api/v1/chat/threads", json={})
     assert response.status_code == 201, response.text
     thread = response.json()["id"]
+    # "Подключи вуз, вот ссылка на мои курсы: <ENTRY>[. Нужны только пары; ...]": the agent of
+    # the thread passes the link as the task's entry and the student's wish, if any, as its note.
+    note = "Нужны только пары; курсы и дедлайны не подключай." if restricted else None
+    connect_job, connection_id = await connect_in_thread(env, account.id, thread, ENTRY, note=note)
     runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
-    connect_job = runtime["activeJob"]["id"]
-    source_message = "Подключи вуз, вот ссылка на мои курсы: " + ENTRY
-    if restricted:
-        source_message += ". Нужны только пары; курсы и дедлайны не подключай."
-
-    class ChatStudent(Student):
-        sent = False
-
-        async def _answer(self, job_id: str, block: dict[str, Any], attendance: Attendance) -> None:
-            if (
-                block["type"] == "input"
-                and block.get("autocomplete") == "off"
-                and not block.get("secret")
-            ):
-                assert not self.sent, "valid source and scope must not be asked twice"
-                self.sent = True
-                attendance.asked.append(
-                    Asked("input", block.get("inputKind"), False, block["question"])
-                )
-                posted = await self._http.post(
-                    f"/api/v1/chat/threads/{thread}/messages",
-                    headers=self._headers,
-                    json={
-                        "text": source_message,
-                        "targetJobId": job_id,
-                        "clientMessageId": new_id(),
-                    },
-                )
-                assert posted.status_code == 202, posted.text
-                assert posted.json()["jobId"] == job_id
-                return
-            await super()._answer(job_id, block, attendance)
+    assert runtime["activeJob"]["id"] == connect_job
 
     async with live_http(env.app) as http:
-        student = ChatStudent(http, session_header(friend))
+        # The source and its scope are never asked again: only the university's login is.
+        student = Student(http, session_header(friend))
         connected = await student.attend(connect_job)
         assert not [event for event in connected.events if event["event"] == "error"], json.dumps(
             {
@@ -228,18 +200,17 @@ async def test_chat_connect_deep_spa_canary_persistence_and_model_free_sync(
         assert connected.result["kinds"] == (
             ["scheduleEvents"] if restricted else ["courses", "scheduleEvents"]
         )
+        # A bare link needs no classifier; only the student's note is classified.
         assert [request.purpose for request in llm.requests] == (
-            ["classify", "extract", "learn"]
-            if restricted
-            else ["classify", "extract", "learn", "learn"]
+            ["classify", "extract", "learn"] if restricted else ["extract", "learn", "learn"]
         )
-        assert student.sent
+        assert [asked.label for asked in connected.asked] == [*CONNECT_QUESTIONS, "confirm"]
         assert len(llm.observation_requests) == 6
         runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
-        connection = runtime["connection"]
-        assert connection["status"] == "active"
         assert runtime["pending"] == []
-        connection_id = connection["id"]
+        assert runtime["activeJob"] is None
+        connection = (await friend.get(f"/api/v1/connections/{connection_id}")).json()
+        assert connection["status"] == "active"
         learner = Learner(friend, account.id, connection["spaceId"], connection_id, connect_job)
         secrets = Secrets(env, learner)
         await secrets.session("deep portal")
@@ -267,12 +238,14 @@ async def test_chat_connect_deep_spa_canary_persistence_and_model_free_sync(
                 connected.result["kinds"]
             )
             assert stored.allow_hosts == ["fakeuni.test"]
-            thread_row = await session.get(m.ChatThread, thread)
-            assert thread_row is not None
-            assert thread_row.connect_context["entry_urls"] == [ENTRY]
-            assert thread_row.connect_context["absent_kinds"] == (
-                ["courses", "deadlines"] if restricted else ["deadlines"]
-            )
+            job = await session.get(m.Job, connect_job)
+            assert job is not None
+            assert job.thread_id == thread
+            intent = job.payload["learning_intent"]
+            assert intent["entry_urls"] == [ENTRY]
+            assert intent["absent_kinds"] == (["courses", "deadlines"] if restricted else [])
+            # The student's note narrowed automatic discovery; an omitted mode means "requested".
+            assert intent.get("discovery_mode") == (None if restricted else "auto")
         calls = len(llm.requests)
         env.advance(hours=3)
         sync_job = (await friend.post(f"/api/v1/connections/{connection_id}/sync")).json()["jobId"]

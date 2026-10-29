@@ -32,14 +32,15 @@ from botai.sources import runner as sources_runner
 from botai.worker import handler_table
 from tests.agent.rig import call, final, step
 from tests.e2e.support import (
+    SOURCE_TITLE,
     WRONG_PASSWORD,
-    Asked,
     Attendance,
     Campus,
     Learner,
     Stack,
     Student,
     WireTap,
+    connect_in_thread,
     dump_database,
     leaks,
     sent_to_models,
@@ -247,38 +248,15 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
     start_worker(env, learning_llm)
     friend = env.new_client()
     account = await env.account(friend)
-    response = await friend.post("/api/v1/chat/threads", json={"purpose": "connect"})
+    response = await friend.post("/api/v1/chat/threads", json={})
     assert response.status_code == 201, response.text
     thread = response.json()["id"]
+    # The student sends the link in an ordinary thread; its agent connects it right here.
+    connect_job, connection_id = await connect_in_thread(env, account.id, thread, entry)
     initial = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
-    connect_job = initial["activeJob"]["id"]
+    assert initial["activeJob"]["id"] == connect_job
+    assert [task["id"] for task in initial["tasks"]] == [connect_job]
     accepted_ids: list[str] = []
-
-    class ConversationStudent(Student):
-        bootstrap_count = 0
-
-        async def _answer(self, job_id: str, block: dict[str, Any], attendance: Attendance) -> None:
-            if (
-                block["type"] == "input"
-                and block.get("autocomplete") == "off"
-                and not block.get("secret")
-            ):
-                self.bootstrap_count += 1
-                assert self.bootstrap_count == 1, "a valid source URL must not be asked twice"
-                attendance.asked.append(
-                    Asked("input", block.get("inputKind"), False, block["question"])
-                )
-                posted = await self._http.post(
-                    f"/api/v1/chat/threads/{thread}/messages",
-                    headers=self._headers,
-                    json={"text": entry, "targetJobId": job_id, "clientMessageId": new_id()},
-                )
-                assert posted.status_code == 202, posted.text
-                assert posted.json()["jobId"] == job_id
-                accepted_ids.append(posted.json()["message"]["id"])
-                return
-            await super()._answer(job_id, block, attendance)
-
     clarified = False
 
     async def on_question(block: dict[str, Any]) -> None:
@@ -301,24 +279,25 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             clarified = True
 
     async with live_http(env.app) as http:
-        student = ConversationStudent(http, session_header(friend))
+        # The source URL is never asked again: the first question is the university's login.
+        student = Student(http, session_header(friend))
         connect = await student.attend(connect_job, on_question=on_question)
         assert clarified
-        assert student.bootstrap_count == 1
+        # The URL came with the task, so only the clarification needs the classifier.
         assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
         assert json.loads(learning_llm.requests[0].messages[-1].content)["message"] == clarification
-        assert [asked.label for asked in connect.asked] == [
-            "input:text",
-            *CONNECT_QUESTIONS,
-            "confirm",
-        ]
+        assert [asked.label for asked in connect.asked] == [*CONNECT_QUESTIONS, "confirm"]
         assert connect.result["status"] == "ok"
         assert connect.result["kinds"] == ["scheduleEvents"]
         assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
         runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
         assert runtime["pending"] == []
-        assert runtime["connection"]["status"] == "active"
-        connection_id, space_id = runtime["connection"]["id"], runtime["connection"]["spaceId"]
+        assert runtime["activeJob"] is None  # a finished task is not active; it stays in tasks
+        assert [(task["id"], task["state"]) for task in runtime["tasks"]] == [(connect_job, "done")]
+        connection = (await friend.get(f"/api/v1/connections/{connection_id}")).json()
+        assert connection["status"] == "active"
+        assert connection["title"] == SOURCE_TITLE
+        space_id = connection["spaceId"]
         learner = Learner(friend, account.id, space_id, connection_id, connect_job)
         secrets = Secrets(env, learner)
         await secrets.session("chat source")
@@ -328,10 +307,13 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             if receipt["status"] == "applied"
         } >= set(accepted_ids)
         async with env.sm() as session:
-            row = await session.get(m.ChatThread, thread)
-            assert row is not None
-            assert row.connect_context["entry_urls"] == [entry]
-            assert row.connect_context["absent_kinds"] == ["deadlines"]
+            job = await session.get(m.Job, connect_job)
+            assert job is not None
+            assert job.thread_id == thread
+            # The clarification narrowed what the task learns; the task keeps it, not the thread.
+            assert job.payload["learning_intent"]["entry_urls"] == [entry]
+            assert job.payload["learning_intent"]["absent_kinds"] == ["deadlines"]
+            assert job.payload["learning_intent"]["user_note"] == clarification
             assert (
                 await session.scalar(
                     select(func.count())

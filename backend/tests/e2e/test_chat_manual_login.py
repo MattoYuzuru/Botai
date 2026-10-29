@@ -62,13 +62,12 @@ async def test_chat_manual_login_opens_real_screen_then_replays_saved_recipe_wit
         )
         conn = await session.get(m.Connection, connection_id)
         old = await session.get(m.Job, learner.connect_job)
-        conversation = await session.get(m.ChatThread, thread)
         assert conn is not None
         assert old is not None
-        assert conversation is not None
+        assert old.thread_id == thread  # the thread shows the source's earlier connect task
         conn.adapter, conn.spec_id, conn.spec_revision = "recipe", spec.id, spec.revision
         conn.status, conn.error_code, conn.data_scope = "needs_reauth", "source_auth_required", None
-        conversation.connect_context = {**conversation.connect_context, **intent}
+        # What the student asked to learn lives in the task's payload, not in the thread.
         old.state, old.payload = "done", {"url": ENTRY, "learning_intent": intent}
         await session.commit()
         spec_id = spec.id
@@ -182,7 +181,11 @@ async def test_chat_manual_login_opens_real_screen_then_replays_saved_recipe_wit
             assert [asked.type for asked in result.asked] == ["login"]
             assert entry_verified_after_done == [True]
             assert writes == [data.ORIGIN + "/auth/login"]
-            assert [request.purpose for request in llm.requests] == ["chat", "chat"]
+            assert [request.purpose for request in llm.requests] == ["agent", "agent"]
+            told = next(msg for msg in llm.requests[1].messages if msg.role == "tool").content
+            assert "в этом чате" in told  # the task lives here; no bare job/thread ids
+            assert manual_id not in told
+            assert thread not in told
             assert llm.observation_requests == []
             events = (await client.get("/api/v1/schedule", params=week())).json()
             assert [event["title"] for event in events] == [item[0] for item in CLASSES]

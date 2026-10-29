@@ -37,7 +37,7 @@ from botai.jobs.notify import CHANNEL_ANSWERS
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.schemas import JobOut
 from botai.spaces import repo
-from botai.spaces.conversations import owned_thread, safe_text
+from botai.spaces.conversations import owned_thread, reject_secret_links, safe_text
 
 _BLOCK = TypeAdapter(AgentUiBlock)
 RUNTIME_TASKS = 20
@@ -273,6 +273,10 @@ async def post_message(
             raise BotaiError(
                 ErrorCode.CONFLICT, "Этот шаг уже завершён. Откройте текущее состояние разговора"
             )
+        if await _continued(session, target):
+            raise BotaiError(
+                ErrorCode.CONFLICT, "Этот шаг уже заменён. Откройте текущее состояние разговора"
+            )
     else:
         waiting = next(
             (
@@ -286,7 +290,7 @@ async def post_message(
             target = await _locked(session, user_id, waiting.id)
             if target is not None and not _waiting_dialogue(target):
                 target = None  # answered while we were waiting for the lock
-    text = safe_text(body.text) if target is not None else body.text
+    text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
     if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
@@ -299,9 +303,8 @@ async def post_message(
             raise BotaiError(ErrorCode.CONFLICT, "Ассистент ещё отвечает на прошлое сообщение")
         if credential_like(text) and any(_waiting_secret(job) for job in jobs):
             raise BotaiError(ErrorCode.CONFLICT, SECRET_IN_CHAT)
-    now = services.clock.now()
-    if target is not None:
-        now = await dialogue.message_time(session, user_id, thread.id, now)
+    # Appends to a thread are serialized: even two events in one clock tick keep their order.
+    now = await dialogue.message_time(session, user_id, thread.id, services.clock.now())
     block = TextBlock(id=new_id(), at=now, markdown=text)
     message = ChatMessage(
         id=new_id(),
@@ -354,6 +357,17 @@ async def post_message(
         connection_id=target.connection_id if target else None,
     )
     return MessageAccepted(message=message_out(message), job_id=job_id)
+
+
+async def _continued(session: AsyncSession, job: Job) -> bool:
+    """The task handed its work to a newer one (another site of the same chat)."""
+    child_id = job.payload.get("continuation_job_id")
+    if not isinstance(child_id, str):
+        return False
+    state = await session.scalar(
+        select(Job.state).where(Job.id == child_id, Job.user_id == job.user_id)
+    )
+    return state in IN_FLIGHT
 
 
 async def _replay(

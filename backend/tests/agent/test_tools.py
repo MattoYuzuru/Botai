@@ -8,8 +8,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from botai.agent.harness import HarnessTool
 from botai.agent.env import ChatEnv
+from botai.agent.harness import HarnessTool
 from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.core.jobs import JobKind
 from botai.core.llm import ScriptedLlm

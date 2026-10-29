@@ -210,14 +210,14 @@ async def ensure_space(
     if university_id is None:
         space = Space(user_id=user_id, university_id=None, title=MY_MATERIALS)
     else:
-        uni = await session.get(University, university_id)
-        if uni is None:
-            raise LookupError(university_id)
+        uni = await universities.find_or_create(
+            session, title=university_id, university_id=university_id
+        )
         space = Space(
             user_id=user_id, university_id=uni.id, title=uni.title, accent_hue=uni.accent_hue
         )
     session.add(space)
-    await session.flush([space])
+    await session.flush()
     return space, True
 
 

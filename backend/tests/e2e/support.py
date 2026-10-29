@@ -10,13 +10,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.agent.env import ChatEnv
+from botai.agent.tools_sources import connect_source
 from botai.browser.gateway import PlaywrightGateway
 from botai.contracts.agent_ui import ASKING_TYPES
 from botai.core.llm import ScriptedLlm
 from botai.db.base import Base
+from botai.db.models import Connection, Job
 from tests.auth.support import PASSWORD, make_user
 from tests.fakeuni import data
 from tests.jobs.env import Env, session_header
@@ -119,6 +122,47 @@ class Campus:
             user_id,
         )
         return Learner(client, user_id, space_id, connection_id, job_id)
+
+
+SOURCE_TITLE = "Тестовый портал"
+UNIVERSITY = "Фикстурный вуз"
+
+
+async def connect_in_thread(
+    env: Env, user_id: str, thread_id: str, url: str, *, note: str | None = None
+) -> tuple[str, str]:
+    """What the agent of the thread does when the student asks to connect a source: its
+    `connect_source` tool, called directly (no model). Returns (connect job, connection)."""
+    args = {"url": url, "title": SOURCE_TITLE, "university_query": UNIVERSITY}
+    if note is not None:
+        args["note"] = note
+    told = await connect_source(
+        ChatEnv(
+            services=env.services, user_id=user_id, thread_id=thread_id, job_id=None, space_id=None
+        ),
+        args,
+    )
+    assert told.startswith("Результат: запущено."), told
+    assert "в этом чате" in told
+    async with env.sm() as session:
+        jobs = list(
+            await session.scalars(
+                select(Job).where(
+                    Job.user_id == user_id, Job.thread_id == thread_id, Job.kind == "connect"
+                )
+            )
+        )
+        assert len(jobs) == 1, [job.id for job in jobs]
+        job = jobs[0]
+        assert job.connection_id is not None, "a connect task always has its source"
+        assert job.id not in told  # the agent is given links, not bare ids
+        assert f"botai://connections/{job.connection_id}" in told
+        assert job.payload["url"] == url
+        assert job.payload["source"] == "chat"
+        conn = await session.get(Connection, job.connection_id)
+        assert conn is not None
+        assert conn.title == SOURCE_TITLE  # a human name, not the hostname
+    return job.id, job.connection_id
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,7 +22,6 @@ pytestmark = pytest.mark.db
 
 
 async def awaiting_authentication(env: Env) -> tuple[PgJobContext, str]:
-    env.settings.botai_research_enabled = True
     user = (await env.account()).id
     origin = f"https://auth-{new_id().lower()}.fakeuni.test"
     _, connection = await env.connection(user, origin=origin)
