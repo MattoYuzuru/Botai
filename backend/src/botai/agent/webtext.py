@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlsplit
 
@@ -20,11 +19,9 @@ _JSON_STRING_CHARS = 300
 _JSON_DEPTH = 6
 
 
-@dataclass(slots=True)
-class Page:
-    title: str
-    text: str
-    links: list[tuple[str, str]] = field(default_factory=list)  # (label, https url)
+def has_login_form(data: bytes) -> bool:
+    """A page that asks for a password: where an expired session ends up on sites without a 401."""
+    return LexborHTMLParser(data).css_first("input[type=password]") is not None
 
 
 def normalize_url(url: str) -> str:

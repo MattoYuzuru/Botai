@@ -22,6 +22,7 @@ from botai.agent.env import (
     ChatEnv,
     clean,
     connection_link,
+    document_link,
     fmt_updated,
     spec,
     thread_link,
@@ -36,9 +37,15 @@ from botai.jobs.queue import TASK_KINDS
 from botai.jobs.tasks import task_title
 from botai.learn.addresses import url_origin
 from botai.sources import service as documents_service
+from botai.sources.ingest import check_url
 from botai.sources.schemas import DocumentFromUrl
 from botai.spaces import repo, service, universities
-from botai.spaces.conversations import intent_of, normalize_context, safe_url
+from botai.spaces.conversations import (
+    intent_of,
+    normalize_context,
+    reject_secret_links,
+    safe_url,
+)
 from botai.spaces.schemas import ConnectionKind
 
 NO_REPAIR_STATUSES = {"needs_reauth": "нужен повторный вход человеком", "disabled": "отключено"}
@@ -371,8 +378,10 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
 
 
 async def add_document_url(env: ChatEnv, args: dict[str, Any]) -> str:
+    url = str(args.get("url", "")).strip()
     try:
-        url = safe_url(args.get("url"))
+        check_url(url)  # plain https to a public host: a Google file id is long, but not a secret
+        reject_secret_links(url)
     except BotaiError as exc:
         return f"Результат: не запущено. {exc.detail}."
     title = _human_title(args.get("title")) or ""
@@ -383,7 +392,23 @@ async def add_document_url(env: ChatEnv, args: dict[str, Any]) -> str:
         if known is not None:
             return (
                 f"Результат: уже добавлено, ничего не запущено. «{known.title}» "
-                f"botai://documents/{known.id}. Текст читается через read_document и search_documents."
+                f"{document_link(known.id)}. Текст читается через read_document и search_documents."
+            )
+        reading = await session.scalar(
+            select(Job).where(
+                Job.user_id == env.user_id,
+                Job.kind == JobKind.INGEST.value,
+                Job.state.in_(sorted(IN_FLIGHT)),
+                Job.payload["source"]["url"].astext == url,
+            )
+        )
+        if reading is not None:
+            _task_card(
+                env, reading, "ingest", task_title("ingest", title or None), reading.connection_id
+            )
+            return (
+                f"Результат: уже читается, второй раз не запущено: документ по этой ссылке "
+                f"обрабатывается {_where(env, reading)}."
             )
         university_id = clean(str(args.get("university_id") or ""), 50)
         if university_id:
@@ -485,6 +510,12 @@ async def sync_source(env: ChatEnv, args: dict[str, Any]) -> str:
     if conn is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     async with env.services.db() as session:
+        row = await repo.get_connection(session, env.user_id, connection_id)
+        if row.adapter is None and row.spec_id is None:
+            return (
+                f"Обновление «{conn.title}» не запущено: источник ещё не настроен. Продолжить "
+                "подключение можно через request_repair, войти — через request_login."
+            )
         try:
             job_id = await service.enqueue_for_connection(
                 session,

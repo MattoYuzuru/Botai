@@ -66,6 +66,13 @@ def _links_block(links: list[tuple[str, str]]) -> str:
 # --- browse_source ------------------------------------------------------------------------------
 
 
+def _needs_login(title: str) -> str:
+    return (
+        f"Результат: needs_login. Сессия «{title}» истекла или не подходит для этой страницы. "
+        "Предложите студенту войти заново и вызовите request_login, если он согласен."
+    )
+
+
 async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     connection_id = str(args.get("connection_id", "")).strip()
     conn = (await env.titles()).get(connection_id)
@@ -110,10 +117,7 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         async with SourceClient(sctx, auth_type="session") as client:
             response = await client.request("GET", url, auth_binding=binding)
     except SessionExpired:
-        return (
-            f"Результат: needs_login. Сессия «{conn.title}» истекла или не подходит для этой "
-            "страницы. Предложите студенту войти заново и вызовите request_login, если он согласен."
-        )
+        return _needs_login(conn.title)
     except BotaiError as exc:
         return f"Результат: ошибка. {exc.detail}."
     env.used.add("browse_source")
@@ -127,6 +131,8 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         title = "JSON"
         extra = ""
     elif "html" in content_type or response.content.lstrip()[:15].lower().startswith(b"<!doctype"):
+        if webtext.has_login_form(response.content):
+            return _needs_login(conn.title)  # a site without 401 answers an expired session so
         extracted = await asyncio.to_thread(extract, response.content, "html")
         body = extracted.text[: webtext.TEXT_CHARS]
         title = extracted.title or parts.path or host

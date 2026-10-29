@@ -57,12 +57,23 @@ async def update_plan(env: ChatEnv, args: dict[str, Any]) -> str:
                 f"Ошибка аргументов: у шага нужен title, state — одно из {', '.join(PLAN_STATES)}."
             )
         steps.append(PlanStep(id=f"s{index}", title=step_title, state=state))  # type: ignore[arg-type]
-    plan_id = env.plan_id or new_id()
-    env.plan_id = plan_id
     now = env.services.clock.now()
-    block = PlanBlock(id=plan_id, at=now, title=title, steps=steps)
-    data = block.model_dump(by_alias=True, mode="json", exclude_none=True)
     async with env.services.db() as session:
+        if env.plan_id is None and env.job_id is not None:
+            # A retried turn keeps the plan its first run published instead of adding another.
+            earlier = await session.scalar(
+                select(ChatMessage.blocks[0]["id"].astext).where(
+                    ChatMessage.user_id == env.user_id,
+                    ChatMessage.thread_id == env.thread_id,
+                    ChatMessage.job_id == env.job_id,
+                    ChatMessage.role == "agent",
+                    ChatMessage.blocks[0]["type"].astext == "plan",
+                )
+            )
+            env.plan_id = earlier
+        plan_id = env.plan_id = env.plan_id or new_id()
+        block = PlanBlock(id=plan_id, at=now, title=title, steps=steps)
+        data = block.model_dump(by_alias=True, mode="json", exclude_none=True)
         message = await session.scalar(
             select(ChatMessage).where(
                 ChatMessage.user_id == env.user_id,
