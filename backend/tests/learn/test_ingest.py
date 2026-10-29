@@ -244,10 +244,17 @@ class QuestionProbe(InMemoryJobContext):
         super().__init__(**kw)
         self.env = env
         self.chunks_when_asked: list[int] = []
+        self.found_when_asked: list[int] = []
         self.attachment_when_asked: list[tuple[str, str | None]] = []
 
     async def ask(self, block: AgentUiBlock) -> AgentUiAnswer:
         self.chunks_when_asked.append(await self.env.chunks())
+        found = await self.env.db.scalar(  # what `search_documents` does: full-text search
+            select(func.count())
+            .select_from(m.Chunk)
+            .where(m.Chunk.tsv.op("@@")(func.plainto_tsquery("russian", "базы данных")))
+        )
+        self.found_when_asked.append(int(found or 0))
         att = (await self.env.db.execute(select(m.Attachment))).scalars().one()
         await self.env.db.refresh(att)
         self.attachment_when_asked.append((att.ingest_state, att.document_id))
@@ -277,6 +284,7 @@ async def test_the_document_is_searchable_before_the_student_answers_about_its_t
     assert result["status"] == "ok"
     # the first question (which column is the subject?) found the text indexed and readable
     assert probe.chunks_when_asked[0] > 0
+    assert probe.found_when_asked[0] > 0  # and a search for its words already finds it
     assert probe.attachment_when_asked[0][0] == "indexed"
     assert probe.attachment_when_asked[0][1] is not None
     assert "Текст документа уже можно искать" in ls.all_text(probe)
