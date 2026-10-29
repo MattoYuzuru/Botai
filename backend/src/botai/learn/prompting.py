@@ -338,9 +338,15 @@ def discovery_request(observation: dict[str, Any], intent: object) -> LlmRequest
             "required": ["stateRef", "action", "ref", "discoveries", "evidenceRefs"],
             "properties": {
                 "stateRef": {"type": "integer", "minimum": 0},
-                "action": {"enum": ["navigate", "inspect", "activate", "use", "finish"]},
+                "action": {"enum": ["navigate", "inspect", "activate", "use", "probe", "finish"]},
                 "ref": {"type": ["string", "null"], "maxLength": 12},
                 "valueRef": {"type": ["string", "null"], "maxLength": 40},
+                "overrides": {
+                    "type": ["object", "null"],
+                    "maxProperties": 4,
+                    "propertyNames": {"type": "string", "maxLength": 40},
+                    "additionalProperties": {"type": "string", "maxLength": 60},
+                },
                 "discoveries": {
                     "type": "array",
                     "maxItems": len(KIND_LABELS),

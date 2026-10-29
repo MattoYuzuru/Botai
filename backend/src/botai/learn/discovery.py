@@ -14,7 +14,9 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
+from zoneinfo import ZoneInfo
 
 from botai.browser.probe import requires_authentication
 from botai.browser.read_capabilities import ReadEffectError
@@ -49,6 +51,13 @@ from botai.learn.observe import (
     protect_observation,
     request_key,
 )
+from botai.learn.probe import (
+    Prober,
+    ProbeRefused,
+    ProbeShape,
+    observed_literals,
+    probe_url,
+)
 from botai.learn.prompting import discovery_request
 from botai.learn.redact import Redactor
 from botai.sources.vocab import KIND_LABELS
@@ -70,6 +79,7 @@ class DiscoveryBudget:
     tokens: int = 150_000
     links_per_page: int = 80
     capabilities: bool = True
+    probes: int = 6  # repeated reads with other dates or pages (FR-039) per observation
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +89,24 @@ class Decision:
     discoveries: tuple[Kind, ...]
     evidence: tuple[str, ...]
     value_ref: str | None = None
+    overrides: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeKit:
+    """What a probe needs besides the observation: the reader and the source's clock."""
+
+    prober: Prober
+    now: datetime
+    tz: ZoneInfo
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeNote:
+    source: str
+    overrides: tuple[tuple[str, str], ...]
+    status: int
+    shape: ProbeShape
 
 
 @dataclass(slots=True)
@@ -105,6 +133,9 @@ class ObservationSession:
     network_auth_required: bool = False
     current_requested_url: str | None = field(default=None, repr=False)
     auth_target_url: str | None = field(default=None, repr=False)
+    probe_kit: ProbeKit | None = field(default=None, repr=False)
+    probe_count: int = 0
+    probes: dict[str, ProbeNote] = field(default_factory=dict, repr=False)
 
     def offer_entries(self, urls: list[str]) -> None:
         """Keep explicit entry pages and the source home available without inventing routes."""
@@ -293,6 +324,16 @@ class ObservationSession:
                 }
                 for ref in response_refs
             ],
+            "probes": [
+                {
+                    "ref": ref,
+                    "from": note.source,
+                    "overrides": dict(note.overrides),
+                    "status": note.status,
+                    "objectsPerLevel": list(note.shape.levels),
+                }
+                for ref, note in self.probes.items()
+            ],
             "details": self.details,
         }
 
@@ -300,7 +341,15 @@ class ObservationSession:
         if not isinstance(data, dict):
             raise ValueError("invalid observation plan")
         data = cast(dict[str, Any], data)
-        if set(data) - {"stateRef", "action", "ref", "discoveries", "evidenceRefs", "valueRef"}:
+        if set(data) - {
+            "stateRef",
+            "action",
+            "ref",
+            "discoveries",
+            "evidenceRefs",
+            "valueRef",
+            "overrides",
+        }:
             raise ValueError("invalid observation plan fields")
         if type(data.get("stateRef")) is not int or data["stateRef"] != self.revision:
             raise ValueError("stale observation plan")
@@ -310,6 +359,7 @@ class ObservationSession:
             "inspect",
             "activate",
             "use",
+            "probe",
             "finish",
         }:
             raise ValueError("invalid observation action")
@@ -326,6 +376,21 @@ class ObservationSession:
             raise ValueError("unknown view reference")
         elif action == "use" and ref not in self.capabilities:
             raise ValueError("unknown capability reference")
+        elif action == "probe" and ref not in self.calls:
+            raise ValueError("unknown response reference")
+        raw_overrides = data.get("overrides")
+        if action == "probe":
+            if (
+                not isinstance(raw_overrides, dict)
+                or not 1 <= len(raw_overrides) <= 4
+                or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in cast(dict[object, object], raw_overrides).items()
+                )
+            ):
+                raise ValueError("invalid probe overrides")
+        elif raw_overrides:
+            raise ValueError("this action does not accept overrides")
         value_ref = data.get("valueRef")
         if value_ref is not None and not isinstance(value_ref, str):
             raise ValueError("invalid capability value reference")
@@ -354,12 +419,14 @@ class ObservationSession:
             or (kinds and not evidence)
         ):
             raise ValueError("invalid discovered kinds")
+        overrides = tuple(cast(dict[str, str], raw_overrides).items()) if action == "probe" else ()
         return Decision(
             action,
             ref,
             tuple(cast(list[Kind], kinds)),
             tuple(evidence),
             value_ref,
+            overrides,
         )
 
     async def apply(self, decision: Decision) -> bool:
@@ -368,6 +435,8 @@ class ObservationSession:
             return False
         if decision.action == "navigate":
             return await self.visit(self.links[ref][1])
+        if decision.action == "probe":
+            return await self.probe(ref, dict(decision.overrides))
         if decision.action == "use":
             if not isinstance(self.handle, ReadCapabilityBrowser):
                 return False
@@ -424,6 +493,59 @@ class ObservationSession:
         self.revision += 1
         return bool(detail)
 
+    async def probe(self, ref: str, overrides: dict[str, str]) -> bool:
+        """Repeat one observed read with other query values and keep the answer as evidence."""
+        kit = self.probe_kit
+        if kit is None or self.probe_count >= self.budget.probes:
+            self.failures.add("no_progress")
+            return False
+        call = self.calls[ref]
+        try:
+            url = probe_url(
+                call,
+                overrides,
+                origin=self.origin,
+                literals=observed_literals(self.calls.values()),
+                now=kit.now,
+                tz=kit.tz,
+            )
+        except ProbeRefused as refused:
+            diagnostic_event("observe.probe", outcome="refused", reason=refused.reason)
+            self.details = {ref: f"probe refused: {refused.reason}"}
+            self.delta = [ref]
+            self.revision += 1
+            return False
+        if self.redactor.contains_secret_address(url):
+            diagnostic_event("observe.probe", outcome="refused", reason="secret_address")
+            return False
+        self.probe_count += 1
+        reply = await kit.prober(call, url)
+        if reply is None:
+            self.failures.add("data_request_failed")
+            diagnostic_event("observe.probe", outcome="failed", reason="request_failed")
+            return False
+        new_ref = f"r{len(self.calls)}"
+        self.calls[new_ref] = call.model_copy(
+            update={
+                "url": url,
+                "status": reply.status,
+                "response_sample": reply.text,
+                "response_content_type": reply.content_type,
+                "evidence_id": f"probe-{self.probe_count}",
+            }
+        )
+        self.probes[new_ref] = ProbeNote(ref, tuple(overrides.items()), reply.status, reply.shape)
+        self.delta = [new_ref]
+        self.revision += 1
+        diagnostic_event(
+            "observe.probe",
+            outcome="ok",
+            status=reply.status,
+            top_level=reply.shape.top_level,
+            records=reply.shape.records,
+        )
+        return True
+
     def bundle(self, evidence: tuple[str, ...] = ()) -> Observations:
         page_refs = [ref for ref in evidence if ref in self.pages]
         call_refs = [ref for ref in evidence if ref in self.calls]
@@ -479,6 +601,7 @@ async def adaptive_observe(
     memory: DiscoveryMemory | None = None,
     checkpoint: Callable[[DiscoveryMemory], Awaitable[None]] | None = None,
     run_limits: MemoryLimits | None = None,
+    probe_kit: ProbeKit | None = None,
 ) -> Observations:
     """Model-guided exploration, with legacy crawl fallback for unavailable/malformed planners."""
     if memory is not None:
@@ -493,9 +616,10 @@ async def adaptive_observe(
             memory=memory,
             checkpoint=checkpoint,
             limits=run_limits or MemoryLimits(),
+            probe_kit=probe_kit,
         )
     budget = budget or DiscoveryBudget()
-    state = ObservationSession(handle, origin, redactor, budget)
+    state = ObservationSession(handle, origin, redactor, budget, probe_kit=probe_kit)
     tokens = 0
     discovered: dict[Kind, None] = {}
     evidence: tuple[str, ...] = ()
@@ -521,7 +645,7 @@ async def adaptive_observe(
                 if len(state.pages) >= budget.pages:
                     stopped = "page_budget"
                     break
-                if state.network_count >= budget.requests:
+                if state.network_count + state.probe_count >= budget.requests:
                     stopped = "request_budget"
                     break
                 if not state.pages:
@@ -797,6 +921,7 @@ class _MemorySlice:
     started: float = field(default_factory=time.monotonic)
     _tick: float = field(default_factory=time.monotonic)
     _network: int = 0
+    _probed: int = 0
     slice_tokens: int = 0
     _sensitive_omitted: bool = False
 
@@ -834,6 +959,8 @@ class _MemorySlice:
         self._tick = now
         self.memory.requests += max(0, self.state.network_count - self._network)
         self._network = self.state.network_count
+        self.memory.requests += max(0, self.state.probe_count - self._probed)
+        self._probed = self.state.probe_count
 
     async def commit(self) -> None:
         self.account()
@@ -882,7 +1009,7 @@ class _MemorySlice:
             return "timeout"
         if len(self.state.pages) >= self.state.budget.pages:
             return "page_budget"
-        if self.state.network_count >= self.state.budget.requests:
+        if self.state.network_count + self.state.probe_count >= self.state.budget.requests:
             return "request_budget"
         if self.slice_tokens >= self.state.budget.tokens:
             return "token_budget"
@@ -926,6 +1053,7 @@ async def _resumable_observe(
     memory: DiscoveryMemory,
     checkpoint: Callable[[DiscoveryMemory], Awaitable[None]] | None,
     limits: MemoryLimits,
+    probe_kit: ProbeKit | None = None,
 ) -> Observations:
     memory.validate_for(origin)
     sensitive_omitted = _sanitize_memory_addresses(memory, redactor)
@@ -935,7 +1063,12 @@ async def _resumable_observe(
     memory.resume_needed = False
     memory.exhausted = False
     state = ObservationSession(
-        handle, origin, redactor, budget, portable_plans=dict(memory.browser_plans)
+        handle,
+        origin,
+        redactor,
+        budget,
+        portable_plans=dict(memory.browser_plans),
+        probe_kit=probe_kit,
     )
     # Runtime references are rebuilt. In particular an old stateRef cannot accidentally match
     # the first page of a new handle, even when both happen to contain a link named l0.

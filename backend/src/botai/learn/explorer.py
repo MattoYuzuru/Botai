@@ -26,6 +26,7 @@ import logging
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -37,7 +38,7 @@ from botai.browser.session import EntrySessionProvider, encode_session, session_
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
-from botai.core.browser import ObservedRequest, SessionState
+from botai.core.browser import BrowserHandle, ObservedRequest, SessionState
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -62,12 +63,13 @@ from botai.learn.author import (
     parse_json,
 )
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
-from botai.learn.discovery import DiscoveryBudget, adaptive_observe
+from botai.learn.discovery import DiscoveryBudget, ProbeKit, adaptive_observe
 from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
 from botai.learn.policies import bind_parts
+from botai.learn.probe import http_prober
 from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandidate, intent_key
 from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
@@ -997,6 +999,11 @@ class Explorer:
                     start_urls=start_urls,
                     intent=self.intent,
                     llm=self.services.llm,
+                    probe_kit=ProbeKit(
+                        http_prober(partial(self._probe_context, handle, info, redactor)),
+                        self.services.clock.now(),
+                        info.tz,
+                    ),
                     budget=DiscoveryBudget(
                         capabilities=settings.botai_factory_v2_enabled,
                         steps=settings.botai_research_slice_steps if research else 10,
@@ -1104,6 +1111,17 @@ class Explorer:
         self._browser_plans = obs.browser_plans
         self._browser_plan_urls = obs.browser_plan_urls
         return obs
+
+    async def _probe_context(
+        self, handle: BrowserHandle, info: ConnInfo, redactor: Redactor
+    ) -> SyncContext:
+        """The student's session as the browser holds it now, for a read-only probe."""
+        async with asyncio.timeout(5.0):
+            state = await handle.export_session()
+        redactor.protect_session(state)
+        context = self._sync_context(info, state)
+        context.before_request = None  # the discovery memory already counts its probes
+        return context
 
     async def _restore_candidate(
         self,
