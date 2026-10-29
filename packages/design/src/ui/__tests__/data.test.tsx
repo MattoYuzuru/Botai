@@ -239,16 +239,52 @@ describe("SourceStatusBar: статусы вузов одной полосой",
   it("касание закрепляет пояснение, повторное — снимает; обновление не запускается", async () => {
     render(<SourceStatusBar items={items} nowMs={NOW} />);
     const [first, second] = screen.getAllByRole("button");
-    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(first).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(first as HTMLElement);
-    expect(first).toHaveAttribute("aria-expanded", "true");
+    expect(first).toHaveAttribute("aria-pressed", "true");
     expect(first?.closest("li")).toHaveAttribute("data-expanded");
     // Раскрыт один чип: касание другого переносит пояснение, а не копит их.
     await userEvent.click(second as HTMLElement);
-    expect(first).toHaveAttribute("aria-expanded", "false");
-    expect(second).toHaveAttribute("aria-expanded", "true");
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    expect(second).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(second as HTMLElement);
-    expect(second).toHaveAttribute("aria-expanded", "false");
+    expect(second).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("пока открыт шит или диалог, Escape принадлежит ему, а закреплённый чип остаётся", async () => {
+    render(
+      <>
+        <SourceStatusBar items={items} nowMs={NOW} />
+        <div role="dialog" aria-label="Шит" />
+      </>,
+    );
+    const first = screen.getAllByRole("button")[0] as HTMLElement;
+    await userEvent.click(first);
+    await userEvent.keyboard("{Escape}");
+    expect(first).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("чип не выходит за ширину полосы, а соседям остаётся место на зону нажатия (320 px)", () => {
+    render(
+      <SourceStatusBar
+        items={[...items, { ...items[0], id: "su", title: "СУ" } as SourceStatusBarItem]}
+        nowMs={NOW}
+      />,
+    );
+    for (const li of screen.getAllByRole("listitem")) {
+      expect(li.className).toContain("max-w-full");
+      expect(li.className).toContain("min-w-11");
+      // Три вуза: раскрытому чипу доступно всё, кроме двух зон нажатия соседей по 3 rem.
+      expect(li.style.maxWidth).toBe("calc(100% - 6rem)");
+    }
+  });
+
+  it("кнопка-переключатель сообщает «закреплено» (aria-pressed), а не раскрытие несуществующей области", () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    for (const button of screen.getAllByRole("button")) {
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      expect(button).not.toHaveAttribute("aria-expanded");
+    }
   });
 
   it("Escape и касание вне полосы сворачивают пояснение", async () => {
@@ -260,12 +296,12 @@ describe("SourceStatusBar: статусы вузов одной полосой",
     );
     const first = screen.getAllByRole("button")[0] as HTMLElement;
     await userEvent.click(first);
-    expect(first).toHaveAttribute("aria-expanded", "true");
+    expect(first).toHaveAttribute("aria-pressed", "true");
     await userEvent.keyboard("{Escape}");
-    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(first).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(first);
     await userEvent.click(screen.getByText("Снаружи"));
-    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(first).toHaveAttribute("aria-pressed", "false");
   });
 
   it("зона нажатия не меньше 44 px, без вузов полоса не рисуется", () => {

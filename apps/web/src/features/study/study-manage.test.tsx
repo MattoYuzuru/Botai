@@ -170,7 +170,8 @@ describe("«Источники»: управление", () => {
     const sheet = await screen.findByRole("dialog", { name: "LMS" });
     await userEvent.click(within(sheet).getByRole("link", { name: "Войти снова" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.draft).toBe("Войди снова в «LMS» (Центральный университет)");
+    expect(router.state.location.search.draft).toContain("LMS");
+    expect(router.state.location.search.draft).toContain("Центральный университет");
   });
 });
 

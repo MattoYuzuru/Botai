@@ -23,6 +23,7 @@ import { ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notic
 import { type SpaceInfo, useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { AccountSettings } from "@/features/settings/account";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
+import { AddDocumentSheet } from "./add-document-sheet";
 import { ConnectionSheet } from "./connection-sheet";
 import { type StudyKind, visibleSections } from "./registry";
 import { SourceList } from "./source-list";
@@ -30,7 +31,8 @@ import { SourceList } from "./source-list";
 /**
  * «Учёба» (`/study`): вуз — единица со многими источниками. У каждого вуза: название, сокращение и сводный
  * статус; список его источников (личный кабинет, учебная платформа, документация, таблицы, документы) со
- * статусом и временем обновления; «Добавить источник» открывает новый чат с готовой просьбой; ниже разделы
+ * статусом и временем обновления; «Добавить источник» открывает новый чат с готовой просьбой, «Добавить
+ * документ» — шит (есть и у вуза без документов); ниже разделы
  * с данными (Предметы, Оценки, … «Документы и вложения») в фиксированном порядке (FR-014). Профиль и
  * настройки — внизу экрана (§7.1).
  */
@@ -40,6 +42,9 @@ export function StudyScreen() {
   const nowMs = useNow(30_000);
   const online = useOnline();
   const [openId, setOpenId] = useState<string | null>(null);
+  // Вуз, в который добавляют документ: кнопка есть в панели каждого вуза, даже если документов ещё нет.
+  // `key` шита — вуз: у другой панели форма открывается заново, а при закрытии анимация не обрывается.
+  const [addingTo, setAddingTo] = useState<{ spaceId: string; open: boolean } | null>(null);
   const state = resolveDataState({
     hasData: directory.connectionsLoaded,
     isEmpty: false,
@@ -85,6 +90,7 @@ export function StudyScreen() {
               space={space}
               nowMs={nowMs}
               onOpenSource={(connection: Connection) => setOpenId(connection.id)}
+              onAddDocument={() => setAddingTo({ spaceId: space.id, open: true })}
             />
           ))}
           <Button variant="ghost" asChild className="self-start">
@@ -101,6 +107,13 @@ export function StudyScreen() {
         nowMs={nowMs}
         onClose={() => setOpenId(null)}
       />
+      <AddDocumentSheet
+        key={addingTo?.spaceId ?? "none"}
+        open={addingTo?.open ?? false}
+        onOpenChange={(open) => setAddingTo((current) => current && { ...current, open })}
+        spaces={scope.spaces}
+        defaultSpaceId={addingTo?.spaceId}
+      />
       <AccountSettings />
     </Screen>
   );
@@ -111,10 +124,12 @@ function UniversityPanel({
   space,
   nowMs,
   onOpenSource,
+  onAddDocument,
 }: {
   space: SpaceInfo;
   nowMs: number;
   onOpenSource: (connection: Connection) => void;
+  onAddDocument: () => void;
 }) {
   const sections = useQuery({ ...sectionsQuery(space.id), refetchInterval: 60_000 });
   const visible = sections.data ? visibleSections(sections.data) : null;
@@ -149,12 +164,17 @@ function UniversityPanel({
         ) : (
           <SourceList space={space} nowMs={nowMs} onOpen={onOpenSource} />
         )}
-        <Button variant="ghost" asChild className="self-start">
-          <Link {...addSourceLink(space.title)}>
-            <Icon name="plus" size={20} />
-            Добавить источник
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-x-2">
+          <Button variant="ghost" asChild>
+            <Link {...addSourceLink(space.title)}>
+              <Icon name="plus" size={20} />
+              Добавить источник
+            </Link>
+          </Button>
+          <Button variant="ghost" leadingIcon="document" onClick={onAddDocument}>
+            Добавить документ
+          </Button>
+        </div>
       </Card>
 
       <Card padding="sm" data-part="sections">

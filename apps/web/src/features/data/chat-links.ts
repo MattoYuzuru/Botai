@@ -20,7 +20,7 @@ export const connectUniversityLink = (): ChatLink => chatDraftLink(CONNECT_UNIVE
 
 /** «Добавить источник» вуза: готовая просьба с названием вуза; какой именно источник, допишет человек. */
 export const addSourceDraft = (university: string): string =>
-  `Давай добавим для ${university} ещё один источник: `;
+  `Давай добавим источник для вуза «${university}»: `;
 
 export const addSourceLink = (university: string): ChatLink => chatDraftLink(addSourceDraft(university));
 

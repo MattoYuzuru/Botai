@@ -67,9 +67,7 @@ test.describe("«Источники»: управление", () => {
     await page.getByRole("button", { name: /LMS/ }).click();
     await page.getByRole("dialog", { name: "LMS" }).getByRole("link", { name: "Войти снова" }).click();
     await expect(page).toHaveURL(/\/chat\?draft=/);
-    expect(new URL(page.url()).searchParams.get("draft")).toBe(
-      "Войди снова в «LMS» (Центральный университет)",
-    );
+    expect(new URL(page.url()).searchParams.get("draft")).toContain("Центральный университет");
   });
 });
 

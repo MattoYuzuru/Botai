@@ -23,6 +23,9 @@ export interface SourceStatusBarProps {
   className?: string;
 }
 
+/** Минимальная ширина соседа вместе с промежутком: зона нажатия 44 px (`min-w-11`) и `gap-1`, в rem. */
+const NEIGHBOUR_MIN_REM = 3;
+
 const iconTone = {
   info: "text-info",
   warning: "text-warning",
@@ -49,6 +52,9 @@ function describeChip(item: SourceStatusBarItem, nowMs: number) {
  * то же место (шапка) и то же поведение. Пояснение («Обновлено 20 минут назад») раскрывается по наведению,
  * фокусу с клавиатуры и касанию; нажатие ничего не фильтрует и не запускает.
  *
+ * Состояние кнопки — «закреплено касанием» (`aria-pressed`): наведение и фокус раскрывают чип без него, а
+ * полное пояснение уже есть в имени кнопки (`aria-label`).
+ *
  * Плавность (styleguide §5): ширина пояснения анимируется через `grid-template-columns: 0fr → 1fr`, то есть
  * ровно до ширины текста за всё время перехода и без скачка `max-width`; соседние чипы стоят в одной строке
  * без переноса и сдвигаются вместе с ним, при уходе курсора возвращаются тем же переходом. Раскрытый чип не
@@ -70,7 +76,10 @@ export function SourceStatusBar({
       if (!list.current?.contains(event.target as Node)) setPinned(null);
     };
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPinned(null);
+      // Escape принадлежит открытому слою: шит или диалог закрывается первым, а чип остаётся как был.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      setPinned(null);
     };
     document.addEventListener("pointerdown", onOutside);
     document.addEventListener("keydown", onEscape);
@@ -81,6 +90,8 @@ export function SourceStatusBar({
   }, [pinned]);
 
   if (items.length === 0) return null;
+  // Раскрытый чип не вытесняет соседей за край: каждому соседу остаётся своя минимальная зона нажатия.
+  const neighbourSafeWidth = `calc(100% - ${(items.length - 1) * NEIGHBOUR_MIN_REM}rem)`;
   return (
     <ul
       ref={list}
@@ -95,12 +106,13 @@ export function SourceStatusBar({
           <li
             key={item.id}
             data-expanded={expanded || undefined}
-            className="group/chip min-w-0 shrink hover:shrink-0 has-[:focus-visible]:shrink-0 data-[expanded]:shrink-0"
+            style={{ maxWidth: neighbourSafeWidth }}
+            className="group/chip max-w-full min-w-11 shrink hover:shrink-0 has-[:focus-visible]:shrink-0 data-[expanded]:shrink-0"
           >
             <button
               type="button"
               aria-label={`${item.title}: ${detail}`}
-              aria-expanded={expanded}
+              aria-pressed={expanded}
               data-source-state={item.state}
               data-space-id={item.id}
               data-expanded={expanded || undefined}

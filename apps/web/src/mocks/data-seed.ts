@@ -89,6 +89,8 @@ interface EventTemplate {
   address?: string;
   group?: string;
   lesson?: number;
+  /** Ссылка занятия от источника (поле `url`): отдельно от `links[]`. */
+  url?: string;
   links?: readonly EventLink[];
   attributes?: readonly EventAttribute[];
 }
@@ -96,7 +98,7 @@ interface EventTemplate {
 /** Здание синтетического вуза: адрес и корпус одни и те же во всех парах, как на сайте настоящего вуза. */
 const HSE_ADDRESS = "ул. Учебная, д. 11";
 const HSE_GROUP = "ПМ-3 курс 26/27";
-const HSE_CAMPUS: EventAttribute = { label: "Корпус", value: "Главный корпус", icon: "building" };
+const HSE_CAMPUS: EventAttribute = { label: "Корпус", value: "Главный корпус" };
 
 const EVENT_TEMPLATES: readonly EventTemplate[] = [
   {
@@ -132,7 +134,7 @@ const EVENT_TEMPLATES: readonly EventTemplate[] = [
     group: HSE_GROUP,
     lesson: 3,
     links: [{ url: "https://lk.fakeuni.test/materials/algorithms", label: "Материалы занятия" }],
-    attributes: [HSE_CAMPUS, { label: "Форма контроля", value: "Контрольная работа", icon: null }],
+    attributes: [HSE_CAMPUS, { label: "Форма контроля", value: "Контрольная работа" }],
   },
   {
     day: 0,
@@ -147,7 +149,7 @@ const EVENT_TEMPLATES: readonly EventTemplate[] = [
     group: "Продукт 26/27",
     lesson: 4,
     links: [{ url: "https://my.fakeuni.test/meet/product-101", label: "Подключиться к занятию" }],
-    attributes: [{ label: "Платформа", value: "Видеосвязь", icon: null }],
+    attributes: [{ label: "Платформа", value: "Видеосвязь" }],
   },
   {
     day: 0,
@@ -160,6 +162,7 @@ const EVENT_TEMPLATES: readonly EventTemplate[] = [
     source: "hse",
     group: HSE_GROUP,
     lesson: 5,
+    url: "https://lk.fakeuni.test/classroom/english",
   },
   {
     day: 1,
@@ -334,8 +337,7 @@ export function seedEvents(db: MockDb): ScheduleEvent[] {
         courseTitle: template.course ?? null,
         links: [...(template.links ?? [])],
         attributes: [...(template.attributes ?? [])],
-        url: null,
-        openUrl: prov.openUrl,
+        url: template.url ?? null,
         changed: Boolean(template.changed) && offset >= 0 && offset < 7,
         conflictsWith: [],
         provenance: prov,

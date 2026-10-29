@@ -70,7 +70,7 @@ function EventDetails({
   const details = eventDetails(event, { timeZone });
   const format = EVENT_FORMAT_LABEL[event.format];
   const connection = space?.connections.find((row) => row.id === event.provenance.connectionId);
-  const openUrl = openUrlOf(event, event.provenance, connection);
+  const openUrl = openUrlOf(event.provenance, connection);
   const partners = event.conflictsWith.map((id) => events.find((row) => row.id === id) ?? null);
 
   return (

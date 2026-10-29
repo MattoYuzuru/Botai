@@ -233,7 +233,6 @@ describe("«Расписание»: карточка пары по пресет�
     const event = eventFixture({
       id: "no-ui",
       title: "Пара без страницы",
-      openUrl: null,
       provenance: provenanceFixture({
         connectionId: portal?.id,
         spaceId: space.id,
@@ -248,6 +247,20 @@ describe("«Расписание»: карточка пары по пресет�
     expect(within(sheet).getByRole("link", { name: /Открыть в личном кабинете/ })).toHaveAttribute(
       "href",
       "https://lk.fakeuni.test/",
+    );
+    for (const link of sheet.querySelectorAll("a[href]"))
+      expect(link.getAttribute("href")).not.toContain("/api/");
+  });
+
+  it("ссылка занятия от источника (поле url) показана онлайн-ссылкой, адрес API — никогда", async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    await userEvent.click(within(list).getByRole("button", { name: /Английский язык/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Английский язык" });
+    expect(within(sheet).getByRole("link", { name: "Ссылка на занятие" })).toHaveAttribute(
+      "href",
+      "https://lk.fakeuni.test/classroom/english",
     );
     for (const link of sheet.querySelectorAll("a[href]"))
       expect(link.getAttribute("href")).not.toContain("/api/");

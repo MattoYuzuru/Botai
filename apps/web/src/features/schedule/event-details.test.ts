@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eventFixture } from "@/test/data-fixtures";
+import type { ScheduleEvent } from "@/api/types";
+import { eventFixture, provenanceFixture } from "@/test/data-fixtures";
 import { attributeIcon, compactFacts, EVENT_FIELDS, eventDetails } from "./event-details";
 
 const MSK = "Europe/Moscow";
@@ -40,8 +41,8 @@ describe("пресет eventDetails: показывает только то, ч�
     expect(icon("address")).toBe("address");
     expect(icon("room")).toBe("room");
     expect(icon("time")).toBe("time");
-    expect(attributeIcon({ label: "Корпус", icon: null })).toBe("building");
-    expect(attributeIcon({ label: "Что-то своё", icon: "building" })).toBe("building");
+    expect(attributeIcon("Корпус")).toBe("building");
+    expect(attributeIcon("Что-то своё")).toBe("info");
   });
 
   it("реестр расширяем: новое поле — строка реестра, карточка подхватывает его сама", () => {
@@ -66,16 +67,15 @@ describe("пресет eventDetails: тип занятия, атрибуты и 
     expect(eventDetails(eventFixture({ kind: "other", kindText: " " })).badge).toBeNull();
   });
 
-  it("атрибуты: иконка — подсказка источника, иначе по подписи, иначе «информация»; повтор значения скрыт", () => {
+  it("атрибуты: иконка выводится из подписи (контракт: только {label, value}), иначе «информация»; повтор значения скрыт", () => {
     const event = eventFixture({
       address: "Покровский б-р, д.11",
       attributes: [
-        { label: "Корпус", value: "Главный корпус", icon: "building" },
+        { label: "Корпус", value: "Главный корпус" },
         { label: "Кампус", value: "Покровка" },
-        { label: "Форма контроля", value: "Контрольная работа", icon: null },
+        { label: "Форма контроля", value: "Контрольная работа" },
         { label: "Адрес здания", value: "покровский б-р, д.11" },
         { label: "Пустое", value: " " },
-        { label: "Неизвестная иконка", value: "Что-то", icon: "map-pin" },
       ],
     });
     const attributes = eventDetails(event).facts.filter((fact) => fact.key.startsWith("attribute-"));
@@ -83,8 +83,25 @@ describe("пресет eventDetails: тип занятия, атрибуты и 
       ["Корпус", "building", "Главный корпус"],
       ["Кампус", "building", "Покровка"],
       ["Форма контроля", "info", "Контрольная работа"],
-      ["Неизвестная иконка", "info", "Что-то"],
     ]);
+  });
+
+  it("лишние поля атрибута и прототипные имена не ломают карточку: иконка только по подписи", () => {
+    // Бэкенд может приложить к атрибуту что угодно; читаются только label и value.
+    const hostile = [
+      { label: "constructor", value: "x", icon: "constructor" },
+      { label: "__proto__", value: "y", icon: "__proto__" },
+      { label: "toString", value: "z", icon: "toString" },
+    ] as unknown as ScheduleEvent["attributes"];
+    const facts = eventDetails(eventFixture({ attributes: hostile })).facts;
+    expect(facts.filter((fact) => fact.key.startsWith("attribute-")).map((fact) => fact.icon)).toEqual([
+      "info",
+      "info",
+      "info",
+    ]);
+    for (const label of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(attributeIcon(label)).toBe("info");
+    }
   });
 
   it("онлайн-ссылки: подпись источника, иначе хост; небезопасные схемы отбрасываются", () => {
@@ -101,6 +118,41 @@ describe("пресет eventDetails: тип занятия, атрибуты и 
       { href: "https://www.fakeuni.test/record", label: "fakeuni.test" },
     ]);
   });
+
+  it("ссылка занятия `url` — тоже онлайн-ссылка, без повторов с links[] и без служебного адреса API", () => {
+    const own = eventFixture({ url: "https://lk.fakeuni.test/classroom/1" });
+    expect(eventDetails(own).links).toEqual([
+      { href: "https://lk.fakeuni.test/classroom/1", label: "Ссылка на занятие" },
+    ]);
+    const duplicated = eventFixture({
+      url: "https://lk.fakeuni.test/classroom/1",
+      links: [{ url: "https://lk.fakeuni.test/classroom/1", label: "Класс" }],
+    });
+    expect(eventDetails(duplicated).links).toEqual([
+      { href: "https://lk.fakeuni.test/classroom/1", label: "Класс" },
+    ]);
+    // Источник может положить в `url` адрес API: это провенанс, а не ссылка для человека.
+    const api = eventFixture({
+      url: "https://lk.fakeuni.test/api/get-myschedule?begin_date=2026-10-26",
+      provenance: provenanceFixture({
+        sourceUrl: "https://lk.fakeuni.test/api/get-myschedule?begin_date=2026-10-26",
+      }),
+    });
+    expect(eventDetails(api).links).toEqual([]);
+    expect(eventDetails(eventFixture({ url: "javascript:alert(1)" })).links).toEqual([]);
+  });
+
+  it("одинаковый адрес в links[] показан один раз: ключи кнопок не сталкиваются", () => {
+    const event = eventFixture({
+      links: [
+        { url: "https://my.fakeuni.test/meet/1", label: "Подключиться" },
+        { url: "https://my.fakeuni.test/meet/1", label: "Подключиться ещё раз" },
+      ],
+    });
+    expect(eventDetails(event).links).toEqual([
+      { href: "https://my.fakeuni.test/meet/1", label: "Подключиться" },
+    ]);
+  });
 });
 
 describe("компактный вариант для карточки в списке и сетке", () => {
@@ -113,8 +165,8 @@ describe("компактный вариант для карточки в спи�
       lessonNumber: 3,
       courseTitle: "Математический анализ",
       attributes: [
-        { label: "Форма контроля", value: "Контрольная работа", icon: null },
-        { label: "Корпус", value: "Главный корпус", icon: "building" },
+        { label: "Форма контроля", value: "Контрольная работа" },
+        { label: "Корпус", value: "Главный корпус" },
       ],
     });
     // Здание стоит рядом с адресом и аудиторией, а не в хвосте.

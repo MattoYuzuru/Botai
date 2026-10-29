@@ -33,7 +33,6 @@ export function eventFixture(patch: Partial<ScheduleEvent> = {}): ScheduleEvent 
     links: [],
     attributes: [],
     url: null,
-    openUrl: null,
     changed: false,
     conflictsWith: [],
     provenance: provenanceFixture(),

@@ -5,7 +5,12 @@ import { useRef, useState } from "react";
 import { humanMessage } from "@/api/errors";
 import type { Connection } from "@/api/types";
 import { chatThreadLink, connectionChatLink } from "@/features/data/chat-links";
-import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
+import {
+  connectionKindTitle,
+  describeConnection,
+  describeTask,
+  originLabel,
+} from "@/features/data/connection-status";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
 import { siteUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
@@ -111,7 +116,7 @@ function ConnectionDetails({
         )}
         {connection.activeTask && (
           <DetailRow icon="repairing" label="Сейчас в работе">
-            {connection.activeTask.title}
+            {describeTask(connection.activeTask)}
           </DetailRow>
         )}
         <DetailRow icon="lock" label="Пароль">

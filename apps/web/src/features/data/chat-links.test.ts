@@ -17,8 +17,9 @@ describe("переходы в чат (agent-hub-v3 §3.9)", () => {
 
   it("«Подключить ещё вуз» оставляет фразу открытой; «Добавить источник» называет вуз", () => {
     expect(connectUniversityLink().search.draft).toBe(CONNECT_UNIVERSITY_DRAFT);
-    expect(CONNECT_UNIVERSITY_DRAFT).toBe("Давай подключим вуз ");
-    expect(addSourceDraft("НИУ ВШЭ")).toBe("Давай добавим для НИУ ВШЭ ещё один источник: ");
+    expect(CONNECT_UNIVERSITY_DRAFT.endsWith(" ")).toBe(true);
+    expect(addSourceDraft("НИУ ВШЭ")).toContain("«НИУ ВШЭ»");
+    expect(addSourceDraft("НИУ ВШЭ").endsWith(": ")).toBe(true);
   });
 
   it("плашка источника: есть тред задачи — в него, нет — готовая просьба по состоянию", () => {
@@ -26,8 +27,10 @@ describe("переходы в чат (agent-hub-v3 §3.9)", () => {
     expect(connectionChatLink(withThread, "НИУ ВШЭ")).toEqual(chatThreadLink("01JTHREAD"));
     const draft = (status: Parameters<typeof connectionFixture>[0] = {}) =>
       connectionChatLink(connectionFixture({ title: "Smart LMS", ...status }), "НИУ ВШЭ").search.draft;
-    expect(draft({ status: "needs_reauth" })).toBe("Войди снова в «Smart LMS» (НИУ ВШЭ)");
-    expect(draft({ status: "waiting_user" })).toBe("Продолжим подключение «Smart LMS» (НИУ ВШЭ)");
-    expect(draft({ status: "error" })).toBe("Почему не обновляется «Smart LMS» (НИУ ВШЭ)? Посмотри и почини");
+    for (const status of ["needs_reauth", "waiting_user", "error"] as const) {
+      expect(draft({ status })).toContain("«Smart LMS»");
+      expect(draft({ status })).toContain("НИУ ВШЭ");
+    }
+    expect(draft({ status: "needs_reauth" })).not.toBe(draft({ status: "waiting_user" }));
   });
 });

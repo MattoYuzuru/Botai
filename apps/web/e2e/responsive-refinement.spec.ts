@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { expectFitsWidth, freezeClock, open } from "./data-support";
 import { expectSheetReady } from "./support";
 
@@ -50,11 +50,8 @@ test("шапка, предупреждение и пустые данные на
   await page.screenshot({ path: info.outputPath(`today-${width}.png`), fullPage: true });
 });
 
-test("три вуза в шапке: пояснение раскрывается плавно, соседи сдвигаются, без фильтрации", async ({
-  page,
-}, info) => {
-  const phone = info.project.name === "phone";
-  await page.setViewportSize({ width: phone ? 400 : 1512, height: phone ? 775 : 982 });
+/** Три вуза в базе мока: ВШЭ, ЦУ и «Синтетический университет»; «Сегодня» без данных, подключения устарели. */
+async function openWithThreeSpaces(page: Page) {
   await open(page, "/?data=quiet", "stale");
   await page.evaluate(async () => {
     const path = "/src/mocks/db.ts";
@@ -72,13 +69,21 @@ test("три вуза в шапке: пояснение раскрывается
     persistDb(db);
   });
   await page.goto("/?data=quiet&latency=0");
+}
+
+test("три вуза в шапке: пояснение раскрывается плавно, соседи сдвигаются, без фильтрации", async ({
+  page,
+}, info) => {
+  const phone = info.project.name === "phone";
+  await page.setViewportSize({ width: phone ? 400 : 1512, height: phone ? 775 : 982 });
+  await openWithThreeSpaces(page);
   const statuses = page.locator("header").getByRole("list", { name: "Статусы вузов" });
   const chips = statuses.getByRole("button");
   await expect(chips).toHaveCount(3);
   const status = chips.first();
   const detail = status.locator("[data-source-detail]");
   const label = detail.locator("span.block");
-  await expect(status).toHaveAttribute("aria-expanded", "false");
+  await expect(status).toHaveAttribute("aria-pressed", "false");
   expect((await detail.boundingBox())?.width).toBe(0);
 
   // Плавность проверяем по свойствам перехода, а не по таймингам: ширина идёт через grid-template-columns
@@ -116,14 +121,14 @@ test("три вуза в шапке: пояснение раскрывается
   await expect.poll(lefts).toEqual(rest);
 
   await status.click();
-  await expect(status).toHaveAttribute("aria-expanded", "true");
+  await expect(status).toHaveAttribute("aria-pressed", "true");
   await expect(detail).toHaveCSS("opacity", "1");
-  await expect(statuses.getByRole("button", { expanded: true })).toHaveCount(1);
+  await expect(statuses.getByRole("button", { pressed: true })).toHaveCount(1);
   await page.keyboard.press("Escape");
-  await expect(status).toHaveAttribute("aria-expanded", "false");
+  await expect(status).toHaveAttribute("aria-pressed", "false");
   await status.click();
   await page.getByRole("heading", { name: "Сегодня", exact: true }).click();
-  await expect(status).toHaveAttribute("aria-expanded", "false");
+  await expect(status).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "stale");
   await expectFitsWidth(page, phone ? 400 : 1512);
 
@@ -134,6 +139,37 @@ test("три вуза в шапке: пояснение раскрывается
   // Сокращённое движение: переход не 0.28 с, а 1 мс, информация та же.
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect(await detail.evaluate((node) => getComputedStyle(node).transitionDuration)).toContain("0.001s");
+});
+
+test("320 px: раскрытый чип с длинным пояснением не выходит за экран и не выталкивает соседей", async ({
+  page,
+  context,
+}, info) => {
+  test.skip(info.project.name !== "phone", "узкий экран телефона");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openWithThreeSpaces(page);
+  const chips = page.locator("header").getByRole("list", { name: "Статусы вузов" }).getByRole("button");
+  await expect(chips).toHaveCount(3);
+  // Без сети пояснение самое длинное: «Нет сети. Показан снимок от …».
+  await context.setOffline(true);
+  await expect(chips.first()).toHaveAttribute("data-source-state", "offline");
+  for (const index of [0, 1, 2]) {
+    await chips.nth(index).click();
+    await expect(chips.nth(index)).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(
+        () =>
+          chips.evaluateAll((nodes) =>
+            nodes.every((node) => {
+              const box = node.getBoundingClientRect();
+              return box.left >= 0 && box.right <= 320 && box.width >= 44;
+            }),
+          ),
+        { message: `чипы внутри экрана при раскрытом чипе ${index}` },
+      )
+      .toBe(true);
+    await expectFitsWidth(page, 320, `раскрыт чип ${index}`);
+  }
 });
 
 test("laptop: наведение раскрывает пояснение, уход курсора возвращает; соседние чипы не перепрыгивают", async ({
@@ -152,7 +188,7 @@ test("laptop: наведение раскрывает пояснение, ухо
   await expect.poll(async () => (await lefts())[1]).toBeGreaterThan(rest[1] ?? 0);
   await page.mouse.move(640, 500);
   await expect.poll(lefts).toEqual(rest);
-  await expect(chips.first()).toHaveAttribute("aria-expanded", "false");
+  await expect(chips.first()).toHaveAttribute("aria-pressed", "false");
 });
 
 test("подключение: поиск с клавиатуры, отдельный повторный вход, обе темы и крупный текст", async ({

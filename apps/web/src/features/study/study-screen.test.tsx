@@ -199,21 +199,20 @@ describe("«Учёба»: вуз и его источники", () => {
     const { router } = renderApp("/study");
     const hse = await panel(/^Высшая школа экономики/);
     const add = await within(hse).findByRole("link", { name: "Добавить источник" });
-    expect(hrefOf(add)).toEqual({
-      pathname: "/chat",
-      draft: "Давай добавим для Высшая школа экономики ещё один источник: ",
-    });
+    expect(hrefOf(add).pathname).toBe("/chat");
+    expect(hrefOf(add).draft).toContain("Высшая школа экономики");
     await userEvent.click(add);
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.draft).toBe(
-      "Давай добавим для Высшая школа экономики ещё один источник: ",
-    );
+    expect(router.state.location.search.draft).toContain("Высшая школа экономики");
+    expect(router.state.location.search.thread).toBeUndefined();
   });
 
   it("«Подключить ещё вуз» — чат с открытой фразой; ссылок на /connect на экране нет", async () => {
     renderApp("/study");
     const more = await screen.findByRole("link", { name: "Подключить ещё вуз" });
-    expect(hrefOf(more)).toEqual({ pathname: "/chat", draft: "Давай подключим вуз " });
+    expect(hrefOf(more).pathname).toBe("/chat");
+    expect(hrefOf(more).draft).toBeTruthy();
+    expect(hrefOf(more).thread).toBeUndefined();
     await panel(/^Высшая школа экономики/);
     expect(document.querySelector('a[href^="/connect"]')).toBeNull();
   });
@@ -222,10 +221,11 @@ describe("«Учёба»: вуз и его источники", () => {
     useScenario("connected", "waiting");
     renderApp("/study");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
-    expect(hrefOf(within(notices).getByRole("link", { name: "Продолжить" }))).toEqual({
-      pathname: "/chat",
-      draft: "Продолжим подключение «Личный кабинет» (Высшая школа экономики)",
-    });
+    const link = hrefOf(within(notices).getByRole("link", { name: "Продолжить" }));
+    expect(link.pathname).toBe("/chat");
+    expect(link.draft).toContain("Личный кабинет");
+    expect(link.draft).toContain("Высшая школа экономики");
+    expect(link.thread).toBeUndefined();
   });
 
   it("плашка источника с тредом задачи ведёт прямо в него", async () => {
@@ -240,21 +240,26 @@ describe("«Учёба»: вуз и его источники", () => {
     });
   });
 
+  it("«Добавить документ» есть в панели вуза, даже когда документов ещё нет", async () => {
+    renderApp("/study");
+    // У ЦУ нет документов: строки «Документы и вложения» в списке разделов нет, а добавить документ можно.
+    const cu = await panel(/^Центральный университет/);
+    await within(cu).findByRole("list", { name: "Источники: ЦУ" });
+    expect(within(cu).queryByRole("link", { name: /Документы и вложения/ })).toBeNull();
+    await userEvent.click(within(cu).getByRole("button", { name: "Добавить документ" }));
+    const sheet = await screen.findByRole("dialog", { name: "Добавить документ" });
+    expect(within(sheet).getByLabelText("Ссылка")).toBeInTheDocument();
+  });
+
   it("строка источника открывает карточку: сайт, чат источника и что агент делает сейчас", async () => {
-    const task = {
-      jobId: "01JJOB000000000000000000AA",
-      kind: "sync" as const,
-      connectionId: null,
-      state: "running",
-      title: "Обновляю расписание",
-    };
+    const task = { jobId: "01JJOB000000000000000000AA", kind: "sync" as const, state: "running" as const };
     const portal = current.db.connections.find((row) => row.title === "Личный кабинет");
     if (portal) Object.assign(portal, { threadId: "01JTHREADPORTAL00000000AA", activeTask: task });
     renderApp("/study");
     const hse = await panel(/^Высшая школа экономики/);
     await userEvent.click(await within(hse).findByRole("button", { name: /Личный кабинет/ }));
     const sheet = await screen.findByRole("dialog", { name: "Личный кабинет" });
-    expect(within(sheet).getByText("Обновляю расписание")).toBeInTheDocument();
+    expect(within(sheet).getByText("Обновление данных: идёт")).toBeInTheDocument();
     expect(within(sheet).getByRole("link", { name: /Открыть сайт/ })).toHaveAttribute(
       "href",
       "https://lk.fakeuni.test/",

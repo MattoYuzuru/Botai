@@ -164,7 +164,7 @@ export function sourceFrom(
     ?.connections.find((row) => row.id === provenance.connectionId);
   return {
     title: connection?.title ?? fallbackTitle,
-    url: openUrlOf(null, provenance, connection),
+    url: openUrlOf(provenance, connection),
     fetchedAt: Date.parse(provenance.fetchedAt),
     stale: provenance.stale,
     spaceId: provenance.spaceId,

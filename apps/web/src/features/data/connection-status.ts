@@ -7,7 +7,7 @@ import {
   type IconName,
   safeHttpUrl,
 } from "@botai/design";
-import type { Connection, ConnectionKind, ConnectionStatus } from "@/api/types";
+import type { Connection, ConnectionKind, ConnectionStatus, ConnectionTask } from "@/api/types";
 
 export type ConnectionTone = "success" | "info" | "warning" | "danger" | "neutral";
 /** Бизнес-действие рядом со статусом. Кнопки «Повторить» нет: повторы идут в фоне. */
@@ -49,11 +49,33 @@ const KIND_ICONS: Record<ConnectionKind, IconName> = {
   other: "connection",
 };
 
-/** Название вида подключения для подписи под именем. */
-export const connectionKindTitle = (kind: ConnectionKind): string => KIND_TITLES[kind];
+/** Значение по собственному ключу: строки бэкенда не должны находить `constructor` и прочее из прототипа. */
+const own = <V>(record: Readonly<Record<string, V>>, key: string, fallback: NoInfer<V>): V =>
+  Object.hasOwn(record, key) ? (record[key] as V) : fallback;
 
-/** Иконка вида подключения: источник узнаётся в списке по виду, а не по адресу. */
-export const connectionKindIcon = (kind: ConnectionKind): IconName => KIND_ICONS[kind];
+/** Название вида подключения для подписи под именем; неизвестный вид (устаревший `mail`, новый от бэкенда) — «Источник». */
+export const connectionKindTitle = (kind: ConnectionKind): string =>
+  own(KIND_TITLES, kind, KIND_TITLES.other);
+
+/** Иконка вида подключения: источник узнаётся в списке по виду, а не по адресу; неизвестный вид — общая. */
+export const connectionKindIcon = (kind: ConnectionKind): IconName => own(KIND_ICONS, kind, KIND_ICONS.other);
+
+const TASK_KIND: Record<ConnectionTask["kind"], string> = {
+  connect: "Подключение",
+  repair: "Починка",
+  sync: "Обновление данных",
+  ingest: "Чтение документа",
+};
+
+const TASK_STATE: Record<ConnectionTask["state"], string> = {
+  queued: "ждёт очереди",
+  running: "идёт",
+  waiting_user: "ждёт вашего ответа",
+};
+
+/** Что агент делает с источником прямо сейчас: «Обновление данных: идёт». Название задачи бэкенд не присылает. */
+export const describeTask = (task: ConnectionTask): string =>
+  `${own(TASK_KIND, task.kind, "Работа с источником")}: ${own(TASK_STATE, task.state, "идёт")}`;
 
 function snapshotText(lastSyncAt: string | null, nowMs: number, timeZone: string): string | null {
   const at = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;

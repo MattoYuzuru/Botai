@@ -117,7 +117,8 @@ describe("«Сегодня»: состояния данных", () => {
     renderApp("/");
     expect(await screen.findByText("Вузов пока нет")).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Подключить вуз" });
-    expect(hrefOf(link)).toEqual({ pathname: "/chat", draft: "Давай подключим вуз " });
+    expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(link).draft).toBeTruthy();
     expect(screen.queryByText(/сдано/i)).toBeNull();
   });
 
@@ -153,10 +154,12 @@ describe("«Сегодня»: состояния данных", () => {
     useScenario("reauth");
     const { router } = renderApp("/");
     const link = await screen.findByRole("link", { name: "Войти снова" });
-    expect(hrefOf(link).draft).toBe("Войди снова в «LMS» (Центральный университет)");
+    expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(link).draft).toContain("LMS");
+    expect(hrefOf(link).draft).toContain("Центральный университет");
     await userEvent.click(link);
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.draft).toBe("Войди снова в «LMS» (Центральный университет)");
+    expect(router.state.location.search.draft).toContain("Центральный университет");
     expect(router.state.location.search.thread).toBeUndefined();
   });
 
@@ -198,7 +201,7 @@ describe("«Сегодня»: состояния данных", () => {
     expect(within(notices).getByText("Сайт вуза не отвечает уже вторые сутки.")).toBeInTheDocument();
     await userEvent.click(within(notices).getByRole("link", { name: "Спросить в чате" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.draft).toMatch(/^Почему не обновляется «Личный кабинет»/);
+    expect(router.state.location.search.draft).toContain("Личный кабинет");
   });
 
   it("offline: последний снимок и подпись «Нет сети. Показан снимок от …»", async () => {

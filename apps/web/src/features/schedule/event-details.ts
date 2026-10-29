@@ -1,5 +1,5 @@
 import { formatTime, type IconName, safeHttpUrl } from "@botai/design";
-import type { EventAttribute, ScheduleEvent } from "@/api/types";
+import type { ScheduleEvent } from "@/api/types";
 import type { EventFormat, EventKind } from "@/features/data/types";
 
 export const EVENT_KIND_LABEL: Record<EventKind, string | null> = {
@@ -37,8 +37,12 @@ export type EventDetailsSource = Pick<ScheduleEvent, "startsAt" | "endsAt"> &
       | "lessonNumber"
       | "links"
       | "attributes"
+      | "url"
     >
-  >;
+  > & {
+    /** Служебный адрес API: ссылкой занятия он не бывает, даже если источник положил его в `url`. */
+    provenance?: Pick<ScheduleEvent["provenance"], "sourceUrl">;
+  };
 
 export interface EventFieldContext {
   timeZone?: string;
@@ -103,21 +107,7 @@ export const EVENT_FIELDS: readonly EventFieldDef[] = [
   },
 ];
 
-/** Иконки, которые источник может подсказать в `attributes[].icon`. Остальные имена игнорируются. */
-const ATTRIBUTE_ICONS: Readonly<Record<string, IconName>> = {
-  building: "building",
-  campus: "building",
-  address: "address",
-  room: "room",
-  teacher: "teacher",
-  group: "group",
-  time: "time",
-  number: "number",
-  course: "course",
-  info: "info",
-};
-
-/** Подпись → иконка, когда источник иконку не назвал: «Кампус», «Корпус», «Здание» — учебное здание. */
+/** Подпись → иконка: «Кампус», «Корпус», «Здание» — учебное здание; всё, что не опознано, — «информация». */
 const ATTRIBUTE_LABELS: readonly (readonly [RegExp, IconName])[] = [
   [/кампус|корпус|здани|building|campus/i, "building"],
   [/адрес|address/i, "address"],
@@ -126,11 +116,13 @@ const ATTRIBUTE_LABELS: readonly (readonly [RegExp, IconName])[] = [
   [/групп|поток|group/i, "group"],
 ];
 
-/** Иконка атрибута: подсказка источника, иначе по подписи, иначе общая «информация». */
-export function attributeIcon(attribute: Pick<EventAttribute, "label" | "icon">): IconName {
-  const hint = attribute.icon?.trim().toLowerCase();
-  if (hint && hint in ATTRIBUTE_ICONS) return ATTRIBUTE_ICONS[hint] as IconName;
-  return ATTRIBUTE_LABELS.find(([pattern]) => pattern.test(attribute.label))?.[1] ?? "info";
+/**
+ * Иконка атрибута занятия. В контракте у атрибута только `{label, value}` (agent-hub-v3 §3.7), поэтому иконка
+ * выводится из подписи по этому реестру, а неопознанная подпись получает общую «информацию». Любые другие
+ * поля, которые источник мог бы приложить к атрибуту, не читаются.
+ */
+export function attributeIcon(label: string): IconName {
+  return ATTRIBUTE_LABELS.find(([pattern]) => pattern.test(label))?.[1] ?? "info";
 }
 
 /** Одна показанная строка: из реестра или из `attributes`. */
@@ -161,9 +153,31 @@ function linkLabel(label: string | null | undefined, url: URL): string {
   return clean(label) ?? url.hostname.replace(/^www\./, "");
 }
 
+/** Подпись ссылки занятия из поля `url`, у которого подписи нет. */
+const EVENT_URL_LABEL = "Ссылка на занятие";
+
+/**
+ * Онлайн-ссылки занятия без повторов по адресу: сначала `links[]` с подписями источника, затем `url` занятия
+ * (если это не служебный адрес API и его нет среди `links[]`). Небезопасные схемы отбрасываются.
+ */
+function eventLinks(event: EventDetailsSource): EventLinkView[] {
+  const views = new Map<string, EventLinkView>();
+  for (const link of event.links ?? []) {
+    const url = safeHttpUrl(link.url);
+    if (url && !views.has(url.href))
+      views.set(url.href, { href: url.href, label: linkLabel(link.label, url) });
+  }
+  const own = safeHttpUrl(event.url);
+  const api = safeHttpUrl(event.provenance?.sourceUrl);
+  if (own && own.href !== api?.href && !views.has(own.href)) {
+    views.set(own.href, { href: own.href, label: EVENT_URL_LABEL });
+  }
+  return [...views.values()];
+}
+
 /**
  * Пресет `eventDetails`: что показать в карточке пары. Берёт то, что есть: пустые поля пропускаются, а
- * атрибуты с тем же текстом, что уже показан полем, не повторяются. Один результат кормит и шит (все
+ * атрибуты с тем же текстом, что уже показан полем, не повторяются; ссылки — `links[]` и `url` без повторов. Один результат кормит и шит (все
  * строки и ссылки), и компактную карточку (`compactFacts`).
  */
 export function eventDetails(event: EventDetailsSource, context: EventFieldContext = {}): EventDetails {
@@ -179,7 +193,7 @@ export function eventDetails(event: EventDetailsSource, context: EventFieldConte
     const text = clean(attribute.value);
     if (!label || !text || seen.has(text.toLowerCase())) continue;
     seen.add(text.toLowerCase());
-    const icon = attributeIcon({ label, icon: attribute.icon });
+    const icon = attributeIcon(label);
     // Компактная карточка берёт из атрибутов только учебное здание: остальное — в шите.
     const fact: DetailFact = { key: `attribute-${index}`, icon, label, text, compact: icon === "building" };
     // Здание стоит рядом с адресом и аудиторией (после них и после уже поставленных зданий), остальное — в конце.
@@ -188,10 +202,7 @@ export function eventDetails(event: EventDetailsSource, context: EventFieldConte
       : -1;
     facts.splice(place === -1 ? facts.length : place + 1, 0, fact);
   }
-  const links = (event.links ?? []).flatMap((link): EventLinkView[] => {
-    const url = safeHttpUrl(link.url);
-    return url ? [{ href: url.href, label: linkLabel(link.label, url) }] : [];
-  });
+  const links = eventLinks(event);
   const badge = clean(event.kindText) ?? (event.kind ? EVENT_KIND_LABEL[event.kind] : null);
   return { badge, facts, links };
 }

@@ -108,7 +108,7 @@ function DeadlineDetails({
 
       <SourceCitation
         title={connection?.title ?? "Задания"}
-        url={openUrlOf(null, deadline.provenance, connection)}
+        url={openUrlOf(deadline.provenance, connection)}
         fetchedAt={Date.parse(deadline.provenance.fetchedAt)}
         nowMs={nowMs}
         timeZone={timeZone}

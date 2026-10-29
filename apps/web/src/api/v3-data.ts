@@ -1,8 +1,9 @@
 /**
  * Расширения контракта данных агент-хаба v3 (docs/plan/agent-hub-v3.md §3.5, §3.7), объявленные вручную:
  * бэкенд меняется параллельно, а `schema.gen.ts` перегенерируется только на интеграции. Каждый тип берёт
- * сгенерированный и подменяет поля расширения (`Omit<…> & Ext`), поэтому после перегенерации схемы код не
- * меняется, а `asV3` становится тождественным.
+ * сгенерированный и подменяет поля расширения (`Omit<…> & Ext`). Это утверждение формы, а не проверка:
+ * на интеграции, после перегенерации схемы, типы сверяются с бэкендом, а `asV3` и `Omit<…> & Ext`
+ * заменяются типами из `schema.gen.ts`.
  */
 import type { components } from "./schema.gen";
 
@@ -14,11 +15,10 @@ export interface EventLink {
   label: string;
 }
 
-/** Дополнительный атрибут занятия из источника; подпись общая (без личных значений), `icon` — подсказка. */
+/** Дополнительный атрибут занятия из источника; подпись общая (без личных значений). Иконку выводит пресет по подписи. */
 export interface EventAttribute {
   label: string;
   value: string;
-  icon?: string | null;
 }
 
 interface ProvenanceExt {
@@ -44,8 +44,6 @@ interface ScheduleEventExt extends WithProvenance {
   lessonNumber: number | null;
   links: EventLink[];
   attributes: EventAttribute[];
-  /** Страница интерфейса источника с этой парой. */
-  openUrl: string | null;
 }
 
 export type ScheduleEvent = Omit<Schemas["ScheduleEventOut"], keyof ScheduleEventExt> & ScheduleEventExt;
@@ -62,8 +60,8 @@ export type Today = Omit<Schemas["TodayOut"], "events" | "deadlines"> & {
 
 interface SpaceExt {
   /** «НИУ ВШЭ»: короткое имя вуза для чипов и подписей; у пространства без вуза — `null`. */
-  shortTitle: string | null;
-  aliases: string[];
+  shortTitle?: string | null;
+  aliases?: string[];
 }
 
 export type Space = Omit<Schemas["SpaceOut"], keyof SpaceExt> & SpaceExt;
@@ -80,13 +78,11 @@ export type ConnectionKind =
   | "calendar"
   | "other";
 
-/** Фоновая задача источника; форма — как у `ThreadOut.activeTask` (§3.2). */
+/** Фоновая задача источника (WS4): что делает агент сейчас; название и тред задачи в ответ не входят. */
 export interface ConnectionTask {
   jobId: string;
   kind: "connect" | "repair" | "sync" | "ingest";
-  connectionId: string | null;
-  state: string;
-  title: string;
+  state: "queued" | "running" | "waiting_user";
 }
 
 interface ConnectionExt {
@@ -108,7 +104,8 @@ interface Result {
 
 /**
  * Ответ типизированного клиента, чья форма уже расширена v3, но ещё не попала в `schema.gen.ts`. Единственное
- * место приведения: после перегенерации схемы вызов превращается в тождество и его можно убрать.
+ * место приведения типа (`as`): оно ничего не проверяет в рантайме, поэтому после перегенерации схемы и
+ * сверки типов с бэкендом вызовы `asV3` убираются.
  */
 export function asV3<T>(
   request: Promise<Result>,
