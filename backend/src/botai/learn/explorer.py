@@ -1462,7 +1462,7 @@ class Explorer:
         if base_spec is not None:
             base = base_spec["recipe"]
             endpoints = [e for e in copy.deepcopy(base["endpoints"]) if e["kind"] not in chosen]
-            bootstrap = copy.deepcopy(base.get("bootstrap", []))
+            bootstrap = copy.deepcopy(base.get("bootstrap", [])) if endpoints else []
             if bound_mode:
                 bindings.update(bind_parts(base["auth"], endpoints, bootstrap))
             retained_kinds = {e["kind"] for e in endpoints}

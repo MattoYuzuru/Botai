@@ -16,6 +16,12 @@ def bind_parts(
     Promotion of a legacy policy is equivalent to that stored policy. It does not fetch excluded
     endpoints or infer a new credential source. New author candidates already have compiled bindings.
     """
+    requests = [step for step in bootstrap]
+    requests.extend(
+        endpoint["request"] for endpoint in endpoints if not endpoint["request"].get("render")
+    )
+    if not requests:
+        return {}  # No copied HTTP authority survives; rendered requests own their browser session.
     session = auth.get("type") == "session"
     if auth.get("type") not in {"none", "cookie", "bearer", "session"}:
         raise BotaiError(ErrorCode.RECIPE_REJECTED, "Неизвестный способ авторизации")
@@ -28,10 +34,6 @@ def bind_parts(
             ErrorCode.RECIPE_REJECTED,
             "Прежний способ авторизации нельзя объединить с новой привязкой",
         )
-    requests = [step for step in bootstrap]
-    requests.extend(
-        endpoint["request"] for endpoint in endpoints if not endpoint["request"].get("render")
-    )
     result: dict[str, dict[str, Any]] = {}
     names = {
         (False, False): "bNone",

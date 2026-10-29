@@ -51,3 +51,14 @@ def test_legacy_default_bearer_promotes_without_inventing_a_header(header: str |
 def test_unrepresentable_authority_is_rejected(auth: dict[str, Any]) -> None:
     with pytest.raises(BotaiError):
         bind_parts(auth, [{"request": {"path": "/api", "authBinding": "old"}}], [])
+
+
+@pytest.mark.parametrize("rendered", [False, True])
+def test_no_retained_http_authority_needs_no_legacy_policy_translation(rendered: bool) -> None:
+    endpoints = [{"request": {"path": "/page", "render": True}}] if rendered else []
+    assert bind_parts({"type": "bearer", "headerName": "X-Api-Token"}, endpoints, []) == {}
+
+
+def test_retained_bootstrap_still_requires_a_representable_policy() -> None:
+    with pytest.raises(BotaiError):
+        bind_parts({"type": "bearer", "headerName": "X-Api-Token"}, [], [{"path": "/bootstrap"}])
