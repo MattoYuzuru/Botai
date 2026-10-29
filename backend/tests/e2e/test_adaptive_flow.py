@@ -82,7 +82,10 @@ class DeepPlanner(ls.EvidenceLlm):
                 ensure_ascii=False,
             )
         )
-        schedule = ls.answer([recipes.timetable_endpoint(path="/api/deep-schedule")])
+        # The page fetched the address without a query: the recipe cites exactly that request.
+        deep_schedule = recipes.timetable_endpoint(path="/api/deep-schedule")
+        deep_schedule["request"].pop("query")
+        schedule = ls.answer([deep_schedule])
         # The external-service label is observed too: the existing policy extractor checks
         # whether it states a restriction on third-party access before recipe authoring.
         warning = LlmResponse(content='{"warning":null}')
