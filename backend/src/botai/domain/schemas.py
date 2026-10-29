@@ -3,18 +3,36 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
+from pydantic import ConfigDict, Field
+
 from botai.core.api import ApiModel
 
 
 class Provenance(ApiModel):
+    # Defaults keep every constructor working; the API contract still lists the fields as present.
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     connection_id: str
     space_id: str
-    source_url: str
+    source_url: str  # where the record was read; for an API source this is not a page to open
     fetched_at: datetime
     stale: bool
+    open_url: str | None = None  # the page of the source that shows the record (FR-042)
+
+
+class EventLink(ApiModel):
+    url: str
+    label: str
+
+
+class EventAttribute(ApiModel):
+    label: str
+    value: str
 
 
 class ScheduleEventOut(ApiModel):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     id: str
     title: str
     kind: Literal["lecture", "seminar", "lab", "exam", "consultation", "other"]
@@ -28,6 +46,12 @@ class ScheduleEventOut(ApiModel):
     changed: bool
     conflicts_with: list[str]  # ids of overlapping events from other spaces (FR-013)
     provenance: Provenance
+    kind_text: str | None = None  # the source's own wording of the class type
+    address: str | None = None
+    group: str | None = None
+    lesson_number: int | None = None
+    links: list[EventLink] = Field(default_factory=list)
+    attributes: list[EventAttribute] = Field(default_factory=list)
 
 
 class DeadlineOut(ApiModel):

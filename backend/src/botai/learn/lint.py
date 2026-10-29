@@ -32,7 +32,7 @@ from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
 from botai.sources.extract import selector_valid
 from botai.sources.readonly import is_read_only_post
-from botai.sources.vocab import REQUIRED, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
+from botai.sources.vocab import REQUIRED, STRUCTURED_FIELDS, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
 
 SCHEMA = "adapter-spec.schema.json"
 MAX_ISSUES = 50
@@ -374,7 +374,70 @@ def _endpoint(
                     "pagination.cursor", _p(*base, "pagination"), "курсор нужен путь и ответ JSON"
                 )
             )
+        if pagination["type"] == "dateWindow":
+            _date_window(pagination, request, (*base, "pagination"), issues)
+    if endpoint.get("uiUrl") is not None:
+        _ui_url(endpoint["uiUrl"], known, (*base, "uiUrl"), issues)
     _response(kind, response, (*base, "response"), issues)
+
+
+def _date_window(
+    pagination: Mapping[str, Any],
+    request: Mapping[str, Any],
+    base: tuple[Any, ...],
+    issues: list[LintIssue],
+) -> None:
+    """A date window moves one date template of the query; the walk must contain the window the
+    source's own page showed (offset 0), so that the first canary window reproduces a real read."""
+    moved = (request.get("query") or {}).get(pagination["param"])
+    if not isinstance(moved, str) or not templates.is_date_template(moved):
+        issues.append(
+            LintIssue(
+                "pagination.window_param",
+                _p(*base, "param"),
+                "окно двигает шаблон даты из query запроса",
+            )
+        )
+    if pagination["windows"] < 2:
+        issues.append(
+            LintIssue("pagination.window_count", _p(*base, "windows"), "нужно не меньше двух окон")
+        )
+    if pagination.get("startOffset", 0) + pagination["windows"] - 1 < 0:
+        issues.append(
+            LintIssue(
+                "pagination.window_range",
+                _p(*base, "startOffset"),
+                "обход должен включать окно, которое показывала страница источника",
+            )
+        )
+
+
+_UI_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}$")
+_UI_SHORT_NUMBER = re.compile(r"^\d{1,3}$")
+
+
+def _ui_url(
+    ui_url: Mapping[str, Any], known: set[str], base: tuple[Any, ...], issues: list[LintIssue]
+) -> None:
+    """The interface address is shared like the request: only structure and the same templates,
+    never an identifier, a date or a code that belongs to one student."""
+    _check_path(ui_url["path"], _p(*base, "path"), issues)
+    _check_template(ui_url["path"], known, _p(*base, "path"), issues)
+    for segment in unquote(unquote(templates.PLACEHOLDER.sub("", ui_url["path"]))).split("/"):
+        if segment and not _UI_WORD.match(segment):
+            issues.append(
+                LintIssue(
+                    "uiurl.personal", _p(*base, "path"), "сегмент адреса похож на идентификатор"
+                )
+            )
+    for key, value in (ui_url.get("query") or {}).items():
+        where = _p(*base, "query", key)
+        if SECRET_NAME.search(key):
+            issues.append(LintIssue("param.secret_name", where, "имя параметра похоже на секрет"))
+        _check_template(value, known, where, issues)
+        literal = templates.PLACEHOLDER.sub("", value)
+        if literal and not (_UI_WORD.match(literal) or _UI_SHORT_NUMBER.match(literal)):
+            issues.append(LintIssue("uiurl.personal", where, "значение адреса похоже на личное"))
 
 
 def _browser_plan(node: Any, base: tuple[Any, ...], issues: list[LintIssue]) -> None:
@@ -397,7 +460,7 @@ def _response(
     fields: Mapping[str, Any] = response["fields"]
     vocab = VOCAB[kind]
     for name in fields:
-        if name not in vocab:
+        if name not in vocab or name in STRUCTURED_FIELDS:
             issues.append(
                 LintIssue("field.unknown", _p(*base, "fields", name), "поля нет в словаре вида")
             )
@@ -459,6 +522,14 @@ def _response(
             operand = expansion.get(name)
             if isinstance(operand, Mapping):
                 _data_scalar(operand, response["format"], _p(*base, "expand", name), issues)
+    for index, link in enumerate(response.get("links") or []):
+        _data_scalar(link["url"], response["format"], _p(*base, "links", index, "url"), issues)
+        if isinstance(link.get("label"), Mapping):
+            _data_scalar(
+                link["label"], response["format"], _p(*base, "links", index, "label"), issues
+            )
+    for index, attribute in enumerate(response.get("attributes") or []):
+        _data_scalar(attribute, response["format"], _p(*base, "attributes", index), issues)
     if response.get("itemsPath") is not None:
         _check_pointer(response["itemsPath"], _p(*base, "itemsPath"), issues)
     if response.get("itemsSelector") is not None:
@@ -557,7 +628,7 @@ def _document(spec: Mapping[str, Any], ctx: LintContext, issues: list[LintIssue]
             LintIssue("table.kind", _p("table", "kind"), "вид не поддерживается таблицами")
         )
         return
-    allowed_columns = VOCAB[table["kind"]] | TABLE_EXTRA_FIELDS
+    allowed_columns = (VOCAB[table["kind"]] | TABLE_EXTRA_FIELDS) - STRUCTURED_FIELDS
     for target in table["columns"]:
         if target not in allowed_columns or target == "externalId":
             issues.append(
@@ -651,6 +722,11 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
                 yield from _browser_plan_literals(
                     request["browserPlan"], (*base, "request", "browserPlan")
                 )
+            ui_url = endpoint.get("uiUrl")
+            if ui_url is not None:
+                yield from _path_literals(ui_url["path"], (*base, "uiUrl", "path"))
+                for key, value in (ui_url.get("query") or {}).items():
+                    yield _p(*base, "uiUrl", "query", key), templates.PLACEHOLDER.sub("", value)
             response = endpoint["response"]
             if recipe["version"] == 2:
                 yield from _data_literals(response, (*base, "response"))
@@ -706,6 +782,7 @@ def _data_literals(node: Any, base: tuple[Any, ...]) -> Iterator[tuple[str, str]
                 "pattern",
                 "attr",
                 "as",
+                "label",
             }:
                 yield _p(*where), value
             elif isinstance(value, str) and key in {"path", "fallbackPath", "itemsPath"}:

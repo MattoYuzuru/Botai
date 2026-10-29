@@ -1324,6 +1324,40 @@
             }
           ],
           "default": null
+        },
+        "links": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "$ref": "#/$defs/v2JsonLink"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Онлайн-ссылки занятия (только scheduleEvents): адрес и подпись."
+        },
+        "attributes": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/v2JsonAttribute"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Дополнительные значения занятия под общей подписью (только scheduleEvents)."
         }
       },
       "required": [
@@ -1489,6 +1523,40 @@
             }
           ],
           "default": null
+        },
+        "links": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "$ref": "#/$defs/v2HtmlLink"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Онлайн-ссылки занятия (только scheduleEvents): адрес и подпись."
+        },
+        "attributes": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/v2HtmlAttribute"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Дополнительные значения занятия под общей подписью (только scheduleEvents)."
         }
       },
       "required": [
@@ -2152,7 +2220,8 @@
                 "none",
                 "offset",
                 "page",
-                "cursor"
+                "cursor",
+                "dateWindow"
               ]
             },
             "param": {
@@ -2179,8 +2248,99 @@
             },
             "totalPath": {
               "$ref": "#/$defs/pointer"
+            },
+            "stepDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31,
+              "description": "dateWindow: на сколько дней сдвигается окно (7 — неделя)."
+            },
+            "windows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12,
+              "description": "dateWindow: сколько окон читать (запросов на endpoint)."
+            },
+            "startOffset": {
+              "type": "integer",
+              "minimum": -4,
+              "maximum": 0,
+              "default": 0,
+              "description": "dateWindow: первое окно относительно окна, которое показывала страница источника (0). −1 — предыдущая неделя."
             }
-          }
+          },
+          "description": "dateWindow сдвигает шаблоны дат запроса на stepDays для каждого окна; param — ключ query с шаблоном даты. Окно 0 воспроизводит наблюдённый запрос.",
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "dateWindow"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "then": {
+                "required": [
+                  "param",
+                  "stepDays",
+                  "windows"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "limit"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "limitParam"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "cursorPath"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "totalPath"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "maxPages"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "else": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "stepDays"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "windows"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "startOffset"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
         },
         "response": {
           "oneOf": [
@@ -2191,6 +2351,30 @@
               "$ref": "#/$defs/v2HtmlResponse"
             }
           ]
+        },
+        "uiUrl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ],
+          "description": "Страница источника, где студент видит записи; компилятор выводит её из страницы-инициатора наблюдаемого запроса. Шаблоны те же, что у запроса.",
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "query": {
+              "type": "object",
+              "maxProperties": 12,
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/template"
+              }
+            }
+          }
         }
       },
       "allOf": [
@@ -2274,6 +2458,81 @@
                     "const": "none"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "pagination"
+            ],
+            "properties": {
+              "pagination": {
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "dateWindow"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "request": {
+                "properties": {
+                  "method": {
+                    "const": "GET"
+                  },
+                  "render": {
+                    "const": false
+                  }
+                },
+                "not": {
+                  "required": [
+                    "body"
+                  ]
+                }
+              },
+              "response": {
+                "not": {
+                  "required": [
+                    "expand"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "links"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "attributes"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "response"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "scheduleEvents"
               }
             }
           }
@@ -2565,6 +2824,161 @@
           }
         }
       ]
+    },
+    "v2JsonAttribute": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(/([^/~]|~[01])*)*$",
+          "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "fallbackPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(/([^/~]|~[01])*)*$",
+              "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Общий текст подписи, не значение из ответа."
+        }
+      },
+      "required": [
+        "label",
+        "path"
+      ],
+      "title": "JsonAttribute",
+      "type": "object"
+    },
+    "v2HtmlAttribute": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "attr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attr"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Общий текст подписи, не значение из ответа."
+        }
+      },
+      "required": [
+        "label",
+        "selector"
+      ],
+      "title": "HtmlAttribute",
+      "type": "object"
+    },
+    "v2JsonLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "title": "JsonLink",
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "v2HtmlLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "title": "HtmlLink",
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
     }
   }
 }

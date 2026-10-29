@@ -42,7 +42,15 @@ MODELS: dict[Kind, type[Any]] = {
     "news": m.NewsItem,
 }
 # Columns whose change means "the student should notice" for a class.
-_EVENT_MATERIAL = ("title", "kind", "starts_at", "ends_at", "location_text", "teacher_text")
+_EVENT_MATERIAL = (
+    "title",
+    "kind",
+    "starts_at",
+    "ends_at",
+    "location_text",
+    "teacher_text",
+    "address",
+)
 _CHUNK = 500
 
 
@@ -131,6 +139,48 @@ def _url(value: Any, base: str) -> str | None:
     return joined[:2000]
 
 
+def _int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    return value if isinstance(value, int) and 0 <= value <= 10_000 else None
+
+
+MAX_LINKS = 4
+MAX_ATTRIBUTES = 8
+
+
+def _links(value: Any, base: str) -> list[dict[str, str]]:
+    """Online rooms and materials: http(s) links only, each with a short readable label."""
+    out: list[dict[str, str]] = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        url = _url(raw.get("url"), base)
+        if url is None or any(item["url"] == url for item in out):
+            continue
+        out.append({"url": url, "label": _text(raw.get("label"), 80) or ""})
+        if len(out) == MAX_LINKS:
+            break
+    return out
+
+
+def _attributes(value: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        label, text_ = _text(raw.get("label"), 40), _text(raw.get("value"), 200)
+        if label is not None and text_ is not None:
+            out.append({"label": label, "value": text_})
+        if len(out) == MAX_ATTRIBUTES:
+            break
+    return out
+
+
 def _grade_value(value: Any) -> str | None:
     if isinstance(value, bool):
         return None
@@ -171,6 +221,12 @@ def _event(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | Non
         "location_text": _text(f.get("location"), 200),
         "teacher_text": _text(f.get("teacher"), 300),
         "url": _url(f.get("url"), src),
+        "kind_text": _text(f.get("kindText"), 120),
+        "address": _text(f.get("address"), 300),
+        "group_text": _text(f.get("group"), 200),
+        "lesson_number": _int(f.get("lessonNumber")),
+        "links": _links(f.get("links"), src),
+        "attributes": _attributes(f.get("attributes")),
     }
 
 
@@ -262,6 +318,10 @@ _REQUIRED_COLUMNS: dict[Kind, tuple[str, ...]] = {
 }
 
 
+def _open_url(record: Record) -> str | None:
+    return _url(record.open_url, record.source_url)
+
+
 def coerce(kind: Kind, record: Record, tz: ZoneInfo) -> dict[str, Any] | None:
     """Domain columns for a record, or None when it lacks what the kind cannot do without."""
     if not REQUIRED[kind] <= {k for k, v in record.fields.items() if v is not None}:
@@ -335,6 +395,7 @@ async def apply_result(
                         connection_id=connection_id,
                         external_id=external_id,
                         source_url=rec.source_url,
+                        open_url=_open_url(rec),
                         fetched_at=now,
                         spec_revision=result.spec_revision,
                         seen_at=now,
@@ -348,7 +409,7 @@ async def apply_result(
                 setattr(obj, col, row[col])
             if kind == "scheduleEvents" and any(c in _EVENT_MATERIAL for c in changed):
                 obj.changed = True
-            obj.source_url, obj.fetched_at = rec.source_url, now
+            obj.source_url, obj.open_url, obj.fetched_at = rec.source_url, _open_url(rec), now
             obj.spec_revision, obj.seen_at = result.spec_revision, now
             st.updated += 1 if changed else 0
             st.unchanged += 0 if changed else 1

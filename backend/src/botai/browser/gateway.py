@@ -142,6 +142,14 @@ def _browser_diagnostics(connection_id: str) -> dict[str, object]:
     return {**_EMPTY_DIAGNOSTIC_CONTEXT, **diagnostic_context(), "connection_id": connection_id}
 
 
+def _initiator_url(request: Request) -> str | None:
+    """The document of the frame that issued the request; a worker has no frame."""
+    try:
+        return request.frame.url or None
+    except PlaywrightError:
+        return None
+
+
 def _method(method: str) -> str:
     return (
         method
@@ -605,6 +613,7 @@ class PlaywrightHandle:
             resource_type=request.resource_type,
             request_content_type=request.headers.get("content-type"),
             evidence_id=f"r{serial}",
+            initiator_url=_initiator_url(request),
         )
         self._log.append(entry)
         self._entries[request] = entry

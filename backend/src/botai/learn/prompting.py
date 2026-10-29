@@ -18,7 +18,7 @@ from botai.contracts.schemas import validator
 from botai.contracts.specs import Kind
 from botai.core.browser import ObservedRequest
 from botai.core.llm import LlmMessage, LlmRequest
-from botai.sources.vocab import KIND_LABELS, REQUIRED, VOCAB
+from botai.sources.vocab import KIND_LABELS, REQUIRED, STRUCTURED_FIELDS, VOCAB
 
 PROMPTS = Path(__file__).parent / "prompts"
 MAX_CANDIDATES = 3
@@ -44,6 +44,9 @@ FIELD_HELP: dict[str, str] = {
     "format": "очно, онлайн или смешанно",
     "location": "аудитория или «онлайн»",
     "teacher": "преподаватель (`joinNames`, если их несколько)",
+    "kindText": "тип занятия словами источника (например «Текущий рубежный контроль»)",
+    "group": "группа или поток, например «ИВТ 2 курс»",
+    "lessonNumber": "номер пары в дне (`number`)",
     "url": "ссылка на запись",
     "code": "код курса",
     "term": "семестр или учебный период",
@@ -62,7 +65,7 @@ FIELD_HELP: dict[str, str] = {
     "role": "роль: преподаватель, ассистент, сотрудник",
     "email": "рабочая почта преподавателя, только если она публична",
     "building": "корпус",
-    "address": "адрес",
+    "address": "адрес: улица и дом здания",
     "body": "текст",
     "publishedAt": "дата публикации",
 }
@@ -78,7 +81,8 @@ def system_prompt() -> str:
 
 
 def _fields_help(kind: Kind) -> str:
-    return "\n".join(f"- `{name}` — {FIELD_HELP.get(name, name)}" for name in sorted(VOCAB[kind]))
+    names = sorted(VOCAB[kind] - STRUCTURED_FIELDS)
+    return "\n".join(f"- `{name}` — {FIELD_HELP.get(name, name)}" for name in names)
 
 
 PROBLEMS: dict[str, str] = {
@@ -89,6 +93,7 @@ PROBLEMS: dict[str, str] = {
     "selector": "по прежним селекторам ничего не находится",
     "bootstrap": "шаг подготовки не получает нужные значения",
     "empty": "по прежнему описанию записей не находится, хотя раньше они были",
+    "horizon": "описание читает одно окно дат, а соседние окна источника дают больше записей",
 }
 
 
@@ -153,7 +158,10 @@ def _factory_rules() -> str:
         "с requestEvidenceId наблюдаемого document-запроса той же страницы.\n"
         "Схема также описывает вложенные collections, ссылки from на именованный контекст, "
         "составление даты и времени compose и ограниченное разворачивание недельного расписания "
-        "expand. Применяй их только когда такая структура подтверждена наблюдением."
+        "expand. Применяй их только когда такая структура подтверждена наблюдением.\n"
+        "Адрес страницы для человека (uiUrl) сервер выводит сам из страницы, где браузер сделал "
+        "запрос; не задавай uiUrl. Окна дат (pagination.type=dateWindow) двигают шаблон даты "
+        "из query: окно 0 должно воспроизводить наблюдённый запрос."
     )
 
 
@@ -205,6 +213,7 @@ def author_schema(
         request["allOf"] = [
             rule for rule in request.get("allOf", []) if "browserPlan" not in json.dumps(rule)
         ]
+        endpoint["properties"].pop("uiUrl", None)
         endpoint["properties"]["requestEvidenceId"] = request_refs
         endpoint["properties"]["browserPlanRef"] = plan_refs
         endpoint["oneOf"] = [{"required": ["requestEvidenceId"]}, {"required": ["browserPlanRef"]}]

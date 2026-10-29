@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from typing import Any, cast
+from urllib.parse import parse_qsl, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -39,12 +40,17 @@ def needs_recipe_v2(
         return True
     for endpoint in endpoints:
         request, response = endpoint.get("request", {}), endpoint.get("response", {})
+        pagination = endpoint.get("pagination")
+        if "uiUrl" in endpoint or (
+            isinstance(pagination, dict) and pagination.get("type") == "dateWindow"
+        ):
+            return True
         if isinstance(request, dict) and any(
             key in request for key in ("authBinding", "browserPlan")
         ):
             return True
         if isinstance(response, dict):
-            if any(key in response for key in ("collections", "expand")):
+            if any(key in response for key in ("collections", "expand", "links", "attributes")):
                 return True
             fields = response.get("fields", {})
             if isinstance(fields, dict) and any(
@@ -120,6 +126,99 @@ def _entry_request(
     return path, query
 
 
+_UI_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}$")
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _window_range(pagination: Mapping[str, Any]) -> range:
+    first = pagination.get("startOffset", 0)
+    return range(first, first + int(pagination["windows"]))
+
+
+def _certify_window(
+    request: Mapping[str, Any],
+    pagination: Mapping[str, Any],
+    observed: ObservedRequest,
+    *,
+    now: datetime,
+    tz: ZoneInfo,
+) -> None:
+    """The walk must reproduce what the browser really asked: one of its windows (normally the
+    current one) renders the observed value of the moved parameter."""
+    query = request.get("query")
+    template = query.get(pagination["param"]) if isinstance(query, dict) else None
+    if not isinstance(template, str):
+        raise FactoryCompileError("window_param_missing")
+    if not templates.is_date_template(template):
+        raise FactoryCompileError("window_template_unsupported")
+    seen = dict(parse_qsl(urlsplit(observed.url).query, keep_blank_values=True))
+    value = seen.get(pagination["param"])
+    step = int(pagination["stepDays"])
+    for window in _window_range(pagination):
+        moved = templates.shifted_now(now, tz, window * step)
+        if templates.render(template, now=moved, tz=tz, params={}) == value:
+            return
+    raise FactoryCompileError("window_template_mismatch")
+
+
+def ui_url_for(
+    observed: ObservedRequest,
+    request: Mapping[str, Any],
+    origin: str,
+    *,
+    now: datetime,
+    tz: ZoneInfo,
+) -> dict[str, Any] | None:
+    """Where the student sees this data: the page that issued the observed request, with the
+    request's own date templates. Anything that cannot be generalised is left out, so a link
+    that would point at one student's identifier or a past week is never produced."""
+    page = observed.initiator_url
+    if page is None or auth_origin(page) is None or auth_origin(page) != auth_origin(origin):
+        return None
+    parts = urlsplit(page)
+    if parts.fragment:
+        return None
+    path = parts.path or "/"
+    segments = [segment for segment in unquote(path).split("/") if segment]
+    if any(not _UI_WORD.match(segment) for segment in segments):
+        return None
+    try:
+        pairs = parse_qsl(parts.query, keep_blank_values=True, max_num_fields=12)
+    except ValueError:
+        return None
+    declared = request.get("query")
+    api_query: dict[str, Any] = declared if isinstance(declared, dict) else {}
+    query: dict[str, str] = {}
+    for key, value in pairs:
+        if key in query or not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", key):
+            continue
+        template = api_query.get(key)
+        candidates = [template] if isinstance(template, str) and "{" in template else []
+        if _ISO_DATE.match(value):
+            candidates += ["{today}", "{weekStart}"]
+            candidates += [f"{{plusDays:{n}}}" for n in range(1, 32)]
+            candidates += [f"{{minusDays:{n}}}" for n in range(1, 32)]
+        match = next(
+            (
+                c
+                for c in candidates
+                if templates.is_date_template(c)
+                and templates.render(c, now=now, tz=tz, params={}) == value
+            ),
+            None,
+        )
+        if match is not None:
+            query[key] = match
+        elif _UI_WORD.match(value):
+            query[key] = value
+    if not segments and not query:
+        return None  # the site root says nothing about where this data is shown
+    ui: dict[str, Any] = {"path": path}
+    if query:
+        ui["query"] = query
+    return ui
+
+
 def _portable_browser_plan(plan: BaseModel) -> dict[str, Any]:
     """Share structural replay facts, without unnecessary source or student display labels."""
     portable = plan.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -160,7 +259,7 @@ def compile_candidate(
     request, response = compiled.get("request"), compiled.get("response")
     if not isinstance(request, dict) or not isinstance(response, dict):
         raise FactoryCompileError("factory_request_invalid")
-    if "authBinding" in request or "browserPlan" in request:
+    if "authBinding" in request or "browserPlan" in request or "uiUrl" in compiled:
         raise FactoryCompileError("factory_execution_fields_forbidden")
     evidence_id = compiled.pop("requestEvidenceId", None)
     plan_ref = compiled.pop("browserPlanRef", None)
@@ -217,6 +316,16 @@ def compile_candidate(
         bindings.clear()
     else:
         bind(evidence_id, request)
+        observed = request_facts[cast(str, evidence_id)]
+        pagination = compiled.get("pagination")
+        if isinstance(pagination, dict) and pagination.get("type") == "dateWindow":
+            if now is None or time_zone is None:
+                raise FactoryCompileError("window_template_unsupported")
+            _certify_window(request, pagination, observed, now=now, tz=time_zone)
+        if now is not None and time_zone is not None:
+            ui = ui_url_for(observed, request, origin, now=now, tz=time_zone)
+            if ui is not None:
+                compiled["uiUrl"] = ui
 
     preparation: list[dict[str, Any]] = []
     for raw in bootstrap:

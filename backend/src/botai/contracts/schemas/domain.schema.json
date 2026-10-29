@@ -12,7 +12,8 @@
       "required": ["sourceId", "sourceUrl", "fetchedAt"],
       "properties": {
         "sourceId": { "$ref": "#/$defs/id", "description": "connectionId" },
-        "sourceUrl": { "type": "string", "format": "uri" },
+        "sourceUrl": { "type": "string", "format": "uri", "description": "Откуда запись прочитана; для API-источника это не страница для открытия." },
+        "openUrl": { "type": ["string", "null"], "format": "uri", "description": "Страница источника, где студент видит запись (FR-042). Для API-источника выводится из uiUrl рецепта; для HTML-источника это сама страница." },
         "fetchedAt": { "type": "string", "format": "date-time" },
         "recipeRev": { "type": "integer", "minimum": 1 }
       }
@@ -110,6 +111,38 @@
             "teacherIds": { "type": "array", "items": { "$ref": "#/$defs/id" }, "maxItems": 10 },
             "teacherText": { "type": ["string", "null"], "maxLength": 300 },
             "url": { "type": ["string", "null"], "format": "uri" },
+            "kindText": { "type": ["string", "null"], "maxLength": 120, "description": "Тип занятия словами источника («Текущий рубежный контроль»); kind остаётся общим." },
+            "address": { "type": ["string", "null"], "maxLength": 300, "description": "Адрес здания; аудитория — в locationText." },
+            "group": { "type": ["string", "null"], "maxLength": 200, "description": "Группа или поток." },
+            "lessonNumber": { "type": ["integer", "null"], "minimum": 0, "maximum": 10000 },
+            "links": {
+              "type": "array",
+              "maxItems": 4,
+              "description": "Онлайн-комнаты и материалы занятия: только http(s).",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["url", "label"],
+                "properties": {
+                  "url": { "type": "string", "format": "uri" },
+                  "label": { "type": "string", "maxLength": 80 }
+                }
+              }
+            },
+            "attributes": {
+              "type": "array",
+              "maxItems": 8,
+              "description": "Дополнительные значения под общими подписями («Корпус»); подпись задаёт рецепт и не содержит личных значений.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "value"],
+                "properties": {
+                  "label": { "type": "string", "maxLength": 40 },
+                  "value": { "type": "string", "maxLength": 200 }
+                }
+              }
+            },
             "recurrence": {
               "type": ["object", "null"],
               "additionalProperties": false,

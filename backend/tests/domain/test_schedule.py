@@ -60,9 +60,17 @@ async def test_events_of_all_spaces_in_time_order_with_provenance(
         "connectionId": w.conn_a,
         "spaceId": w.space_a,
         "sourceUrl": "https://source.example.org/x",
+        "openUrl": None,
         "fetchedAt": "2026-10-27T12:00:00Z",
         "stale": False,
     }
+    assert (first["kindText"], first["address"], first["group"], first["lessonNumber"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert first["links"] == [] and first["attributes"] == []
     assert second["provenance"]["spaceId"] == w.space_b
     assert second["teacher"] == "Петров"
     assert second["format"] == "online"

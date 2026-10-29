@@ -17,6 +17,8 @@ PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _DAYS = re.compile(r"^(plusDays|minusDays):(\d{1,4})$")
 PARAM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,30}$")
 BUILTIN_NAMES = frozenset({"today", "nowUnix", "weekStart"})
+# Builtins that name a calendar date: the only ones a date window may move.
+DATE_BUILTIN_NAMES = frozenset({"today", "weekStart"})
 MAX_PARAM_VALUE = 200
 
 
@@ -34,6 +36,21 @@ def placeholders(template: str) -> list[str]:
 
 def is_builtin(name: str) -> bool:
     return name in BUILTIN_NAMES or _DAYS.match(name) is not None
+
+
+def is_date_builtin(name: str) -> bool:
+    return name in DATE_BUILTIN_NAMES or _DAYS.match(name) is not None
+
+
+def is_date_template(template: str) -> bool:
+    """A value made only of calendar-date builtins (`{weekStart}`, `T{plusDays:7}`...)."""
+    names = placeholders(template)
+    return bool(names) and all(is_date_builtin(name) for name in names)
+
+
+def shifted_now(now: datetime, tz: ZoneInfo, days: int) -> datetime:
+    """`now` moved by whole calendar days of the source's time zone (wall clock, DST-safe)."""
+    return now.astimezone(tz) + timedelta(days=days)
 
 
 def is_valid_placeholder(name: str, known_params: frozenset[str] | set[str]) -> bool:
