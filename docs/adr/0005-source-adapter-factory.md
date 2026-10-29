@@ -3,6 +3,10 @@
 - Статус: **accepted**, 2026-10-27
 - Связь: FR-008–FR-011, FR-018, FR-031, FR-032, [contracts.md](../architecture/contracts.md), [HLD](../architecture/hld.md)
 
+Дополнение 29.10.2026: [ADR-0012](0012-verified-source-factory-v2.md) вводит версионированный
+контракт auth/data/browser replay. Принцип «спецификация вместо кода вуза» сохраняется;
+[LLD v2](../architecture/factory-v2.md) перечисляет фактическое ограниченное подмножество.
+
 ## Контекст
 
 Источников много и они разные: JSON API личного кабинета, HTML-страница с новостями, Moodle с

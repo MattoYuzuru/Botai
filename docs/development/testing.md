@@ -85,6 +85,37 @@ compose), Explorer, sync, repair, домен и чат. Студента игр�
 модель, настоящие вузы, Moodle/iCal/документы через раннер, `make dev`-запуск процессов
 (`uvicorn`, `python -m botai.worker`) по отдельности этот набор не подтверждает.
 
+## Приёмка factory v2 (снимок 29.10.2026)
+
+Foundation длительного исследования принят отдельно (PR #68): main
+79c258064931dc6195980366dca4141ef4952690,
+[CI 40912340821](https://github.com/MattoYuzuru/Botai/actions/runs/40912340821) и
+[deploy 40914887383](https://github.com/MattoYuzuru/Botai/actions/runs/40914887383) успешны.
+Операторская сверка сообщила этот revision у api/worker/proxy и schema e4a91b7c603d;
+это evidence foundation, не factory v2. Контрактный PR #69 принят отдельно на 8d62fd5.
+Новые auth/data/browser
+компоненты v2 имеют ограниченные локальные L0/L1-проверки; **полный CI v2 и выпуск ещё идут**.
+Наличие test file, merge контракта или зелёный foundation run не подтверждают новый binary.
+Числа/ссылки окончательного прогона привязываются к полному SHA в отчёте PR/выпуска.
+
+| Граница | Synthetic проверки |
+|---|---|
+| V1 strict / v2 schema и compiler | tests/core/test_recipe_v2_contract.py, tests/learn/test_factory_compile.py: current request/browser refs, запрет поддельного execution payload, producer off, перенос dynamic date template |
+| Per-request Cookie+Bearer и origin scope | tests/learn/test_auth_bindings.py, tests/browser/test_scoped_auth.py, tests/sources/test_session_bindings.py: observed proof, отказ чужого audience/redirect, собственные credentials |
+| Nested/weekly data | tests/sources/test_recipe_expressions.py, test_recipe_data_v2.py: parent cardinality pagination, дата+время, DST gap/fold, recurrence parity/исключения/горизонт/стабильные ID, whole-endpoint overflow |
+| Recursive lint | tests/learn/test_data_lint.py: alias/TZ до сети, required fields weekly, вложенные секретные pointers/attrs/regex/literals, v1 без ослаблений |
+| Native browser replay | tests/browser/test_read_capabilities.py: дата/select/tab/frame/next, новый handle, late target/effect, POST/WS, timeout/cycle/cap, settled/explicit empty |
+| Typed canary и correction | tests/learn/test_canary_findings.py и test_canary_recovery.py: static findings без exception text, следующие candidates, bounded авторское исправление |
+| TTL и budget | tests/jobs/test_research_store.py и tests/learn/test_research_progress.py: атомарная usage projection, CAS/tenant/fence, сохранение cumulative расхода/reservations после TTL |
+| Полный v2 путь | tests/e2e/test_factory_v2.py: Worker/API/Chromium/proxy/LoginFlow, наблюдаемый Cookie+Bearer, nested schedule в домене, fresh runtime sync без LLM, стабильные ID при изменении аудитории, второй студент со своей сессией, отсутствие plaintext credentials |
+| Shutdown/resume и поздний результат | tests/e2e/test_research_resume.py, tests/jobs/test_source_fencing.py: proposal до canary, новый claim/браузер, activation receipt, изменившийся intent/spec, отказ поздней записи |
+
+Сквозной v2 fixture добавлен и включён в интеграционную приёмку; выполнение после окончательного
+wiring и полный итог CI подтверждает координатор. Ни одна строка таблицы не заявляет L2/L3.
+Доказательство выпуска требует полного CI того же SHA, health/revision/migration evidence,
+затем отдельной проверки владельцем настоящего источника. Producer по умолчанию выключен;
+совместимость reader и rollback — [deployment](../plan/deployment.md).
+
 ## Что требуется от PR
 
 ### Приёмка источников и публичного поиска

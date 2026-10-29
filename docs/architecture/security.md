@@ -30,6 +30,8 @@
 Уточнение рефакторинга 29.10.2026: [длительное исследование](source-research.md) хранит знания
 в отдельном зашифрованном checkpoint с tenant/job/connection binding, CAS и TTL.
 Это не ещё одна browser session: cookies, bearer, storage и ввод туда не копируются.
+Несекретные накопительные tokens/active_ms/requests/steps того же Job сохраняются отдельно
+от TTL знаний в служебной projection; удаление checkpoint не возвращает потраченный budget.
 Старые DOM references не восстанавливаются. Публикация checkpoint, session, ревизии и
 снимка проверяет claim в той же транзакции; новый inbox revision запрещает позднюю
 активацию по старому намерению. Ключи остаются в Vault. Наличие этих требований в документе
@@ -50,6 +52,36 @@ Chromium. Запасной путь — удалённый экран (капч�
 пути отсутствует (Ф, контракт §5, §11).
 
 ---
+
+## 0.1 Дополнение factory v2
+
+[ADR-0012](../adr/0012-verified-source-factory-v2.md) и [LLD](factory-v2.md) задают ограниченное
+подмножество, собранное в интеграционной ветке; полный CI и production-приёмка ещё проверяются.
+
+- Модель выбирает текущий requestEvidenceId/browserPlanRef. Compiler проверяет факты из
+  доверенного Observer и стирает temporary ref до хранения. Модель не записывает authBinding,
+  browserPlan или credentials. GET-bootstrap имеет отдельное доказательство запроса.
+- Cookie и Bearer комбинируются только по наблюдаемой policy конкретного HTTP-запроса.
+  Bearer имеет exact-origin audience, включая порт; allowlist другого host не выдаёт ему
+  credential grant. На redirect audience проверяется заново. Чужая сессия не переносится
+  вместе с общей спецификацией. Обновление секретов остаётся внутри LoginFlow/Vault.
+- Полный доступный inventory cookie/bearer/storage защищается до prompts/checkpoint/replay;
+  отражённый известный секрет, в том числе в percent-encoded URL, не становится адресом памяти.
+  Неудача безопасной подготовки не компенсируется передачей исходного DOM в модель.
+- Nested DSL проверяется схемой, typed models и recursive lint. Вложенный selector, pointer,
+  fallback, pattern, attribute или alias не создаёт исключения для личного literal. Нет eval,
+  parser code или произвольного сетевого вызова. DST ambiguity и overflow не скрываются
+  усечением успешного результата.
+- Native controls проходят повторную проверку target/frame/ownership/effect в read-only
+  браузере. Формы, generic buttons, custom calendars, неизвестный JS, POST/WS и cross-origin
+  frames не получают полномочие от наличия browser plan. Сами scripts страницы остаются
+  недоверенными и исполняются только внутри существующих browser/egress границ.
+- Журналы и canary feedback содержат static reason, kind/transport/status и counters;
+  raw headers, тела, exception text и credentials туда не включаются. Неопределённые
+  reservations учитываются в cumulative Job budget, даже если знания истекли по TTL.
+
+Отрицательные и сквозные fixtures перечислены в [testing](../development/testing.md).
+Эти меры не являются доказательством пройденного L3 или полной модели угроз.
 
 ## 1. Активы и границы доверия
 
@@ -188,7 +220,7 @@ AAD = `aad_version | user_id | connection_id | kind | kek_id`. Следстви�
 | IP-литералы | запрещены в hostname |
 | DNS | резолвинг на стороне прокси; отказ при приватных/зарезервированных диапазонах: `127/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` (включая `169.254.169.254`), `::1`, `fc00::/7`, `fe80::/10`, CGNAT `100.64/10` |
 | DNS rebinding | адрес **пинится** после проверки и соединение устанавливается на этот же адрес (resolve-then-connect, без повторного резолва) |
-| Бюджет запросов | на sync: ≤10 эндпоинтов, ≤3 страницы на эндпоинт, ≤1000 элементов, общий тайм-аут; на вход: TTL сессии, лимит стартов 5/мин; на agent retrieval: 12 страниц, 20 шагов, 60 с |
+| Бюджет запросов | CONNECT проверяет собственные разрешения; executor отдельно ограничивает sync: до 120 обращений SourceClient на fetch, до 20 HTTP-страниц/5000 записей endpoint; rendered fetch — до 3 страниц/30 с. Лимиты discovery и cumulative Job budget — [source-research](source-research.md), data/browser caps — [factory-v2](factory-v2.md). Это разные счётчики, не один лимит прокси |
 | Загрузки и устройства | `acceptDownloads:false`, file chooser отменяется, permissions пусты, service workers и расширения выключены |
 | Исходящий к LLM | отдельный фиксированный путь API DeepSeek, не делится с вузовским |
 | Публичный поиск | отдельные разрешения EgressProxy только для фиксированных HTTPS API Exa/DeepSeek; cookies и сессия вуза в запрос не включаются; редиректы не исполняются |
