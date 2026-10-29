@@ -76,7 +76,16 @@ async def test_manual_login_precedes_existing_recipe_and_replays_without_model(
     sessions = EntrySessions()
     env = await make_env([], sessions=sessions, with_spec=True, status="needs_reauth")
 
-    result = await env.run(payload={"manual_login": True, "kinds": ["scheduleEvents"]})
+    result = await env.run(
+        payload={
+            "manual_login": True,
+            "learning_intent": LearningIntent(
+                entry_urls=(ORIGIN + "/",),
+                requested_kinds=("scheduleEvents",),
+                user_note="Дедлайнов здесь нет, нужны только пары",
+            ).checkpoint(),
+        }
+    )
 
     assert result == {"status": "ok", "login_resumed": True}
     assert sessions.entries == [(ORIGIN + "/", True, True)]

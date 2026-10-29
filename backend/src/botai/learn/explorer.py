@@ -376,13 +376,10 @@ class Explorer:
                     info, "Не получилось определить адрес сайта", ErrorCode.VALIDATION
                 )
             info = await self._info(connection_id)
-            await self._initial_note(await self._redactor(info))
-            await self._checkpoint()
-            await self._drain(await self._redactor(info))
-            continued = await self._continue_foreign(info)
-            if continued is not None:
-                return continued
             if self._manual_login:
+                # The human hand-off precedes classification of old notes or new turns.
+                # A configured source resumes its recipe even while the model is unavailable.
+                await self._checkpoint()
                 stage = await self.ui.stage("Открываю защищённый вход")
                 try:
                     self._prepared_session = await self._ensure_session(
@@ -406,6 +403,12 @@ class Explorer:
                     )
                     await self._report_sync(outcome, prefix="Вход проверен.")
                     return {"status": outcome.status, "login_resumed": True}
+            await self._initial_note(await self._redactor(info))
+            await self._checkpoint()
+            await self._drain(await self._redactor(info))
+            continued = await self._continue_foreign(info)
+            if continued is not None:
+                return continued
             reused = await self._reuse(info)
             if reused is not None:
                 return reused
