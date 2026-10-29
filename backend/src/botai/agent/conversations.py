@@ -437,6 +437,7 @@ async def post_message(
         )
         state["inbox"] = inbox
         dialogue.save_state(target, state)
+        dialogue.advance_input(target)
         dialogue.receipt(target, now=now, status="accepted", message_id=message.id)
         await session.execute(select(func.pg_notify(CHANNEL_ANSWERS, target.id)))
         job_id = target.id

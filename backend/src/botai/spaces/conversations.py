@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.contracts.agent_ui import InputBlock, TextBlock
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import guard_job
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
@@ -305,6 +306,7 @@ async def bind_bootstrap(
             )
         if job is None or job.state not in IN_FLIGHT or job.thread_id != thread.id:
             raise BotaiError(ErrorCode.NOT_FOUND, "Задание подключения уже завершено")
+        await guard_job(ctx, session, check_input=True)
         other = await session.scalar(
             select(Job)
             .where(
@@ -535,6 +537,7 @@ async def continue_source(
             or job.thread_id not in (None, thread.id)
         ):
             raise BotaiError(ErrorCode.NOT_FOUND, "Активное подключение уже завершено")
+        await guard_job(ctx, session, check_input=True)
         job.thread_id = thread.id
         with session.no_autoflush:
             child_job = await enqueue_in_session(

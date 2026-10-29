@@ -209,11 +209,12 @@ async def author_kind(
     digest: str,
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
+    verification_feedback: list[str] | None = None,
 ) -> Authored:
     """Ask for candidates of one kind; lint each; retry once on a rejection or a broken answer.
     With `previous` (the endpoint that stopped working) it is a repair."""
     out = Authored(kind)
-    feedback: list[str] | None = None
+    feedback = verification_feedback
     for attempt in range(2):
         started = time.monotonic()
         diagnostic_event(

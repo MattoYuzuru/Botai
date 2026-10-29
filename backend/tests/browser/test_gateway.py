@@ -320,6 +320,27 @@ async def test_restored_bearer_is_sent_to_the_session_origin_only(open_browser: 
     assert '"ok"' in (await handle.goto("https://fakeuni.test/spa/api/ping")).text
 
 
+async def test_application_bearer_replaces_the_saved_fallback(open_browser: Opener) -> None:
+    state = SessionState(
+        origin="https://fakeuni.test",
+        bearer=SecretStr("outdated-fixture-token"),
+        captured_at=datetime.now(UTC),
+    )
+    handle = await open_browser(session=state)
+    await handle.goto("https://fakeuni.test/spa")
+    await handle.page.wait_for_function("document.getElementById('out').textContent.includes('ok')")
+    ping = next(r for r in await handle.network_log() if r.url.endswith("/spa/api/ping"))
+    assert ping.status == 200
+    assert (await handle.export_session()).bearer == SecretStr(SPA_JWT)
+
+
+async def test_session_origin_survives_allowlist_host_order(open_browser: Opener) -> None:
+    state = SessionState(origin="https://fakeuni.test", captured_at=datetime.now(UTC))
+    handle = await open_browser(hosts=("id.fakeuni.test", "fakeuni.test"), session=state)
+    await handle.goto("https://fakeuni.test/spa")
+    assert (await handle.export_session()).origin == state.origin
+
+
 async def test_cookies_outside_the_capture_hosts_are_not_exported(open_browser: Opener) -> None:
     handle = await open_browser(capture=CaptureConfig(cookies_for=("id.fakeuni.test",)))
     await log_in(handle)

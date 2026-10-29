@@ -22,34 +22,45 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from botai.agent.llm import usage_scope
 from botai.core.diagnostics import diagnostic_event, diagnostic_scope, purge_diagnostics
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import Handler, HandlerTable
 from botai.core.ids import new_id
-from botai.core.jobs import JobCancelled, JobKind
+from botai.core.jobs import JobCancelled, JobClaimLost, JobDeferred, JobInputChanged, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db.models import Connection, Job, JobAnswer, User
 from botai.jobs import dialogue
+from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.context import ASK_TTL, PgJobContext
 from botai.jobs.events import (
-    TERMINAL,
     append_event,
     error_event,
     purge_finished,
     status_data,
 )
 from botai.jobs.notify import CHANNEL_CANCEL, CHANNEL_JOBS, Notifier, dsn_for_asyncpg
+from botai.jobs.queue import SOURCE_KINDS
 
 log = logging.getLogger(__name__)
 
 RETRYABLE = frozenset({ErrorCode.SOURCE_UNAVAILABLE, ErrorCode.SOURCE_RATE_LIMITED})
 RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
 SYNC_STATUSES = ("active", "stale")
+ACTIVE_STATES = ("running", "waiting_user")
+
+
+def retry_failures(payload: dict[str, Any], attempt: int) -> int:
+    value = payload.get("_retry_failures")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return max(0, attempt - 1)
+
 
 # Active-time budgets per kind (lld.md §5). Time spent waiting for the student is not counted.
 BUDGETS: dict[str, float] = {
@@ -133,6 +144,7 @@ class Worker:
         self.notifier = notifier or Notifier(dsn_for_asyncpg(services.settings.database_url))
         self.name = name or worker_name()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._claims: dict[str, Claimed] = {}
         self._cancel_reason: dict[str, str] = {}
         self._stop = asyncio.Event()
         self._slot_free = asyncio.Event()
@@ -141,34 +153,84 @@ class Worker:
 
     async def claim(self) -> Claimed | None:
         now = self.services.clock.now()
+        skipped_users: set[str] = set()
         async with self.services.db() as session:
-            job = await session.scalar(
-                select(Job)
-                .join(User, User.id == Job.user_id)
-                .where(Job.state == "queued", Job.run_after <= now, User.disabled.is_(False))
-                .order_by(Job.run_after, Job.id)
-                .limit(1)
-                .with_for_update(of=Job, skip_locked=True)
-            )
-            if job is None:
-                return None
-            job.state = "running"
-            job.attempts += 1
-            job.locked_by = self.name
-            job.locked_at = now
-            job.started_at = job.started_at or now
-            job.error = None
-            await append_event(session, job.id, "status", status_data(job, now))
-            await session.commit()
-            return Claimed(
-                job.id,
-                job.user_id,
-                job.kind,
-                job.connection_id,
-                dict(job.payload),
-                job.attempts,
-                job.thread_id,
-            )
+            while True:
+                compatible = ~Job.payload.bool_op("?")("_research_engine")
+                if self.services.settings.botai_research_enabled:
+                    compatible = or_(compatible, Job.payload.contains({"_research_engine": 1}))
+                active = aliased(Job)
+                busy = exists(
+                    select(active.id).where(
+                        active.user_id == Job.user_id,
+                        active.kind.in_(SOURCE_KINDS),
+                        active.state.in_(ACTIVE_STATES),
+                    )
+                )
+                job = await session.scalar(
+                    select(Job)
+                    .join(User, User.id == Job.user_id)
+                    .where(
+                        Job.state == "queued",
+                        Job.run_after <= now,
+                        User.disabled.is_(False),
+                        compatible,
+                        or_(Job.kind.not_in(SOURCE_KINDS), ~busy),
+                        Job.user_id.not_in(skipped_users),
+                        Job.id.not_in(self._tasks),
+                    )
+                    .order_by(Job.run_after, Job.id)
+                    .limit(1)
+                    .with_for_update(of=Job, skip_locked=True)
+                )
+                if job is None:
+                    return None
+                if job.kind in SOURCE_KINDS:
+                    acquired = await session.scalar(
+                        select(
+                            func.pg_try_advisory_xact_lock(
+                                func.hashtextextended(f"research-user:{job.user_id}", 0)
+                            )
+                        )
+                    )
+                    occupied = (
+                        await session.scalar(
+                            select(Job.id)
+                            .where(
+                                Job.user_id == job.user_id,
+                                Job.kind.in_(SOURCE_KINDS),
+                                Job.state.in_(ACTIVE_STATES),
+                            )
+                            .limit(1)
+                        )
+                        if acquired
+                        else True
+                    )
+                    if occupied:
+                        skipped_users.add(job.user_id)
+                        await session.rollback()
+                        continue
+                failures = retry_failures(job.payload, job.attempts + 1)
+                job.payload = {**job.payload, "_retry_failures": failures}
+                job.state = "running"
+                job.attempts += 1
+                job.locked_by = self.name
+                job.locked_at = now
+                job.started_at = job.started_at or now
+                job.error = None
+                await append_event(session, job.id, "status", status_data(job, now))
+                await session.commit()
+                claimed = Claimed(
+                    job.id,
+                    job.user_id,
+                    job.kind,
+                    job.connection_id,
+                    dict(job.payload),
+                    job.attempts,
+                    job.thread_id,
+                )
+                self._claims[claimed.id] = claimed
+                return claimed
 
     # --- running one job --------------------------------------------------------------------
 
@@ -212,18 +274,37 @@ class Worker:
             poll_seconds=self.config.poll_seconds,
             on_wait_start=clock.pause,
             on_wait_end=clock.resume,
+            claim_worker=self.name,
+            claim_attempt=job.attempts,
+            initial_input_revision=dialogue.payload_input_revision(job.payload),
+            research_ttl=timedelta(
+                hours=self.services.settings.botai_research_checkpoint_ttl_hours
+            ),
         )
         try:
             async with scope:
                 # every LLM call of the handler is quota-checked and recorded for this user and job
                 with usage_scope(job.user_id, job.id):
-                    result = await handler(ctx, self.services, job.payload)
+                    # Retry accounting belongs to the worker. Preserve routing/intent
+                    # metadata, but do not expose this counter to handler results or prompts.
+                    payload = {k: v for k, v in job.payload.items() if k != "_retry_failures"}
+                    result = await handler(ctx, self.services, payload)
+        except JobClaimLost:
+            diagnostic_event("job.claim_lost", attempt=job.attempts)
+        except JobInputChanged:
+            await self._requeue(job, "Учитываю новое сообщение", input_changed=True)
+        except JobDeferred as deferred:
+            await self._requeue(
+                job, deferred.stage, delay=timedelta(seconds=deferred.delay_seconds)
+            )
         except JobCancelled as exc:
             log.info("job %s cancelled: %s", job.id, exc)
             await self._finish(job, "cancelled")
         except asyncio.CancelledError:
             reason = self._cancel_reason.pop(job.id, "shutdown")
-            if reason == "shutdown":
+            if reason == "claim_lost":
+                diagnostic_event("job.claim_lost", attempt=job.attempts)
+            elif reason == "shutdown":
                 await self._requeue(job, "Продолжу после перезапуска")
             else:
                 await self._finish(job, "cancelled")
@@ -241,18 +322,30 @@ class Worker:
         except Exception as exc:
             await self._fail_unexpected(job, type(exc).__name__, exc.__traceback__)
         else:
-            await self._finish(job, "done", result=result)
+            try:
+                await self._finish(job, "done", result=result, input_revision=ctx.input_revision)
+            except JobInputChanged:
+                await self._requeue(job, "Учитываю новое сообщение", input_changed=True)
 
     async def _failed_or_retry(self, job: Claimed, err: BotaiError) -> None:
-        if err.code in RETRYABLE and job.attempts <= len(RETRY_DELAYS):
-            delay = RETRY_DELAYS[job.attempts - 1]
+        failures = retry_failures(job.payload, job.attempts) + 1
+        if err.code in RETRYABLE and failures <= len(RETRY_DELAYS):
+            delay = RETRY_DELAYS[failures - 1]
             minutes = int(delay.total_seconds() // 60)
             await self._requeue(
-                job, f"Источник недоступен, повторю через {minutes} мин", delay=delay
+                job,
+                f"Источник недоступен, повторю через {minutes} мин",
+                delay=delay,
+                failures=failures,
             )
             return
         await self._fail(
-            job, err.code.value, err.detail or "Задание не выполнено", err.status, extra=err.extra
+            job,
+            err.code.value,
+            err.detail or "Задание не выполнено",
+            err.status,
+            extra=err.extra,
+            failures=failures if err.code in RETRYABLE else None,
         )
 
     async def _fail_unexpected(self, job: Claimed, kind: str, tb: Any = None) -> None:
@@ -263,25 +356,46 @@ class Worker:
 
     # --- state transitions (each in one transaction with its events) --------------------------
 
-    async def _locked(self, session: AsyncSession, job_id: str) -> Job | None:
-        job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
-        if job is None or job.state in TERMINAL:
-            return None  # deleted with its connection, or already cancelled by the student
+    async def _locked(self, session: AsyncSession, claim: Claimed) -> Job | None:
+        job = await session.scalar(
+            select(Job).where(Job.id == claim.id, Job.user_id == claim.user_id).with_for_update()
+        )
+        if (
+            job is None
+            or job.state not in ACTIVE_STATES
+            or job.locked_by != self.name
+            or job.attempts != claim.attempts
+        ):
+            return None
         return job
 
     async def _finish(
-        self, job: Claimed, state: str, *, result: dict[str, Any] | None = None
+        self,
+        job: Claimed,
+        state: str,
+        *,
+        result: dict[str, Any] | None = None,
+        input_revision: int | None = None,
     ) -> None:
         now = self.services.clock.now()
         async with self.services.db() as session:
-            row = await self._locked(session, job.id)
+            connection = None
+            if state == "cancelled":
+                _, connection = await lock_job_and_connection(session, job.user_id, job.id)
+            row = await self._locked(session, job)
             if row is None:
                 await session.rollback()
+                return
             else:
+                if input_revision is not None and dialogue.input_revision(row) != input_revision:
+                    raise JobInputChanged
                 row.state = state
                 row.result = result
                 row.finished_at = now
                 row.locked_by = None
+                row.locked_at = None
+                if state == "cancelled":
+                    await restore_source_after_stop(session, row, connection)
                 if state == "cancelled" and row.stage is None:
                     row.stage = "Остановлено"
                 await dialogue.project_terminal(session, row, now)
@@ -305,12 +419,15 @@ class Worker:
         status: int,
         *,
         extra: dict[str, Any] | None = None,
+        failures: int | None = None,
     ) -> None:
         now = self.services.clock.now()
         async with self.services.db() as session:
-            row = await self._locked(session, job.id)
+            _, connection = await lock_job_and_connection(session, job.user_id, job.id)
+            row = await self._locked(session, job)
             if row is None:
                 await session.rollback()
+                return
             else:
                 body = error_event(row, code, detail, status, extra)
                 row.state = "failed"
@@ -318,8 +435,12 @@ class Worker:
                 if extra:
                     stored["extra"] = extra
                 row.error = stored
+                if failures is not None:
+                    row.payload = {**row.payload, "_retry_failures": failures}
                 row.finished_at = now
                 row.locked_by = None
+                row.locked_at = None
+                await restore_source_after_stop(session, row, connection)
                 await dialogue.project_terminal(session, row, now)
                 await append_event(session, job.id, "status", status_data(row, now))
                 await append_event(session, job.id, "error", body)
@@ -327,14 +448,26 @@ class Worker:
         await self._drop_transient(job)
         diagnostic_event("job.failed", state="failed", error_code=code, status=status)
 
-    async def _requeue(self, job: Claimed, stage: str, *, delay: timedelta = timedelta(0)) -> None:
+    async def _requeue(
+        self,
+        job: Claimed,
+        stage: str,
+        *,
+        delay: timedelta = timedelta(0),
+        failures: int | None = None,
+        input_changed: bool = False,
+    ) -> None:
         now = self.services.clock.now()
         async with self.services.db() as session:
-            row = await self._locked(session, job.id)
+            row = await self._locked(session, job)
             if row is None:
                 await session.rollback()
                 return
+            if input_changed:
+                await dialogue.supersede_old_question(session, row, now)
             row.state = "queued"
+            if failures is not None:
+                row.payload = {**row.payload, "_retry_failures": failures}
             row.stage = stage[:120]
             row.run_after = now + delay
             row.locked_by = None
@@ -397,7 +530,10 @@ class Worker:
             await self._shutdown(background)
 
     def _on_done(self, task: asyncio.Task[None]) -> None:
-        self._tasks.pop(self._job_of(task), None)
+        job_id = self._job_of(task)
+        if self._tasks.get(job_id) is task:
+            self._tasks.pop(job_id, None)
+            self._claims.pop(job_id, None)
         self._slot_free.set()
 
     async def _sleep(self, wake: asyncio.Event, seconds: float) -> None:
@@ -428,10 +564,10 @@ class Worker:
     def _job_of(self, task: asyncio.Task[None]) -> str:
         return task.get_name().removeprefix("job-")
 
-    def _on_cancel(self, job_id: str) -> None:
+    def _on_cancel(self, job_id: str, reason: str = "user") -> None:
         task = self._tasks.get(job_id)
         if task is not None and not task.done():
-            self._cancel_reason[job_id] = "user"
+            self._cancel_reason[job_id] = reason
             task.cancel()
 
     # --- heartbeat, recovery, scheduler -------------------------------------------------------
@@ -448,25 +584,41 @@ class Worker:
 
     async def heartbeat(self) -> None:
         """Shows the jobs of this worker are alive and notices cancellations that missed NOTIFY."""
-        ids = list(self._tasks)
-        if not ids:
+        claims = [self._claims[job_id] for job_id in self._tasks if job_id in self._claims]
+        if not claims:
             return
+        ids = [claim.id for claim in claims]
         now = self.services.clock.now()
         async with self.services.db() as session:
-            await session.execute(
-                update(Job).where(Job.id.in_(ids), Job.locked_by == self.name).values(locked_at=now)
+            renewed = set(
+                await session.scalars(
+                    update(Job)
+                    .where(
+                        or_(
+                            *(
+                                and_(
+                                    Job.id == claim.id,
+                                    Job.user_id == claim.user_id,
+                                    Job.attempts == claim.attempts,
+                                )
+                                for claim in claims
+                            )
+                        ),
+                        Job.locked_by == self.name,
+                        Job.state.in_(ACTIVE_STATES),
+                    )
+                    .values(locked_at=now)
+                    .returning(Job.id)
+                )
             )
             cancelled = (
                 await session.scalars(
                     select(Job.id).where(Job.id.in_(ids), Job.state == "cancelled")
                 )
             ).all()
-            gone = set(ids) - set(
-                (await session.scalars(select(Job.id).where(Job.id.in_(ids)))).all()
-            )
             await session.commit()
-        for job_id in (*cancelled, *gone):
-            self._on_cancel(job_id)
+        for job_id in set(ids) - renewed:
+            self._on_cancel(job_id, "user" if job_id in cancelled else "claim_lost")
 
     async def _maintenance_loop(self) -> None:
         while True:
@@ -479,8 +631,11 @@ class Worker:
             await asyncio.sleep(self.config.maintenance_seconds)
 
     async def maintain(self) -> None:
+        from botai.jobs.research import purge_expired
+
         purge_diagnostics()
         await self.recover_orphans()
+        await purge_expired(self.services.db, self.services.clock.now())
         async with self.services.db() as session:
             await purge_finished(session, self.services.clock.now())
             await session.commit()
@@ -490,24 +645,43 @@ class Worker:
         now = self.services.clock.now()
         stale_before = now - self.config.lease
         async with self.services.db() as session:
-            rows = (
-                await session.scalars(
-                    select(Job)
+            candidates = (
+                await session.execute(
+                    select(Job.id, Job.user_id)
                     .where(
                         Job.state.in_(("running", "waiting_user")),
                         Job.locked_at.is_not(None),
                         Job.locked_at < stale_before,
+                        or_(
+                            ~Job.payload.bool_op("?")("_research_engine"),
+                            Job.payload.contains({"_research_engine": 1}),
+                        ),
                     )
-                    .with_for_update(skip_locked=True)
+                    .order_by(Job.locked_at, Job.id)
+                    .limit(100)
                 )
             ).all()
-            for job in rows:
-                if job.attempts > len(RETRY_DELAYS):
+        recovered = 0
+        for job_id, user_id in candidates:
+            async with self.services.db() as session:
+                job, connection = await lock_job_and_connection(session, user_id, job_id)
+                if (
+                    job is None
+                    or job.state not in ACTIVE_STATES
+                    or job.locked_at is None
+                    or job.locked_at >= stale_before
+                ):
+                    continue
+                failures = retry_failures(job.payload, job.attempts) + 1
+                job.payload = {**job.payload, "_retry_failures": failures}
+                if failures > len(RETRY_DELAYS):
                     detail = "Задание прервано несколько раз подряд"
                     job.state = "failed"
                     job.error = {"code": "internal_error", "detail": detail, "status": 500}
                     job.finished_at = now
                     job.locked_by = None
+                    job.locked_at = None
+                    await restore_source_after_stop(session, job, connection)
                     await dialogue.project_terminal(session, job, now)
                     await append_event(session, job.id, "status", status_data(job, now))
                     await append_event(
@@ -524,8 +698,21 @@ class Worker:
                     job.locked_at = None
                     await append_event(session, job.id, "status", status_data(job, now))
                     await session.execute(select(func.pg_notify(CHANNEL_JOBS, job.id)))
-            await session.commit()
-            return len(rows)
+                await session.commit()
+                recovered += 1
+                terminal = job.state == "failed"
+                claim = Claimed(
+                    job.id,
+                    job.user_id,
+                    job.kind,
+                    job.connection_id,
+                    dict(job.payload),
+                    job.attempts,
+                    job.thread_id,
+                )
+            if terminal:
+                await self._drop_transient(claim)
+        return recovered
 
     async def _scheduler_loop(self) -> None:
         while True:

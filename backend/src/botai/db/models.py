@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Computed,
     DateTime,
     Float,
@@ -383,6 +384,35 @@ class Job(Base):
     created_at: Mapped[datetime] = ts_now()
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobResearchCheckpoint(Base):
+    """Private encrypted research state. No plaintext payload in Job, events or diagnostics."""
+
+    __tablename__ = "job_research_checkpoints"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint("format_version > 0", name="format_version_positive"),
+        CheckConstraint("intent_key ~ '^[0-9a-f]{64}$'", name="intent_key_hex"),
+        Index("ix_job_research_checkpoints_expires_at", "expires_at"),
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = _user_fk()
+    connection_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    format_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    kek_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    aad_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class JobEvent(Base):

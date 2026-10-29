@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request
@@ -21,6 +22,7 @@ from botai.browser.proxy import EgressProxy
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db import models as m
 from botai.learn.canary import run_canary
+from botai.learn.handlers import make_handlers
 from botai.sources import rendered
 from tests.browser.conftest import PROXY_SECRET, QuietServer, Tls, tls  # noqa: F401
 from tests.fakeuni import data
@@ -29,7 +31,7 @@ from tests.fakeuni.login import COOKIE, SESSIONS
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
 from tests.sources import recipes
-from tests.sources.helpers import NOW, make_ctx, session_state
+from tests.sources.helpers import FAST, NOW, make_ctx, session_state
 
 pytestmark = pytest.mark.browser
 ENTRY = f"{data.ORIGIN}/rendered-schedule?begin_date=2026-10-26"
@@ -188,6 +190,33 @@ async def test_dom_only_spa_canary_and_sync_follow_local_week_without_model(
     visits = len(dom_site.weeks)
     assert (await env.sync())["status"] == "skipped"
     assert len(dom_site.weeks) == visits
+
+
+async def test_refused_http_candidate_does_not_hide_a_working_rendered_candidate(
+    make_env: EnvFactory, dom_site: DomSite
+) -> None:
+    refused = recipes.timetable_endpoint(path="/api/browser-only-timetable")
+    env = await make_env([ls.answer([refused, endpoint()])])
+    await env.login()
+    env.services.browser = dom_site.gateway
+    http_calls: list[str] = []
+
+    def denied(request: httpx.Request) -> httpx.Response:
+        http_calls.append(request.url.path)
+        return httpx.Response(401)
+
+    env.transport = httpx.MockTransport(denied)
+    env.handlers = make_handlers(transport=env.transport, retry=FAST)
+    result = await env.run(payload={"url": ENTRY, "kinds": ["scheduleEvents"]})
+
+    assert result["status"] == "ok"
+    assert http_calls == ["/api/browser-only-timetable"]
+    assert await env.count(m.ScheduleEvent) == 1
+    stored = await env.spec(1)
+    assert stored["recipe"]["endpoints"][0]["request"]["render"] is True
+    assert len(env.llm.requests) == 1
+    assert env.sessions.calls == 1
+    assert dom_site.writes == []
 
 
 async def test_rendered_drift_preserves_the_last_snapshot(

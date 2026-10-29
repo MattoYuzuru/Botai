@@ -135,7 +135,7 @@ async def test_an_observed_identifier_copied_into_a_path_is_caught(make_env: Env
 async def test_candidates_that_fail_on_the_live_session_are_dropped(make_env: EnvFactory) -> None:
     wrong = recipes.timetable_endpoint(path="/api/v9/timetable")  # 404 on the university
     env = await make_env(
-        [ls.answer([wrong]), ls.deadlines_answer()],
+        [ls.answer([wrong]), ls.answer([wrong]), ls.deadlines_answer()],
     )
     result = await env.run(choices=["skip"])
     # the timetable could not be verified, the deadlines could; the student is asked what to do
@@ -403,7 +403,7 @@ async def test_scoped_discovery_preserves_other_users_shared_recipe_kinds(
 
 async def test_canary_rejection_is_not_reported_as_missing_data(make_env: EnvFactory) -> None:
     wrong = recipes.timetable_endpoint(path="/api/missing-timetable")
-    env = await make_env([ls.answer([wrong]), ls.answer([wrong])])
+    env = await make_env([ls.answer([wrong])] * 4)
     result = await env.run(
         payload={"kinds": ["scheduleEvents"]},
         links=[f"{data.ORIGIN}/news", f"{data.ORIGIN}/news"],

@@ -332,38 +332,67 @@ class PlaywrightHandle:
         self._auth_permits.pop(frame, None)
         self._auth_epochs.pop(frame, None)
 
+    def _auth_refused(self, request: Request, reason: str) -> bool:
+        self._diagnostic(
+            "browser.auth_permit_refused",
+            outcome="rejected",
+            reason=reason,
+            method=_method(request.method),
+            **url_facts(request.url),
+        )
+        return False
+
     async def _entry_auth_allowed(self, request: Request) -> bool:
         if self.read_only or self._entry_verifying:
-            return False
+            return self._auth_refused(request, "auth_read_only")
         try:
             frame = request.frame
-            permit = self._auth_permits.pop(frame, None)
+            permit = self._auth_permits.get(frame)
+            if permit is None:
+                return self._auth_refused(request, "auth_no_permit")
             if (
-                permit is None
-                or frame.page != self._page
+                frame.page != self._page
                 or self._page != permit.page
                 or self._auth_epochs.get(frame, 0) != permit.epoch
                 or frame.url != permit.url
             ):
-                return False
+                return self._auth_refused(request, "auth_context_changed")
             if request.is_navigation_request():
                 # Never inspect a renderer suspended by this document POST.
-                return request.url in permit.actions
-            # GET polling can remove auth UI without changing a SPA's URL.
-            # No snapshot/title/navigation waits or retries inside interception.
-            async with asyncio.timeout(AUTH_EVALUATE_S):
-                raw: Any = await frame.evaluate(_AUTH_SCAN_JS)
-            snap = build_snapshot(permit.url, str(raw.get("title", "")), raw)
-            return (
-                self._page == permit.page == frame.page
-                and self._auth_epochs.get(frame, 0) == permit.epoch
-                and frame.url == permit.url
-                and (
+                if request.url not in permit.actions:
+                    return self._auth_refused(request, "auth_action_mismatch")
+            else:
+                # GET polling can remove auth UI without changing a SPA's URL.
+                # No snapshot/title/navigation waits or retries inside interception.
+                async with asyncio.timeout(AUTH_EVALUATE_S):
+                    raw: Any = await frame.evaluate(_AUTH_SCAN_JS)
+                snap = build_snapshot(permit.url, str(raw.get("title", "")), raw)
+                if (
+                    self._page != permit.page
+                    or frame.page != permit.page
+                    or self._auth_epochs.get(frame, 0) != permit.epoch
+                    or frame.url != permit.url
+                ):
+                    return self._auth_refused(request, "auth_context_changed")
+                if not (
                     has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
-                )
+                ):
+                    return self._auth_refused(request, "auth_ui_missing")
+            # The scan above yields: another request may consume the permit, or a
+            # navigation may revoke/replace it. Only its current owner can consume it.
+            if self._auth_permits.get(frame) is not permit:
+                return self._auth_refused(request, "auth_permit_used")
+            self._auth_permits.pop(frame)
+            self._diagnostic(
+                "browser.auth_permit",
+                outcome="accepted",
+                phase="response",
+                method=_method(request.method),
+                **url_facts(request.url),
             )
+            return True
         except (PlaywrightError, TimeoutError):
-            return False
+            return self._auth_refused(request, "auth_scan_failed")
 
     async def _arm_auth_document(self, frame: Frame) -> _AuthPermit | None:
         page = self._page
@@ -378,12 +407,31 @@ class PlaywrightHandle:
                 or frame.page != page
                 or frame.url != url
                 or self._auth_epochs.get(frame, 0) != epoch
-                or not (
-                    has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
-                )
             ):
+                self._diagnostic(
+                    "browser.auth_permit",
+                    outcome="rejected",
+                    reason="auth_context_changed",
+                    **url_facts(url),
+                )
+                return None
+            if not (
+                has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
+            ):
+                self._diagnostic(
+                    "browser.auth_permit",
+                    outcome="rejected",
+                    reason="auth_ui_missing",
+                    **url_facts(url),
+                )
                 return None
         except (PlaywrightError, TimeoutError):
+            self._diagnostic(
+                "browser.auth_permit",
+                outcome="rejected",
+                reason="auth_scan_failed",
+                **url_facts(url),
+            )
             return None
         actions = frozenset(
             urlsplit(urljoin(url, form.action or url))._replace(fragment="").geturl()
@@ -393,6 +441,16 @@ class PlaywrightHandle:
         )
         grant = _AuthPermit(page, epoch, url, actions)
         self._auth_permits[frame] = grant
+        self._diagnostic(
+            "browser.auth_permit",
+            outcome="accepted",
+            phase="request",
+            action_count=len(actions),
+            truncated=len(actions) > 8,
+            **url_facts(url),
+        )
+        for action in sorted(actions)[:8]:
+            self._diagnostic("browser.auth_action", **url_facts(action))
         return grant
 
     @contextlib.asynccontextmanager
@@ -426,13 +484,28 @@ class PlaywrightHandle:
     @contextlib.asynccontextmanager
     async def auth_document(self) -> AsyncGenerator[None]:
         """One native auth POST; never inspect a paused navigation from its route handler."""
-        frame = self._page.main_frame
+        page = self._page
+        frame = page.main_frame
+        previous_navigation = self._navigation_request
         grant = await self._arm_auth_document(frame) if self._entry_guarded else None
         deadline = monotonic() + SETTLE_MS / 1000
         try:
             yield
             if self._entry_guarded:
-                while self._inflight or monotonic() - self._last_activity < READ_VIEW_QUIET_S:
+                while True:
+                    if (
+                        self._page == page
+                        and self._navigation_request is not None
+                        and self._navigation_request is not previous_navigation
+                    ):
+                        failure = self.navigation_failure()
+                        if failure is not None:
+                            raise failure
+                    if (
+                        not self._inflight
+                        and monotonic() - self._last_activity >= READ_VIEW_QUIET_S
+                    ):
+                        break
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         raise BotaiError(
@@ -1229,7 +1302,7 @@ class PlaywrightGateway:
                 viewport={"width": 1024, "height": 768},
             )
             context.set_default_timeout(ACTION_TIMEOUT_MS)
-            primary = origin or f"https://{hosts[0]}"
+            primary = origin or (session.origin if session is not None else f"https://{hosts[0]}")
             if session is not None:
                 await self._restore(context, session, allow_hosts=hosts)
             if read_only:
@@ -1338,7 +1411,12 @@ class PlaywrightGateway:
             pattern = f"{primary.scheme}://{primary.hostname}/**"
 
             async def add_authorization(route: Route) -> None:
-                headers = {**route.request.headers, "authorization": f"Bearer {bearer}"}
-                await route.continue_(headers=headers)
+                headers = route.request.headers
+                # The application may have refreshed its token since restoration. Its own
+                # credentials take precedence over the saved fallback, including other schemes.
+                if "authorization" in headers:
+                    await route.continue_()
+                else:
+                    await route.continue_(headers={**headers, "authorization": f"Bearer {bearer}"})
 
             await context.route(pattern, add_authorization)

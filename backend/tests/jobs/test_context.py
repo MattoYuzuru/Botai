@@ -102,6 +102,7 @@ def manual_ctx(env: Env, job_id: str, user_id: str, conn: str | None, **kw: Any)
         vault=env.services.vault,
         clock=env.clock,
         notifier=Notifier(None),
+        allow_unclaimed=True,
         poll_seconds=0.05,
         **kw,
     )

@@ -49,6 +49,7 @@
 | [Контракты](docs/architecture/contracts.md) | Домен, рецепт, пресет входа, блоки интерфейса агента, REST/SSE/WS |
 | [Безопасность](docs/architecture/security.md) | Границы доверия, модель угроз, шифрование, egress, 152-ФЗ, проверки CI |
 | [Адаптивное исследование](docs/research/adaptive-observation.md) | Инструменты браузера, автоматическое обнаружение видов, бюджеты и неполный результат |
+| [Длительное исследование](docs/architecture/source-research.md) · [план рефакторинга](docs/plan/source-research-refactor.md) | Принятая архитектура checkpoint, fencing, восстановления и проверяемые этапы реализации |
 | [Публичный поиск](docs/development/public-search.md) | Exa, DeepSeek Search API, fallback, лимиты, ключи и безопасный smoke |
 | [Проверки](docs/development/testing.md) · [диагностика](docs/development/diagnostics.md) | Реальный L1 стенд, границы доказательств, keep/on/off и сохранение событий |
 | [Деплой и откат](docs/plan/deployment.md) | Проверенный main, образ по SHA, конфигурация сервера, резервная копия и откат |

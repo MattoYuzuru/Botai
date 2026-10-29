@@ -114,12 +114,19 @@ class FakePage:
 
 class FakeBrowserHandle:
     def __init__(
-        self, pages: Mapping[str, FakePage], now: datetime, origin: str, *, read_only: bool = False
+        self,
+        pages: Mapping[str, FakePage],
+        now: datetime,
+        origin: str,
+        *,
+        read_only: bool = False,
+        session: SessionState | None = None,
     ) -> None:
         self.read_only = read_only
         self._pages = pages
         self._now = now
         self._origin = origin
+        self._session = session
         self._url: str | None = None
         self._log: list[ObservedRequest] = []
         self.filled: dict[str, str] = {}
@@ -156,6 +163,8 @@ class FakeBrowserHandle:
         return self._snap()
 
     async def export_session(self) -> SessionState:
+        if self._session is not None:
+            return self._session.model_copy(deep=True)
         return SessionState(origin=self._origin, captured_at=self._now)
 
     async def close(self) -> None:
@@ -183,7 +192,9 @@ class FakeBrowserGateway:
         previous = self._users.get(user_id)
         if background and previous is not None and not previous.closed:
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Браузер занят другим действием")
-        handle = FakeBrowserHandle(self._pages, self._now, self._origin, read_only=read_only)
+        handle = FakeBrowserHandle(
+            self._pages, self._now, self._origin, read_only=read_only, session=session
+        )
         self._users[user_id] = handle
         self.handles.append(handle)
         return handle

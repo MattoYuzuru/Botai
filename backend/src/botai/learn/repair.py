@@ -19,6 +19,7 @@ While it runs the old data stay on screen with the connection marked `repairing`
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
 from collections.abc import Sequence
@@ -31,7 +32,7 @@ from botai.contracts.specs import Kind
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import Handler
 from botai.core.http import RetryPolicy
-from botai.core.jobs import JobCancelled, JobContext
+from botai.core.jobs import JobCancelled, JobClaimLost, JobContext
 from botai.core.services import Services
 from botai.db import models as m
 from botai.learn import revisions
@@ -50,6 +51,7 @@ from botai.sources.runner import (
     baseline_counts,
     build_context,
     fetch_with_reauth,
+    guard_source_write,
     load_snapshot,
     sync_connection,
 )
@@ -113,7 +115,8 @@ class Repairer(Explorer):
         try:
             return await self._repair(snap, mode, reason)
         except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
-            await self._leave_stale(snap, "Починка не завершена: задание остановлено")
+            with contextlib.suppress(JobClaimLost):
+                await self._leave_stale(snap, "Починка не завершена: задание остановлено")
             raise
         except BotaiError as err:
             if err.code in {ErrorCode.SOURCE_UNAVAILABLE, ErrorCode.SOURCE_RATE_LIMITED}:
@@ -150,6 +153,11 @@ class Repairer(Explorer):
 
     async def _record_canary(self, snap: Snapshot, *, ok: bool) -> None:
         async with self.services.db() as db, db.begin():
+            connection = await guard_source_write(
+                db, self.ctx, snap.user_id, snap.connection_id, origin=snap.origin
+            )
+            if connection is None or connection.status == "disabled":
+                return
             row = await db.get(m.AdapterSpecRow, snap.spec_id)
             if row is not None:
                 await revisions.record(
@@ -343,6 +351,11 @@ class Repairer(Explorer):
         stage = await ui.stage("Сохраняю исправленное описание")
         now = svc.clock.now()
         async with svc.db() as db, db.begin():
+            conn = await guard_source_write(
+                db, self.ctx, snap.user_id, snap.connection_id, origin=snap.origin
+            )
+            if conn is None or conn.status == "disabled":
+                return {"status": "skipped", "detail": "disabled"}
             row = await revisions.add_revision(
                 db,
                 origin=snap.origin,
@@ -353,9 +366,7 @@ class Repairer(Explorer):
                 notes=f"repair: {reason}",
             )
             old = await revisions.activate(db, row, now=now)
-            conn = await db.get(m.Connection, snap.connection_id)
-            if conn is not None and conn.status != "disabled":
-                conn.spec_id, conn.spec_revision, conn.status = row.id, row.revision, "active"
+            conn.spec_id, conn.spec_revision, conn.status = row.id, row.revision, "active"
             new_id, new_revision = row.id, row.revision
         await stage.finish("ok", f"Версия описания: {new_revision}")
 
@@ -410,10 +421,14 @@ class Repairer(Explorer):
         svc = self.services
         now = svc.clock.now()
         async with svc.db() as db, db.begin():
+            conn = await guard_source_write(
+                db, self.ctx, snap.user_id, snap.connection_id, origin=snap.origin
+            )
+            if conn is None or conn.status == "disabled":
+                return {"status": "skipped", "detail": "disabled"}
             row = await db.get(m.AdapterSpecRow, new_id)
             previous = await revisions.rollback(db, row, now=now) if row is not None else None
-            conn = await db.get(m.Connection, snap.connection_id)
-            if conn is not None and previous is not None and conn.status != "disabled":
+            if previous is not None:
                 conn.spec_id, conn.spec_revision = previous.id, previous.revision
         await self._set(
             snap.connection_id,

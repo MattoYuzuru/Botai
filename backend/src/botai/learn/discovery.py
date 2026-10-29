@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from botai.browser.probe import requires_authentication
 from botai.browser.read_views import ReadView, ReadViewBrowser
@@ -23,6 +25,7 @@ from botai.core.llm import LlmFixtureMissing, LlmProvider, LlmRequest, LlmRespon
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import parse_json
 from botai.learn.intent import LearningIntent
+from botai.learn.memory import DiscoveryMemory, MemoryLimits, NegativeReason, StopReason
 from botai.learn.observe import (
     MAX_CALLS,
     Observations,
@@ -370,8 +373,24 @@ async def adaptive_observe(
     intent: LearningIntent,
     llm: LlmProvider,
     budget: DiscoveryBudget | None = None,
+    memory: DiscoveryMemory | None = None,
+    checkpoint: Callable[[DiscoveryMemory], Awaitable[None]] | None = None,
+    run_limits: MemoryLimits | None = None,
 ) -> Observations:
     """Model-guided exploration, with legacy crawl fallback for unavailable/malformed planners."""
+    if memory is not None:
+        return await _resumable_observe(
+            handle,
+            origin,
+            redactor,
+            start_urls=start_urls,
+            intent=intent,
+            llm=llm,
+            budget=budget or DiscoveryBudget(),
+            memory=memory,
+            checkpoint=checkpoint,
+            limits=run_limits or MemoryLimits(),
+        )
     budget = budget or DiscoveryBudget()
     state = ObservationSession(handle, origin, redactor, budget)
     tokens = 0
@@ -544,3 +563,389 @@ def finish_observation(
         elapsed_ms=round((time.monotonic() - started) * 1000),
     )
     return obs
+
+
+_Result = TypeVar("_Result")
+
+
+class _SliceExpired(Exception):
+    pass
+
+
+def _sanitize_memory_addresses(memory: DiscoveryMemory, redactor: Redactor) -> bool:
+    """Remove protected values before any checkpoint or replay, never persist deny-set values."""
+    omitted = False
+    for field_name in ("frontier", "visited", "evidence_urls"):
+        before = getattr(memory, field_name)
+        after = [url for url in before if not redactor.contains_secret_address(url)]
+        omitted = omitted or len(before) != len(after)
+        setattr(memory, field_name, after)
+    for field_name in ("last_url", "pending_url"):
+        value = getattr(memory, field_name)
+        if value is not None and redactor.contains_secret_address(value):
+            setattr(memory, field_name, None)
+            omitted = True
+    negatives = []
+    for outcome in memory.negative_outcomes:
+        if outcome.url is not None and redactor.contains_secret_address(outcome.url):
+            negatives.append(outcome.model_copy(update={"url": None}))
+            omitted = True
+        else:
+            negatives.append(outcome)
+    memory.negative_outcomes = negatives
+    return omitted
+
+
+@dataclass
+class _MemorySlice:
+    state: ObservationSession
+    memory: DiscoveryMemory
+    limits: MemoryLimits
+    checkpoint: Callable[[DiscoveryMemory], Awaitable[None]] | None
+    started: float = field(default_factory=time.monotonic)
+    _tick: float = field(default_factory=time.monotonic)
+    _network: int = 0
+    slice_tokens: int = 0
+    _sensitive_omitted: bool = False
+
+    def reject_address(self) -> None:
+        self.state.failures.add("navigation_failed")
+        self.memory.remember_negative("navigation_failed")
+        if not self._sensitive_omitted:
+            diagnostic_event(
+                "observe.plan", outcome="rejected", reason="invalid_address", omitted_sensitive=True
+            )
+            self._sensitive_omitted = True
+
+    def allowed_address(self, url: str) -> bool:
+        if self.state.redactor.contains_secret_address(url):
+            self.reject_address()
+            return False
+        return True
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.state.budget.seconds - (time.monotonic() - self.started))
+
+    async def bounded(self, operation: Awaitable[_Result]) -> _Result:
+        # Checkpoint callbacks are deliberately outside this timeout: a storage/fencing
+        # exception must propagate instead of becoming a source timeout or fallback crawl.
+        try:
+            async with asyncio.timeout(self.remaining):
+                return await operation
+        except TimeoutError:
+            raise _SliceExpired from None
+
+    def account(self) -> None:
+        now = time.monotonic()
+        self.memory.active_ms += max(0, int((now - self._tick) * 1000))
+        self._tick = now
+        self.memory.requests += max(0, self.state.network_count - self._network)
+        self._network = self.state.network_count
+
+    async def commit(self) -> None:
+        self.account()
+        state, memory = self.state, self.memory
+        if _sanitize_memory_addresses(memory, state.redactor):
+            self.reject_address()
+        memory.merge_urls(
+            "visited", [url for url in sorted(state.visited) if self.allowed_address(url)]
+        )
+        state.links = {
+            ref: value for ref, value in state.links.items() if self.allowed_address(value[1])
+        }
+        state.current_links = [ref for ref in state.current_links if ref in state.links]
+        targets = [target for _, target in state.links.values() if target not in state.visited]
+        memory.merge_urls("frontier", targets)
+        memory.frontier = [url for url in memory.frontier if url not in state.visited]
+        if state.current_requested_url is not None and self.allowed_address(
+            state.current_requested_url
+        ):
+            memory.last_url = state.current_requested_url
+        pages = [
+            page.url
+            for page in state.pages.values()
+            if navigation_url(page.url) == page.url
+            and url_origin(page.url) == state.origin
+            and self.allowed_address(page.url)
+        ]
+        memory.evidence_urls = list(dict.fromkeys([*memory.evidence_urls, *pages]))[-6:]
+        for failure in sorted(state.failures):
+            memory.remember_negative(cast(NegativeReason, failure), memory.last_url)
+        memory.validate_for(state.origin)
+        if self.checkpoint is not None:
+            await self.checkpoint(memory.model_copy(deep=True))
+
+    def stop(self) -> StopReason:
+        self.account()
+        reason = self.memory.exhausted_reason(self.limits)
+        if reason:
+            self.memory.exhausted = True
+            return reason
+        if self.memory.overflowed:
+            return "page_budget"
+        if self.remaining <= 0:
+            return "timeout"
+        if len(self.state.pages) >= self.state.budget.pages:
+            return "page_budget"
+        if self.state.network_count >= self.state.budget.requests:
+            return "request_budget"
+        if self.slice_tokens >= self.state.budget.tokens:
+            return "token_budget"
+        return ""
+
+    def next_url(self) -> str | None:
+        return next((url for url in self.memory.frontier if url not in self.state.visited), None)
+
+    async def visit(self, url: str) -> bool:
+        if not self.allowed_address(url):
+            if self.memory.pending_url == url:
+                self.memory.pending_url = None
+            await self.commit()
+            return False
+        changed = await self.bounded(self.state.visit(url))
+        if self.state.current_requested_url != url:
+            self.memory.remember_negative("navigation_failed", url)
+        if self.memory.pending_url == url:
+            self.memory.pending_url = None
+        await self.commit()
+        return changed
+
+
+def _planner_allocation(request: LlmRequest) -> int:
+    # UTF-8 bytes plus schema/role overhead conservatively bound text tokenization without
+    # making a remote tokenizer call. Unknown in-flight allocations are never refunded.
+    message_bytes = sum(len(message.content.encode("utf-8")) for message in request.messages)
+    schema_bytes = len(json.dumps(request.json_schema, ensure_ascii=False).encode("utf-8"))
+    return message_bytes + schema_bytes + request.max_tokens + 1024
+
+
+async def _resumable_observe(
+    handle: BrowserHandle,
+    origin: str,
+    redactor: Redactor,
+    *,
+    start_urls: list[str],
+    intent: LearningIntent,
+    llm: LlmProvider,
+    budget: DiscoveryBudget,
+    memory: DiscoveryMemory,
+    checkpoint: Callable[[DiscoveryMemory], Awaitable[None]] | None,
+    limits: MemoryLimits,
+) -> Observations:
+    memory.validate_for(origin)
+    sensitive_omitted = _sanitize_memory_addresses(memory, redactor)
+    memory.abandon_planner()  # a previous process may have died after the remote call
+    generation = memory.generations
+    memory.generations += 1
+    memory.resume_needed = False
+    memory.exhausted = False
+    state = ObservationSession(handle, origin, redactor, budget)
+    # Runtime references are rebuilt. In particular an old stateRef cannot accidentally match
+    # the first page of a new handle, even when both happen to contain a link named l0.
+    state.revision = generation * 1000
+    state.visited.update(memory.visited)
+    run = _MemorySlice(state, memory, limits, checkpoint)
+    if sensitive_omitted:
+        run.reject_address()
+    evidence: tuple[str, ...] = ()
+    stopped: StopReason = "step_budget"
+    fallback = False
+    no_progress = 0
+    initial = [
+        url
+        for url in start_urls
+        if navigation_url(url) == url and url_origin(url) == origin and run.allowed_address(url)
+    ]
+    memory.merge_urls("frontier", [url for url in initial if url not in state.visited])
+    await run.commit()
+    try:
+        stopped = run.stop()
+        if not stopped:
+            restore = list(
+                dict.fromkeys(
+                    url
+                    for url in [
+                        memory.pending_url,
+                        memory.last_url,
+                        *reversed(memory.evidence_urls),
+                    ]
+                    if url is not None
+                )
+            )
+            hydrate_limit = min(limits.max_rehydrate_pages, max(1, budget.pages // 2))
+            if budget.pages <= 1 and memory.frontier:
+                restore = [memory.pending_url or memory.frontier[0]]
+            for url in restore[:hydrate_limit]:
+                state.visited.discard(url)
+                await run.visit(url)
+                if state.auth_required or state.bot_protection or run.stop():
+                    break
+            if not state.pages and not run.stop():
+                for url in memory.frontier:
+                    if await run.visit(url):
+                        break
+                    if run.stop():
+                        break
+            state.offer_entries([*memory.frontier, *initial])
+            await run.commit()
+            if memory.finished and not state.auth_required and not state.bot_protection:
+                stopped = "finished"
+            else:
+                memory.finished = False
+                for step in range(budget.steps):
+                    if state.auth_required or state.bot_protection:
+                        stopped = "authentication"
+                        break
+                    stopped = run.stop()
+                    if stopped:
+                        break
+                    if not state.pages:
+                        stopped = "navigation_failed" if memory.negative_outcomes else "empty"
+                        break
+                    request = discovery_request(state.summary(), intent)
+                    allocation = _planner_allocation(request)
+                    if memory.tokens + memory.reserved_tokens + allocation > limits.max_tokens:
+                        stopped = "token_budget"
+                        memory.exhausted = True
+                        break
+                    memory.reserve_planner(allocation)
+                    await run.commit()
+                    diagnostic_event("observe.plan", phase="request", step=step)
+                    response: LlmResponse | None = None
+                    try:
+                        if not isinstance(llm, ObservationProvider):
+                            raise LlmFixtureMissing("provider has no observation planner")
+                        response = await run.bounded(llm.complete_observation(request))
+                    except LlmFixtureMissing:
+                        memory.complete_planner(0)  # provider was not called
+                        fallback, stopped = True, "planner_unavailable"
+                    except BotaiError as exc:
+                        if exc.code == ErrorCode.QUOTA_EXCEEDED:
+                            memory.complete_planner(0)
+                            await run.commit()
+                            raise
+                        memory.abandon_planner()
+                        memory.remember_negative("provider_failed", memory.last_url)
+                        fallback, stopped = True, "provider_failed"
+                    if response is not None:
+                        usage = response.usage
+                        spent = usage.input_cache_hit + usage.input_cache_miss + usage.output
+                        memory.complete_planner(spent)
+                        run.slice_tokens += spent
+                        try:
+                            decision = state.decision(parse_json(response.content))
+                        except ValueError:
+                            memory.remember_negative("invalid_plan", memory.last_url)
+                            fallback, stopped = True, "invalid_plan"
+                        else:
+                            if intent.discovery_mode == "auto":
+                                memory.discovered_kinds = list(
+                                    dict.fromkeys(
+                                        [
+                                            *memory.discovered_kinds,
+                                            *(
+                                                k
+                                                for k in decision.discoveries
+                                                if k not in intent.absent_kinds
+                                            ),
+                                        ]
+                                    )
+                                )
+                            evidence = decision.evidence or evidence
+                            if decision.action == "navigate" and decision.ref is not None:
+                                target = state.links[decision.ref][1]
+                                if not run.allowed_address(target):
+                                    await run.commit()
+                                    continue
+                                memory.pending_url = target
+                            await run.commit()  # validated selection precedes its read effect
+                            if decision.action == "navigate":
+                                # A callback/capture may discover a rotated credential between
+                                # validation and this effect. Check the target again after await.
+                                target = state.links.get(decision.ref or "")
+                                if target is None or not run.allowed_address(target[1]):
+                                    memory.pending_url = None
+                                    await run.commit()
+                                    continue
+                            if decision.action == "finish":
+                                if state.failures and run.next_url() is not None:
+                                    target = run.next_url()
+                                    assert target is not None
+                                    await run.visit(target)
+                                    continue
+                                stopped, memory.finished = "finished", True
+                                break
+                            changed = await run.bounded(state.apply(decision))
+                            if memory.pending_url is not None:
+                                if state.current_requested_url != memory.pending_url:
+                                    memory.remember_negative(
+                                        "navigation_failed", memory.pending_url
+                                    )
+                                memory.pending_url = None
+                            await run.commit()
+                            no_progress = 0 if changed else no_progress + 1
+                            if no_progress >= 2:
+                                memory.remember_negative("no_progress", memory.last_url)
+                                target = run.next_url()
+                                if target is None:
+                                    stopped = "no_progress"
+                                    break
+                                if run.stop():
+                                    stopped = run.stop()
+                                    break
+                                memory.steps += 1
+                                memory.pending_url = target
+                                await run.commit()
+                                await run.visit(target)
+                                no_progress = 0
+                            continue
+                    await run.commit()
+                    if fallback:
+                        break
+                else:
+                    stopped = "step_budget"
+            if fallback and not state.auth_required and not state.bot_protection:
+                # Legacy providers terminate with the same bounded crawl semantics; they must
+                # not turn a missing planner fixture/capability into endless queued slices.
+                for _ in range(min(6, budget.pages)):
+                    if run.stop() or (target := run.next_url()) is None:
+                        break
+                    memory.steps += 1
+                    memory.pending_url = target
+                    await run.commit()
+                    await run.visit(target)
+                    if state.auth_required or state.bot_protection:
+                        break
+                memory.finished = not state.auth_required and not state.bot_protection
+    except _SliceExpired:
+        stopped = "timeout"
+        memory.abandon_planner()
+    if state.auth_required or state.bot_protection:
+        stopped = "authentication"
+        memory.finished = False
+    final_limit = run.stop()
+    if memory.exhausted or memory.overflowed:
+        stopped = final_limit or stopped
+    memory.stop_reason = stopped
+    memory.resume_needed = (
+        not memory.finished
+        and not memory.exhausted
+        and not memory.overflowed
+        and stopped in {"step_budget", "token_budget", "page_budget", "request_budget", "timeout"}
+    )
+    await run.commit()
+    obs = state.bundle(evidence)
+    return finish_observation(
+        obs,
+        state,
+        run.slice_tokens,
+        tuple(memory.discovered_kinds),
+        stopped,
+        run.started,
+        limited=memory.exhausted
+        or memory.overflowed
+        or memory.resume_needed
+        or stopped not in {"finished", "authentication", "empty", "planner_unavailable"}
+        or (fallback and run.next_url() is not None),
+    )

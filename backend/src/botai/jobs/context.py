@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import SecretStr
@@ -24,10 +24,12 @@ from botai.contracts.agent_ui import AgentUiAnswer, AgentUiBlock, InputBlock
 from botai.core.clock import Clock
 from botai.core.diagnostics import bind_diagnostics, diagnostic_event
 from botai.core.dialogue import DialogueTurn
-from botai.core.jobs import JobCancelled, JobState
-from botai.core.vault import SecretKind, Vault
-from botai.db.models import ChatThread, Job, JobAnswer
+from botai.core.jobs import JobCancelled, JobClaimLost, JobInputChanged, JobState
+from botai.core.research import ResearchCheckpoint
+from botai.core.vault import CipherVault, SecretKind, TransactionalVault, Vault
+from botai.db.models import ChatThread, Connection, Job, JobAnswer
 from botai.jobs import dialogue
+from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.events import TERMINAL, append_event, status_data
 from botai.jobs.notify import CHANNEL_ANSWERS, Notifier
 
@@ -53,7 +55,16 @@ class PgJobContext:
         poll_seconds: float = POLL_SECONDS,
         on_wait_start: Callable[[], None] | None = None,
         on_wait_end: Callable[[], None] | None = None,
+        claim_worker: str | None = None,
+        claim_attempt: int | None = None,
+        initial_input_revision: int = 0,
+        allow_unclaimed: bool = False,
+        research_ttl: timedelta = timedelta(hours=24),
     ) -> None:
+        if (claim_worker is None) != (claim_attempt is None):
+            raise ValueError("a claim needs both worker and attempt")
+        if not allow_unclaimed and claim_worker is None:
+            raise ValueError("persistent contexts require an immutable worker claim")
         self.job_id = job_id
         self.user_id = user_id
         self.connection_id = connection_id
@@ -68,6 +79,125 @@ class PgJobContext:
         self._waiting_via_status = False
         self._dialogue_delivered: set[str] = set()
         self._dialogue_blocks: set[str] = set()
+        self._claim_worker = claim_worker
+        self._claim_attempt = claim_attempt
+        self._input_revision = initial_input_revision
+        self._research_ttl = research_ttl
+
+    @property
+    def input_revision(self) -> int:
+        """Revision of the inbox last read by this handler, never a fresh database lookup."""
+        return self._input_revision
+
+    async def assert_current(
+        self, session: AsyncSession, *, input_revision: int | None = None
+    ) -> None:
+        job = await self._live_job(session)
+        if input_revision is not None and dialogue.input_revision(job) != input_revision:
+            raise JobInputChanged
+
+    def _research_input_current(self, job: Job) -> None:
+        engine = job.payload.get("_research_engine")
+        if (
+            type(engine) is int
+            and engine == 1
+            and dialogue.input_revision(job) != self.input_revision
+        ):
+            raise JobInputChanged
+
+    def authentication_context(self) -> PgJobContext:
+        """An isolated auth view: it never reads or acknowledges the research inbox."""
+        return _AuthenticationJobContext(
+            job_id=self.job_id,
+            user_id=self.user_id,
+            connection_id=self.connection_id,
+            db=self._db,
+            vault=self._vault,
+            clock=self._clock,
+            notifier=self._notifier,
+            ask_ttl=self._ask_ttl,
+            poll_seconds=self._poll,
+            on_wait_start=self._on_wait_start,
+            on_wait_end=self._on_wait_end,
+            claim_worker=self._claim_worker,
+            claim_attempt=self._claim_attempt,
+            initial_input_revision=self.input_revision,
+            allow_unclaimed=self._claim_worker is None,
+            research_ttl=self._research_ttl,
+        )
+
+    async def load_research(self) -> ResearchCheckpoint | None:
+        from botai.jobs.research import ResearchStore
+
+        if not isinstance(self._vault, CipherVault):
+            raise ValueError("the Vault does not support encrypted research checkpoints")
+        return await ResearchStore(self._db, self._vault, self._clock, ttl=self._research_ttl).load(
+            self
+        )
+
+    async def save_research(
+        self, payload: SecretStr, *, intent_key: str, expected_revision: int
+    ) -> ResearchCheckpoint:
+        from botai.jobs.research import ResearchStore
+
+        if not isinstance(self._vault, CipherVault):
+            raise ValueError("the Vault does not support encrypted research checkpoints")
+        return await ResearchStore(self._db, self._vault, self._clock, ttl=self._research_ttl).save(
+            self, payload, intent_key=intent_key, expected_revision=expected_revision
+        )
+
+    async def put_secret(
+        self,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        await self._put_secret(
+            user_id, connection_id, kind, value, expires_at=expires_at, check_input=True
+        )
+
+    async def _put_secret(
+        self,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None,
+        check_input: bool,
+    ) -> None:
+        if user_id != self.user_id:
+            raise JobClaimLost("a job cannot publish another user's secret")
+        if kind is not SecretKind.TRANSIENT and connection_id != self.connection_id:
+            raise JobClaimLost("a job cannot publish a different connection's secret")
+        async with self._db() as session, session.begin():
+            if kind is not SecretKind.TRANSIENT:
+                connection = await session.scalar(
+                    select(Connection)
+                    .where(Connection.id == connection_id, Connection.user_id == user_id)
+                    .with_for_update()
+                )
+                if connection is None or connection.status == "disabled":
+                    raise JobClaimLost("the connection is no longer available")
+            await self.assert_current(
+                session, input_revision=self.input_revision if check_input else None
+            )
+            job = await session.get(Job, self.job_id)
+            if (
+                kind is not SecretKind.TRANSIENT
+                and job is not None
+                and job.connection_id != connection_id
+            ):
+                raise JobClaimLost("the job connection binding changed")
+            if isinstance(self._vault, TransactionalVault):
+                await self._vault.put_in_transaction(
+                    session, user_id, connection_id, kind, value, expires_at=expires_at
+                )
+            else:
+                await self._vault.put(user_id, connection_id, kind, value, expires_at=expires_at)
 
     # --- JobContext -------------------------------------------------------------------------
 
@@ -76,6 +206,7 @@ class PgJobContext:
             raise ValueError("a handler may only report running or waiting_user")
         async with self._db() as session:
             job = await self._live_job(session)
+            self._research_input_current(job)
             job.stage = stage[:STAGE_MAX]
             job.state = state.value
             pending = dialogue.state_of(job).get("pending")
@@ -102,6 +233,7 @@ class PgJobContext:
         """Idempotent by `block.id`: emitting the id again replaces the block on the client."""
         async with self._db() as session:
             job = await self._live_job(session)
+            self._research_input_current(job)
             now = self._clock.now()
             if block.type in {"login", "wait"}:
                 dialogue.set_pending(
@@ -121,6 +253,8 @@ class PgJobContext:
         async with self._db() as session:
             job = await self._live_job(session)
             turns = await dialogue.read_turns(session, job)
+            observed_revision = dialogue.input_revision(job)
+        self._input_revision = observed_revision
         self._dialogue_delivered.update(turn.message_id for turn in turns)
         diagnostic_event("dialogue.drain", turn_count=len(turns))
         return turns
@@ -135,6 +269,8 @@ class PgJobContext:
         intent = {key: value for key, value in normalize_context(intent).items() if key in allowed}
         async with self._db() as session:
             job = await self._live_job(session)
+            if dialogue.input_revision(job) != self.input_revision:
+                raise JobInputChanged
             now = self._clock.now()
             state = dialogue.state_of(job)
             applied = set(state.get("applied_ids") or [])
@@ -171,6 +307,7 @@ class PgJobContext:
             raise ValueError("native credentials cannot be answered by conversation")
         async with self._db() as session:
             job = await self._live_job(session)
+            self._research_input_current(job)
             now = self._clock.now()
             dialogue.set_pending(job, block, channel="dialogue", now=now)
             await dialogue.project_block(session, job, _dump(block), now)
@@ -188,6 +325,8 @@ class PgJobContext:
                     async with self._db() as session:
                         job = await self._live_job(session)
                         turns = await dialogue.read_turns(session, job)
+                        observed_revision = dialogue.input_revision(job)
+                    self._input_revision = observed_revision
                     if turns:
                         turn = turns[0]
                         self._dialogue_delivered.add(turn.message_id)
@@ -224,10 +363,12 @@ class PgJobContext:
         answer = await self._ask(block)
         if not answer.is_secret:
             raise TypeError("a secret input was answered without the secret path")
-        secret = await self._vault.get(self.user_id, block.id, SecretKind.TRANSIENT)
-        if secret is None:
-            raise JobCancelled(f"the secret answer to block {block.id} is gone (expired)")
-        await self._vault.delete(self.user_id, block.id, SecretKind.TRANSIENT)  # read once
+        async with self._db() as session:
+            await self.assert_current(session)
+            secret = await self._vault.get(self.user_id, block.id, SecretKind.TRANSIENT)
+            if secret is None:
+                raise JobCancelled(f"the secret answer to block {block.id} is gone (expired)")
+            await self._vault.delete(self.user_id, block.id, SecretKind.TRANSIENT)  # read once
         return secret
 
     # --- internals --------------------------------------------------------------------------
@@ -237,13 +378,24 @@ class PgJobContext:
         job = await session.scalar(
             select(Job).where(Job.id == self.job_id, Job.user_id == self.user_id).with_for_update()
         )
-        if job is None or job.state in TERMINAL:
+        if self._claim_worker is not None:
+            if (
+                job is None
+                or job.state not in {"running", "waiting_user"}
+                or job.locked_by != self._claim_worker
+                or job.attempts != self._claim_attempt
+                or job.connection_id != self.connection_id
+            ):
+                raise JobClaimLost(f"claim for job {self.job_id} is no longer current")
+        elif job is None or job.state in TERMINAL:
             raise JobCancelled(f"job {self.job_id} is no longer running")
+        assert job is not None
         return job
 
     async def _ask(self, block: AgentUiBlock) -> JobAnswer:
         async with self._db() as session:
             job = await self._live_job(session)
+            self._research_input_current(job)
             dialogue.set_pending(
                 job,
                 block,
@@ -281,9 +433,8 @@ class PgJobContext:
 
     async def _answer_or_cancel(self, block_id: str) -> JobAnswer | None:
         async with self._db() as session:
-            job = await session.get(Job, self.job_id)
-            if job is None or job.state in TERMINAL:
-                raise JobCancelled(f"job {self.job_id} is no longer running")
+            job = await self._live_job(session)
+            self._research_input_current(job)
             return await session.scalar(
                 select(JobAnswer).where(
                     JobAnswer.job_id == self.job_id, JobAnswer.block_id == block_id
@@ -293,6 +444,7 @@ class PgJobContext:
     async def _resume(self, block_id: str | None = None) -> None:
         async with self._db() as session:
             job = await self._live_job(session)
+            self._research_input_current(job)
             if block_id is not None:
                 dialogue.complete_pending(job, block_id, now=self._clock.now())
             job.state = JobState.RUNNING.value
@@ -302,17 +454,63 @@ class PgJobContext:
     async def _expire(self) -> None:
         """The wait TTL ran out: the job is cancelled, its progress (result so far) is kept."""
         async with self._db() as session:
-            job = await session.scalar(select(Job).where(Job.id == self.job_id).with_for_update())
+            job, connection = await lock_job_and_connection(session, self.user_id, self.job_id)
             if job is None or job.state in TERMINAL:
+                if self._claim_worker is not None:
+                    raise JobClaimLost("the job expired after its claim was revoked")
                 return
+            await self.assert_current(session)
             now = self._clock.now()
             job.state = JobState.CANCELLED.value
             job.stage = "Не дождались ответа, задание остановлено"
             job.finished_at = now
             job.locked_by = None
+            job.locked_at = None
+            await restore_source_after_stop(session, job, connection)
             await dialogue.project_terminal(session, job, now)
             await append_event(session, self.job_id, "status", status_data(job, now))
+            blocks = list(
+                await session.scalars(
+                    select(JobAnswer.block_id).where(
+                        JobAnswer.job_id == job.id, JobAnswer.is_secret.is_(True)
+                    )
+                )
+            )
             await session.commit()
+        for block_id in blocks:
+            await self._vault.delete(self.user_id, block_id, SecretKind.TRANSIENT)
+
+
+class _AuthenticationJobContext(PgJobContext):
+    """LoginFlow's temporary view; normal data/intent guards remain strict on this object too."""
+
+    def _research_input_current(self, job: Job) -> None:
+        # A scope clarification does not revoke the current human login. The normal
+        # context drains it after authentication; cancellation/claim/binding still fence it.
+        pass
+
+    async def assert_authentication_current(self, session: AsyncSession) -> None:
+        await self.assert_current(session)
+
+    async def put_secret(
+        self,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        if kind not in {
+            SecretKind.SESSION,
+            SecretKind.LOGIN,
+            SecretKind.PASSWORD,
+            SecretKind.TRANSIENT,
+        }:
+            raise ValueError("authentication cannot publish this secret kind")
+        await self._put_secret(
+            user_id, connection_id, kind, value, expires_at=expires_at, check_input=False
+        )
 
 
 def _dump(block: AgentUiBlock) -> dict[str, object]:

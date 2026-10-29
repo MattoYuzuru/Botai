@@ -9,7 +9,14 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.clock import FrozenClock
-from botai.core.vault import SecretKind, VaultError, generate_kek_b64, load_kek
+from botai.core.vault import (
+    CipherVault,
+    SecretKind,
+    TransactionalVault,
+    VaultError,
+    generate_kek_b64,
+    load_kek,
+)
 from botai.db.models import SecretRow
 from botai.settings import Settings
 from botai.vault.factory import build_vault
@@ -228,6 +235,65 @@ async def test_put_over_an_expired_secret_revives_the_slot(tx_sessionmaker: Sm) 
     got = await vault.get(user, "j", SecretKind.TRANSIENT)
     assert got is not None
     assert got.get_secret_value() == "new"
+
+
+async def test_transactional_put_commits_and_rolls_back_with_the_callers_write(
+    tx_sessionmaker: Sm,
+) -> None:
+    user = await make_user(tx_sessionmaker)
+    vault = _vault(tx_sessionmaker)
+    assert isinstance(vault, TransactionalVault)
+    await vault.put(user, "c1", SecretKind.SESSION, "before")
+    async with tx_sessionmaker() as session, session.begin():
+        await vault.put_in_transaction(session, user, "c1", SecretKind.SESSION, MARKER)
+        row = await session.scalar(select(SecretRow).where(SecretRow.user_id == user))
+        assert row is not None
+        assert MARKER.encode() not in row.ciphertext
+    got = await vault.get(user, "c1", SecretKind.SESSION)
+    assert got is not None
+    assert got.get_secret_value() == MARKER
+
+    async def abort_publication() -> None:
+        async with tx_sessionmaker() as session, session.begin():
+            await session.execute(
+                update(SecretRow).where(SecretRow.user_id == user).values(expires_at=NOW)
+            )
+            await vault.put_in_transaction(session, user, "c1", SecretKind.SESSION, "after")
+            raise RuntimeError("abort guarded publication")
+
+    with pytest.raises(RuntimeError, match="abort guarded publication"):
+        await abort_publication()
+    got = await vault.get(user, "c1", SecretKind.SESSION)
+    assert got is not None
+    assert got.get_secret_value() == MARKER
+
+
+async def test_transactional_insert_does_not_escape_rollback_and_keeps_default_ttl(
+    tx_sessionmaker: Sm,
+) -> None:
+    user = await make_user(tx_sessionmaker)
+    vault = _vault(tx_sessionmaker)
+    async with tx_sessionmaker() as session:
+        await vault.put_in_transaction(session, user, "block", SecretKind.TRANSIENT, MARKER)
+        row = await session.scalar(select(SecretRow).where(SecretRow.user_id == user))
+        assert row is not None
+        assert row.expires_at == NOW + timedelta(minutes=10)
+        await session.rollback()
+    assert await vault.get(user, "block", SecretKind.TRANSIENT) is None
+
+
+async def test_pg_cipher_has_no_persistence_side_effect(tx_sessionmaker: Sm) -> None:
+    vault = _vault(tx_sessionmaker)
+    assert isinstance(vault, CipherVault)
+    scope = "research:job:connection:v1:r1"
+    sealed = vault.seal_value("user", scope, SecretKind.RESEARCH, MARKER)
+    got = vault.open_value("user", scope, SecretKind.RESEARCH, sealed)
+    assert got.get_secret_value() == MARKER
+    assert MARKER not in repr(got)
+    async with tx_sessionmaker() as session:
+        assert not list(await session.scalars(select(SecretRow).where(SecretRow.user_id == "user")))
+    with pytest.raises(VaultError):
+        vault.open_value("user", scope.replace(":r1", ":r2"), SecretKind.RESEARCH, sealed)
 
 
 def test_current_kek_must_be_loaded(tx_sessionmaker: Sm) -> None:

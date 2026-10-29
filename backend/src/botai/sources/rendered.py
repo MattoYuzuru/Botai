@@ -53,6 +53,8 @@ class RenderedPageReader:
             raise BotaiError(ErrorCode.EGRESS_BLOCKED, "Страница не принадлежит источнику")
         if self.ctx.browser is None:
             raise BotaiError(ErrorCode.RECIPE_REJECTED, "Чтение страницы в браузере недоступно")
+        if self.ctx.before_request is not None:
+            await self.ctx.before_request()
         handle: BrowserHandle | None = None
         try:
             # Leave cleanup inside the fetch-wide time budget as well.
