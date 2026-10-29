@@ -161,6 +161,20 @@ async def test_a_site_address_is_not_a_name_for_a_university(
         assert await s.scalar(select(func.count()).select_from(m.Space)) == 1
 
 
+async def test_a_space_cannot_be_renamed_to_a_site_address(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    space = (await client.post("/api/v1/spaces", json={"title": "Институт связи"})).json()
+    for title in ("lk.example.org", "https://lms.example.org/login", "  my.uni.example "):
+        r = await client.patch(f"/api/v1/spaces/{space['id']}", json={"title": title})
+        assert r.status_code == 422, title
+        assert "словами" in r.json()["detail"]
+    ok = await client.patch(f"/api/v1/spaces/{space['id']}", json={"title": "Мой институт"})
+    assert (ok.status_code, ok.json()["title"]) == (200, "Мой институт")
+    assert (await client.get("/api/v1/spaces")).json()[0]["title"] == "Мой институт"
+
+
 # --- finding a university -------------------------------------------------------------------------
 
 

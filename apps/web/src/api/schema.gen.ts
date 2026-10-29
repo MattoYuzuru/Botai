@@ -107,7 +107,8 @@ export interface paths {
         /**
          * Attachment Content
          * @description The bytes, shown in place when a browser can show them safely (HTML never is), with
-         *     byte ranges so that audio can be played and sought on every browser.
+         *     byte ranges so that audio can be played and sought on every browser. A range is cut by the
+         *     database; a refused range reads nothing.
          */
         get: operations["attachment_content_api_v1_attachments__attachment_id__content_get"];
         put?: never;

@@ -40,6 +40,7 @@ _NOT_READY = frozenset({"draft", "learning", "disabled"})
 _ICAL_SCHEMES = frozenset({"http", "https", "webcal"})
 MATERIALS_TITLE = "Мои материалы"
 MATERIALS_SHORT_TITLE = "Материалы"
+_NAME_NOT_ADDRESS = "Назовите вуз словами, а не адресом сайта"
 
 
 # --- what the API shows ---------------------------------------------------------------------------
@@ -169,7 +170,7 @@ async def create_space(
     """POST /spaces: the university by id, name or site, and its one space for this user.
     The third value tells whether the space is new."""
     if body.university_id is None and views.looks_like_address(body.title):
-        raise BotaiError(ErrorCode.VALIDATION, "Назовите вуз словами, а не адресом сайта")
+        raise BotaiError(ErrorCode.VALIDATION, _NAME_NOT_ADDRESS)
     university = await universities.find_or_create(
         session,
         title=body.title,
@@ -189,6 +190,8 @@ async def update_space(
         title = " ".join(body.title.split())
         if not title:
             raise BotaiError(ErrorCode.VALIDATION, "Название не может быть пустым")
+        if views.looks_like_address(title):
+            raise BotaiError(ErrorCode.VALIDATION, _NAME_NOT_ADDRESS)
         space.title = title
     if body.time_zone is not None:
         try:

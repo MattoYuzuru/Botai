@@ -54,22 +54,40 @@ async def test_duplicate_spaces_are_merged_and_sources_get_human_kinds_and_title
             "INSERT INTO universities (id,title,short_title,origins,accent_hue,accent_verified) "
             "VALUES ('hse','НИУ ВШЭ','ВШЭ','[]',250,false)"
         )
-        spaces = [  # (id, user, university, title, created)
-            ("s-old", "u1", "hse", "lk.hse.ru", "2026-10-01"),
-            ("s-dup", "u1", "hse", "hse.ru", "2026-10-02"),
-            ("m-old", "u1", None, "Материалы", "2026-10-01"),
-            ("m-dup", "u1", None, "Ещё", "2026-10-03"),
-            ("other", "u2", "hse", "Вышка", "2026-10-01"),
+        spaces = [  # (id, user, university, title, created, time zone, profile)
+            ("s-old", "u1", "hse", "lk.hse.ru", "2026-10-01", "Europe/Moscow", '{"group": "A"}'),
+            (
+                "s-dup",
+                "u1",
+                "hse",
+                "hse.ru",
+                "2026-10-02",
+                "Asia/Yekaterinburg",
+                '{"group": "B", "year": 2}',
+            ),
+            (
+                "s-dup2",
+                "u1",
+                "hse",
+                "hse2.ru",
+                "2026-10-04",
+                "Asia/Omsk",
+                '{"year": 3, "name": "N"}',
+            ),
+            ("m-old", "u1", None, "Материалы", "2026-10-01", "Asia/Tokyo", "{}"),
+            ("m-dup", "u1", None, "Ещё", "2026-10-03", "Europe/Moscow", '{"note": "x"}'),
+            ("other", "u2", "hse", "Вышка", "2026-10-01", "Europe/Moscow", "{}"),
         ]
-        for sid, user, uni, title, created in spaces:
+        for sid, user, uni, title, created, zone, profile in spaces:
             await execute(
                 "INSERT INTO spaces (id,user_id,university_id,title,accent_hue,time_zone,profile,"
-                "created_at) VALUES (:i, :u, :uni, :t, 250, 'Europe/Moscow', '{}', "
-                ":c)",
+                "created_at) VALUES (:i, :u, :uni, :t, 250, :z, CAST(:p AS jsonb), :c)",
                 i=sid,
                 u=user,
                 uni=uni,
                 t=title,
+                z=zone,
+                p=profile,
                 c=datetime.fromisoformat(created).replace(tzinfo=UTC),
             )
         connections = [  # (id, space, origin, kind, title)
@@ -112,6 +130,12 @@ async def test_duplicate_spaces_are_merged_and_sources_get_human_kinds_and_title
             ("m-old", "Материалы"),
             ("other", "НИУ ВШЭ"),  # a space of a university takes the university's name
             ("s-old", "НИУ ВШЭ"),
+        ]
+        # the oldest space keeps what it has; what it lacks comes from the others, an older one first
+        assert await execute("SELECT id, profile, time_zone FROM spaces ORDER BY id") == [
+            ("m-old", {"note": "x"}, "Asia/Tokyo"),  # its own time zone was not the default
+            ("other", {}, "Europe/Moscow"),
+            ("s-old", {"group": "A", "year": 2, "name": "N"}, "Asia/Yekaterinburg"),
         ]
         # everything that hung on a merged space moved to the one that stayed
         assert await execute("SELECT id, space_id FROM connections ORDER BY id") == [

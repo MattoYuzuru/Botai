@@ -1,11 +1,17 @@
 """One space per university, human source titles and kinds, chat attachments.
 
 * `spaces`: duplicates of one (user, university) pair, and extra "no university" spaces, are merged
-  into the oldest one (connections, documents, facts and threads move; its profile is kept),
-  then two partial unique indexes enforce the rule. A space of a university takes its name.
+  into the oldest one: connections, documents, facts and threads move; the profiles are united
+  (on a clash of keys the oldest space wins, then the older of the duplicates); the time zone of
+  the oldest space is replaced by a duplicate's when it is still the default. Then two partial
+  unique indexes enforce the rule. A space of a university takes its name.
 * `connections`: `entry_url`; kinds move to the new vocabulary (`mail` -> `other`, a document
   behind a link -> `doc`); a title that is just the host of the origin becomes the kind's name.
 * `attachments`: the bytes of chat files, owned by one user.
+
+The downgrade drops the indexes, the column and the table only. It does not split merged spaces,
+and it does not restore the old kinds or the host titles: those are lost for good, so rolling
+back the data means restoring the dump taken before the migration.
 
 Revision ID: b7d3c91a5e24
 Revises: e4a91b7c603d
@@ -50,6 +56,36 @@ def upgrade() -> None:
                     PARTITION BY user_id, university_id ORDER BY created_at, id
                 ) AS keeper FROM spaces
             ) ranked WHERE id <> keeper
+            """
+        )
+    )
+    # The oldest space keeps its own profile and time zone; what it lacks comes from the others.
+    op.execute(
+        sa.text(
+            """
+            UPDATE spaces k SET profile = m.merged || k.profile
+            FROM (
+                SELECT mm.new_id, jsonb_object_agg(e.key, e.value ORDER BY d.created_at DESC, d.id)
+                       AS merged
+                FROM _space_merge mm
+                JOIN spaces d ON d.id = mm.old_id
+                CROSS JOIN LATERAL jsonb_each(d.profile) e
+                GROUP BY mm.new_id
+            ) m WHERE k.id = m.new_id
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
+            UPDATE spaces k SET time_zone = m.tz
+            FROM (
+                SELECT DISTINCT ON (mm.new_id) mm.new_id, d.time_zone AS tz
+                FROM _space_merge mm
+                JOIN spaces d ON d.id = mm.old_id
+                WHERE d.time_zone <> 'Europe/Moscow'
+                ORDER BY mm.new_id, d.created_at, d.id
+            ) m WHERE k.id = m.new_id AND k.time_zone = 'Europe/Moscow'
             """
         )
     )

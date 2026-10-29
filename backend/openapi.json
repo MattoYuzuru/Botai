@@ -2634,7 +2634,7 @@
     },
     "/api/v1/attachments/{attachment_id}/content": {
       "get": {
-        "description": "The bytes, shown in place when a browser can show them safely (HTML never is), with\nbyte ranges so that audio can be played and sought on every browser.",
+        "description": "The bytes, shown in place when a browser can show them safely (HTML never is), with\nbyte ranges so that audio can be played and sought on every browser. A range is cut by the\ndatabase; a refused range reads nothing.",
         "operationId": "attachment_content_api_v1_attachments__attachment_id__content_get",
         "parameters": [
           {
