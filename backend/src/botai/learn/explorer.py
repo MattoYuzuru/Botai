@@ -1440,12 +1440,14 @@ class Explorer:
             checked, _ = await self._verify_candidate(
                 kind, wide, 0, sctx, info, revision, digest, lint_ctx
             )
-            if checked is not None and checked[1].count(kind) > count:
+            if checked is not None and checked[1].count(kind) >= count:
+                # A walk that the source answers window by window is never worse than one window,
+                # and it keeps reading as the schedule fills up.
                 found = Chosen(kind, checked[0], checked[1], found.comparison)
                 count = found.report.count(kind)
                 await stage.finish("ok", f"Найдено записей: {count}")
             else:
-                await stage.finish("skipped", "Соседние недели ничего не добавили")
+                await stage.finish("skipped", "Соседние недели не подтвердились")
         if count > horizon.SPARSE:
             return found
         self._horizon_asked.add(kind)
