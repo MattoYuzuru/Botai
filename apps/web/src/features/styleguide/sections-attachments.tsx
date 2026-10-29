@@ -194,7 +194,12 @@ export function AttachmentsSection() {
               state="waiting_user"
               here={false}
               action={
-                <Button variant="secondary" size="sm" onClick={() => toast("Откроется чат задачи")}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-touch-expanded=""
+                  onClick={() => toast("Откроется чат задачи")}
+                >
                   Открыть чат
                 </Button>
               }
