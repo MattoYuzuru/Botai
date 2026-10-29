@@ -227,15 +227,83 @@ async def source(env: Env) -> AsyncIterator[Source]:
     try:
         yield value
     finally:
-        # Specs/presets are shared registry rows; this origin is unique to this fixture.
-        async with env.sm() as db, db.begin():
-            await db.execute(
-                update(m.Connection)
-                .where(m.Connection.id == connection)
-                .values(spec_id=None, login_preset_id=None)
+        await cleanup_source_registry(value)
+
+
+async def cleanup_source_registry(source: Source) -> None:
+    """Undo this fixture's shared rows, including audit history deliberately retained in prod."""
+    async with source.env.sm() as db, db.begin():
+        await db.execute(
+            update(m.Connection)
+            .where(m.Connection.id == source.info.connection_id)
+            .values(spec_id=None, login_preset_id=None)
+        )
+        # Canary audit has no spec FK, and activation canaries have no user_id. Neither
+        # deleting the shared spec nor the environment's user cleanup can cascade to it.
+        # This exact origin is unique to the source fixture; preserve every other origin.
+        await db.execute(
+            delete(m.AuditLog).where(m.AuditLog.detail["origin"].as_string() == source.origin)
+        )
+        await db.execute(delete(m.AdapterSpecRow).where(m.AdapterSpecRow.origin == source.origin))
+        await db.execute(delete(m.LoginPresetRow).where(m.LoginPresetRow.origin == source.origin))
+
+
+async def test_source_cleanup_removes_its_shared_canary_but_preserves_another_spec(
+    source: Source,
+) -> None:
+    foreign_origin = f"https://{new_id().lower()}.fakeuni.test"
+    try:
+        async with source.env.sm() as db, db.begin():
+            own = await db.get(m.AdapterSpecRow, source.snap.spec_id)
+            assert own is not None
+            await revisions.activate(db, own, now=source.env.clock.now())
+            foreign = await revisions.add_revision(
+                db,
+                origin=foreign_origin,
+                adapter="recipe",
+                spec={**source.spec, "recipe": {**source.spec["recipe"], "origin": foreign_origin}},
             )
-            await db.execute(delete(m.AdapterSpecRow).where(m.AdapterSpecRow.origin == origin))
-            await db.execute(delete(m.LoginPresetRow).where(m.LoginPresetRow.origin == origin))
+            await revisions.activate(db, foreign, now=source.env.clock.now())
+            foreign_id = foreign.id
+        async with source.env.sm() as db:
+            assert await db.scalar(
+                select(func.count())
+                .select_from(m.AuditLog)
+                .where(
+                    m.AuditLog.kind == revisions.AUDIT_CANARY,
+                    m.AuditLog.detail["spec_id"].as_string() == source.snap.spec_id,
+                    m.AuditLog.user_id.is_(None),
+                )
+            )
+        await cleanup_source_registry(source)
+        async with source.env.sm() as db:
+            assert await db.get(m.AdapterSpecRow, source.snap.spec_id) is None
+            assert (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(m.AuditLog)
+                    .where(m.AuditLog.detail["origin"].as_string() == source.origin)
+                )
+                == 0
+            )
+            retained = list(
+                await db.scalars(
+                    select(m.AuditLog).where(
+                        m.AuditLog.kind == revisions.AUDIT_CANARY,
+                        m.AuditLog.detail["spec_id"].as_string() == foreign_id,
+                    )
+                )
+            )
+            assert [entry.detail["via"] for entry in retained] == ["activation"]
+            assert await db.get(m.AdapterSpecRow, foreign_id) is not None
+    finally:
+        async with source.env.sm() as db, db.begin():
+            await db.execute(
+                delete(m.AuditLog).where(m.AuditLog.detail["origin"].as_string() == foreign_origin)
+            )
+            await db.execute(
+                delete(m.AdapterSpecRow).where(m.AdapterSpecRow.origin == foreign_origin)
+            )
 
 
 @pytest.mark.parametrize("write", ["status", "snapshot", "activate", "session", "preset", "host"])
