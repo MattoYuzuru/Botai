@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from pydantic import ValidationError
+
 from botai.contracts.schemas import errors as schema_errors
+from botai.contracts.specs import Recipe
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
@@ -255,6 +258,19 @@ def _query_literals(request: Mapping[str, Any]) -> dict[str, str]:
 
 def _recipe(recipe: Mapping[str, Any], ctx: LintContext, issues: list[LintIssue]) -> None:
     base = ("recipe",)
+    if recipe["version"] == 2:
+        try:
+            # Cross-field data invariants (aliases, scalar sources, IANA zones and weekly
+            # operands) belong to the typed executor too. Never forward Pydantic's raw input.
+            Recipe.model_validate(recipe)
+        except ValidationError:
+            issues.append(
+                LintIssue(
+                    "data.invalid",
+                    _p(*base),
+                    "источники полей, зоны времени или сочетания выражений недопустимы",
+                )
+            )
     _check_origin(recipe["origin"], ctx, _p(*base, "origin"), issues)
     auth = recipe["auth"]
     header = str(auth.get("headerName", "")).lower()
@@ -337,6 +353,9 @@ def _endpoint(
     pagination = endpoint.get("pagination")
     response = endpoint["response"]
     if pagination:
+        for name in ("cursorPath", "totalPath"):
+            if pagination.get(name):
+                _check_pointer(pagination[name], _p(*base, "pagination", name), issues)
         for name in ("param", "limitParam"):
             if name in pagination and SECRET_NAME.search(pagination[name]):
                 issues.append(
@@ -377,10 +396,12 @@ def _response(
                     "identity ссылается на несуществующее поле",
                 )
             )
+    generated = {"startsAt", "endsAt"} if response.get("expand") else set()
+    available = names | generated
     needed = set(REQUIRED[kind])
-    if kind == "scheduleEvents" and not ({"endsAt", "durationMinutes"} & names):
+    if kind == "scheduleEvents" and not ({"endsAt", "durationMinutes"} & available):
         needed.add("endsAt")
-    for name in sorted(needed - names):
+    for name in sorted(needed - available):
         issues.append(
             LintIssue(
                 "field.missing_required", _p(*base, "fields", name), "обязательное поле не описано"
@@ -388,28 +409,63 @@ def _response(
         )
 
     for name, field_spec in fields.items():
-        where = _p(*base, "fields", name)
-        if response["format"] == "json":
-            _check_pointer(field_spec["path"], where, issues)
-            if field_spec.get("fallbackPath"):
-                _check_pointer(field_spec["fallbackPath"], where, issues)
+        field_base = (*base, "fields", name)
+        if "compose" in field_spec:
+            for operand in ("date", "time"):
+                _data_scalar(
+                    field_spec["compose"][operand],
+                    response["format"],
+                    _p(*field_base, "compose", operand),
+                    issues,
+                )
         else:
-            _selector(field_spec["selector"], where, issues, allow_self=True)
-            attr = field_spec.get("attr")
-            if attr and (
-                STRONG_SECRET.search(attr)
-                or attr.lower().startswith("on")
-                or attr.lower() == "style"
-            ):
-                issues.append(LintIssue("html.attr", where, "атрибут запрещён"))
-            pattern = field_spec.get("pattern")
-            if pattern:
-                for reason in rxsafe.problems(pattern):
-                    issues.append(LintIssue("pattern.unsafe", where, reason))
-    if response["format"] == "json":
+            _data_scalar(field_spec, response["format"], _p(*field_base), issues)
+    for index, collection in enumerate(response.get("collections") or []):
+        where = _p(*base, "collections", index)
+        if response["format"] == "json":
+            _check_pointer(collection["path"], where, issues)
+        else:
+            _selector(collection["selector"], where, issues)
+    expansion = response.get("expand")
+    if expansion:
+        for name in (
+            "startDate",
+            "untilDate",
+            "weekdays",
+            "startTime",
+            "endTime",
+            "durationMinutes",
+            "anchorDate",
+            "excludeDates",
+            "includeDates",
+        ):
+            operand = expansion.get(name)
+            if isinstance(operand, Mapping):
+                _data_scalar(operand, response["format"], _p(*base, "expand", name), issues)
+    if response.get("itemsPath") is not None:
         _check_pointer(response["itemsPath"], _p(*base, "itemsPath"), issues)
-    else:
+    if response.get("itemsSelector") is not None:
         _selector(response["itemsSelector"], _p(*base, "itemsSelector"), issues)
+
+
+def _data_scalar(
+    field_spec: Mapping[str, Any], format: str, where: str, issues: list[LintIssue]
+) -> None:
+    if format == "json":
+        _check_pointer(field_spec["path"], where, issues)
+        if field_spec.get("fallbackPath"):
+            _check_pointer(field_spec["fallbackPath"], where, issues)
+        return
+    _selector(field_spec["selector"], where, issues, allow_self=True)
+    attr = field_spec.get("attr")
+    if attr and (
+        STRONG_SECRET.search(attr) or attr.lower().startswith("on") or attr.lower() == "style"
+    ):
+        issues.append(LintIssue("html.attr", where, "атрибут запрещён"))
+    pattern = field_spec.get("pattern")
+    if pattern:
+        for reason in rxsafe.problems(pattern):
+            issues.append(LintIssue("pattern.unsafe", where, reason))
 
 
 def _selector(
@@ -575,6 +631,9 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
                 for key, value in (request.get(section) or {}).items():
                     yield _p(*base, "request", section, key), templates.PLACEHOLDER.sub("", value)
             response = endpoint["response"]
+            if recipe["version"] == 2:
+                yield from _data_literals(response, (*base, "response"))
+                continue
             for name, field_spec in response["fields"].items():
                 where = (*base, "response", "fields", name)
                 yield _p(*where, "selector"), field_spec.get("selector", "")
@@ -591,6 +650,28 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
         for target, mapping in (table.get("columns") or {}).items():
             yield _p("table", "columns", target), mapping.get("column", "")
         yield _p("table", "rowFilter", "column"), (table.get("rowFilter") or {}).get("column", "")
+
+
+def _data_literals(node: Any, base: tuple[Any, ...]) -> Iterator[tuple[str, str]]:
+    """V2's nested extractors are shared structural data, never copied student values."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            where = (*base, key)
+            if isinstance(value, str) and key in {
+                "selector",
+                "itemsSelector",
+                "pattern",
+                "attr",
+                "as",
+            }:
+                yield _p(*where), value
+            elif isinstance(value, str) and key in {"path", "fallbackPath", "itemsPath"}:
+                yield from _path_literals(value, where)
+            elif isinstance(value, (Mapping, list)):
+                yield from _data_literals(value, where)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _data_literals(item, (*base, index))
 
 
 def _path_literals(path: str, base: tuple[Any, ...]) -> Iterator[tuple[str, str]]:
