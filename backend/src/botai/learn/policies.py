@@ -51,10 +51,15 @@ def bind_parts(
                 "cookies": auth.get("type") == "cookie",
                 "bearer": "observedAuthorization" if auth.get("type") == "bearer" else "none",
             }
-        if type(binding["cookies"]) is not bool or not isinstance(binding["bearer"], str) or binding["bearer"] not in {
-            "none",
-            "observedAuthorization",
-        }:
+        if (
+            type(binding["cookies"]) is not bool
+            or not isinstance(binding["bearer"], str)
+            or binding["bearer"]
+            not in {
+                "none",
+                "observedAuthorization",
+            }
+        ):
             raise BotaiError(ErrorCode.RECIPE_REJECTED, "Некорректная привязка авторизации")
         name = names[binding["cookies"], binding["bearer"] == "observedAuthorization"]
         request["authBinding"] = name
