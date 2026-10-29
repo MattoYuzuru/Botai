@@ -361,22 +361,54 @@ async def test_the_reset_marker_reaches_the_client_and_login_survives(
     assert me.headers["x-botai-data-reset"] == str(int(clock.now().timestamp() * 1000))
 
 
+async def _orphans(sm: Sm) -> None:
+    """Shared rows nobody uses and this account never touched: left over from long ago."""
+    async with sm() as s:
+        s.add(m.University(id="orphan", title="Ничей", short_title="Н", origins=[], accent_hue=250))
+        s.add(
+            m.AdapterSpecRow(
+                origin="https://old.example.org",
+                adapter="recipe",
+                revision=1,
+                state="active",
+                spec={},
+            )
+        )
+        s.add(
+            m.AdapterSpecRow(
+                origin="doc:01GHOSTCONNECTION",
+                adapter="document",
+                revision=1,
+                state="active",
+                spec={},
+            )
+        )
+        s.add(
+            m.LoginPresetRow(
+                origin="https://old.example.org", revision=1, state="active", preset={}
+            )
+        )
+        await s.commit()
+
+
 async def test_shared_data_goes_only_when_nobody_else_uses_it(
     tx_sessionmaker: Sm, clock: FrozenClock, two_users: tuple[tuple[str, str], tuple[str, str]]
 ) -> None:
     (_, email), _ = two_users
-    # recipes: a's site, the shared site, b's site, and one per document source (a's and b's)
+    await _orphans(tx_sessionmaker)
+    # recipes: a's site, the shared site, b's site, one per document source (a's and b's), and
+    # two orphans; presets: a's, shared, b's, one orphan; universities: a's, b's, common, orphan
     assert await _shared(tx_sessionmaker) == {
-        "adapter_specs": 5,
-        "login_presets": 3,
-        "universities": 3,
+        "adapter_specs": 7,
+        "login_presets": 4,
+        "universities": 4,
     }
     code, out = await _run(tx_sessionmaker, clock, "--email", email, "--yes", "--shared")
     assert code == 0, out.text
     assert await _shared(tx_sessionmaker) == {
-        "adapter_specs": 3,  # the shared site, b's site and b's document
-        "login_presets": 2,
-        "universities": 2,  # b's own and the common one
+        "adapter_specs": 5,  # the shared site, b's site and b's document - and the two orphans
+        "login_presets": 3,
+        "universities": 3,  # b's own, the common one - and the orphan
     }
     async with tx_sessionmaker() as s:
         sites = set(
@@ -384,7 +416,7 @@ async def test_shared_data_goes_only_when_nobody_else_uses_it(
                 select(m.AdapterSpecRow.origin).where(~m.AdapterSpecRow.origin.like("doc:%"))
             )
         )
-        documents = list(
+        documents = set(
             await s.scalars(
                 select(m.AdapterSpecRow.origin).where(m.AdapterSpecRow.origin.like("doc:%"))
             )
@@ -392,8 +424,14 @@ async def test_shared_data_goes_only_when_nobody_else_uses_it(
         b_connections = set(
             await s.scalars(select(m.Connection.id).where(m.Connection.origin.like("%b.example%")))
         )
-    assert sites == {"https://b.example.org", "https://shared.example.org"}
-    assert [d.removeprefix("doc:") for d in documents] == list(b_connections)
+        universities = set(await s.scalars(select(m.University.id)))
+    assert sites == {
+        "https://b.example.org",
+        "https://shared.example.org",
+        "https://old.example.org",
+    }
+    assert documents == {f"doc:{c}" for c in b_connections} | {"doc:01GHOSTCONNECTION"}
+    assert universities == {"uni-b-own", "uni-common", "orphan"}
     assert "universities: 1" in out.text
 
 
