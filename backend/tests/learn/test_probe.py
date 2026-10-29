@@ -60,6 +60,7 @@ def test_a_probe_changes_only_a_value_of_an_observed_query_key() -> None:
         f"{ORIGIN}/api/get-myschedule?begin_date=2026-11-03&view=week"
     )
     assert url_for({"begin_date": "{minusDays:7}"}).endswith("begin_date=2026-10-20&view=week")
+    assert "begin_date=2026-12-28" in url_for({"begin_date": "{plusDays:62}"})
     # A literal is allowed when the observation already showed it.
     assert url_for({"view": "week"}) == API
 
@@ -72,6 +73,17 @@ def test_a_probe_changes_only_a_value_of_an_observed_query_key() -> None:
         ({"begin_date": "{userId}"}, "value_not_observed"),  # not a date template
         ({"access_token": "x"}, "unknown_query_key"),
         ({}, "override_count"),
+        # text of the model is never spliced into the address
+        ({"begin_date": "delete{today}"}, "value_not_observed"),
+        ({"begin_date": "{today} OR 1=1"}, "value_not_observed"),
+        ({"begin_date": "../../admin?x={today}"}, "value_not_observed"),
+        ({"begin_date": "{today}{today}"}, "value_not_observed"),
+        ({"begin_date": "{plusDays:9999}"}, "date_out_of_range"),
+        ({"begin_date": "{plusDays:63}"}, "date_out_of_range"),
+        # a date placeholder belongs to a key that held a date; a literal to its own key
+        ({"view": "{today}"}, "not_a_date_key"),
+        ({"view": "2026-10-26"}, "value_not_observed"),
+        ({"begin_date": "week"}, "value_not_observed"),
     ],
 )
 def test_a_probe_cannot_invent_keys_values_or_credentials(
@@ -269,3 +281,50 @@ def test_week_helper_is_a_sliding_window() -> None:
     assert (date(2026, 11, 2) + timedelta(days=6)).isoformat() == week(date(2026, 11, 2))[-1][
         "date"
     ]
+
+
+async def test_the_probe_budget_and_the_read_counter_span_the_slices_of_one_research() -> None:
+    from botai.learn.memory import DiscoveryMemory
+
+    asked: list[str] = []
+
+    async def prober(observed: ObservedRequest, url: str) -> ProbeReply | None:
+        asked.append(url)
+        return ProbeReply(200, "[]", "application/json", shape_of("[]"))
+
+    memory = DiscoveryMemory(origin=ORIGIN, intent_key="a" * 64)
+    budget = DiscoveryBudget(probes=2)
+
+    async def one_slice(offset: int) -> None:
+        llm = ScriptedLlm(
+            discovery_queue=[
+                plan(
+                    memory.generations * 1000 + 1,
+                    "probe",
+                    "r0",
+                    overrides={"begin_date": offset_template(offset)},
+                ),
+                plan(memory.generations * 1000 + 2, "finish", evidence=["r0"]),
+            ]
+        )
+        await adaptive_observe(
+            shell("[]"),
+            ORIGIN,
+            Redactor(),
+            start_urls=[f"{ORIGIN}/"],
+            intent=LearningIntent(discovery_mode="auto"),
+            llm=llm,
+            budget=budget,
+            memory=memory,
+            probe_kit=ProbeKit(prober, NOW, TZ),
+        )
+        memory.finished = False  # the next slice resumes the same research
+
+    def offset_template(n: int) -> str:
+        return f"{{plusDays:{n}}}"
+
+    for n in (7, 14, 21):
+        await one_slice(n)
+    assert len(asked) == 2  # the third slice found the research budget already spent
+    assert memory.probes == 2
+    assert memory.requests >= 2  # probes are counted among the reads of the source

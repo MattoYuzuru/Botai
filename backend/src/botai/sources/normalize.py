@@ -405,9 +405,16 @@ async def apply_result(
                 st.inserted += 1
                 continue
             changed = [col for col, val in row.items() if getattr(obj, col) != val]
+            # A class that gains an address it never had (a recipe that learned a new field) did
+            # not move; only a different value is a change the student should notice.
+            material = [
+                col
+                for col in changed
+                if col in _EVENT_MATERIAL and not (col == "address" and getattr(obj, col) is None)
+            ]
             for col in changed:
                 setattr(obj, col, row[col])
-            if kind == "scheduleEvents" and any(c in _EVENT_MATERIAL for c in changed):
+            if kind == "scheduleEvents" and material:
                 obj.changed = True
             obj.source_url, obj.open_url, obj.fetched_at = rec.source_url, _open_url(rec), now
             obj.spec_revision, obj.seen_at = result.spec_revision, now

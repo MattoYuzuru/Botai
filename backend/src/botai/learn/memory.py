@@ -93,6 +93,7 @@ class DiscoveryMemory(BaseModel):
     steps: int = Field(default=0, ge=0)
     tokens: int = Field(default=0, ge=0)
     requests: int = Field(default=0, ge=0)
+    probes: int = Field(default=0, ge=0)  # repeated reads with other dates, over all slices
     active_ms: int = Field(default=0, ge=0)
     reserved_tokens: int = Field(default=0, ge=0)
     pending_planner_tokens: int = Field(default=0, ge=0)

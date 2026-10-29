@@ -30,9 +30,11 @@ from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.fetch import SourceClient
 
 MAX_OVERRIDES = 4
-MAX_VALUE = 60
 _VALUE = re.compile(r"^[A-Za-z0-9_.:+/-]{1,60}$")
 _KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_PLACEHOLDER = re.compile(r"\{(?:today|weekStart|(?:plusDays|minusDays):(?P<days>\d{1,4}))\}")
+MAX_DAYS = 62
 
 
 class ProbeRefused(Exception):
@@ -73,14 +75,15 @@ class ProbeReply:
 Prober = Callable[[ObservedRequest, str], Awaitable[ProbeReply | None]]
 
 
-def observed_literals(calls: Collection[ObservedRequest]) -> frozenset[str]:
-    """Query values the observation has already shown: the only literals a probe may reuse."""
-    return frozenset(
-        value
-        for call in calls
-        for _, value in parse_qsl(urlsplit(call.url).query, keep_blank_values=True)
-        if value
-    )
+def observed_literals(calls: Collection[ObservedRequest]) -> dict[str, frozenset[str]]:
+    """Query values the observation has already shown, per key: the only literals a probe may
+    reuse. A value seen for one key is not a value for another."""
+    found: dict[str, set[str]] = {}
+    for call in calls:
+        for key, value in parse_qsl(urlsplit(call.url).query, keep_blank_values=True):
+            if value:
+                found.setdefault(key, set()).add(value)
+    return {key: frozenset(values) for key, values in found.items()}
 
 
 def probe_url(
@@ -88,11 +91,15 @@ def probe_url(
     overrides: Mapping[str, str],
     *,
     origin: str,
-    literals: Collection[str],
+    literals: Mapping[str, Collection[str]],
     now: datetime,
     tz: ZoneInfo,
 ) -> str:
-    """The observed URL with changed values of its own query keys, or a static refusal."""
+    """The observed URL with changed values of its own query keys, or a static refusal.
+
+    A value is exactly one date placeholder (`{today}`, `{weekStart}`, `{plusDays:N}`,
+    `{minusDays:N}`, N up to 62) for a key whose observed value is an ISO date, or a literal the
+    observation already showed for that same key. The text of the model is never spliced."""
     if call.method != "GET" or not (call.status and 200 <= call.status < 300):
         raise ProbeRefused("not_a_successful_get")
     if call.resource_type not in {"xhr", "fetch"} or not call.auth_proven:
@@ -103,19 +110,24 @@ def probe_url(
     if not 1 <= len(overrides) <= MAX_OVERRIDES:
         raise ProbeRefused("override_count")
     pairs = parse_qsl(parts.query, keep_blank_values=True, max_num_fields=32)
-    keys = {key for key, _ in pairs}
+    current = dict(pairs)
     changed: dict[str, str] = {}
     for key, raw in overrides.items():
-        if key not in keys or not _KEY.match(key) or SECRET_NAME.search(key):
+        if key not in current or not _KEY.match(key) or SECRET_NAME.search(key):
             raise ProbeRefused("unknown_query_key")
-        if templates.is_date_template(raw):
+        placeholder = _PLACEHOLDER.fullmatch(raw)
+        if placeholder is not None:
+            if _ISO_DATE.fullmatch(current[key]) is None:
+                raise ProbeRefused("not_a_date_key")
+            if placeholder["days"] is not None and int(placeholder["days"]) > MAX_DAYS:
+                raise ProbeRefused("date_out_of_range")
             value = templates.render(raw, now=now, tz=tz, params={})
-        elif raw in literals and _VALUE.match(raw):
+        elif raw in literals.get(key, ()):
             value = raw
         else:
             raise ProbeRefused("value_not_observed")
-        if len(value) > MAX_VALUE:
-            raise ProbeRefused("value_too_long")
+        if _VALUE.fullmatch(value) is None:
+            raise ProbeRefused("value_not_observed")
         changed[key] = value
     query = urlencode([(key, changed.get(key, value)) for key, value in pairs])
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))

@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from botai.core.browser import ObservedRequest, auth_origin
+from botai.learn.addresses import (
+    looks_like_auth_page,
+    request_literals,
+    ui_segment_ok,
+    ui_value_ok,
+)
 from botai.learn.auth_bindings import BindingEvidenceError, compile_auth_binding
+from botai.learn.lint import SECRET_NAME
 from botai.sources import templates
 
 
@@ -126,7 +133,6 @@ def _entry_request(
     return path, query
 
 
-_UI_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -161,6 +167,20 @@ def _certify_window(
     raise FactoryCompileError("window_template_mismatch")
 
 
+def _interface_page(
+    observed: ObservedRequest, documents: Sequence[ObservedRequest], origin: str
+) -> str | None:
+    """The page whose script made the request. A sign-in step is not where the data is shown:
+    then the last ordinary document of the same origin stands in, else there is no address."""
+    candidates = [observed.initiator_url, *(d.url for d in reversed(documents))]
+    for page in candidates:
+        if page is None or auth_origin(page) is None or auth_origin(page) != auth_origin(origin):
+            continue
+        if not looks_like_auth_page(page):
+            return page
+    return None
+
+
 def ui_url_for(
     observed: ObservedRequest,
     request: Mapping[str, Any],
@@ -168,19 +188,24 @@ def ui_url_for(
     *,
     now: datetime,
     tz: ZoneInfo,
+    documents: Sequence[ObservedRequest] = (),
 ) -> dict[str, Any] | None:
     """Where the student sees this data: the page that issued the observed request, with the
     request's own date templates. Anything that cannot be generalised is left out, so a link
-    that would point at one student's identifier or a past week is never produced."""
-    page = observed.initiator_url
-    if page is None or auth_origin(page) is None or auth_origin(page) != auth_origin(origin):
+    that would point at one student's login, group or past week is never produced.
+
+    A literal survives only as a structural word (`schedule`, `week`...) or when the recipe's own
+    API request states the same word. A path segment that is neither makes the address unusable."""
+    page = _interface_page(observed, documents, origin)
+    if page is None:
         return None
     parts = urlsplit(page)
     if parts.fragment:
         return None
     path = parts.path or "/"
+    request_words, request_values = request_literals(request)
     segments = [segment for segment in unquote(path).split("/") if segment]
-    if any(not _UI_WORD.match(segment) for segment in segments):
+    if any(not ui_segment_ok(segment, request_words) for segment in segments):
         return None
     try:
         pairs = parse_qsl(parts.query, keep_blank_values=True, max_num_fields=12)
@@ -190,7 +215,11 @@ def ui_url_for(
     api_query: dict[str, Any] = declared if isinstance(declared, dict) else {}
     query: dict[str, str] = {}
     for key, value in pairs:
-        if key in query or not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", key):
+        if (
+            key in query
+            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", key)
+            or SECRET_NAME.search(key)
+        ):
             continue
         template = api_query.get(key)
         candidates = [template] if isinstance(template, str) and "{" in template else []
@@ -209,7 +238,7 @@ def ui_url_for(
         )
         if match is not None:
             query[key] = match
-        elif _UI_WORD.match(value):
+        elif ui_value_ok(key, value, request_values):
             query[key] = value
     if not segments and not query:
         return None  # the site root says nothing about where this data is shown
@@ -323,7 +352,15 @@ def compile_candidate(
                 raise FactoryCompileError("window_template_unsupported")
             _certify_window(request, pagination, observed, now=now, tz=time_zone)
         if now is not None and time_zone is not None:
-            ui = ui_url_for(observed, request, origin, now=now, tz=time_zone)
+            documents = [
+                fact
+                for fact in request_facts.values()
+                if fact.resource_type == "document"
+                and fact.method == "GET"
+                and fact.status is not None
+                and 200 <= fact.status < 300
+            ]
+            ui = ui_url_for(observed, request, origin, now=now, tz=time_zone, documents=documents)
             if ui is not None:
                 compiled["uiUrl"] = ui
 

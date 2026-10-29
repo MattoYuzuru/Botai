@@ -322,6 +322,9 @@ class RecipeAdapter:
                 # Keep usable records, but never mark an unfinished walk as a complete snapshot.
                 outcome.ok, outcome.problem = False, "no_progress"
                 return outcome, collected
+            if window is not None:
+                # Overlapping windows show the same class twice: one record per identity.
+                page_records = [r for r in page_records if r.external_id not in unique_ids]
             previous_pages.add(page_digest)
             unique_ids.update(ids)
             window_ids.append(frozenset(ids))

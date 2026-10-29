@@ -217,6 +217,7 @@ async def author_kind(
     browser_plans: Mapping[str, object] | None = None,
     browser_plan_urls: Mapping[str, str] | None = None,
     time_zone: ZoneInfo | None = None,
+    observed_at: datetime | None = None,
 ) -> Authored:
     """Ask for candidates of one kind; lint each; retry once on a rejection or a broken answer.
     With `previous` (the endpoint that stopped working) it is a repair."""
@@ -304,7 +305,9 @@ async def author_kind(
                     request_facts=request_facts or {},
                     browser_plans=browser_plans or {},
                     browser_plan_urls=browser_plan_urls or {},
-                    now=now,
+                    # date templates are certified against the day the browser asked, which
+                    # can differ from the day the candidate is compiled
+                    now=observed_at or now,
                     time_zone=time_zone or ZoneInfo("Europe/Moscow"),
                 )
             except FactoryCompileError as exc:

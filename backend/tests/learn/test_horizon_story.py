@@ -182,7 +182,7 @@ async def test_probe_dates_window_card_and_page_address_from_research_to_sync(
 
     # 4. the card keeps what the source says
     control = next(e for e in events if e.starts_at.date().isoformat() == "2026-10-28")
-    assert control.kind_text == "Текущий рубежный контроль"
+    assert control.kind_text == "Контрольное мероприятие"
     assert control.address == slide.ADDRESS
     assert control.group_text == slide.GROUP
     assert control.lesson_number == 2
@@ -260,7 +260,7 @@ async def test_a_new_link_in_the_answer_sends_the_search_elsewhere(
     make_env: EnvFactory,
 ) -> None:
     slide.STATE.sparse = True
-    other = f"{ORIGIN}/other-schedule?begin_date=2026-10-26"
+    other = f"{ORIGIN}/my-schedule?begin_date=2026-10-26"
     classifier = LlmResponse(
         content=json.dumps(
             {"linkIndices": [0], "kinds": [], "absentKinds": [], "note": "Расписание тут."},
@@ -297,7 +297,7 @@ async def test_a_new_link_in_the_answer_sends_the_search_elsewhere(
     # author, the classification of the answer, and the author again on the new entry page
     assert [r.purpose for r in env.llm.requests] == ["learn", "classify", "learn"]
     stored = await env.spec(1)
-    assert stored["recipe"]["endpoints"][0]["uiUrl"]["path"] == "/other-schedule"
+    assert stored["recipe"]["endpoints"][0]["uiUrl"]["path"] == "/my-schedule"
 
 
 async def test_repair_notices_a_horizon_of_one_window_and_widens_it_without_a_model(

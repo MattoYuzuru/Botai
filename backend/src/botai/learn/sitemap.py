@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -21,13 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.browser import ObservedRequest, PageSnapshot
 from botai.db.models import SourceSitemap
-from botai.learn.addresses import navigation_url
-from botai.learn.redact import Redactor
+from botai.learn.addresses import navigation_url, structural_word
+from botai.learn.redact import EMAIL, FIO_FULL, FIO_INITIALS, LONG_DIGITS, PHONE, Redactor
 
 MAX_NAVIGATION = 40
 MAX_ROUTES = 60
 MAX_ENDPOINTS = 12
-_ID_SEGMENT = re.compile(r"/(?:\d{2,}|[0-9a-fA-F]{8,}|[0-9A-Z]{20,})(?=/|$)")
+_PERSON_CONTAINERS = frozenset(
+    {"student", "students", "user", "users", "profile", "profiles", "people", "person", "u"}
+    | {"teacher", "teachers", "account", "accounts", "member", "members", "me", "group", "groups"}
+)  # a segment after these names somebody
+_CODE = re.compile(r"\b[A-ZА-ЯЁ]{2,}[- ]?\d{2,}\b")  # a group or account code: АБВ-211, ABC211
+_PLAIN_WORD = re.compile(r"^(?:[a-z]+|[а-яё]+)(?:-(?:[a-z]+|[а-яё]+))*$")
 _FAQ = re.compile(
     r"(?i)(?:^|[/_.-])(?:faq|help|questions?|knowledge|support|вопрос\w*)(?:$|[/_.-])"
 )
@@ -35,18 +40,55 @@ _SEARCH = re.compile(r"(?i)(?:^|[/_.-])(?:search|find|suggest|autocomplete|looku
 _SEARCH_KEYS = frozenset({"q", "query", "search", "text", "term", "keyword", "s"})
 
 
-def _path(url: str, origin: str) -> str | None:
-    """A same-origin path with identifiers generalised, or None for anything not shareable."""
+def _segment(segment: str, previous: str, redactor: Redactor) -> str:
+    """A path segment as it may be shared: structural and plain words stay; an identifier, a
+    login, a surname, a group code or anything that follows `students/`, `profile/`... is `{id}`.
+    A plain lowercase word of the site's own vocabulary (`raspisanie`) is a route, not a person."""
+    if structural_word(segment):
+        return segment
+    if previous.lower() in _PERSON_CONTAINERS:
+        return "{id}"
+    if _PLAIN_WORD.fullmatch(segment) is None:
+        return "{id}"  # digits, capitals, initials with dots or underscores, mixed codes
+    if redactor.text(segment, 60) != segment:
+        return "{id}"  # a value the redactor knows (the student's own name, login...)
+    return segment
+
+
+def _generalise(path: str, redactor: Redactor) -> str:
+    out: list[str] = []
+    previous = ""
+    for segment in unquote(path).split("/"):
+        if not segment:
+            continue
+        out.append(_segment(segment, previous, redactor))
+        previous = segment
+    return "/" + "/".join(out)
+
+
+def _path(url: str, origin: str, redactor: Redactor) -> str | None:
+    """A same-origin route with personal segments generalised, or None for anything not
+    shareable: a foreign host, a credential in the address, a token-like path."""
     safe = navigation_url(url)
-    if safe is None:
+    if safe is None or redactor.contains_secret_address(url):
         return None
     parts = urlsplit(safe)
     if f"{parts.scheme}://{parts.netloc}" != origin:
         return None
-    path = _ID_SEGMENT.sub("/{id}", parts.path or "/")
-    fragment = parts.fragment if parts.fragment.startswith("/") else ""
-    route = path + (f"#{_ID_SEGMENT.sub('/{id}', fragment.partition('?')[0])}" if fragment else "")
+    route = _generalise(parts.path or "/", redactor)
+    if parts.fragment.startswith("/"):
+        route += "#" + _generalise(parts.fragment.partition("?")[0], redactor)
     return route[:200]
+
+
+def _label(label: str, redactor: Redactor) -> str | None:
+    """A navigation label without anything personal; otherwise the entry has no label."""
+    text = redactor.text(label, 60)
+    if not text or "<" in text:  # the redactor replaced a known or pseudonymised value
+        return None
+    if any(p.search(label) for p in (EMAIL, PHONE, FIO_FULL, FIO_INITIALS, LONG_DIGITS, _CODE)):
+        return None
+    return text
 
 
 def build_sitemap(
@@ -60,22 +102,22 @@ def build_sitemap(
     navigation: dict[str, str] = {}
     routes: dict[str, None] = {}
     for page in pages:
-        if (route := _path(page.url, origin)) is not None:
+        if (route := _path(page.url, origin, redactor)) is not None:
             routes.setdefault(route)
     for label, url in links:
-        path = _path(url, origin)
-        if path is None or redactor.contains_secret_address(url):
+        path = _path(url, origin, redactor)
+        if path is None:
             continue
         routes.setdefault(path)
-        text = redactor.text(label, 60)
+        text = _label(label, redactor)
         if text and path not in navigation:
             navigation[path] = text
     endpoints: dict[tuple[str, str], list[str]] = {}
     for call in calls:
         if call.method != "GET" or not (call.status and 200 <= call.status < 300):
             continue
-        path = _path(call.url, origin)
-        if path is None or redactor.contains_secret_address(call.url):
+        path = _path(call.url, origin, redactor)
+        if path is None:
             continue
         keys = sorted(
             {key for key, _ in parse_qsl(urlsplit(call.url).query, keep_blank_values=True)}

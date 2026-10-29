@@ -40,9 +40,9 @@ def test_card_fields_are_cleaned_and_bounded() -> None:
         "scheduleEvents",
         event(
             {
-                "kindText": " Текущий рубежный контроль ",
+                "kindText": " Контрольное мероприятие ",
                 "address": "Покровский б-р, д.11",
-                "group": "ДРИП 3 курс 26/27",
+                "group": "Группа А-21 курс 3",
                 "lessonNumber": "3",
                 "links": [
                     {"url": "https://meet.fakeuni.test/r/1", "label": "Комната"},
@@ -60,9 +60,9 @@ def test_card_fields_are_cleaned_and_bounded() -> None:
         MSK,
     )
     assert row is not None
-    assert row["kind_text"] == "Текущий рубежный контроль"
+    assert row["kind_text"] == "Контрольное мероприятие"
     assert row["address"] == "Покровский б-р, д.11"
-    assert row["group_text"] == "ДРИП 3 курс 26/27"
+    assert row["group_text"] == "Группа А-21 курс 3"
     assert row["lesson_number"] == 3
     assert row["links"] == [
         {"url": "https://meet.fakeuni.test/r/1", "label": "Комната"},
@@ -95,7 +95,7 @@ async def test_open_url_is_stored_updated_and_served_next_to_the_api_address(
     }
     page = "/schedule?begin_date=2026-11-02"
     first = AdapterResult(
-        [event({"group": "ДРИП"}, open_url="https://fakeuni.test" + page)],
+        [event({"group": "Группа Б-1"}, open_url="https://fakeuni.test" + page)],
         NOW,
         [EndpointOutcome("s", "scheduleEvents", ok=True)],
     )
@@ -103,13 +103,13 @@ async def test_open_url_is_stored_updated_and_served_next_to_the_api_address(
     row = (await db.execute(select(m.ScheduleEvent))).scalar_one()
     assert row.open_url == "https://fakeuni.test" + page
     assert row.source_url.startswith("https://fakeuni.test/api/")
-    assert row.group_text == "ДРИП"
+    assert row.group_text == "Группа Б-1"
 
     later = NOW + timedelta(hours=3)
     second = AdapterResult(
         [
             event(
-                {"group": "ДРИП-2"}, open_url="https://fakeuni.test/schedule?begin_date=2026-11-02"
+                {"group": "Группа Б-2"}, open_url="https://fakeuni.test/schedule?begin_date=2026-11-02"
             )
         ],
         later,
@@ -119,7 +119,7 @@ async def test_open_url_is_stored_updated_and_served_next_to_the_api_address(
     assert stats["scheduleEvents"].updated == 1
     db.expire_all()
     row = (await db.execute(select(m.ScheduleEvent))).scalar_one()
-    assert row.group_text == "ДРИП-2"
+    assert row.group_text == "Группа Б-2"
 
     served = await repo.list_events(
         db,
@@ -132,7 +132,7 @@ async def test_open_url_is_stored_updated_and_served_next_to_the_api_address(
     out = served[0]
     assert out.provenance.open_url == "https://fakeuni.test" + page
     assert out.provenance.source_url.startswith("https://fakeuni.test/api/")
-    assert out.group == "ДРИП-2"
+    assert out.group == "Группа Б-2"
     assert out.links == []
     assert out.attributes == []
 
@@ -192,3 +192,30 @@ async def test_an_html_page_is_its_own_open_url_and_an_unreadable_parameter_give
     )
     assert result.records
     assert {r.open_url for r in result.records} == {None}
+
+
+async def test_an_address_learned_later_is_not_a_change_but_a_different_one_is(
+    db: AsyncSession,
+) -> None:
+    seeded = await seed_connection(db)
+    kwargs: dict[str, Any] = {
+        "user_id": seeded.user_id,
+        "connection_id": seeded.connection_id,
+        "tz": MSK,
+    }
+
+    async def sync(fields: dict[str, Any], at_hours: int) -> bool:
+        result = AdapterResult(
+            [event(fields)],
+            NOW + timedelta(hours=at_hours),
+            [EndpointOutcome("s", "scheduleEvents", ok=True)],
+        )
+        await normalize.apply_result(
+            db, result=result, now=NOW + timedelta(hours=at_hours), **kwargs
+        )
+        db.expire_all()
+        return (await db.execute(select(m.ScheduleEvent))).scalar_one().changed
+
+    assert await sync({}, 0) is False
+    assert await sync({"address": "ул. Учебная, д. 5"}, 1) is False  # new field, same class
+    assert await sync({"address": "ул. Другая, д. 7"}, 2) is True  # the class moved

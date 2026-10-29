@@ -26,6 +26,7 @@ import logging
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, replace
+from datetime import datetime
 from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
@@ -164,6 +165,7 @@ class Explorer:
         self._browser_plans: dict[str, BrowserPlan] = {}
         self._browser_plan_urls: dict[str, str] = {}
         self._horizon_asked: set[Kind] = set()
+        self._observed_at: datetime | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -971,6 +973,7 @@ class Explorer:
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
         self._request_facts, self._browser_plans, self._browser_plan_urls = {}, {}, {}
+        self._observed_at = self.services.clock.now()  # the day the browser asks, for templates
         research = self._research
         if research is not None:
             state = research.state
@@ -1230,6 +1233,7 @@ class Explorer:
                     browser_plans=self._browser_plans,
                     browser_plan_urls=self._browser_plan_urls,
                     time_zone=info.tz,
+                    observed_at=self._observed_at,
                 )
             except AuthorError:
                 self._verification_failed = True
@@ -1410,6 +1414,17 @@ class Explorer:
                 return checked, findings
         return None, findings
 
+    def _horizon_was_asked(self, kind: Kind) -> bool:
+        asked = self._research.state.horizon_asked if self._research else self._horizon_asked
+        return kind in asked
+
+    async def _horizon_mark_asked(self, kind: Kind) -> None:
+        """Remember the question before it is asked: a restart must not ask it again."""
+        self._horizon_asked.add(kind)
+        if self._research is not None and kind not in self._research.state.horizon_asked:
+            self._research.state.horizon_asked.append(kind)
+            await self._research.save()
+
     def _walk_candidate(self, candidate: Candidate, info: ConnInfo) -> Candidate | None:
         wide = horizon.walked(candidate.endpoint, self.services.clock.now(), info.tz)
         return replace(candidate, endpoint=wide) if wide is not None else None
@@ -1427,7 +1442,7 @@ class Explorer:
     ) -> Chosen | None:
         """A date window with almost nothing in it is read over its neighbours; if it stays thin,
         the student is asked in plain words (FR-039). None: the answer sent the search elsewhere."""
-        if kind in self._horizon_asked or not horizon.moves_date(found.candidate.endpoint):
+        if self._horizon_was_asked(kind) or not horizon.moves_date(found.candidate.endpoint):
             return found
         count = found.report.count(kind)
         if count > horizon.SPARSE:
@@ -1450,7 +1465,7 @@ class Explorer:
                 await stage.finish("skipped", "Соседние недели не подтвердились")
         if count > horizon.SPARSE or kind != "scheduleEvents":
             return found  # a few deadlines or news are ordinary; a thin timetable is a question
-        self._horizon_asked.add(kind)
+        await self._horizon_mark_asked(kind)
         now = self.services.clock.now()
         endpoint = found.candidate.endpoint
         per_window: list[int] = []

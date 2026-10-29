@@ -42,15 +42,33 @@ def moves_date(endpoint: Mapping[str, Any]) -> bool:
     return is_walk(endpoint) or bool(date_keys(endpoint))
 
 
+# The field whose value tells two occurrences of the same source id apart: without it in the
+# identity, weeks of a repeating schedule collapse into one row when read as a walk.
+TIME_FIELD: dict[str, str] = {
+    "scheduleEvents": "startsAt",
+    "deadlines": "dueAt",
+    "news": "publishedAt",
+    "grades": "gradedAt",
+}
+
+
+def identity_has_time(endpoint: Mapping[str, Any]) -> bool:
+    kind = endpoint.get("kind")
+    identity = (endpoint.get("response") or {}).get("identity") or []
+    return kind in TIME_FIELD and TIME_FIELD[kind] in identity
+
+
 def _step_days(endpoint: Mapping[str, Any], now: datetime, tz: ZoneInfo) -> int:
-    """A week by default; a `from`..`to` pair of templates declares its own span."""
+    """How far the next window starts. `{weekStart}` snaps to a Monday, so the step is a week; a
+    `from`..`to` pair of templates is an inclusive range, so the next one starts a day after."""
     query = endpoint["request"]["query"]
-    rendered = [
-        templates.render(query[key], now=now, tz=tz, params={}) for key in date_keys(endpoint)
-    ]
+    keys = date_keys(endpoint)
+    if any("weekStart" in templates.placeholders(query[key]) for key in keys):
+        return DEFAULT_STEP
+    rendered = [templates.render(query[key], now=now, tz=tz, params={}) for key in keys]
     days = sorted(date.fromisoformat(text) for text in rendered if _ISO_DATE.fullmatch(text))
-    if len(days) >= 2 and 1 <= (days[-1] - days[0]).days <= 31:
-        return (days[-1] - days[0]).days
+    if len(days) >= 2 and 1 <= (days[-1] - days[0]).days + 1 <= 31:
+        return (days[-1] - days[0]).days + 1
     return DEFAULT_STEP
 
 
@@ -58,11 +76,13 @@ def walked(endpoint: Mapping[str, Any], now: datetime, tz: ZoneInfo) -> dict[str
     """The same endpoint read over `DEFAULT_WINDOWS` windows, or None when it cannot be.
 
     Only a plain GET that moves a date template and has no other pagination can walk: a rendered
-    page, a body, a weekly series or an offset/cursor already own their own traversal.
+    page, a body, a weekly series or an offset/cursor already own their own traversal. The
+    identity must include the time of the record, or the weeks would collapse into one.
     """
     request = endpoint.get("request") or {}
     if (
-        is_walk(endpoint)
+        not identity_has_time(endpoint)
+        or is_walk(endpoint)
         or endpoint.get("pagination") not in (None, {"type": "none"})
         or request.get("method") != "GET"
         or request.get("render")

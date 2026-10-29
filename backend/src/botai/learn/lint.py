@@ -28,6 +28,8 @@ from pydantic import ValidationError
 from botai.contracts.schemas import errors as schema_errors
 from botai.contracts.specs import Recipe
 from botai.core.errors import BotaiError, ErrorCode
+from botai.learn.addresses import request_literals, ui_segment_ok, ui_value_ok
+from botai.learn.horizon import TIME_FIELD
 from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
 from botai.sources.extract import selector_valid
@@ -376,8 +378,9 @@ def _endpoint(
             )
         if pagination["type"] == "dateWindow":
             _date_window(pagination, request, (*base, "pagination"), issues)
+            _window_identity(kind, response, (*base, "response"), issues)
     if endpoint.get("uiUrl") is not None:
-        _ui_url(endpoint["uiUrl"], known, (*base, "uiUrl"), issues)
+        _ui_url(endpoint["uiUrl"], request, known, (*base, "uiUrl"), issues)
     _response(kind, response, (*base, "response"), issues)
 
 
@@ -398,6 +401,22 @@ def _date_window(
                 "окно двигает шаблон даты из query запроса",
             )
         )
+    step = pagination["stepDays"]
+    if (
+        isinstance(moved, str)
+        and step % 7
+        and any(
+            "weekStart" in templates.placeholders(value)
+            for value in (request.get("query") or {}).values()
+        )
+    ):
+        issues.append(
+            LintIssue(
+                "pagination.window_step",
+                _p(*base, "stepDays"),
+                "{weekStart} возвращается к понедельнику: шаг должен быть кратен 7",
+            )
+        )
     if pagination["windows"] < 2:
         issues.append(
             LintIssue("pagination.window_count", _p(*base, "windows"), "нужно не меньше двух окон")
@@ -412,22 +431,40 @@ def _date_window(
         )
 
 
-_UI_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}$")
-_UI_SHORT_NUMBER = re.compile(r"^\d{1,3}$")
+def _window_identity(
+    kind: str, response: Mapping[str, Any], base: tuple[Any, ...], issues: list[LintIssue]
+) -> None:
+    """Weeks of a repeating timetable share source ids: the time must be part of the identity."""
+    wanted = TIME_FIELD.get(kind)
+    if wanted is not None and wanted not in (response.get("identity") or []):
+        issues.append(
+            LintIssue(
+                "pagination.window_identity",
+                _p(*base, "identity"),
+                "в identity окон нужно время записи, иначе недели слипнутся",
+            )
+        )
 
 
 def _ui_url(
-    ui_url: Mapping[str, Any], known: set[str], base: tuple[Any, ...], issues: list[LintIssue]
+    ui_url: Mapping[str, Any],
+    request: Mapping[str, Any],
+    known: set[str],
+    base: tuple[Any, ...],
+    issues: list[LintIssue],
 ) -> None:
-    """The interface address is shared like the request: only structure and the same templates,
-    never an identifier, a date or a code that belongs to one student."""
+    """The interface address is shared like the request: only structure and the same templates.
+
+    A literal is a structural word (`schedule`, `week`...) or a word the recipe's own API request
+    already states. A login, a surname, a group code or any value with digits is a student."""
     _check_path(ui_url["path"], _p(*base, "path"), issues)
     _check_template(ui_url["path"], known, _p(*base, "path"), issues)
+    request_words, request_values = request_literals(request)
     for segment in unquote(unquote(templates.PLACEHOLDER.sub("", ui_url["path"]))).split("/"):
-        if segment and not _UI_WORD.match(segment):
+        if segment and not ui_segment_ok(segment, request_words):
             issues.append(
                 LintIssue(
-                    "uiurl.personal", _p(*base, "path"), "сегмент адреса похож на идентификатор"
+                    "uiurl.personal", _p(*base, "path"), "сегмент адреса похож на личное значение"
                 )
             )
     for key, value in (ui_url.get("query") or {}).items():
@@ -436,7 +473,7 @@ def _ui_url(
             issues.append(LintIssue("param.secret_name", where, "имя параметра похоже на секрет"))
         _check_template(value, known, where, issues)
         literal = templates.PLACEHOLDER.sub("", value)
-        if literal and not (_UI_WORD.match(literal) or _UI_SHORT_NUMBER.match(literal)):
+        if literal and not ui_value_ok(key, literal, request_values):
             issues.append(LintIssue("uiurl.personal", where, "значение адреса похоже на личное"))
 
 

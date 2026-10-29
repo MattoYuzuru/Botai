@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -173,12 +174,12 @@ def test_lint_guards_the_hand_written_parts_of_a_window_and_card() -> None:
 
 def test_a_label_copied_from_the_data_is_an_observed_value() -> None:
     candidate = authored()
-    candidate["response"]["attributes"][0]["label"] = "ДРИП 3 курс 26/27"
+    candidate["response"]["attributes"][0]["label"] = "Группа А-21 курс 3"
     spec = spec_of(compiled(candidate))
     ctx = LintContext(
         allowed_hosts=["fakeuni.test"],
         expected_origin=ORIGIN,
-        observed=["ДРИП 3 курс 26/27"],
+        observed=["Группа А-21 курс 3"],
     )
     assert "observed.value" in lint_spec(spec, ctx).codes()
 
@@ -192,3 +193,96 @@ def test_a_personal_interface_address_is_rejected_by_the_lint_itself() -> None:
         copy.deepcopy(spec), LintContext(allowed_hosts=["fakeuni.test"], expected_origin=ORIGIN)
     ).codes()
     assert "uiurl.personal" in codes
+
+
+# --- an address of the page never carries a login, a surname or a group code --------------------
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "/students/ivanov_ii/schedule?begin_date=2026-10-26",  # a login with initials
+        "/student/ivanov/schedule",  # a bare surname
+        "/profile/s1234567/timetable",
+        "/group-ivt211/schedule",
+    ],
+)
+def test_a_personal_word_in_the_path_leaves_no_address(page: str) -> None:
+    assert ui_url_for(observed(page=page), authored()["request"], ORIGIN, now=NOW, tz=TZ) is None
+
+
+def test_query_literals_are_structural_words_or_the_recipes_own() -> None:
+    fact = observed(
+        page="/schedule?group=IVT211&sid=st123456&view=week&mode=ivanov&begin_date=2026-10-26"
+        "&access_token=abc&scope=ivt"
+    )
+    request = {"path": API, "query": {"begin_date": "{weekStart}", "scope": "ivt"}}
+    ui = ui_url_for(fact, request, ORIGIN, now=NOW, tz=TZ)
+    # `view=week` is structural, `scope=ivt` is stated by the recipe itself; the rest is dropped
+    assert ui == {
+        "path": "/schedule",
+        "query": {"view": "week", "begin_date": "{weekStart}", "scope": "ivt"},
+    }
+
+
+def test_a_sign_in_page_is_not_the_address_and_the_last_ordinary_document_stands_in() -> None:
+    sign_in = observed(page="/login?next=%2Fschedule")
+    assert ui_url_for(sign_in, authored()["request"], ORIGIN, now=NOW, tz=TZ) is None
+    assert (
+        ui_url_for(observed(page="/auth/realms/x/login-actions"), {}, ORIGIN, now=NOW, tz=TZ)
+        is None
+    )
+    documents = [
+        ObservedRequest.model_validate(
+            {"method": "GET", "url": f"{ORIGIN}{path}", "status": 200, "resource_type": "document"}
+        )
+        for path in ("/timetable", "/auth/login", "/schedule?view=week")
+    ]
+    ui = ui_url_for(sign_in, authored()["request"], ORIGIN, now=NOW, tz=TZ, documents=documents)
+    assert ui == {"path": "/schedule", "query": {"view": "week"}}
+
+
+def test_lint_rejects_the_same_words_in_a_hand_written_address() -> None:
+    result = compiled(authored())
+    spec = spec_of(result)
+    endpoint = spec["recipe"]["endpoints"][0]
+    context = LintContext(allowed_hosts=["fakeuni.test"], expected_origin=ORIGIN)
+    for path, query in (
+        ("/students/ivanov_ii/schedule", {}),
+        ("/schedule", {"group": "IVT211"}),
+        ("/schedule", {"sid": "st123456"}),
+    ):
+        endpoint["uiUrl"] = {"path": path, "query": query} if query else {"path": path}
+        assert "uiurl.personal" in lint_spec(copy.deepcopy(spec), context).codes(), (path, query)
+    endpoint["uiUrl"] = {"path": "/my-schedule", "query": {"view": "week"}}
+    assert lint_spec(copy.deepcopy(spec), context).ok
+
+
+async def test_templates_are_certified_against_the_day_of_the_observation() -> None:
+    from datetime import UTC, datetime
+
+    from botai.core.llm import LlmResponse, ScriptedLlm
+    from botai.learn.author import author_kind
+
+    answer = LlmResponse(content=json.dumps({"found": True, "endpoints": [authored()]}))
+    later = datetime(2026, 12, 20, 12, 0, tzinfo=UTC)  # the research resumed weeks afterwards
+
+    async def run(observed_at: datetime | None) -> Any:
+        return await author_kind(
+            ScriptedLlm(queue=[answer, answer]),
+            "scheduleEvents",
+            "<observation>synthetic</observation>",
+            lint_ctx=LintContext(allowed_hosts=["fakeuni.test"], expected_origin=ORIGIN),
+            origin=ORIGIN,
+            revision=1,
+            now=later,
+            digest="a" * 64,
+            request_facts={"r1": observed()},
+            time_zone=TZ,
+            observed_at=observed_at,
+        )
+
+    assert (await run(NOW)).candidates  # the page was observed on 27.10: its week is window 0
+    refused = await run(None)  # against the compile day the observed week is out of the walk
+    assert not refused.candidates
+    assert any("window_template_mismatch" in row for row in refused.rejected)

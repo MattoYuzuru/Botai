@@ -270,3 +270,20 @@ def test_typed_round_trip_of_a_version_one_recipe_has_no_window_syntax() -> None
 
 def test_utc_now_is_irrelevant_for_the_default_clock() -> None:
     assert NOW.tzinfo is UTC
+
+
+async def test_overlapping_windows_give_one_record_per_class() -> None:
+    requests: list[str] = []
+    daily = endpoint(stepDays=1, windows=4, startOffset=-1)
+    daily["request"]["query"]["begin_date"] = "{today}"
+    # a one-day step over a seven-day window: every class is seen by several windows in a row
+    result = await read(spec(daily), server(requests))
+    (outcome,) = result.outcomes
+    assert outcome.ok
+    assert outcome.problem is None
+    assert outcome.windows == 4
+    assert requests == ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]
+    keys = [(r.fields["title"], r.fields["startsAt"]) for r in result.records]
+    assert len(keys) == len(set(keys))  # no class twice
+    assert len(result.records) == len({r.external_id for r in result.records})
+    assert outcome.items_valid == len(result.records)

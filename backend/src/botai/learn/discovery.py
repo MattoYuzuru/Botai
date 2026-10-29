@@ -78,8 +78,7 @@ class DiscoveryBudget:
     seconds: float = 90.0
     tokens: int = 150_000
     links_per_page: int = 80
-    capabilities: bool = True
-    probes: int = 6  # repeated reads with other dates or pages (FR-039) per observation
+    probes: int = 6  # repeated reads with other dates or pages (FR-039), over the whole research
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +134,7 @@ class ObservationSession:
     auth_target_url: str | None = field(default=None, repr=False)
     probe_kit: ProbeKit | None = field(default=None, repr=False)
     probe_count: int = 0
+    probes_before: int = 0  # probes of earlier slices of the same research (the budget is total)
     probes: dict[str, ProbeNote] = field(default_factory=dict, repr=False)
 
     def offer_entries(self, urls: list[str]) -> None:
@@ -196,7 +196,7 @@ class ObservationSession:
                 self.links[link_ref] = (label, target)
                 self.current_links.append(link_ref)
                 known.add(target)
-        if self.budget.capabilities and isinstance(self.handle, ReadCapabilityBrowser):
+        if isinstance(self.handle, ReadCapabilityBrowser):
             for i, capability in enumerate(await self.handle.read_capabilities()):
                 if i >= 24:
                     break
@@ -496,7 +496,7 @@ class ObservationSession:
     async def probe(self, ref: str, overrides: dict[str, str]) -> bool:
         """Repeat one observed read with other query values and keep the answer as evidence."""
         kit = self.probe_kit
-        if kit is None or self.probe_count >= self.budget.probes:
+        if kit is None or self.probes_before + self.probe_count >= self.budget.probes:
             self.failures.add("no_progress")
             return False
         call = self.calls[ref]
@@ -531,7 +531,7 @@ class ObservationSession:
                 "status": reply.status,
                 "response_sample": reply.text,
                 "response_content_type": reply.content_type,
-                "evidence_id": f"probe-{self.probe_count}",
+                "evidence_id": f"probe-{self.probes_before + self.probe_count}",
             }
         )
         self.probes[new_ref] = ProbeNote(ref, tuple(overrides.items()), reply.status, reply.shape)
@@ -960,7 +960,9 @@ class _MemorySlice:
         self._tick = now
         self.memory.requests += max(0, self.state.network_count - self._network)
         self._network = self.state.network_count
-        self.memory.requests += max(0, self.state.probe_count - self._probed)
+        probed = max(0, self.state.probe_count - self._probed)
+        self.memory.requests += probed  # a probe is a read of the source like any other
+        self.memory.probes += probed
         self._probed = self.state.probe_count
 
     async def commit(self) -> None:
@@ -1070,6 +1072,7 @@ async def _resumable_observe(
         budget,
         portable_plans=dict(memory.browser_plans),
         probe_kit=probe_kit,
+        probes_before=memory.probes,
     )
     # Runtime references are rebuilt. In particular an old stateRef cannot accidentally match
     # the first page of a new handle, even when both happen to contain a link named l0.

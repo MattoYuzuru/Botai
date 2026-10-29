@@ -111,7 +111,7 @@
             "teacherIds": { "type": "array", "items": { "$ref": "#/$defs/id" }, "maxItems": 10 },
             "teacherText": { "type": ["string", "null"], "maxLength": 300 },
             "url": { "type": ["string", "null"], "format": "uri" },
-            "kindText": { "type": ["string", "null"], "maxLength": 120, "description": "Тип занятия словами источника («Текущий рубежный контроль»); kind остаётся общим." },
+            "kindText": { "type": ["string", "null"], "maxLength": 120, "description": "Тип занятия словами источника («Зачётное занятие»); kind остаётся общим." },
             "address": { "type": ["string", "null"], "maxLength": 300, "description": "Адрес здания; аудитория — в locationText." },
             "group": { "type": ["string", "null"], "maxLength": 200, "description": "Группа или поток." },
             "lessonNumber": { "type": ["integer", "null"], "minimum": 0, "maximum": 10000 },

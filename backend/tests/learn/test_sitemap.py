@@ -118,3 +118,40 @@ def test_russian_agreement_and_the_question_carry_counts_and_dates_only() -> Non
     assert thin_question(
         0, kind_forms=("запись", "записи", "записей"), span=None, per_window=[], unit="периодам"
     ).startswith("Не вижу записей.")
+
+
+def test_personal_segments_pages_and_labels_stay_out_of_the_shared_map() -> None:
+    redactor = Redactor()
+    redactor.know("ivanov")  # the student's own login is a known value
+    built: dict[str, Any] = build_sitemap(
+        ORIGIN,
+        redactor,
+        [
+            PageSnapshot(url=ORIGIN + "/students/ivanov_ii/schedule"),
+            PageSnapshot(url=ORIGIN + "/group-IVT211/timetable"),
+            PageSnapshot(url=ORIGIN + "/raspisanie/Petrov"),
+            PageSnapshot(url=ORIGIN + "/cb?access_token=abc.def.ghi"),  # a credential
+            PageSnapshot(url=ORIGIN + "/ivanov/courses"),  # the known login as a plain word
+            PageSnapshot(url=ORIGIN + "/ucheba/raspisanie"),  # the site's own plain words
+        ],
+        [
+            ("Иванов Иван Иванович", ORIGIN + "/profile"),
+            ("Мои занятия", ORIGIN + "/my-schedule"),
+            ("Почта ivan@fakeuni.test", ORIGIN + "/mail"),
+            ("Группа АБВ-211", ORIGIN + "/groups/ivt211"),
+            ("Студент 20261234", ORIGIN + "/card/20261234"),
+        ],
+        [],
+    )
+    routes = built["routes"]
+    assert "/students/{id}/schedule" in routes  # a login with initials
+    assert "/group-{id}/timetable" not in routes
+    assert "/{id}/timetable" in routes  # a code with digits
+    assert "/raspisanie/{id}" in routes  # a surname after a plain word is not a word of the site
+    assert "/{id}/courses" in routes  # the redactor knows this value
+    assert "/ucheba/raspisanie" in routes
+    assert not any("access_token" in route or "abc" in route for route in routes)
+    assert not any(part in route for route in routes for part in ("ivanov", "IVT", "Petrov"))
+    labels = {entry["label"] for entry in built["navigation"]}
+    assert labels == {"Мои занятия"}  # a name, an e-mail, a group code and an id are not labels
+    assert "/groups/{id}" in routes  # the label was dropped, the generalised route may stay
