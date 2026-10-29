@@ -2,117 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://botai.local/contracts/recipe.schema.json",
   "title": "LearnedRecipe",
-  "description": "Декларативный рецепт чтения одного origin: ответы JSON (JSON Pointer) или HTML (CSS-селекторы). Не содержит личных значений. Исполняется без LLM. См. ADR-0002, ADR-0005.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "version",
-    "origin",
-    "revision",
-    "learnedAt",
-    "auth",
-    "endpoints",
-    "validation"
-  ],
-  "properties": {
-    "version": {
-      "const": 1
+  "description": "Версионированный декларативный рецепт. v1 неизменён; v2 добавляет executor-owned auth bindings, bounded collections/date/weekly DSL и проверяемый browser replay. Секреты и исполняемый код запрещены.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/recipeV1"
     },
-    "origin": {
-      "type": "string",
-      "pattern": "^https://[a-z0-9.-]+$",
-      "description": "Только схема и хост. Путь, запрос и фрагмент запрещены."
-    },
-    "revision": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "learnedAt": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "learnedByDigest": {
-      "type": "string",
-      "description": "Хеш идентичности автора рецепта для canary. Не раскрывает личность.",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "auth": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "type"
-      ],
-      "properties": {
-        "type": {
-          "enum": [
-            "cookie",
-            "bearer",
-            "none"
-          ]
-        },
-        "headerName": {
-          "type": "string",
-          "pattern": "^[A-Za-z][A-Za-z0-9-]{0,40}$"
-        }
-      }
-    },
-    "bootstrap": {
-      "type": "array",
-      "maxItems": 4,
-      "items": {
-        "$ref": "#/$defs/bootstrapStep"
-      }
-    },
-    "endpoints": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 24,
-      "items": {
-        "$ref": "#/$defs/endpoint"
-      }
-    },
-    "validation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "requireKinds"
-      ],
-      "properties": {
-        "requireKinds": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/kind"
-          }
-        },
-        "minItems": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 1
-        }
-      }
-    },
-    "freshness": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "syncEveryMinutes": {
-          "type": "integer",
-          "minimum": 15,
-          "maximum": 1440
-        },
-        "staleAfterMinutes": {
-          "type": "integer",
-          "minimum": 30,
-          "maximum": 10080
-        }
-      }
-    },
-    "notes": {
-      "type": "string",
-      "maxLength": 2000
+    {
+      "$ref": "#/$defs/recipeV2"
     }
-  },
+  ],
   "$defs": {
     "kind": {
       "enum": [
@@ -509,6 +407,2050 @@
           "maxItems": 6
         }
       }
+    },
+    "v2JsonScalar": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(/([^/~]|~[01])*)*$",
+          "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "fallbackPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(/([^/~]|~[01])*)*$",
+              "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "JsonScalar",
+      "type": "object"
+    },
+    "v2HtmlScalar": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "attr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attr"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "title": "HtmlScalar",
+      "type": "object"
+    },
+    "v2JsonField": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(/([^/~]|~[01])*)*$",
+          "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "fallbackPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(/([^/~]|~[01])*)*$",
+              "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transform": {
+          "anyOf": [
+            {
+              "enum": [
+                "iso",
+                "unixSeconds",
+                "unixMillis",
+                "trim",
+                "number",
+                "bool",
+                "html2text",
+                "joinNames"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transform"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "JsonField",
+      "type": "object"
+    },
+    "v2HtmlField": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        },
+        "from": {
+          "default": "item",
+          "title": "From",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        },
+        "attr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attr"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "transform": {
+          "anyOf": [
+            {
+              "enum": [
+                "iso",
+                "unixSeconds",
+                "unixMillis",
+                "trim",
+                "number",
+                "bool",
+                "html2text",
+                "joinNames"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transform"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "title": "HtmlField",
+      "type": "object"
+    },
+    "v2JsonDateTime": {
+      "additionalProperties": false,
+      "properties": {
+        "timeZone": {
+          "title": "Timezone",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fold": {
+          "default": "reject",
+          "enum": [
+            "reject",
+            "earlier",
+            "later"
+          ],
+          "title": "Fold",
+          "type": "string"
+        },
+        "type": {
+          "const": "dateTime",
+          "title": "Type",
+          "type": "string"
+        },
+        "date": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "time": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "dayOffset": {
+          "default": 0,
+          "enum": [
+            0,
+            1
+          ],
+          "title": "Dayoffset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeZone",
+        "type",
+        "date",
+        "time"
+      ],
+      "title": "JsonDateTime",
+      "type": "object"
+    },
+    "v2HtmlDateTime": {
+      "additionalProperties": false,
+      "properties": {
+        "timeZone": {
+          "title": "Timezone",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fold": {
+          "default": "reject",
+          "enum": [
+            "reject",
+            "earlier",
+            "later"
+          ],
+          "title": "Fold",
+          "type": "string"
+        },
+        "type": {
+          "const": "dateTime",
+          "title": "Type",
+          "type": "string"
+        },
+        "date": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "time": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "dayOffset": {
+          "default": 0,
+          "enum": [
+            0,
+            1
+          ],
+          "title": "Dayoffset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeZone",
+        "type",
+        "date",
+        "time"
+      ],
+      "title": "HtmlDateTime",
+      "type": "object"
+    },
+    "v2JsonComposedField": {
+      "additionalProperties": false,
+      "properties": {
+        "compose": {
+          "$ref": "#/$defs/v2JsonDateTime"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "compose"
+      ],
+      "title": "JsonComposedField",
+      "type": "object"
+    },
+    "v2HtmlComposedField": {
+      "additionalProperties": false,
+      "properties": {
+        "compose": {
+          "$ref": "#/$defs/v2HtmlDateTime"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "compose"
+      ],
+      "title": "HtmlComposedField",
+      "type": "object"
+    },
+    "v2JsonCollection": {
+      "additionalProperties": false,
+      "properties": {
+        "as": {
+          "allOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+            },
+            {
+              "not": {
+                "enum": [
+                  "item",
+                  "root"
+                ]
+              }
+            }
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(/([^/~]|~[01])*)*$",
+          "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+        }
+      },
+      "required": [
+        "as",
+        "path"
+      ],
+      "title": "JsonCollection",
+      "type": "object"
+    },
+    "v2HtmlCollection": {
+      "additionalProperties": false,
+      "properties": {
+        "as": {
+          "allOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+            },
+            {
+              "not": {
+                "enum": [
+                  "item",
+                  "root"
+                ]
+              }
+            }
+          ]
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        }
+      },
+      "required": [
+        "as",
+        "selector"
+      ],
+      "title": "HtmlCollection",
+      "type": "object"
+    },
+    "v2ExpansionHorizon": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "pattern": "^\\{(?:today|weekStart|(?:plusDays|minusDays):[0-9]{1,3})\\}$",
+          "title": "From",
+          "type": "string"
+        },
+        "days": {
+          "maximum": 93,
+          "minimum": 1,
+          "title": "Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "days"
+      ],
+      "title": "ExpansionHorizon",
+      "type": "object"
+    },
+    "v2JsonWeekly": {
+      "additionalProperties": false,
+      "properties": {
+        "timeZone": {
+          "title": "Timezone",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fold": {
+          "default": "reject",
+          "enum": [
+            "reject",
+            "earlier",
+            "later"
+          ],
+          "title": "Fold",
+          "type": "string"
+        },
+        "type": {
+          "const": "weekly",
+          "title": "Type",
+          "type": "string"
+        },
+        "intervalWeeks": {
+          "default": 1,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Intervalweeks",
+          "type": "integer"
+        },
+        "endDayOffset": {
+          "default": 0,
+          "enum": [
+            0,
+            1
+          ],
+          "title": "Enddayoffset",
+          "type": "integer"
+        },
+        "horizon": {
+          "$ref": "#/$defs/v2ExpansionHorizon"
+        },
+        "maxOccurrences": {
+          "default": 512,
+          "maximum": 512,
+          "minimum": 1,
+          "title": "Maxoccurrences",
+          "type": "integer"
+        },
+        "startDate": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "untilDate": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "weekdays": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "startTime": {
+          "$ref": "#/$defs/v2JsonScalar"
+        },
+        "endTime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "durationMinutes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "maximum": 1440,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationminutes"
+        },
+        "anchorDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "excludeDates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "includeDates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "timeZone",
+        "type",
+        "horizon",
+        "startDate",
+        "untilDate",
+        "weekdays",
+        "startTime"
+      ],
+      "title": "JsonWeekly",
+      "type": "object",
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "endTime"
+              ],
+              "properties": {
+                "endTime": {
+                  "type": "object"
+                },
+                "durationMinutes": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "required": [
+                "durationMinutes"
+              ],
+              "properties": {
+                "durationMinutes": {
+                  "type": [
+                    "object",
+                    "integer"
+                  ]
+                },
+                "endTime": {
+                  "type": "null"
+                },
+                "endDayOffset": {
+                  "const": 0
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "required": [
+              "intervalWeeks"
+            ],
+            "properties": {
+              "intervalWeeks": {
+                "minimum": 2
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "anchorDate"
+            ],
+            "properties": {
+              "anchorDate": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "v2HtmlWeekly": {
+      "additionalProperties": false,
+      "properties": {
+        "timeZone": {
+          "title": "Timezone",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fold": {
+          "default": "reject",
+          "enum": [
+            "reject",
+            "earlier",
+            "later"
+          ],
+          "title": "Fold",
+          "type": "string"
+        },
+        "type": {
+          "const": "weekly",
+          "title": "Type",
+          "type": "string"
+        },
+        "intervalWeeks": {
+          "default": 1,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Intervalweeks",
+          "type": "integer"
+        },
+        "endDayOffset": {
+          "default": 0,
+          "enum": [
+            0,
+            1
+          ],
+          "title": "Enddayoffset",
+          "type": "integer"
+        },
+        "horizon": {
+          "$ref": "#/$defs/v2ExpansionHorizon"
+        },
+        "maxOccurrences": {
+          "default": 512,
+          "maximum": 512,
+          "minimum": 1,
+          "title": "Maxoccurrences",
+          "type": "integer"
+        },
+        "startDate": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "untilDate": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "weekdays": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "startTime": {
+          "$ref": "#/$defs/v2HtmlScalar"
+        },
+        "endTime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "durationMinutes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "maximum": 1440,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationminutes"
+        },
+        "anchorDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "excludeDates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "includeDates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "timeZone",
+        "type",
+        "horizon",
+        "startDate",
+        "untilDate",
+        "weekdays",
+        "startTime"
+      ],
+      "title": "HtmlWeekly",
+      "type": "object",
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "endTime"
+              ],
+              "properties": {
+                "endTime": {
+                  "type": "object"
+                },
+                "durationMinutes": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "required": [
+                "durationMinutes"
+              ],
+              "properties": {
+                "durationMinutes": {
+                  "type": [
+                    "object",
+                    "integer"
+                  ]
+                },
+                "endTime": {
+                  "type": "null"
+                },
+                "endDayOffset": {
+                  "const": 0
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "required": [
+              "intervalWeeks"
+            ],
+            "properties": {
+              "intervalWeeks": {
+                "minimum": 2
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "anchorDate"
+            ],
+            "properties": {
+              "anchorDate": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "v2JsonResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "const": "json",
+          "title": "Format",
+          "type": "string"
+        },
+        "itemsPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Itemspath"
+        },
+        "collections": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/v2JsonCollection"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collections"
+        },
+        "fields": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/v2JsonField"
+              },
+              {
+                "$ref": "#/$defs/v2JsonComposedField"
+              }
+            ]
+          },
+          "title": "Fields",
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 24,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+          }
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 6,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expand": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2JsonWeekly"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "format",
+        "fields"
+      ],
+      "title": "JsonResponse",
+      "type": "object",
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "itemsPath"
+              ],
+              "properties": {
+                "itemsPath": {
+                  "type": "string",
+                  "pattern": "^(/([^/~]|~[01])*)*$",
+                  "description": "RFC 6901 JSON Pointer. Пустая строка — корень ответа."
+                },
+                "collections": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "required": [
+                "collections"
+              ],
+              "properties": {
+                "collections": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4
+                },
+                "itemsPath": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "required": [
+              "expand"
+            ],
+            "properties": {
+              "expand": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fields": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "startsAt"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "endsAt"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "durationMinutes"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "v2HtmlResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "const": "html",
+          "title": "Format",
+          "type": "string"
+        },
+        "itemsSelector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Itemsselector"
+        },
+        "collections": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/v2HtmlCollection"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collections"
+        },
+        "fields": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/v2HtmlField"
+              },
+              {
+                "$ref": "#/$defs/v2HtmlComposedField"
+              }
+            ]
+          },
+          "title": "Fields",
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 24,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+          }
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 6,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expand": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2HtmlWeekly"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "format",
+        "fields"
+      ],
+      "title": "HtmlResponse",
+      "type": "object",
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "itemsSelector"
+              ],
+              "properties": {
+                "itemsSelector": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+                },
+                "collections": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "required": [
+                "collections"
+              ],
+              "properties": {
+                "collections": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4
+                },
+                "itemsSelector": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "required": [
+              "expand"
+            ],
+            "properties": {
+              "expand": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fields": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "startsAt"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "endsAt"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "durationMinutes"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "v2BrowserPagination": {
+      "additionalProperties": false,
+      "properties": {
+        "next": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/v2BrowserStep"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "next_link"
+                }
+              }
+            }
+          ]
+        },
+        "maxPages": {
+          "default": 3,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Maxpages",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "next"
+      ],
+      "title": "BrowserPagination",
+      "type": "object"
+    },
+    "v2BrowserStep": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "activate_tab",
+            "set_date",
+            "select_option",
+            "next_link",
+            "wait_ready"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/v2ReadTarget"
+        },
+        "framePath": {
+          "items": {
+            "$ref": "#/$defs/v2ReadFrame"
+          },
+          "maxItems": 3,
+          "title": "Framepath",
+          "type": "array"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2ReadTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "title": "BrowserStep",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "set_date",
+                  "select_option"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "region",
+              "value"
+            ],
+            "properties": {
+              "region": {
+                "type": "object"
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "set_date"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "pattern": "^\\{(?:today|weekStart|(?:plusDays|minusDays):[0-9]{1,3})\\}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "activate_tab",
+                  "next_link",
+                  "wait_ready"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "v2ReadFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        },
+        "title": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Title",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "title": "ReadFrame",
+      "type": "object"
+    },
+    "v2ReadTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "CSS-селектор (подмножество, поддерживаемое selectolax). Без :has и псевдоэлементов."
+        },
+        "tag": {
+          "pattern": "^[a-z][a-z0-9-]{0,30}$",
+          "title": "Tag",
+          "type": "string"
+        },
+        "role": {
+          "default": "",
+          "maxLength": 40,
+          "title": "Role",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Label",
+          "type": "string"
+        },
+        "controls": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Controls",
+          "type": "string"
+        }
+      },
+      "required": [
+        "selector",
+        "tag"
+      ],
+      "title": "ReadTarget",
+      "type": "object"
+    },
+    "v2BrowserPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/v2BrowserStep"
+          },
+          "maxItems": 8,
+          "title": "Steps",
+          "type": "array"
+        },
+        "framePath": {
+          "items": {
+            "$ref": "#/$defs/v2ReadFrame"
+          },
+          "maxItems": 3,
+          "title": "Framepath",
+          "type": "array"
+        },
+        "emptyTarget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2ReadTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pagination": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/v2BrowserPagination"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "BrowserPlan",
+      "type": "object"
+    },
+    "sessionBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cookies",
+        "bearer"
+      ],
+      "properties": {
+        "cookies": {
+          "type": "boolean"
+        },
+        "bearer": {
+          "enum": [
+            "none",
+            "observedAuthorization"
+          ]
+        }
+      }
+    },
+    "sessionAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "version",
+        "bindings"
+      ],
+      "properties": {
+        "type": {
+          "const": "session"
+        },
+        "version": {
+          "const": 1
+        },
+        "bindings": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 4,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sessionBinding"
+          }
+        }
+      }
+    },
+    "bootstrapStepV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "method",
+        "path",
+        "extract"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "method": {
+          "const": "GET"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "extract": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/pointer"
+          }
+        },
+        "authBinding": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+        }
+      }
+    },
+    "endpointV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "request",
+        "response"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "path"
+          ],
+          "properties": {
+            "method": {
+              "enum": [
+                "GET",
+                "POST"
+              ]
+            },
+            "readOnlyPost": {
+              "type": "boolean",
+              "default": false,
+              "description": "true обязателен для method=POST. Метод должен быть в allowlist read-only POST в коде (например AJAX-чтение Moodle)."
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "query": {
+              "type": "object",
+              "maxProperties": 12,
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/template"
+              }
+            },
+            "body": {
+              "type": "object",
+              "description": "Только для readOnlyPost. Значения — шаблоны, не литеральные личные данные.",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/template"
+              }
+            },
+            "render": {
+              "type": "boolean",
+              "default": false,
+              "description": "Явное чтение отрисованного HTML в ограниченном браузере. Только GET и response.format=html; включается после успешной rendered-canary. Без флага — HTTP."
+            },
+            "authBinding": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9]{0,30}$"
+            },
+            "browserPlan": {
+              "$ref": "#/$defs/v2BrowserPlan"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "method": {
+                    "const": "POST"
+                  }
+                },
+                "required": [
+                  "method"
+                ]
+              },
+              "then": {
+                "required": [
+                  "readOnlyPost"
+                ],
+                "properties": {
+                  "readOnlyPost": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "browserPlan"
+                ]
+              },
+              "then": {
+                "required": [
+                  "render"
+                ],
+                "properties": {
+                  "render": {
+                    "const": true
+                  },
+                  "method": {
+                    "const": "GET"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "body"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "pagination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "none",
+                "offset",
+                "page",
+                "cursor"
+              ]
+            },
+            "param": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+            },
+            "limitParam": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "maxPages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 5
+            },
+            "cursorPath": {
+              "$ref": "#/$defs/pointer"
+            },
+            "totalPath": {
+              "$ref": "#/$defs/pointer"
+            }
+          }
+        },
+        "response": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/v2JsonResponse"
+            },
+            {
+              "$ref": "#/$defs/v2HtmlResponse"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "request": {
+                "properties": {
+                  "render": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "render"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "request": {
+                "properties": {
+                  "method": {
+                    "const": "GET"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "body"
+                  ]
+                }
+              },
+              "response": {
+                "properties": {
+                  "format": {
+                    "const": "html"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response": {
+                "required": [
+                  "expand"
+                ],
+                "properties": {
+                  "expand": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "scheduleEvents"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "recipeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "origin",
+        "revision",
+        "learnedAt",
+        "auth",
+        "endpoints",
+        "validation"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "origin": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9.-]+$",
+          "description": "Только схема и хост. Путь, запрос и фрагмент запрещены."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "learnedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "learnedByDigest": {
+          "type": "string",
+          "description": "Хеш идентичности автора рецепта для canary. Не раскрывает личность.",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "cookie",
+                "bearer",
+                "none"
+              ]
+            },
+            "headerName": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9-]{0,40}$"
+            }
+          }
+        },
+        "bootstrap": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/bootstrapStep"
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requireKinds"
+          ],
+          "properties": {
+            "requireKinds": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/kind"
+              }
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1
+            }
+          }
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "syncEveryMinutes": {
+              "type": "integer",
+              "minimum": 15,
+              "maximum": 1440
+            },
+            "staleAfterMinutes": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 10080
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    },
+    "recipeV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "origin",
+        "revision",
+        "learnedAt",
+        "auth",
+        "endpoints",
+        "validation"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "origin": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9.-]+$",
+          "description": "Только схема и хост. Путь, запрос и фрагмент запрещены."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "learnedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "learnedByDigest": {
+          "type": "string",
+          "description": "Хеш идентичности автора рецепта для canary. Не раскрывает личность.",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "auth": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "enum": [
+                    "cookie",
+                    "bearer",
+                    "none"
+                  ]
+                },
+                "headerName": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9-]{0,40}$"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/sessionAuth"
+            }
+          ]
+        },
+        "bootstrap": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/bootstrapStepV2"
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/endpointV2"
+          }
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requireKinds"
+          ],
+          "properties": {
+            "requireKinds": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/kind"
+              }
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1
+            }
+          }
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "syncEveryMinutes": {
+              "type": "integer",
+              "minimum": 15,
+              "maximum": 1440
+            },
+            "staleAfterMinutes": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 10080
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "auth": {
+                "properties": {
+                  "type": {
+                    "const": "session"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "endpoints": {
+                "items": {
+                  "properties": {
+                    "request": {
+                      "allOf": [
+                        {
+                          "if": {
+                            "not": {
+                              "required": [
+                                "render"
+                              ],
+                              "properties": {
+                                "render": {
+                                  "const": true
+                                }
+                              }
+                            }
+                          },
+                          "then": {
+                            "required": [
+                              "authBinding"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "bootstrap": {
+                "items": {
+                  "required": [
+                    "authBinding"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
