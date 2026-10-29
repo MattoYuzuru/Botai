@@ -35,9 +35,13 @@ async def cleanup_specs(env: Env) -> AsyncIterator[None]:
     fakeuni_api.reset()
     async with env.sm() as session:
         before = set(await session.scalars(select(m.AdapterSpecRow.id)))
+        audit_before = set(await session.scalars(select(m.AuditLog.id)))
     yield
     fakeuni_api.reset()
     async with env.sm() as session:
+        # Production deliberately retains global audit history when its owner/spec is
+        # deleted. Remove only this test's additions before their references are nulled.
+        await session.execute(delete(m.AuditLog).where(m.AuditLog.id.not_in(audit_before)))
         await session.execute(delete(m.User).where(m.User.id.in_(env.users)))
         await session.execute(delete(m.AdapterSpecRow).where(m.AdapterSpecRow.id.not_in(before)))
         await session.commit()
