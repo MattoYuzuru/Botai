@@ -20,6 +20,7 @@ from botai.contracts.browser_plan import (
 )
 from botai.core.ids import new_id
 from botai.core.read_capabilities import ReadCapability
+from botai.learn.compiler import compile_candidate
 
 pytestmark = pytest.mark.browser
 ORIGIN = "https://fakeuni.test"
@@ -92,6 +93,22 @@ async def one(registry: ReadCapabilityRegistry, kind: str) -> ReadCapability:
     return found[0]
 
 
+def shared_plan(plan: BrowserPlan) -> BrowserPlan:
+    compiled = compile_candidate(
+        {
+            "request": {"method": "GET", "path": "/native-read"},
+            "response": {"format": "html"},
+            "browserPlanRef": "bp0",
+        },
+        [],
+        origin=ORIGIN,
+        request_facts={},
+        browser_plans={"bp0": plan},
+        browser_plan_urls={"bp0": URL},
+    )
+    return BrowserPlan.model_validate(compiled.endpoint["request"]["browserPlan"])
+
+
 async def test_native_date_select_and_tab_compile_only_current_observed_choices(
     gateway: PlaywrightGateway,
 ) -> None:
@@ -133,6 +150,33 @@ async def test_plan_replays_on_fresh_browser_with_fresh_date_binding(
         assert len(snapshots) == 1
         assert "Данные: 2026-11-02" in snapshots[0].text
         assert await fresh.page.input_value("#from") == "2026-11-02"
+
+
+@pytest.mark.parametrize("change", ["labels", "controls", "role"])
+async def test_minimized_plan_rebinds_display_labels_but_preserves_structural_filter_proof(
+    gateway: PlaywrightGateway, change: str
+) -> None:
+    async with environment(gateway) as (_, registry):
+        date = await one(registry, "set_date")
+        compiled = await registry.apply(date.ref, value_ref="today")
+        plan = shared_plan(compiled.plan)
+        assert plan.steps[0].target.label == ""
+        assert plan.steps[0].region is not None
+        assert plan.steps[0].region.label == ""
+    html = HTML.replace("Начало периода", "Выбор периода").replace("Результаты", "Список занятий")
+    async with environment(gateway, html) as (handle, registry):
+        if change == "controls":
+            await handle.page.locator("#from").evaluate(
+                "el=>el.setAttribute('aria-controls','other')"
+            )
+        elif change == "role":
+            await handle.page.locator("#from").evaluate("el=>el.setAttribute('role','combobox')")
+        if change == "labels":
+            pages = await registry.replay(plan, values={}, items_selector=".lesson")
+            assert "Данные: 2026-10-29" in pages[0].text
+        else:
+            with pytest.raises(ReadEffectError, match="target_changed"):
+                await registry.replay(plan, values={}, items_selector=".lesson")
 
 
 async def test_body_completion_proof_does_not_create_response_finished_close_waiters(
@@ -339,6 +383,15 @@ async def test_same_origin_frame_replays_and_cross_origin_frame_is_not_a_capabil
         assert result.plan.frame_path == [ReadFrame(selector="#course", title="Учебная область")]
         pages = await registry.replay(result.plan, values={}, items_selector=".lesson")
         assert len(pages) == 1
+        portable = shared_plan(result.plan)
+        assert portable.frame_path == [ReadFrame(selector="#course")]
+        await handle.page.locator("#course").evaluate(
+            "el=>{el.title='Новая подпись';el.name='Другой студент';}"
+        )
+        pages = await registry.replay(portable, values={}, items_selector=".lesson")
+        assert "Встроенная пара" in pages[0].text
+        with pytest.raises(ReadEffectError, match="frame_changed"):
+            await registry.replay(result.plan, values={}, items_selector=".lesson")
 
 
 @pytest.mark.parametrize("mode", ["complete", "limit", "cycle"])

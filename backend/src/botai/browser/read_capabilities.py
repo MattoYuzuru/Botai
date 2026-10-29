@@ -153,6 +153,21 @@ def _origin(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _target_matches(actual: Any, expected: ReadTarget) -> bool:
+    if isinstance(actual, dict) and not expected.label:
+        actual = {**actual, "label": ""}
+    return actual == expected.model_dump()
+
+
+def _frame_matches(actual: Any, expected: ReadFrame) -> bool:
+    if isinstance(actual, dict):
+        actual = dict(actual)
+        for key in ("title", "name"):
+            if not getattr(expected, key):
+                actual[key] = ""
+    return actual == expected.model_dump()
+
+
 def _date_value(template: str, values: Mapping[str, str], now: datetime) -> str:
     match = _DATE_TEMPLATE.fullmatch(template)
     if match is None:
@@ -309,7 +324,7 @@ class ReadCapabilityRegistry:
             element = elements[0]
             try:
                 facts: Any = await element.evaluate(_FRAME)
-                if facts != descriptor.model_dump():
+                if not _frame_matches(facts, descriptor):
                     raise ReadEffectError("frame_changed")
                 child = await element.content_frame()
                 if child is None or _origin(child.url) != self._origin:
@@ -527,7 +542,7 @@ class ReadCapabilityRegistry:
         script = _FACTS if actionable else _HIDDEN_REGION_TARGET if allow_hidden else _TARGET
         facts: Any = await element.evaluate(script)
         target = facts.get("target") if actionable and isinstance(facts, dict) else facts
-        if target != descriptor.model_dump():
+        if not _target_matches(target, descriptor):
             await element.dispose()
             raise ReadEffectError("target_changed")
         return element
@@ -601,10 +616,14 @@ class ReadCapabilityRegistry:
             if (
                 not isinstance(facts, dict)
                 or facts.get("kind") != step.op
-                or facts.get("target") != step.target.model_dump()
+                or not _target_matches(facts.get("target"), step.target)
             ):
                 raise ReadEffectError("target_changed")
-            if facts.get("region") != (step.region.model_dump() if step.region else None):
+            if (
+                not _target_matches(facts.get("region"), step.region)
+                if step.region is not None
+                else facts.get("region") is not None
+            ):
                 raise ReadEffectError("target_changed")
             before, sequence = (
                 await self._content(frame, step.region, allow_hidden=step.op == "activate_tab"),
@@ -721,7 +740,7 @@ class ReadCapabilityRegistry:
                 raise ReadEffectError("target_changed")
             next_element = candidates[0]
             next_facts: Any = await next_element.evaluate(_TARGET)
-            if next_facts != plan.pagination.next.target.model_dump():
+            if not _target_matches(next_facts, plan.pagination.next.target):
                 await next_element.dispose()
                 raise ReadEffectError("target_changed")
             if await next_element.get_attribute(

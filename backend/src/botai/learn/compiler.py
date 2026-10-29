@@ -120,6 +120,30 @@ def _entry_request(
     return path, query
 
 
+def _portable_browser_plan(plan: BaseModel) -> dict[str, Any]:
+    """Share structural replay facts, without unnecessary source or student display labels."""
+    portable = plan.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def frames(node: dict[str, Any]) -> None:
+        for frame in node.get("framePath", []):
+            frame.pop("title", None)
+            frame.pop("name", None)
+
+    def step(node: dict[str, Any]) -> None:
+        for key in ("target", "region"):
+            if key in node:
+                node[key].pop("label", None)
+        frames(node)
+
+    frames(portable)
+    for item in portable.get("steps", []):
+        step(item)
+    if portable.get("pagination") is not None:
+        step(portable["pagination"]["next"])
+    # emptyTarget.label is required evidence of a current explicit empty result.
+    return portable
+
+
 def compile_candidate(
     endpoint: Mapping[str, Any],
     bootstrap: Sequence[Mapping[str, Any]],
@@ -180,7 +204,7 @@ def compile_candidate(
         request.pop("query", None)
         if query:
             request["query"] = query
-        request["browserPlan"] = plan.model_dump(mode="json", by_alias=True, exclude_none=True)
+        request["browserPlan"] = _portable_browser_plan(plan)
         request["render"] = True
     elif request.get("render") is True:
         _rendered(request, response)

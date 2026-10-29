@@ -11,12 +11,13 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.schemas import errors
 from botai.core.browser import ObservedRequest
 from botai.core.llm import LlmResponse, ScriptedLlm
 from botai.learn.author import author_kind, build_spec
 from botai.learn.compiler import CompiledCandidate, FactoryCompileError, compile_candidate
-from botai.learn.lint import LintContext
+from botai.learn.lint import LintContext, lint_spec
 from botai.learn.prompting import author_request, author_schema
 from tests.sources import recipes
 from tests.sources.helpers import NOW
@@ -161,6 +162,110 @@ def test_rendered_plan_restores_only_trusted_entry_and_descriptor() -> None:
     assert "browserPlanRef" not in json.dumps(compiled.endpoint)
     assert "invented" not in json.dumps(compiled.endpoint)
     assert as_spec(compiled)["recipe"]["version"] == 2
+
+
+def filter_plan() -> BrowserPlan:
+    frame = {"selector": "#course", "title": "Учебная область", "name": "StudentA"}
+    region = {"selector": "#rows", "tag": "section", "role": "region", "label": "Расписание"}
+    return BrowserPlan.model_validate(
+        {
+            "steps": [
+                {
+                    "op": "set_date",
+                    "target": {
+                        "selector": "#from",
+                        "tag": "input",
+                        "controls": "rows",
+                        "label": "Начало периода",
+                    },
+                    "region": region,
+                    "value": "{today}",
+                    "framePath": [frame],
+                },
+                {
+                    "op": "select_option",
+                    "target": {
+                        "selector": "#kind",
+                        "tag": "select",
+                        "controls": "rows",
+                        "label": "Вид занятий",
+                    },
+                    "region": region,
+                    "value": "lectures",
+                    "framePath": [frame],
+                },
+            ],
+            "framePath": [frame],
+            "emptyTarget": {
+                "selector": "#empty",
+                "tag": "p",
+                "role": "status",
+                "label": "Нет занятий",
+            },
+            "pagination": {
+                "next": {
+                    "op": "next_link",
+                    "target": {"selector": "#next", "tag": "a", "label": "Следующая"},
+                    "region": region,
+                    "framePath": [frame],
+                }
+            },
+        }
+    )
+
+
+def test_shared_browser_plan_minimizes_display_labels_without_changing_private_observations() -> (
+    None
+):
+    endpoint = {**recipes.news_endpoint(), "browserPlanRef": "pNews"}
+    plan = filter_plan()
+    original = plan.model_dump()
+    compiled = compile_source(
+        endpoint, browser_plans={"pNews": plan}, browser_plan_urls={"pNews": ORIGIN + "/news"}
+    )
+    shared = compiled.endpoint["request"]["browserPlan"]
+    for step in [*shared["steps"], shared["pagination"]["next"]]:
+        assert "label" not in step["target"]
+        assert "label" not in step["region"]
+        assert step["framePath"] == [{"selector": "#course"}]
+    assert shared["framePath"] == [{"selector": "#course"}]
+    assert shared["steps"][0]["target"]["controls"] == "rows"
+    assert shared["steps"][0]["value"] == "{today}"
+    assert shared["steps"][1]["value"] == "lectures"
+    assert shared["emptyTarget"]["label"] == "Нет занятий"
+    assert plan.model_dump() == original
+    result = lint_spec(
+        as_spec(compiled),
+        LintContext(
+            observed=(
+                "StudentA",
+                "Учебная область",
+                "Расписание",
+                "Начало периода",
+                "Вид занятий",
+                "Следующая",
+            )
+        ),
+    )
+    assert result.ok, result.reasons()
+
+
+@pytest.mark.parametrize("field", ["selector", "option"])
+def test_minimization_keeps_personal_selectors_and_option_literals_subject_to_lint(
+    field: str,
+) -> None:
+    endpoint = {**recipes.news_endpoint(), "browserPlanRef": "pNews"}
+    plan = filter_plan()
+    if field == "selector":
+        plan.steps[0].target.selector = "#StudentA"
+    else:
+        plan.steps[1].value = "StudentA"
+    compiled = compile_source(
+        endpoint, browser_plans={"pNews": plan}, browser_plan_urls={"pNews": ORIGIN + "/news"}
+    )
+    result = lint_spec(as_spec(compiled), LintContext(observed=("StudentA",)))
+    assert "observed.value" in result.codes()
+    assert "schema" not in result.codes()
 
 
 def test_browser_entry_allows_only_builtins_that_render_to_the_certified_url() -> None:
