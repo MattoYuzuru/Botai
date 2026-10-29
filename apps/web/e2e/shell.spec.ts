@@ -262,6 +262,9 @@ test.describe("каркас", () => {
 
   test("зоны нажатия не меньше 44 px и текст не мельче 13 px на каждом экране", async ({ page }) => {
     await open(page, "/", "connected");
+    // load не ждёт dynamic import/startMocks: сначала сохраняем connected-сценарий,
+    // иначе первый bare reload отменяет bootstrap и открывает fresh/login.
+    await expect(page.getByRole("navigation", { name: "Основная навигация" })).toBeVisible();
     for (const path of ["/", "/schedule", "/tasks", "/chat", "/study"]) {
       await page.goto(`${path}`);
       await expect(page.getByRole("navigation", { name: "Основная навигация" })).toBeVisible();
