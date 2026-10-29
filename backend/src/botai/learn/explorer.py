@@ -396,6 +396,7 @@ class Explorer:
                 self._reauth_attempted = True
                 info = await self._info(connection_id)
                 if info.adapter is not None:
+                    await self._set(connection_id, status="active", clear_error=True)
                     outcome = await sync_connection(
                         self.ctx,
                         self.services,
