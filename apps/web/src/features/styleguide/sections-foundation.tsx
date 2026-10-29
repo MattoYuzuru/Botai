@@ -13,6 +13,7 @@ import {
   Skeleton,
   SkeletonText,
   SourceStatus,
+  SourceStatusBar,
   Swatch,
   Switch,
   SyncIndicator,
@@ -348,6 +349,19 @@ export function StatusSection() {
           </div>
         </Demo>
       </Grid>
+      <Demo
+        label="SourceStatusBar — статусы вузов в шапке; пояснение раскрывается плавно по наведению, фокусу и касанию"
+        wide
+      >
+        <SourceStatusBar
+          nowMs={NOW}
+          items={[
+            { id: "hse", title: "НИУ ВШЭ", state: "ok", updatedAt: NOW - 20 * 60_000, timeZone: MSK },
+            { id: "cu", title: "ЦУ", state: "reauth", updatedAt: NOW - 3 * 86_400_000, timeZone: MSK },
+            { id: "su", title: "СУ", state: "syncing", updatedAt: NOW - 5 * 60_000, timeZone: MSK },
+          ]}
+        />
+      </Demo>
       <Demo label="SyncIndicator — точка с мягкой пульсацией; обновление идёт само, кнопки нет">
         <span className="inline-flex items-center gap-2 type-caption text-fg-muted">
           <SyncIndicator state="syncing" /> обновляется

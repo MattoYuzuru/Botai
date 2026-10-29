@@ -10,7 +10,7 @@ import {
 import { Badge } from "../badge/badge";
 import { Skeleton } from "../skeleton/skeleton";
 import type { ScheduleDayState, ScheduleItem } from "./schedule-day";
-import { ScheduleFacts } from "./schedule-facts";
+import { KIND_BADGE, ScheduleFacts } from "./schedule-facts";
 
 export interface ScheduleGridDay {
   /** Любой момент нужного дня, мс. */
@@ -115,8 +115,8 @@ export function ScheduleGrid({
                         </span>
                         <span className="break-words type-label text-fg">{item.title}</span>
                         {item.badge && (
-                          <Badge tone="info" className="max-w-full self-start">
-                            <span className="truncate">{item.badge}</span>
+                          <Badge tone="info" className={cn(KIND_BADGE, "self-start")}>
+                            {item.badge}
                           </Badge>
                         )}
                         <ScheduleFacts facts={item.facts} layout="stacked" />

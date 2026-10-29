@@ -4,7 +4,7 @@ import { countRu, DEFAULT_TIME_ZONE, formatDayWithWeekday, formatTime } from "..
 import { Badge } from "../badge/badge";
 import { EmptyState } from "../empty-state/empty-state";
 import { Skeleton } from "../skeleton/skeleton";
-import { type ScheduleFact, ScheduleFacts } from "./schedule-facts";
+import { KIND_BADGE, type ScheduleFact, ScheduleFacts } from "./schedule-facts";
 
 export interface ScheduleItem {
   id: string;
@@ -122,8 +122,8 @@ export function ScheduleDay({
                     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                       <span className="type-subheading text-fg">{item.title}</span>
                       {item.badge && (
-                        <Badge tone="info" className="max-w-full">
-                          <span className="truncate">{item.badge}</span>
+                        <Badge tone="info" className={KIND_BADGE}>
+                          {item.badge}
                         </Badge>
                       )}
                     </span>

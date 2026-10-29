@@ -30,7 +30,7 @@ test("шапка, предупреждение и пустые данные на
   await expect(title).toBeVisible();
   const notice = page.getByRole("list", { name: "Состояние источников" });
   await expect(notice.getByText(/Вуз отклонил вход/)).toBeVisible();
-  const action = notice.getByRole("button", { name: "Спросить в чате" });
+  const action = notice.getByRole("link", { name: "Спросить в чате" });
   const text = notice.locator("[data-source-state]");
   const a = await action.boundingBox();
   const t = await text.boundingBox();
@@ -50,7 +50,9 @@ test("шапка, предупреждение и пустые данные на
   await page.screenshot({ path: info.outputPath(`today-${width}.png`), fullPage: true });
 });
 
-test("три вуза в шапке: пояснение по фокусу и касанию без фильтрации", async ({ page }, info) => {
+test("три вуза в шапке: пояснение раскрывается плавно, соседи сдвигаются, без фильтрации", async ({
+  page,
+}, info) => {
   const phone = info.project.name === "phone";
   await page.setViewportSize({ width: phone ? 400 : 1512, height: phone ? 775 : 982 });
   await open(page, "/?data=quiet", "stale");
@@ -58,28 +60,99 @@ test("три вуза в шапке: пояснение по фокусу и к�
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb, ulid } = await import(/* @vite-ignore */ path);
     const db = createDb("stale");
-    const third = { ...db.spaces[0], id: ulid(), title: "Учебный вуз", universityId: null };
+    const third = {
+      ...db.spaces[0],
+      id: ulid(),
+      title: "Синтетический университет",
+      shortTitle: "СУ",
+      universityId: null,
+    };
     db.spaces.push(third);
     db.connections.push({ ...db.connections[0], id: ulid(), spaceId: third.id });
     persistDb(db);
   });
   await page.goto("/?data=quiet&latency=0");
-  const statuses = page.locator("header").getByRole("list", { name: "Свежесть данных" });
-  await expect(statuses.getByRole("button")).toHaveCount(3);
-  const status = statuses.getByRole("button").first();
-  const label = status.locator("span.block");
+  const statuses = page.locator("header").getByRole("list", { name: "Статусы вузов" });
+  const chips = statuses.getByRole("button");
+  await expect(chips).toHaveCount(3);
+  const status = chips.first();
+  const detail = status.locator("[data-source-detail]");
+  const label = detail.locator("span.block");
   await expect(status).toHaveAttribute("aria-expanded", "false");
-  expect((await label.boundingBox())?.width).toBe(0);
+  expect((await detail.boundingBox())?.width).toBe(0);
+
+  // Плавность проверяем по свойствам перехода, а не по таймингам: ширина идёт через grid-template-columns
+  // на токенах движения, max-width не анимируется, чипы стоят в одной строке и не переносятся.
+  const motion = await detail.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      property: style.transitionProperty,
+      duration: style.transitionDuration,
+      easing: style.transitionTimingFunction,
+      columns: style.gridTemplateColumns,
+    };
+  });
+  expect(motion.property).toContain("grid-template-columns");
+  expect(motion.property).not.toContain("max-width");
+  expect(motion.duration).toContain("0.28s");
+  expect(motion.easing).toContain("cubic-bezier(0.22, 1, 0.36, 1)");
+  expect(motion.columns).toBe("0px");
+  const tops = await chips.evaluateAll((nodes) =>
+    nodes.map((node) => Math.round(node.getBoundingClientRect().top)),
+  );
+  expect(new Set(tops).size, "чипы в одной строке").toBe(1);
+
+  const lefts = () =>
+    chips.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const rest = await lefts();
   await status.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
   await expect(label).toBeVisible();
+  // Раскрытый чип стоит на месте, соседи уехали вправо; при потере фокуса вернулись тем же переходом.
+  await expect.poll(async () => (await lefts())[1]).toBeGreaterThan(rest[1] ?? 0);
+  expect((await lefts())[0]).toBe(rest[0]);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect.poll(lefts).toEqual(rest);
+
   await status.click();
   await expect(status).toHaveAttribute("aria-expanded", "true");
-  await expect(label.locator("..")).toHaveCSS("opacity", "1");
+  await expect(detail).toHaveCSS("opacity", "1");
+  await expect(statuses.getByRole("button", { expanded: true })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(status).toHaveAttribute("aria-expanded", "false");
+  await status.click();
   await page.getByRole("heading", { name: "Сегодня", exact: true }).click();
-  await expect(label).toBeVisible();
+  await expect(status).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "stale");
   await expectFitsWidth(page, phone ? 400 : 1512);
+
+  await status.click();
+  await expect(label).toBeVisible();
   await page.screenshot({ path: info.outputPath("freshness-expanded.png"), fullPage: true });
+
+  // Сокращённое движение: переход не 0.28 с, а 1 мс, информация та же.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await detail.evaluate((node) => getComputedStyle(node).transitionDuration)).toContain("0.001s");
+});
+
+test("laptop: наведение раскрывает пояснение, уход курсора возвращает; соседние чипы не перепрыгивают", async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== "laptop", "наведение мыши");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await open(page, "/schedule", "connected");
+  await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "ok");
+  const chips = page.locator("header").getByRole("list", { name: "Статусы вузов" }).getByRole("button");
+  const lefts = () =>
+    chips.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const rest = await lefts();
+  await chips.first().hover();
+  await expect(chips.first().locator("[data-source-detail] span.block")).toBeVisible();
+  await expect.poll(async () => (await lefts())[1]).toBeGreaterThan(rest[1] ?? 0);
+  await page.mouse.move(640, 500);
+  await expect.poll(lefts).toEqual(rest);
+  await expect(chips.first()).toHaveAttribute("aria-expanded", "false");
 });
 
 test("подключение: поиск с клавиатуры, отдельный повторный вход, обе темы и крупный текст", async ({

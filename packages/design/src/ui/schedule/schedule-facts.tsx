@@ -44,3 +44,9 @@ export function ScheduleFacts({
     </span>
   );
 }
+
+/**
+ * Бейдж типа занятия: слова источника бывают длинными («Текущий рубежный контроль»), поэтому он переносится на
+ * вторую строку, а не усекается — информация не теряется в узкой колонке недели.
+ */
+export const KIND_BADGE = "h-auto min-h-6 max-w-full whitespace-normal py-0.5 text-left";
