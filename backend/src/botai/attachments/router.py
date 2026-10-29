@@ -15,6 +15,10 @@ from botai.db.session import DbSession
 router = APIRouter(prefix="/api/v1/attachments", tags=["attachments"])
 
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+# Nothing of a student's file may run or load anything when it is opened on its own. Chrome's PDF
+# viewer does not work under `sandbox`, and a PDF is not run by the page: it keeps the rest.
+_CSP = "sandbox; default-src 'none'"
+_CSP_PDF = "default-src 'none'"
 
 
 @router.post("", response_model=AttachmentOut, status_code=201)
@@ -50,34 +54,37 @@ async def attachment_content(
     attachment_id: str, request: Request, user: AuthUser, session: DbSession
 ) -> Response:
     """The bytes, shown in place when a browser can show them safely (HTML never is), with
-    byte ranges so that audio can be played and sought on every browser."""
-    att = await service.get(session, user.id, attachment_id, with_data=True)
+    byte ranges so that audio can be played and sought on every browser. A range is cut by the
+    database; a refused range reads nothing."""
+    att = await service.get(session, user.id, attachment_id)
     content_type, disposition = kinds.served_as(att.name, att.mime)
     headers = {
         "content-type": content_type,
         "content-disposition": disposition,
         "cache-control": "private, no-store",
         "x-content-type-options": "nosniff",
+        "content-security-policy": _CSP_PDF if att.mime == "application/pdf" else _CSP,
         "accept-ranges": "bytes",
     }
-    data = att.data
-    start, end = 0, len(data) - 1
+    size = att.size
+    start, end = 0, size - 1
     status = 200
     if (wanted := request.headers.get("range")) is not None:
         match = _RANGE.match(wanted.strip())
         first, last = (match.group(1), match.group(2)) if match else ("", "")
         if not match or (first == "" and last == ""):
-            return Response(status_code=416, headers={"content-range": f"bytes */{len(data)}"})
+            return Response(status_code=416, headers={"content-range": f"bytes */{size}"})
         if first == "":  # the last N bytes
-            start = max(0, len(data) - int(last))
+            start = max(0, size - int(last))
         else:
             start = int(first)
             end = min(end, int(last)) if last else end
-        if start > end or start >= len(data):
-            return Response(status_code=416, headers={"content-range": f"bytes */{len(data)}"})
-        headers["content-range"] = f"bytes {start}-{end}/{len(data)}"
+        if start > end or start >= size:
+            return Response(status_code=416, headers={"content-range": f"bytes */{size}"})
+        headers["content-range"] = f"bytes {start}-{end}/{size}"
         status = 206
-    return Response(content=data[start : end + 1], status_code=status, headers=headers)
+    data = await service.read_bytes(session, att.id, start, end - start + 1)
+    return Response(content=data, status_code=status, headers=headers)
 
 
 @router.delete("/{attachment_id}", status_code=204)

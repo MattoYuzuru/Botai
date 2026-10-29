@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, delete, exists, func, not_, select, text
+from sqlalchemy import ColumnElement, LargeBinary, delete, exists, func, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -168,6 +168,17 @@ async def get(
     if att is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Вложение не найдено")
     return att
+
+
+async def read_bytes(session: AsyncSession, attachment_id: str, start: int, length: int) -> bytes:
+    """`length` bytes from offset `start`, cut by the database: a range of a long recording does
+    not load the whole file. The caller has checked the owner (`get`)."""
+    chunk = await session.scalar(
+        select(func.substr(Attachment.data, start + 1, length, type_=LargeBinary)).where(
+            Attachment.id == attachment_id
+        )
+    )
+    return chunk or b""
 
 
 async def delete_unsent(session: AsyncSession, user_id: str, attachment_id: str) -> None:

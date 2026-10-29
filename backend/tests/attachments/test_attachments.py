@@ -281,6 +281,50 @@ async def test_documents_and_audio_are_served_with_their_own_type(
     assert r.content == data
 
 
+async def test_a_file_cannot_script_the_page_that_shows_it(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    csp = {}
+    for name, data in (("a.png", PNG), ("a.html", HTML), ("a.pdf", make_pdf("x")), ("a.ogg", OGG)):
+        att = (await _upload(client, data, name)).json()
+        csp[name] = (await client.get(f"{URL}/{att['id']}/content")).headers[
+            "content-security-policy"
+        ]
+    for name in ("a.png", "a.html", "a.ogg"):
+        assert csp[name] == "sandbox; default-src 'none'", name
+    # a PDF stays inline (Chrome's viewer does not run in a sandbox): nothing may load from it
+    assert csp["a.pdf"] == "default-src 'none'"
+
+
+async def test_a_range_is_cut_by_the_database_and_a_refused_one_reads_nothing(
+    client: httpx.AsyncClient,
+    tx_sessionmaker: Sm,
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    body = OGG + bytes(range(200))
+    att = (await _upload(client, body, "v.ogg")).json()
+    url = f"{URL}/{att['id']}/content"
+    reads: list[tuple[int, int]] = []
+    real = service.read_bytes
+
+    async def spy(session: object, attachment_id: str, start: int, length: int) -> bytes:
+        reads.append((start, length))
+        return await real(session, attachment_id, start, length)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service, "read_bytes", spy)
+    assert (await client.get(url, headers={"range": "bytes=10-19"})).content == body[10:20]
+    assert (await client.get(url, headers={"range": "bytes=-5"})).content == body[-5:]
+    assert (await client.get(url)).content == body
+    assert reads == [(10, 10), (len(body) - 5, 5), (0, len(body))]  # only what was asked for
+    reads.clear()
+    for bad in ("bytes=9999-", "bytes=5-2", "bytes=-", "bytes=x-y"):
+        assert (await client.get(url, headers={"range": bad})).status_code == 416
+    assert reads == []  # no byte of the file was read to refuse them
+
+
 async def test_audio_can_be_sought_with_byte_ranges(
     client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
 ) -> None:
