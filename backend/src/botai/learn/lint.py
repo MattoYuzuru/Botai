@@ -647,6 +647,10 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
             for section in ("query", "body"):
                 for key, value in (request.get(section) or {}).items():
                     yield _p(*base, "request", section, key), templates.PLACEHOLDER.sub("", value)
+            if request.get("browserPlan") is not None:
+                yield from _browser_plan_literals(
+                    request["browserPlan"], (*base, "request", "browserPlan")
+                )
             response = endpoint["response"]
             if recipe["version"] == 2:
                 yield from _data_literals(response, (*base, "response"))
@@ -667,6 +671,28 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
         for target, mapping in (table.get("columns") or {}).items():
             yield _p("table", "columns", target), mapping.get("column", "")
         yield _p("table", "rowFilter", "column"), (table.get("rowFilter") or {}).get("column", "")
+
+
+def _browser_plan_literals(node: Any, base: tuple[Any, ...]) -> Iterator[tuple[str, str]]:
+    """Only DOM-derived values are literals; trusted operations and date bindings are not."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            where = (*base, key)
+            if isinstance(value, str) and key in {
+                "selector",
+                "label",
+                "controls",
+                "title",
+                "name",
+                "value",
+            }:
+                if key != "value" or node.get("op") != "set_date":
+                    yield _p(*where), value
+            elif isinstance(value, (Mapping, list)):
+                yield from _browser_plan_literals(value, where)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _browser_plan_literals(item, (*base, index))
 
 
 def _data_literals(node: Any, base: tuple[Any, ...]) -> Iterator[tuple[str, str]]:

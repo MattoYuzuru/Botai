@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from botai.learn.lint import lint_spec
+from botai.learn.lint import LintContext, lint_spec
 from tests.sources.recipes import deadlines_html_endpoint, recipe_spec
 
 
@@ -73,4 +73,34 @@ def test_browser_plan_cannot_bypass_response_selector_policy(
     result = lint_spec(spec)
     where = "/recipe/endpoints/0/" + "/".join(map(str, path))
     assert any(issue.code == "html.selector" and issue.path == where for issue in result.issues)
+    assert "schema" not in result.codes()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("steps", 0, "target", "selector"),
+        ("steps", 0, "target", "label"),
+        ("steps", 0, "target", "controls"),
+        ("steps", 0, "region", "label"),
+        ("steps", 0, "framePath", 0, "name"),
+        ("framePath", 0, "title"),
+        ("emptyTarget", "label"),
+        ("pagination", "next", "target", "label"),
+        ("steps", 0, "value"),
+    ],
+)
+def test_browser_plan_does_not_share_observed_student_literals(path: tuple[str | int, ...]) -> None:
+    spec = browser_recipe()
+    plan = spec["recipe"]["endpoints"][0]["request"]["browserPlan"]
+    if path[-1] == "value":
+        plan["steps"][0].update(op="select_option")
+        plan["steps"][0]["target"]["tag"] = "select"
+    node = plan
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = "StudentA"
+    result = lint_spec(spec, LintContext(observed=("StudentA",)))
+    where = "/recipe/endpoints/0/request/browserPlan/" + "/".join(map(str, path))
+    assert any(issue.code == "observed.value" and issue.path == where for issue in result.issues)
     assert "schema" not in result.codes()
