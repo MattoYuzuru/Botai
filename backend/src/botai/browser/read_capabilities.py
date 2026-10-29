@@ -211,7 +211,7 @@ class ReadCapabilityRegistry:
         self._started: dict[Request, float] = {}
         self._refused: set[Frame] = set()
         self._inflight: dict[Frame, set[Request]] = {}
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._responses: dict[Request, tuple[int, str]] = {}
         page.on("response", self._response)
         page.on("request", self._request)
         page.on("requestfinished", self._request_done)
@@ -244,41 +244,34 @@ class ReadCapabilityRegistry:
                 self._started[request] = time.monotonic()
 
     def _request_done(self, request: Request) -> None:
+        started = self._started.pop(request, 0.0)
+        response = self._responses.pop(request, None)
         with contextlib.suppress(PlaywrightError):
-            self._inflight.get(request.frame, set()).discard(request)
-            if request.failure is not None:
-                self._started.pop(request, None)
-
-    def _response(self, response: Response) -> None:
-        task = asyncio.create_task(self._finished(response))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def _finished(self, response: Response) -> None:
-        try:
-            request = response.request
-            if request.method != "GET" or request.resource_type not in {"document", "xhr", "fetch"}:
-                return
             frame = request.frame
-            started = self._started.get(request, 0.0)
-            if response.status in {401, 403}:
-                self._refused.add(frame)
-                return
-            async with asyncio.timeout(WAIT_SECONDS):
-                error = await response.finished()
+            self._inflight.get(frame, set()).discard(request)
             if (
-                error is None
-                and 200 <= response.status < 300
-                and _origin(response.url) == _origin(frame.url)
+                request.failure is None
+                and response is not None
+                and 200 <= response[0] < 300
+                and response[1] == _origin(frame.url)
             ):
+                # This public event means the response body has completed. In pinned
+                # Playwright it also resolves Response._finished_future, without creating
+                # the orphan close-waiter left behind by Response.finished().
                 self._completed[frame] = self._completed.get(frame, 0) + 1
                 self._completed_started[frame] = max(
                     started, self._completed_started.get(frame, 0.0)
                 )
-        except (PlaywrightError, TimeoutError):
-            return
-        finally:
-            self._started.pop(response.request, None)
+
+    def _response(self, response: Response) -> None:
+        with contextlib.suppress(PlaywrightError):
+            request = response.request
+            if request.method != "GET" or request.resource_type not in {"document", "xhr", "fetch"}:
+                return
+            frame = request.frame
+            if response.status in {401, 403}:
+                self._refused.add(frame)
+            self._responses[request] = (response.status, _origin(response.url))
 
     async def aclose(self) -> None:
         self.invalidate()
@@ -287,9 +280,9 @@ class ReadCapabilityRegistry:
         self.page.remove_listener("requestfinished", self._request_done)
         self.page.remove_listener("requestfailed", self._request_done)
         self.page.remove_listener("framenavigated", self._navigated)
-        for task in list(self._tasks):
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._responses.clear()
+        self._started.clear()
+        self._inflight.clear()
         await self._dispose()
 
     async def _dispose(self) -> None:

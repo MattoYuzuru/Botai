@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.async_api import Route
+from playwright.async_api import Response, Route
 
 from botai.browser import read_capabilities as capabilities_module
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
@@ -133,6 +133,19 @@ async def test_plan_replays_on_fresh_browser_with_fresh_date_binding(
         assert len(snapshots) == 1
         assert "Данные: 2026-11-02" in snapshots[0].text
         assert await fresh.page.input_value("#from") == "2026-11-02"
+
+
+async def test_body_completion_proof_does_not_create_response_finished_close_waiters(
+    gateway: PlaywrightGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def forbidden_finished(response: Response) -> None:
+        raise AssertionError("registry must use requestfinished body completion events")
+
+    monkeypatch.setattr(Response, "finished", forbidden_finished)
+    async with environment(gateway) as (_, registry):
+        date = await one(registry, "set_date")
+        result = await registry.apply(date.ref, value_ref="today")
+        assert "Данные: 2026-10-29" in result.snapshot.text
 
 
 async def test_preloaded_hidden_tab_panel_becomes_visible_and_replays(
