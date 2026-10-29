@@ -322,7 +322,9 @@ async def test_command_line_replay_writes_a_learning_report_and_its_table(
     fixtures = tmp_path / "fixtures"
     use_model(
         monkeypatch,
-        RecordingLlm(ls.EvidenceLlm(queue=[ls.answer([moved_timetable()])]), fixtures / "flash-high"),
+        RecordingLlm(
+            ls.EvidenceLlm(queue=[ls.answer([moved_timetable()])]), fixtures / "flash-high"
+        ),
     )
     (ok,), _, _ = await run("B3", tmp_path / "rec")
     assert ok.success

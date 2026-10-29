@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -149,3 +150,45 @@ async def test_a_record_without_a_page_has_no_open_url(db: AsyncSession) -> None
     )
     row = (await db.execute(select(m.ScheduleEvent))).scalar_one()
     assert row.open_url is None
+
+
+async def test_an_html_page_is_its_own_open_url_and_an_unreadable_parameter_gives_none() -> None:
+    from botai.contracts.specs import RecipeSpec
+    from botai.sources.adapters.recipe import RecipeAdapter
+    from tests.sources import recipes
+    from tests.sources.helpers import make_ctx
+
+    html = "<ul><li class='news-item'><a href='/n/1'>Новость</a><time datetime='2026-10-27T10:00:00Z'>x</time></li></ul>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+
+    spec = RecipeSpec.model_validate(
+        recipes.recipe_spec([recipes.news_endpoint()], require=("news",))
+    )
+    result = await RecipeAdapter(spec).fetch(make_ctx(transport=httpx.MockTransport(handler)))
+    assert [r.open_url for r in result.records] == ["https://fakeuni.test/news"]
+
+    # a declared page address that needs a value the source did not give is left out
+    data = recipes.recipe_spec([recipes.timetable_endpoint()], require=("scheduleEvents",))
+    data["recipe"]["version"] = 2
+    data["recipe"]["endpoints"][0]["uiUrl"] = {"path": "/students/{studentId}/schedule"}
+    data["recipe"]["bootstrap"] = [
+        {"id": "me", "method": "GET", "path": "/api/v2/me", "extract": {"studentId": "/missing"}}
+    ]
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/me":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"items": data_timetable()})
+
+    from tests.fakeuni import data as fakeuni_data
+
+    def data_timetable() -> list[dict[str, object]]:
+        return fakeuni_data.timetable()
+
+    result = await RecipeAdapter(RecipeSpec.model_validate(data)).fetch(
+        make_ctx(transport=httpx.MockTransport(api))
+    )
+    assert result.records
+    assert {r.open_url for r in result.records} == {None}

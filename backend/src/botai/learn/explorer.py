@@ -1695,7 +1695,7 @@ class Explorer:
             items = [item("Найдено записей", str(len(records)))]
             for rec in sample_of(records, kind, now):
                 label, value = describe(rec, info.tz)
-                items.append(item(label, value or "—", _safe_url(rec.source_url)))
+                items.append(item(label, value or "—", _safe_url(rec.open_url or "")))
             groups.append(SummaryGroup(title=KIND_LABELS[kind], items=items))
         groups.append(
             SummaryGroup(title="Источник", items=[item("Сайт", info.origin, info.origin)])
