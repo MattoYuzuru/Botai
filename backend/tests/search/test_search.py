@@ -90,6 +90,7 @@ async def test_exa_to_deepseek_429_and_cooldown() -> None:
     [
         (402, "credits_exhausted"),
         (401, "invalid_key"),
+        (403, "access_denied"),
         (400, "invalid_config"),
         (302, "invalid_config"),
     ],
@@ -102,6 +103,66 @@ async def test_permanent_errors_do_not_retry(status: int, reason: str) -> None:
     assert found.issues[0].reason == reason
     await service.search("university official portal")
     assert [p for p, _, _ in sender.calls] == ["exa", "deepseek", "deepseek"]
+
+
+async def test_html_access_denial_falls_back_without_repeating_or_exposing_the_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "challenge-body-never-expose"
+    denied = httpx.Response(
+        403,
+        headers={"content-type": "text/html", "server": "cloudflare", "cf-mitigated": "challenge"},
+        text=f"<html><title>Just a moment...</title><script>{marker}</script></html>",
+    )
+    sender = Script(denied, answer("deepseek"), answer("deepseek"))
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def record(event: str, **facts: object) -> None:
+        events.append((event, facts))
+
+    monkeypatch.setattr("botai.search.service.diagnostic_event", record)
+    service = SearchService(settings(), sender=sender)
+    found = await service.search("public university docs")
+    assert found.status == "ok"
+    assert found.results[0].provider == "deepseek"
+    assert found.issues[0].reason == "access_denied"
+    assert marker not in str(found)
+    assert marker not in str(events)
+    assert any(
+        event == "search.fallback" and facts.get("reason") == "access_denied"
+        for event, facts in events
+    )
+    again = await service.search("official university portal")
+    assert again.status == "ok"
+    assert [provider for provider, _, _ in sender.calls] == ["exa", "deepseek", "deepseek"]
+
+
+async def test_401_still_reports_invalid_key_separately_from_access_denial() -> None:
+    sender = Script(httpx.Response(401, json={"error": "Invalid API key"}), answer("deepseek"))
+    found = await SearchService(settings(), sender=sender).search("public university docs")
+    assert found.status == "ok"
+    assert found.issues[0].reason == "invalid_key"
+    assert [provider for provider, _, _ in sender.calls] == ["exa", "deepseek"]
+
+
+async def test_access_denial_by_both_providers_stays_unavailable_without_cycling() -> None:
+    sender = Script(
+        httpx.Response(
+            403, headers={"content-type": "text/html"}, text="<html>Access denied</html>"
+        ),
+        httpx.Response(403, json={"error": "Access denied"}),
+    )
+    now = [0.0]
+    service = SearchService(settings(), sender=sender, monotonic=lambda: now[0])
+    failed = await service.search("public university docs")
+    assert failed.status == "unavailable"
+    assert not failed.results
+    assert [issue.reason for issue in failed.issues] == ["access_denied", "access_denied"]
+    now[0] = 1_000_000  # access restrictions require operator action, not a timed retry
+    again = await service.search("official university portal")
+    assert again.status == "unavailable"
+    assert not again.results
+    assert [provider for provider, _, _ in sender.calls] == ["exa", "deepseek"]
 
 
 @pytest.mark.parametrize("failure", [httpx.ReadTimeout("opaque"), httpx.Response(503)])
