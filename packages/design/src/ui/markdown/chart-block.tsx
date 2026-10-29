@@ -317,6 +317,7 @@ export function ChartBlock({ spec, className }: ChartBlockProps) {
         <Button
           variant="ghost"
           size="sm"
+          className="-ml-3"
           aria-expanded={tableShown}
           aria-controls={tableId}
           onClick={() => setTableShown((value) => !value)}
