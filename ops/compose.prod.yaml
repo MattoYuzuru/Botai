@@ -83,6 +83,8 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "botai.worker"]
+    # Worker drains for 20 seconds before returning its claims to the queue.
+    stop_grace_period: 45s
     environment:
       <<: *app-env
       BOTAI_DIAGNOSTICS_SERVICE: worker
