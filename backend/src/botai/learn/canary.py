@@ -95,7 +95,9 @@ class CanaryReport:
     findings: list[CanaryFinding] = field(default_factory=list)
 
     def feedback(self) -> list[str]:
-        return [finding.feedback() for finding in self.findings] or self.problems
+        return list(
+            dict.fromkeys([*self.problems, *(finding.feedback() for finding in self.findings)])
+        )
 
     def count(self, kind: Kind) -> int:
         return len(self.valid.get(kind, []))
@@ -185,7 +187,8 @@ async def run_canary(
             items_seen=outcome.items_seen,
             items_valid=outcome.items_valid,
         )
-        for outcome in result.structural_problems()
+        for outcome in result.outcomes
+        if outcome.structural or not outcome.ok
     ]
     problems = [f"{o.kind or o.endpoint_id}: {o.problem}" for o in result.structural_problems()]
     for kind in sorted(require):

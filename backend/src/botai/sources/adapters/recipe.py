@@ -269,6 +269,13 @@ class RecipeAdapter:
             outcome.items_seen = seen
             outcome.items_valid = len(collected)
             if len(collected) + len(page_records) > MAX_ITEMS_PER_ENDPOINT:
+                if self.recipe.version == 1:
+                    # Preserve the legacy bounded prefix, while refusing to declare the
+                    # truncated endpoint complete (missing-row markers must remain untouched).
+                    outcome.ok, outcome.problem = False, "limit"
+                    collected.extend(page_records[: MAX_ITEMS_PER_ENDPOINT - len(collected)])
+                    outcome.items_valid = len(collected)
+                    return outcome, collected
                 return fail("limit", str(response.url))
             page_digest = hashlib.sha256(response.content).hexdigest()
             ids = {r.external_id for r in page_records}
@@ -509,8 +516,6 @@ class RecipeAdapter:
             items = resolve(doc, spec.items_path)
             if items is MISSING or not isinstance(items, list):
                 return "format"
-            if len(items) > remaining_leaves:
-                raise ExpressionError("limit")
             records = [
                 rec
                 for raw in items
@@ -527,8 +532,6 @@ class RecipeAdapter:
         if not nodes:
             _raise_if_login_page(response, tree_has_password=_has_password(tree))
             return 0, [], None, 0, 0
-        if len(nodes) > remaining_leaves:
-            raise ExpressionError("limit")
         records = []
         for node in nodes:
             fields: dict[str, Any] = {}
