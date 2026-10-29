@@ -314,7 +314,12 @@ class SearchService:
                     "search.failed", provider=provider, reason=reason, attempt=attempt + 1
                 )
                 state.reason = reason
-                if reason in {"invalid_key", "invalid_config", "credits_exhausted"}:
+                if reason in {
+                    "invalid_key",
+                    "invalid_config",
+                    "credits_exhausted",
+                    "access_denied",
+                }:
                     state.disabled = True  # configuration/top-up requires an operator action
                     break
                 # One-way fallback: never return to a provider during this search/turn.
@@ -354,8 +359,10 @@ def _error_reason(response: httpx.Response) -> str | None:
         return None
     if status == 402:
         return "credits_exhausted"
-    if status in {401, 403}:
+    if status == 401:
         return "invalid_key"
+    if status == 403:
+        return "access_denied"  # access policy / edge challenge does not prove a bad key
     if status == 429:
         return "rate_limited"
     if status in {408, 425} or status >= 500:
