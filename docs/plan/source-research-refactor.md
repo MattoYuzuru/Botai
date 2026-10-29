@@ -1,7 +1,7 @@
 # План рефакторинга длительного исследования
 
-Статус на 29.10.2026: **foundation принят; factory v2 реализована в интеграционной ветке**.
-Полный CI и выпуск v2 продолжаются. Цель: сохранять исследование после рестарта и границы
+Статус на 29.10.2026: **foundation и factory v2 реализованы**.
+Приёмка каждого выпуска выполняется по CI и production evidence его SHA. Цель: сохранять исследование после рестарта и границы
 среза, расширяя проверяемую выразительность фабрики без кода под вуз.
 [ADR-0011](../adr/0011-resumable-source-discovery.md), [ADR-0012](../adr/0012-verified-source-factory-v2.md),
 [LLD исследования](../architecture/source-research.md), [LLD v2](../architecture/factory-v2.md).
@@ -26,7 +26,7 @@ Foundation сохраняет публичные recipe/API/SSE schemas: fenced 
 
 Отдельный контрактный этап v2 сохраняет строгий v1 и добавляет per-request observation proof
 для Cookie/Bearer, ограниченную data DSL и native browser replay. Код compiler/reader/lint,
-типизированных canary findings и synthetic fixtures собран; это не статус release-ready.
+типизированных canary findings и synthetic fixtures собран; сам по себе код не заменяет приёмку выпуска.
 Дополнение к ledger сохраняет несекретный накопительный Job usage после TTL checkpoint.
 Вычисленные диапазоны динамических дат по-прежнему не закрепляются навсегда за подтверждением:
 обычный sync вычисляет шаблоны заново.
@@ -57,7 +57,7 @@ Foundation сохраняет публичные recipe/API/SSE schemas: fenced 
 в спокойной фазе общего checkout. Полный `make check`/CI — на окончательной интегрированной
 ревизии. L2 модели и реальные вузы локальными L1-сценариями не подтверждаются.
 
-## Завершение v2 и следующие расширения
+## Выпуск v2 и следующие расширения
 
 1. Завершить полный CI на финальном интегрированном SHA: contracts/gen, backend, browser/PG,
    frontend, guards. Отдельно подтвердить сквозной factory v2 fixture после wiring.

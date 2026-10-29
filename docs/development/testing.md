@@ -93,8 +93,8 @@ Foundation длительного исследования принят отде
 [deploy 40914887383](https://github.com/MattoYuzuru/Botai/actions/runs/40914887383) успешны.
 Операторская сверка сообщила этот revision у api/worker/proxy и schema e4a91b7c603d;
 это evidence foundation, не factory v2. Контрактный PR #69 принят отдельно на 8d62fd5.
-Новые auth/data/browser
-компоненты v2 имеют ограниченные локальные L0/L1-проверки; **полный CI v2 и выпуск ещё идут**.
+Auth/data/browser компоненты v2 имеют ограниченные локальные L0/L1-проверки и сквозные
+фикстуры. Допуск полного CI и production-приёмка определяются для конкретного SHA.
 Наличие test file, merge контракта или зелёный foundation run не подтверждают новый binary.
 Числа/ссылки окончательного прогона привязываются к полному SHA в отчёте PR/выпуска.
 
@@ -105,13 +105,15 @@ Foundation длительного исследования принят отде
 | Nested/weekly data | tests/sources/test_recipe_expressions.py, test_recipe_data_v2.py: parent cardinality pagination, дата+время, DST gap/fold, recurrence parity/исключения/горизонт/стабильные ID, whole-endpoint overflow |
 | Recursive lint | tests/learn/test_data_lint.py: alias/TZ до сети, required fields weekly, вложенные секретные pointers/attrs/regex/literals, v1 без ослаблений |
 | Native browser replay | tests/browser/test_read_capabilities.py: дата/select/tab/frame/next, новый handle, late target/effect, POST/WS, timeout/cycle/cap, settled/explicit empty |
+| Browser plan от автора до sync | tests/learn/test_browser_plan_story.py: настоящий native date → observed plan ref → canary/activation → новая дата в свежем Chromium без модели, стабильные ID и запрет POST |
+| Личный acquisition context | tests/browser/test_private_entry.py и tests/e2e/test_factory_v2.py: только Vault, same-origin, новая явная ссылка, отзыв cookie → обычный перевход/новый bearer без модели, отдельные студенты и отсутствие секретов в открытых данных |
 | Typed canary и correction | tests/learn/test_canary_findings.py и test_canary_recovery.py: static findings без exception text, следующие candidates, bounded авторское исправление |
 | TTL и budget | tests/jobs/test_research_store.py и tests/learn/test_research_progress.py: атомарная usage projection, CAS/tenant/fence, сохранение cumulative расхода/reservations после TTL |
 | Полный v2 путь | tests/e2e/test_factory_v2.py: Worker/API/Chromium/proxy/LoginFlow, наблюдаемый Cookie+Bearer, nested schedule в домене, fresh runtime sync без LLM, стабильные ID при изменении аудитории, второй студент со своей сессией, отсутствие plaintext credentials |
 | Shutdown/resume и поздний результат | tests/e2e/test_research_resume.py, tests/jobs/test_source_fencing.py: proposal до canary, новый claim/браузер, activation receipt, изменившийся intent/spec, отказ поздней записи |
 
-Сквозной v2 fixture добавлен и включён в интеграционную приёмку; выполнение после окончательного
-wiring и полный итог CI подтверждает координатор. Ни одна строка таблицы не заявляет L2/L3.
+Сквозные v2 fixtures включены в интеграционную приёмку; полный итог CI проверяется на том же
+SHA перед merge. Ни одна строка таблицы не заявляет L2/L3.
 Доказательство выпуска требует полного CI того же SHA, health/revision/migration evidence,
 затем отдельной проверки владельцем настоящего источника. Producer по умолчанию выключен;
 совместимость reader и rollback — [deployment](../plan/deployment.md).
