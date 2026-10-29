@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, Mock, PropertyMock
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Request, Route
+from playwright.async_api import Request, Response, Route
 from pydantic import SecretStr
 
 from botai.browser.gateway import SAMPLE_CHARS, CaptureConfig, PlaywrightGateway, PlaywrightHandle
 from botai.browser.proxy import EgressProxy
 from botai.browser.session import decode_session, encode_session
-from botai.core.browser import SessionCookie, SessionOriginStorage, SessionState
+from botai.core.browser import ObservedRequest, SessionCookie, SessionOriginStorage, SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from tests.fakeuni import data
@@ -332,6 +332,72 @@ async def test_application_bearer_replaces_the_saved_fallback(open_browser: Open
     ping = next(r for r in await handle.network_log() if r.url.endswith("/spa/api/ping"))
     assert ping.status == 200
     assert (await handle.export_session()).bearer == SecretStr(SPA_JWT)
+
+
+async def test_later_fallback_request_preserves_the_application_bearer_and_actual_auth_facts(
+    open_browser: Opener,
+) -> None:
+    state = SessionState(
+        origin="https://fakeuni.test",
+        bearer=SecretStr("outdated-fixture-token"),
+        captured_at=datetime.now(UTC),
+    )
+    handle = await open_browser(session=state)
+    await handle.goto("https://fakeuni.test/spa")
+    await handle.page.wait_for_function("document.getElementById('out').textContent.includes('ok')")
+    assert (await handle.export_session()).bearer == SecretStr(SPA_JWT)
+    # Force a later serial than the application's completed fresh-header request. This GET has
+    # no application header, so its actual wire credential is still the injected saved token.
+    await handle.page.evaluate(
+        "async()=>{await (await fetch('/spa/api/token?later=fallback')).text();}"
+    )
+    fallback = next(row for row in await handle.network_log() if "later=fallback" in row.url)
+    assert fallback.status == 200
+    assert fallback.auth_proven
+    assert fallback.has_authorization
+    assert fallback.authorization_scheme == "bearer"
+    assert (await handle.export_session()).bearer == SecretStr(SPA_JWT)
+    assert "outdated-fixture-token" not in fallback.model_dump_json()
+
+
+@pytest.mark.parametrize("application_first", [False, True])
+async def test_header_capture_and_completed_fallback_keep_provenance_priority_in_either_order(
+    open_browser: Opener, application_first: bool
+) -> None:
+    handle = await open_browser()
+    application = Mock(spec=Request)
+    application.url = "https://fakeuni.test/app-request"
+    application.all_headers = AsyncMock(return_value={"authorization": "Bearer app-fresh-fixture"})
+    fallback = Mock(spec=Request)
+    fallback.url = "https://fakeuni.test/fallback-request"
+    fallback.all_headers = AsyncMock(return_value={})
+    fallback.resource_type = "fetch"
+    app_entry = ObservedRequest(method="GET", url=application.url)
+    fallback_entry = ObservedRequest(method="GET", url=fallback.url)
+    handle._injected_authorizations[fallback] = "Bearer saved-fallback-fixture"  # pyright: ignore[reportPrivateUsage]
+    handle._entries[fallback] = fallback_entry  # pyright: ignore[reportPrivateUsage]
+    handle._request_versions[fallback] = 2  # pyright: ignore[reportPrivateUsage]
+    response = Mock(spec=Response)
+    response.request = fallback
+    response.url = fallback.url
+    response.status = 200
+    response.headers = {"content-type": "application/octet-stream"}
+    if application_first:
+        await handle._capture_auth(application, app_entry, 1)  # pyright: ignore[reportPrivateUsage]
+    await handle._capture_auth(fallback, fallback_entry, 2)  # pyright: ignore[reportPrivateUsage]
+    handle._on_response(response)  # pyright: ignore[reportPrivateUsage]
+    if not application_first:
+        await handle._capture_auth(application, app_entry, 1)  # pyright: ignore[reportPrivateUsage]
+    assert fallback_entry.auth_proven
+    assert fallback_entry.has_authorization
+    assert (await handle.export_session()).bearer == SecretStr("app-fresh-fixture")
+    # Same-provenance captures retain request serial order despite completion order.
+    newer = Mock(spec=Request)
+    newer.url = application.url
+    newer.all_headers = AsyncMock(return_value={"authorization": "Bearer app-newest-fixture"})
+    await handle._capture_auth(newer, app_entry, 3)  # pyright: ignore[reportPrivateUsage]
+    await handle._capture_auth(application, app_entry, 1)  # pyright: ignore[reportPrivateUsage]
+    assert (await handle.export_session()).bearer == SecretStr("app-newest-fixture")
 
 
 async def test_session_origin_survives_allowlist_host_order(open_browser: Opener) -> None:

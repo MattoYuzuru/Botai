@@ -293,7 +293,7 @@ class PlaywrightHandle:
         self._sampled = 0
         self._failed_diagnostics = 0
         self._bearer: dict[str, str] = {}  # exact origin -> last bearer the browser sent
-        self._bearer_versions: dict[str, int] = {}
+        self._bearer_versions: dict[str, tuple[int, int]] = {}
         self._bearer_captured_at: dict[str, datetime] = {}
         self._restored_bearers = dict(restored_bearers or {})
         self._request_serial = 0
@@ -591,7 +591,12 @@ class PlaywrightHandle:
         serial = self._request_serial
         if host:
             self._visited.setdefault(host.lower(), None)
-            self._remember_bearer(request.url, request.headers.get("authorization", ""), serial)
+            self._remember_bearer(
+                request.url,
+                request.headers.get("authorization", ""),
+                serial,
+                injected=request in self._injected_authorizations,
+            )
         if request.resource_type not in _OBSERVED_TYPES or len(self._log) >= MAX_LOG:
             return
         entry = ObservedRequest(
@@ -616,7 +621,9 @@ class PlaywrightHandle:
             **url_facts(request.url),
         )
 
-    def _remember_bearer(self, url: str, authorization: str, serial: int) -> None:
+    def _remember_bearer(
+        self, url: str, authorization: str, serial: int, *, injected: bool
+    ) -> None:
         origin = auth_origin(url)
         host = (urlsplit(url).hostname or "").lower()
         if origin is None or host not in self.allow_hosts:
@@ -632,9 +639,12 @@ class PlaywrightHandle:
         if len(token) > 32_768:
             self._secret_inventory_failed = True
             return
-        if serial >= self._bearer_versions.get(origin, 0):
+        # The application's own credential supersedes the saved fallback, even when a later
+        # request omitted its header or asynchronous header capture completes out of order.
+        version = (0 if injected else 1, serial)
+        if version >= self._bearer_versions.get(origin, (-1, 0)):
             self._bearer[origin] = token
-            self._bearer_versions[origin] = serial
+            self._bearer_versions[origin] = version
             self._bearer_captured_at[origin] = self._clock.now()
 
     def _remember_secret(self, token: str) -> None:
@@ -671,7 +681,12 @@ class PlaywrightHandle:
                 if authorization
                 else "none"
             )
-            self._remember_bearer(request.url, authorization, serial)
+            self._remember_bearer(
+                request.url,
+                authorization,
+                serial,
+                injected=request in self._injected_authorizations,
+            )
             entry.auth_proven = True
         except (PlaywrightError, TimeoutError):
             # Without a complete inventory, reflected headers may not be passed to the model.
@@ -689,7 +704,10 @@ class PlaywrightHandle:
             entry.has_authorization = True
             entry.authorization_scheme = "bearer"
             self._remember_bearer(
-                response.request.url, injected, self._request_versions[response.request]
+                response.request.url,
+                injected,
+                self._request_versions[response.request],
+                injected=True,
             )
         content_type = response.headers.get("content-type")
         entry.response_content_type = content_type
