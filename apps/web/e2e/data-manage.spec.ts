@@ -11,7 +11,7 @@ async function openPortalSheet(page: Page) {
   return page.getByRole("dialog", { name: "Личный кабинет" });
 }
 
-test.describe("«Подключения»: управление", () => {
+test.describe("«Источники»: управление", () => {
   test("карточка подключения: статус, пароль, действия; кнопки «Обновить» нет", async ({ page }) => {
     const sheet = await openPortalSheet(page);
     await expect(sheet.getByText("Работает")).toBeVisible();
@@ -62,11 +62,12 @@ test.describe("«Подключения»: управление", () => {
     await expect(page.getByRole("button", { name: /Личный кабинет/ })).toHaveCount(0);
   });
 
-  test("«Войти снова» из карточки открывает ход задания", async ({ page }) => {
+  test("«Войти снова» из карточки открывает чат с готовой просьбой", async ({ page }) => {
     await open(page, "/study/connections", "reauth");
     await page.getByRole("button", { name: /LMS/ }).click();
-    await page.getByRole("dialog", { name: "LMS" }).getByRole("button", { name: "Войти снова" }).click();
-    await expect(page).toHaveURL(/\/chat\?thread=[0-9A-Z]{26}/);
+    await page.getByRole("dialog", { name: "LMS" }).getByRole("link", { name: "Войти снова" }).click();
+    await expect(page).toHaveURL(/\/chat\?draft=/);
+    expect(new URL(page.url()).searchParams.get("draft")).toBe("Войди снова в «LMS» (Центральный университет)");
   });
 });
 

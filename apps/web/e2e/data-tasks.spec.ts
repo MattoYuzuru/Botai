@@ -59,7 +59,7 @@ test.describe("«Задания»", () => {
 
   test("нужен вход: полоса «Войти снова», задания на месте", async ({ page }) => {
     await open(page, "/tasks", "reauth");
-    await expect(page.getByRole("button", { name: "Войти снова" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
     await expect(screen(page)).toHaveAttribute("data-state", "reauth");
     await expect(page.getByText("Эссе по продуктовой стратегии")).toBeVisible();
   });

@@ -7,7 +7,7 @@ import {
   type IconName,
   safeHttpUrl,
 } from "@botai/design";
-import type { Connection, ConnectionStatus } from "@/api/types";
+import type { Connection, ConnectionKind, ConnectionStatus } from "@/api/types";
 
 export type ConnectionTone = "success" | "info" | "warning" | "danger" | "neutral";
 /** Бизнес-действие рядом со статусом. Кнопки «Повторить» нет: повторы идут в фоне. */
@@ -25,18 +25,35 @@ export interface ConnectionView {
   attention: boolean;
 }
 
-const KIND_TITLES: Record<Connection["kind"], string> = {
+const KIND_TITLES: Record<ConnectionKind, string> = {
+  portal: "Личный кабинет",
   lms: "Учебная платформа",
   schedule: "Расписание",
-  portal: "Личный кабинет",
+  site: "Сайт",
   sheet: "Таблица",
-  document: "Документы",
-  mail: "Почта",
+  doc: "Документация",
+  document: "Документ",
+  calendar: "Календарь",
   other: "Источник",
 };
 
+const KIND_ICONS: Record<ConnectionKind, IconName> = {
+  portal: "university",
+  lms: "course",
+  schedule: "schedule",
+  site: "site",
+  sheet: "table",
+  doc: "document",
+  document: "document",
+  calendar: "today",
+  other: "connection",
+};
+
 /** Название вида подключения для подписи под именем. */
-export const connectionKindTitle = (kind: Connection["kind"]): string => KIND_TITLES[kind];
+export const connectionKindTitle = (kind: ConnectionKind): string => KIND_TITLES[kind];
+
+/** Иконка вида подключения: источник узнаётся в списке по виду, а не по адресу. */
+export const connectionKindIcon = (kind: ConnectionKind): IconName => KIND_ICONS[kind];
 
 function snapshotText(lastSyncAt: string | null, nowMs: number, timeZone: string): string | null {
   const at = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;
@@ -158,12 +175,6 @@ export function describeConnection(
         attention: false,
       };
   }
-}
-
-/** Подключения, которым нужно внимание, по списку id из `/today.attention`. */
-export function attentionConnections(ids: readonly string[], all: readonly Connection[]): Connection[] {
-  const wanted = new Set(ids);
-  return all.filter((connection) => wanted.has(connection.id));
 }
 
 /** Адрес источника без схемы: «lk.fakeuni.test». Источник без адреса (документ) — только вид. */

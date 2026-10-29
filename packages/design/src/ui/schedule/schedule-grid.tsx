@@ -8,9 +8,9 @@ import {
   zonedParts,
 } from "../../lib/format";
 import { Badge } from "../badge/badge";
-import { Icon } from "../icon";
 import { Skeleton } from "../skeleton/skeleton";
 import type { ScheduleDayState, ScheduleItem } from "./schedule-day";
+import { ScheduleFacts } from "./schedule-facts";
 
 export interface ScheduleGridDay {
   /** Любой момент нужного дня, мс. */
@@ -114,12 +114,12 @@ export function ScheduleGrid({
                           </time>
                         </span>
                         <span className="break-words type-label text-fg">{item.title}</span>
-                        {item.room && (
-                          <span className="flex items-center gap-1 type-caption text-fg-muted">
-                            <Icon name="room" size={16} className="shrink-0" />
-                            <span className="min-w-0 break-words">{item.room}</span>
-                          </span>
+                        {item.badge && (
+                          <Badge tone="info" className="max-w-full self-start">
+                            <span className="truncate">{item.badge}</span>
+                          </Badge>
                         )}
+                        <ScheduleFacts facts={item.facts} layout="stacked" />
                         <span className="flex flex-wrap gap-1 empty:hidden">
                           {live && <Badge tone="accent">Идёт сейчас</Badge>}
                           {item.conflict && (

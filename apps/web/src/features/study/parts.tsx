@@ -9,7 +9,9 @@ import {
   SourceCitation,
 } from "@botai/design";
 import { type ReactNode, useRef } from "react";
+import type { Provenance } from "@/api/types";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
+import { openUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 
 /** Скелетон списка записей: форма будущих строк, `aria-busy`, без спиннера. */
@@ -153,7 +155,7 @@ export function ExternalLinkButton({ href, children }: { href: string; children:
 
 /** Источник записи для `RecordSheet`: название подключения, адрес страницы, время получения. */
 export function sourceFrom(
-  provenance: { connectionId: string; spaceId: string; sourceUrl: string; fetchedAt: string; stale: boolean },
+  provenance: Provenance,
   spaces: ReadonlyMap<string, SpaceInfo>,
   fallbackTitle: string,
 ): NonNullable<RecordView["source"]> {
@@ -162,7 +164,7 @@ export function sourceFrom(
     ?.connections.find((row) => row.id === provenance.connectionId);
   return {
     title: connection?.title ?? fallbackTitle,
-    url: provenance.sourceUrl,
+    url: openUrlOf(null, provenance, connection),
     fetchedAt: Date.parse(provenance.fetchedAt),
     stale: provenance.stale,
     spaceId: provenance.spaceId,

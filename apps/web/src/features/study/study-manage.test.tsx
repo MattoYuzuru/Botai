@@ -40,7 +40,7 @@ async function openPortal() {
   return screen.findByRole("dialog", { name: "Личный кабинет" });
 }
 
-describe("«Подключения»: управление", () => {
+describe("«Источники»: управление", () => {
   it("карточка подключения: статус, когда обновлялось, пароль хранится зашифрованным", async () => {
     const sheet = await openPortal();
     expect(within(sheet).getByText("Работает")).toBeInTheDocument();
@@ -162,15 +162,15 @@ describe("«Подключения»: управление", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /Личный кабинет/ })).toBeNull());
   });
 
-  it("нужен повторный вход: в карточке «Войти снова» открывает ход задания", async () => {
+  it("нужен повторный вход: в карточке «Войти снова» ведёт в чат, а не ставит вход в очередь", async () => {
     useScenario("reauth");
     const cu = (current.db.spaces[1] as { id: string }).id;
     const { router } = renderApp(`/study/connections?space=${cu}`);
     await userEvent.click(await screen.findByRole("button", { name: /LMS/ }));
     const sheet = await screen.findByRole("dialog", { name: "LMS" });
-    await userEvent.click(within(sheet).getByRole("button", { name: "Войти снова" }));
+    await userEvent.click(within(sheet).getByRole("link", { name: "Войти снова" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
+    expect(router.state.location.search.draft).toBe("Войди снова в «LMS» (Центральный университет)");
   });
 });
 

@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { api, call } from "@/api/client";
-import { queryKeys } from "@/api/queries";
+import { queryKeys, spacesQuery } from "@/api/queries";
 import type { Space, University } from "@/api/types";
+import { asV3 } from "@/api/v3-data";
 import { useActiveJob } from "@/features/jobs/active-job";
 import { jobManager } from "@/features/jobs/job-manager";
 
@@ -32,11 +33,7 @@ export async function startConnection(
   choice: ConnectChoice,
 ): Promise<StartedConnection> {
   const title = choice.university?.title ?? choice.title.trim();
-  const spaces = await queryClient.fetchQuery({
-    queryKey: queryKeys.spaces,
-    queryFn: () => call(api.GET("/api/v1/spaces")),
-    staleTime: 0,
-  });
+  const spaces = await queryClient.fetchQuery({ ...spacesQuery, staleTime: 0 });
   const existing = spaces.find(
     (space) =>
       (choice.university && space.universityId === choice.university.id) ||
@@ -45,9 +42,11 @@ export async function startConnection(
   const space =
     existing ??
     (await call(
-      api.POST("/api/v1/spaces", {
-        body: { title, universityId: choice.university?.id ?? null },
-      }),
+      asV3<Space>(
+        api.POST("/api/v1/spaces", {
+          body: { title, universityId: choice.university?.id ?? null },
+        }),
+      ),
     ));
 
   const started = await call(

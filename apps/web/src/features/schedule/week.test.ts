@@ -1,32 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleEvent } from "@/api/types";
+import { eventFixture } from "@/test/data-fixtures";
 import { conflictingCount, conflictSummary, eventsOnDay, stripDays, weekOf, weekRangeLabel } from "./week";
 
 const MSK = "Europe/Moscow";
 const NOW = Date.UTC(2026, 9, 27, 14, 40);
 
 function event(id: string, startsAt: string, endsAt: string, conflictsWith: string[] = []): ScheduleEvent {
-  return {
-    id,
-    title: id,
-    kind: "lecture",
-    format: "offline",
-    startsAt,
-    endsAt,
-    location: null,
-    teacher: null,
-    courseTitle: null,
-    url: null,
-    changed: false,
-    conflictsWith,
-    provenance: {
-      connectionId: "c",
-      spaceId: "s",
-      sourceUrl: "https://x.test",
-      fetchedAt: startsAt,
-      stale: false,
-    },
-  };
+  return eventFixture({ id, title: id, startsAt, endsAt, conflictsWith });
 }
 
 describe("неделя расписания", () => {

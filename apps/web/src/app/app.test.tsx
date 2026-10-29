@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEMO, type Scenario } from "@/mocks/db";
+import { hrefOf } from "@/test/data-fixtures";
 import { renderApp } from "@/test/render-app";
 import { createTestServer } from "@/test/server";
 
@@ -48,7 +49,10 @@ describe("вход и регистрация", () => {
     expect(router.state.location.pathname).toBe("/");
     const nav = screen.getByRole("navigation", { name: "Основная навигация" });
     expect(within(nav).getAllByRole("link")).toHaveLength(5);
-    expect(await screen.findByRole("link", { name: "Подключить вуз" })).toHaveAttribute("href", "/connect");
+    expect(hrefOf(await screen.findByRole("link", { name: "Подключить вуз" }))).toEqual({
+      pathname: "/chat",
+      draft: "Давай подключим вуз ",
+    });
     expect(screen.getByText("Вузов пока нет")).toBeInTheDocument();
   });
 

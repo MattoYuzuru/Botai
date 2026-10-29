@@ -8,6 +8,7 @@ import {
   Icon,
   ScheduleDay,
   Skeleton,
+  SourceStatusBar,
   useNow,
   useOnline,
 } from "@botai/design";
@@ -17,7 +18,7 @@ import { useMemo, useState } from "react";
 import { Screen } from "@/app/screen";
 import { resolveDataState, scheduleListState } from "@/features/data/data-state";
 import { todayQuery } from "@/features/data/queries";
-import { HeaderFreshness, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
+import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { EventSheet } from "@/features/schedule/event-sheet";
@@ -87,7 +88,7 @@ export function TodayScreen() {
       title="Сегодня"
       subtitle={formatDayWithWeekday(nowMs, nowMs, timeZone)}
       trailing={<ScreenSyncIndicator />}
-      meta={<HeaderFreshness spaces={directory.spaces} nowMs={nowMs} />}
+      meta={<SourceStatusBar items={sourceStatusItems(directory.spaces)} nowMs={nowMs} />}
     >
       <div data-screen="today" data-state={state} className="flex flex-1 flex-col gap-6">
         <SourceNotices spaces={directory.spaces} attentionIds={fetched?.data.attention} nowMs={nowMs} />

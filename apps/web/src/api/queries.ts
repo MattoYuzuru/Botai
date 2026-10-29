@@ -1,6 +1,8 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api, call } from "./client";
 import { isClientError } from "./errors";
+import type { Connection, Space } from "./types";
+import { asV3 } from "./v3-data";
 
 /**
  * Ключи и запросы. Повторы идут в фоне с нарастающей паузой (QueryClient в main.tsx); ответ сервера
@@ -26,7 +28,7 @@ export const meQuery = queryOptions({
 
 export const spacesQuery = queryOptions({
   queryKey: queryKeys.spaces,
-  queryFn: () => call(api.GET("/api/v1/spaces")),
+  queryFn: () => call(asV3<Space[]>(api.GET("/api/v1/spaces"))),
   staleTime: 60_000,
 });
 
@@ -34,7 +36,11 @@ export const connectionsQuery = (spaceId: string) =>
   queryOptions({
     queryKey: queryKeys.connections(spaceId),
     queryFn: () =>
-      call(api.GET("/api/v1/spaces/{space_id}/connections", { params: { path: { space_id: spaceId } } })),
+      call(
+        asV3<Connection[]>(
+          api.GET("/api/v1/spaces/{space_id}/connections", { params: { path: { space_id: spaceId } } }),
+        ),
+      ),
     staleTime: 30_000,
   });
 

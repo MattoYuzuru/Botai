@@ -1,11 +1,13 @@
-import { Badge, Banner, Button, Dialog, formatWhen, Sheet, toast } from "@botai/design";
+import { Badge, Banner, Button, Dialog, formatWhen, Icon, Sheet, toast } from "@botai/design";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { humanMessage } from "@/api/errors";
 import type { Connection } from "@/api/types";
+import { chatThreadLink, connectionChatLink } from "@/features/data/chat-links";
 import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
-import { useReconnect } from "@/features/data/use-reconnect";
+import { siteUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { deleteConnection, forgetPassword, refreshAfterChange } from "./connection-actions";
 import { SecretForm } from "./secret-form";
@@ -19,9 +21,9 @@ export interface ConnectionSheetProps {
 }
 
 /**
- * Управление подключением: статус человеческим языком, когда обновлялось, сохранён ли пароль, добавление
- * ссылки календаря или ключа (значение больше не показывается), «Забыть пароль» и «Удалить подключение» — оба
- * через подтверждение, потому что необратимы.
+ * Управление источником: статус человеческим языком, когда обновлялось, что сейчас делает агент, сохранён ли
+ * пароль, «Открыть сайт» и чат источника, добавление ссылки календаря или ключа (значение больше не
+ * показывается), «Забыть пароль» и «Удалить подключение» — оба через подтверждение, потому что необратимы.
  */
 export function ConnectionSheet({ connection, space, nowMs, onClose }: ConnectionSheetProps) {
   const last = useRef<{ connection: Connection; space: SpaceInfo | undefined } | null>(null);
@@ -62,13 +64,14 @@ function ConnectionDetails({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const reconnect = useReconnect();
   const [adding, setAdding] = useState(false);
   const [confirm, setConfirm] = useState<"password" | "delete" | null>(null);
   const timeZone = space?.timeZone;
   const view = describeConnection(connection, nowMs, { shortTitle: space?.shortTitle, timeZone });
   const lastSync = connection.lastSyncAt ? Date.parse(connection.lastSyncAt) : null;
   const nextSync = connection.nextSyncAt ? Date.parse(connection.nextSyncAt) : null;
+  const site = siteUrlOf(connection);
+  const chat = connectionChatLink(connection, space?.title ?? connection.title);
 
   const refresh = () => refreshAfterChange(queryClient, connection.spaceId);
 
@@ -86,20 +89,10 @@ function ConnectionDetails({
         icon={view.icon}
         action={
           view.action === "reauth" ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              data-touch-expanded=""
-              loading={reconnect.isPending}
-              onClick={() =>
-                reconnect.mutate({
-                  connectionId: connection.id,
-                  spaceId: connection.spaceId,
-                  spaceTitle: space?.shortTitle ?? connection.title,
-                })
-              }
-            >
-              Войти снова
+            <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
+              <Link to={chat.to} search={chat.search} onClick={onClose}>
+                Войти снова
+              </Link>
             </Button>
           ) : undefined
         }
@@ -116,12 +109,38 @@ function ConnectionDetails({
             {formatWhen(nextSync, nowMs, timeZone)}
           </DetailRow>
         )}
+        {connection.activeTask && (
+          <DetailRow icon="repairing" label="Сейчас в работе">
+            {connection.activeTask.title}
+          </DetailRow>
+        )}
         <DetailRow icon="lock" label="Пароль">
           {connection.hasPassword
             ? "Сохранён зашифрованным: BotAI входит сам, когда сессия протухает"
             : "Не сохранён: при необходимости вход придётся подтвердить"}
         </DetailRow>
       </DetailList>
+
+      {(site || connection.threadId) && (
+        <section aria-label="Перейти" className="flex flex-col gap-2">
+          {site && (
+            <Button variant="secondary" asChild>
+              <a href={site} target="_blank" rel="noopener noreferrer">
+                <Icon name="external" size={20} />
+                Открыть сайт
+              </a>
+            </Button>
+          )}
+          {connection.threadId && (
+            <Button variant="secondary" asChild>
+              <Link {...chatThreadLink(connection.threadId)} onClick={onClose}>
+                <Icon name="chat" size={20} />
+                Открыть чат источника
+              </Link>
+            </Button>
+          )}
+        </section>
+      )}
 
       <section aria-label="Ссылка или ключ" className="flex flex-col gap-3">
         {adding ? (

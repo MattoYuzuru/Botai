@@ -12,27 +12,34 @@ import {
 } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { sectionsQuery } from "@/api/queries";
+import type { Connection } from "@/api/types";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
-import { describeConnection } from "@/features/data/connection-status";
+import { addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
 import { resolveDataState } from "@/features/data/data-state";
 import { ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { type SpaceInfo, useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { AccountSettings } from "@/features/settings/account";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
+import { ConnectionSheet } from "./connection-sheet";
 import { type StudyKind, visibleSections } from "./registry";
+import { SourceList } from "./source-list";
 
 /**
- * «Учёба» (`/study`): пространства вузов, у каждого — динамические разделы (FR-014) в фиксированном порядке:
- * Предметы, Оценки, Преподаватели, Аудитории, Новости, Документы, Подключения. Раздел виден, только если у
- * подключений есть данные этого вида; «Подключения» — всегда. Профиль и настройки — внизу экрана (§7.1).
+ * «Учёба» (`/study`): вуз — единица со многими источниками. У каждого вуза: название, сокращение и сводный
+ * статус; список его источников (личный кабинет, учебная платформа, документация, таблицы, документы) со
+ * статусом и временем обновления; «Добавить источник» открывает новый чат с готовой просьбой; ниже разделы
+ * с данными (Предметы, Оценки, … «Документы и вложения») в фиксированном порядке (FR-014). Профиль и
+ * настройки — внизу экрана (§7.1).
  */
 export function StudyScreen() {
   const directory = useSpaceDirectory();
   const scope = useScope(directory);
   const nowMs = useNow(30_000);
   const online = useOnline();
+  const [openId, setOpenId] = useState<string | null>(null);
   const state = resolveDataState({
     hasData: directory.connectionsLoaded,
     isEmpty: false,
@@ -48,6 +55,9 @@ export function StudyScreen() {
       <ConnectedSpaceSwitcher />
     </>
   );
+  const opened = scope.spaces
+    .flatMap((space) => space.connections.map((connection) => ({ connection, space })))
+    .find((row) => row.connection.id === openId);
 
   return (
     <Screen title="Учёба" trailing={trailing}>
@@ -70,35 +80,55 @@ export function StudyScreen() {
         <div data-screen="study" data-state={state} className="flex flex-col gap-6">
           <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
           {scope.spaces.map((space) => (
-            <SpacePanel key={space.id} space={space} nowMs={nowMs} showTitle />
+            <UniversityPanel
+              key={space.id}
+              space={space}
+              nowMs={nowMs}
+              onOpenSource={(connection: Connection) => setOpenId(connection.id)}
+            />
           ))}
           <Button variant="ghost" asChild className="self-start">
-            <Link to="/connect">
+            <Link {...connectUniversityLink()}>
               <Icon name="plus" size={20} />
               Подключить ещё вуз
             </Link>
           </Button>
         </div>
       )}
+      <ConnectionSheet
+        connection={opened?.connection ?? null}
+        space={opened?.space}
+        nowMs={nowMs}
+        onClose={() => setOpenId(null)}
+      />
       <AccountSettings />
     </Screen>
   );
 }
 
-/** Вуз и его разделы: заголовок с состоянием источников и список разделов, у которых есть данные. */
-function SpacePanel({ space, nowMs, showTitle }: { space: SpaceInfo; nowMs: number; showTitle: boolean }) {
+/** Вуз: название и статус, его источники и разделы с данными. */
+function UniversityPanel({
+  space,
+  nowMs,
+  onOpenSource,
+}: {
+  space: SpaceInfo;
+  nowMs: number;
+  onOpenSource: (connection: Connection) => void;
+}) {
   const sections = useQuery({ ...sectionsQuery(space.id), refetchInterval: 60_000 });
-  const visible = sections.data ? visibleSections(sections.data, space.connections.length) : null;
-  const attention = space.connections.filter(
-    (connection) => describeConnection(connection, nowMs, { shortTitle: space.shortTitle }).attention,
-  ).length;
+  const visible = sections.data ? visibleSections(sections.data) : null;
+  const abbreviated = space.shortTitle !== space.title;
 
   return (
     <section aria-labelledby={`space-${space.id}`} data-space-id={space.id} className="flex flex-col gap-2">
       <div className="flex flex-col gap-1 px-1">
-        <h2 id={`space-${space.id}`} className={showTitle ? "type-heading text-fg" : "sr-only"}>
-          {space.title}
-        </h2>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h2 id={`space-${space.id}`} className="type-heading text-fg">
+            {space.title}
+          </h2>
+          {abbreviated && <Badge tone="neutral">{space.shortTitle}</Badge>}
+        </div>
         {space.health.state !== "none" && (
           <SourceStatus
             state={space.health.state}
@@ -110,14 +140,34 @@ function SpacePanel({ space, nowMs, showTitle }: { space: SpaceInfo; nowMs: numb
           />
         )}
       </div>
-      <Card padding="sm">
+
+      <Card padding="sm" data-part="sources" className="flex flex-col">
+        {space.connections.length === 0 ? (
+          <p className="px-3 py-3 type-ui text-fg-muted">
+            Источников пока нет: добавьте личный кабинет, учебную платформу, таблицу или документ.
+          </p>
+        ) : (
+          <SourceList space={space} nowMs={nowMs} onOpen={onOpenSource} />
+        )}
+        <Button variant="ghost" asChild className="self-start">
+          <Link {...addSourceLink(space.title)}>
+            <Icon name="plus" size={20} />
+            Добавить источник
+          </Link>
+        </Button>
+      </Card>
+
+      <Card padding="sm" data-part="sections">
         {visible === null ? (
           <div role="status" aria-busy="true" className="flex flex-col gap-2">
             <span className="sr-only">Загрузка разделов</span>
             <Skeleton className="h-14 rounded-md" />
             <Skeleton className="h-14 rounded-md" />
-            <Skeleton className="h-14 rounded-md" />
           </div>
+        ) : visible.length === 0 ? (
+          <p className="px-3 py-3 type-ui text-fg-muted">
+            Данных пока нет: они появятся, когда источники их отдадут.
+          </p>
         ) : (
           <ul aria-label={`Разделы: ${space.shortTitle}`}>
             {visible.map(({ def, count }) => (
@@ -128,19 +178,7 @@ function SpacePanel({ space, nowMs, showTitle }: { space: SpaceInfo; nowMs: numb
                   search={{ space: space.id }}
                   className={listRowClass}
                 >
-                  <ListRowBody
-                    icon={def.icon}
-                    title={def.title}
-                    meta={
-                      def.kind === "connections" && attention > 0 ? (
-                        <Badge tone="warning" icon="warning">
-                          Нужно внимание: {attention}
-                        </Badge>
-                      ) : undefined
-                    }
-                    trailing={count}
-                    chevron
-                  />
+                  <ListRowBody icon={def.icon} title={def.title} trailing={count} chevron />
                 </Link>
               </li>
             ))}

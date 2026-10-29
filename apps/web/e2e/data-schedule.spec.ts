@@ -72,7 +72,7 @@ test.describe("«Расписание»", () => {
 
   test("нужен повторный вход: полоса «Войти снова», расписание на месте", async ({ page }) => {
     await open(page, "/schedule", "reauth");
-    await expect(page.getByRole("button", { name: "Войти снова" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
     await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "reauth");
     await expect(page.getByText("Основы продуктового менеджмента").first()).toBeVisible();
   });

@@ -1,11 +1,9 @@
 import type { components } from "@/api/schema.gen";
 
+export type { Course, Grade, NewsItem, Person } from "@/api/v3-data";
+
 type Schemas = components["schemas"];
 
-export type Course = Schemas["CourseOut"];
-export type Grade = Schemas["GradeOut"];
-export type Person = Schemas["PersonOut"];
-export type NewsItem = Schemas["NewsOut"];
 export type DocumentRow = Schemas["DocumentOut"];
 export type DocumentStarted = Schemas["DocumentStarted"];
 export type SectionKind = Schemas["SectionOut"]["kind"];

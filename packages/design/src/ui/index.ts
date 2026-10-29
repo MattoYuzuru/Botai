@@ -75,6 +75,7 @@ export {
   ScheduleDay,
   type ScheduleDayProps,
   type ScheduleDayState,
+  type ScheduleFact,
   type ScheduleItem,
 } from "./schedule/schedule-day";
 export {
@@ -101,6 +102,11 @@ export {
   SourceStatus,
   type SourceStatusProps,
 } from "./source-status/source-status";
+export {
+  SourceStatusBar,
+  type SourceStatusBarItem,
+  type SourceStatusBarProps,
+} from "./source-status/source-status-bar";
 export { Spinner } from "./spinner/spinner";
 export { Swatch, type SwatchProps } from "./swatch/swatch";
 export { Switch, type SwitchProps } from "./switch/switch";
