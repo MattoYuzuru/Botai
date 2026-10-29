@@ -622,6 +622,7 @@ async def test_push_that_is_never_approved_fails_after_the_wait(
 
 
 async def tick_captcha_and_submit(handle: PlaywrightHandle, link: FakeLink) -> None:
+    link.human_control = True  # real screen input marks this before forwarding CDP events
     page = handle.page
     await page.frame_locator("iframe").locator("#human").check()
     await asyncio.sleep(0.3)
@@ -671,6 +672,7 @@ async def test_a_page_nobody_taught_us_is_handed_to_the_human(
     make_rig: Callable[..., Rig],
 ) -> None:
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
         await handle.page.goto(f"{ORIGIN}/plain/login")
         await handle.page.fill("#u", data.USERNAME)
         await handle.page.fill("#p", data.PASSWORD)
@@ -793,6 +795,7 @@ async def test_manual_request_supersedes_native_answer_without_reopening_the_pag
     make_rig: Callable[..., Rig], answer_simultaneously: bool
 ) -> None:
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
         assert await handle.page.input_value("#u") == data.USERNAME
         assert await handle.page.input_value("#p") == ""
         assert await handle.page.evaluate("window.__handoffMarker") == "same-browser"
@@ -954,6 +957,7 @@ async def test_a_screen_mode_preset_goes_straight_to_the_human(
     make_rig: Callable[..., Rig],
 ) -> None:
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
         await handle.page.fill("#u", data.USERNAME)
         await handle.page.fill("#p", data.PASSWORD)
         await handle.page.click("button[type=submit]")
