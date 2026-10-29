@@ -69,6 +69,28 @@ async def test_each_request_replays_exactly_its_proven_cookie_bearer_combination
     assert len(requests) == 4
 
 
+async def test_public_binding_can_read_with_an_expired_unused_session() -> None:
+    seen: list[httpx.Request] = []
+
+    def source(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert "cookie" not in request.headers
+        assert "authorization" not in request.headers
+        return httpx.Response(200)
+
+    state = session(expires_hint=NOW - timedelta(seconds=1))
+    ctx = make_ctx(session=state, transport=httpx.MockTransport(source))
+    async with SourceClient(ctx, auth_type="session") as client:
+        response = await client.request(
+            "GET", ORIGIN + "/public", auth_binding={"cookies": False, "bearer": "none"}
+        )
+        assert response.status_code == 200
+        with pytest.raises(SessionExpired) as error:
+            await client.request("GET", ORIGIN + "/private", auth_binding=MIXED)
+        assert error.value.code == "auth_missing"
+    assert len(seen) == 1
+
+
 async def test_replacing_the_session_after_login_refresh_replaces_both_credentials() -> None:
     seen: list[tuple[str | None, str | None]] = []
 

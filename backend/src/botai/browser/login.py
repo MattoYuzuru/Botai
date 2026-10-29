@@ -666,8 +666,9 @@ class LoginFlow:
         signature = page_signature(snap)
         if run.verified_page == signature and not force:
             return None
+        network = await run.handle.network_log()
         state = await run.handle.export_session()
-        if not state.cookies and state.bearer is None:
+        if not state.cookies and state.bearer is None and not state.bearer_scopes:
             return None
         if not (run.submitted or run.push_confirmed or run.human_progress or force):
             # A public page may issue guest cookies/bearers whose GETs refuse a
@@ -698,6 +699,7 @@ class LoginFlow:
                 run.verified_page = page_signature(fresh)
                 return None
             snap = fresh
+            network = await run.handle.network_log()
             state = await run.handle.export_session()
         if run.probe is not None:
             if await probe_ok(state, run.probe, run.hosts, egress=self._egress):
@@ -706,7 +708,6 @@ class LoginFlow:
                 return state
             run.verified_page = signature
             return None
-        network = await run.handle.network_log()
         if run.entry_url is not None:
             private_path = urlsplit(run.entry_url).path
             private_paths = {private_path, run.entry_form_path}

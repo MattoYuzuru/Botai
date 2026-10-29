@@ -347,7 +347,9 @@ def build_preset(
     ] or allow[:1]
     capture: dict[str, Any] = {
         "cookiesFor": cookie_hosts,
-        "bearerFrom": "authorizationHeader" if session.bearer else "none",
+        # Absence during this login is not a policy forbidding tokens sent by a later SPA page.
+        # Only browser-sent Authorization is captured; no storage key or value is inferred.
+        "bearerFrom": "authorizationHeader",
         "storage": "encrypted",
         "lifetimeKnown": session.expires_hint is not None,
     }

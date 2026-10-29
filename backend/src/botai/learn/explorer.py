@@ -144,6 +144,7 @@ class Explorer:
         self._initial_note_pending = False
         self._previous_status: str | None = None
         self._reauth_attempted = False
+        self._canary_session_checked: set[str] = set()
         self._observed_session: SessionState | None = None
         self._observation_limited = False
         self._verification_failed = False
@@ -741,7 +742,7 @@ class Explorer:
             await self._research_for(info)
             if self._research is not None:
                 sctx.before_request = self._research.before_request
-            obs = await self._observe(info, session, redactor, extra)
+            obs = await self._observe(info, sctx.session or session, redactor, extra)
             if obs.limited and not self._observation_limited:
                 await ui.say(
                     "Пока не удалось полностью проверить источник: исследование достигло "
@@ -1319,6 +1320,28 @@ class Explorer:
             diagnostic_event("canary.candidate", phase="request", **facts)
             try:
                 report = await self._canary(spec, sctx, require={kind})
+                if (
+                    spec["recipe"]["version"] == 2
+                    and info.connection_id not in self._canary_session_checked
+                    and any(
+                        finding.code
+                        in {
+                            "auth_missing",
+                            "auth_rejected",
+                            "auth_scope_mismatch",
+                            "login_redirect",
+                        }
+                        for finding in report.findings
+                    )
+                ):
+                    self._canary_session_checked.add(info.connection_id)
+                    async with self.services.db() as db:
+                        await guard_job(self.ctx, db, check_input=True)
+                    # Endpoint refusal is not a request to log in. The session provider checks
+                    # the independent entry/probe, preserving a healthy human login (force=False).
+                    sctx.session = await self._ensure_session(info, force=False)
+                    self._observed_session = sctx.session
+                    report = await self._canary(spec, sctx, require={kind})
             except SessionExpired:
                 diagnostic_event(
                     "canary.candidate",

@@ -71,7 +71,11 @@ class SourceClient:
         if header_name:
             self._credential_headers.add(header_name.lower())
         session = ctx.session if use_session else None
-        if auth_type != "none" and session is not None and known_expired(session, ctx.now):
+        if (
+            auth_type in {"cookie", "bearer"}
+            and session is not None
+            and known_expired(session, ctx.now)
+        ):
             raise SessionExpired("session is past its expiry hint", code="auth_missing")
         if auth_type == "session" and any(
             name.lower() in self._credential_headers for name in headers or {}
