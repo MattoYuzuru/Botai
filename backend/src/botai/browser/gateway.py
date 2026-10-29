@@ -258,6 +258,7 @@ class PlaywrightHandle:
         read_only: bool = False,
         injected_authorizations: dict[Request, str] | None = None,
         confirmed_entry_url: SecretStr | None = None,
+        restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -294,6 +295,7 @@ class PlaywrightHandle:
         self._bearer: dict[str, str] = {}  # exact origin -> last bearer the browser sent
         self._bearer_versions: dict[str, int] = {}
         self._bearer_captured_at: dict[str, datetime] = {}
+        self._restored_bearers = dict(restored_bearers or {})
         self._request_serial = 0
         self._observation_bearers: set[str] = set()
         self._observation_bearer_bytes = 0
@@ -1134,7 +1136,7 @@ class PlaywrightHandle:
                         origin=origin,
                         token=SecretStr(token),
                         captured_at=self._bearer_captured_at.get(origin, now),
-                        expires_hint=jwt_expiry(token),
+                        expires_hint=self._bearer_expiry(origin, token),
                     )
                 )
         elif source in ("localStorage", "sessionStorage") and self._capture.bearer_key:
@@ -1144,7 +1146,7 @@ class PlaywrightHandle:
         if cookies and len(expiries) == len(cookies):
             hint = min(expiries)
         if bearer:
-            exp = jwt_expiry(bearer)
+            exp = self._bearer_expiry(auth_origin(self.origin) or "", bearer)
             if exp is not None and (hint is None or exp < hint):
                 hint = exp
         browser_storage = await self._export_browser_storage()
@@ -1166,6 +1168,13 @@ class PlaywrightHandle:
             browser_storage=browser_storage,
             entry_url=self._confirmed_entry_url,
         )
+
+    def _bearer_expiry(self, origin: str, token: str) -> datetime | None:
+        expiries = [jwt_expiry(token)]
+        restored = self._restored_bearers.get(origin)
+        if restored is not None and restored[0].get_secret_value() == token:
+            expiries.append(restored[1])
+        return min((expiry for expiry in expiries if expiry is not None), default=None)
 
     async def _export_browser_storage(self) -> list[SessionOriginStorage]:
         entries: dict[str, SessionOriginStorage] = {}
@@ -1444,7 +1453,7 @@ class PlaywrightGateway:
             injected_authorizations: dict[Request, str] = {}
             if session is not None:
                 injected_authorizations = await self._restore(
-                    context, session, allow_hosts=hosts, now=self._clock.now()
+                    context, session, allow_hosts=hosts, clock=self._clock
                 )
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
@@ -1462,6 +1471,21 @@ class PlaywrightGateway:
                     await context.close()
             self._slots.release()
             raise
+        restored_bearers: dict[str, tuple[SecretStr, datetime | None]] = {}
+        if session is not None:
+            for scope in session.bearer_scopes:
+                expiry = min(
+                    (
+                        value
+                        for value in (scope.expires_hint, session.expires_hint)
+                        if value is not None
+                    ),
+                    default=None,
+                )
+                restored_bearers[scope.origin] = (scope.token, expiry)
+            audience = auth_origin(session.origin)
+            if session.bearer is not None and audience is not None:
+                restored_bearers.setdefault(audience, (session.bearer, session.expires_hint))
         handle = PlaywrightHandle(
             gateway=self,
             context=context,
@@ -1474,6 +1498,7 @@ class PlaywrightGateway:
             clock=self._clock,
             read_only=read_only,
             injected_authorizations=injected_authorizations,
+            restored_bearers=restored_bearers,
             confirmed_entry_url=(
                 session.entry_url
                 if session is not None and auth_origin(primary) == auth_origin(session.origin)
@@ -1492,9 +1517,17 @@ class PlaywrightGateway:
         *,
         allow_hosts: Iterable[str] | None = None,
         now: datetime | None = None,
+        clock: Clock | None = None,
     ) -> dict[Request, str]:
         injected_authorizations: dict[Request, str] = {}
-        now = now or datetime.now(UTC)
+        read_now = clock.now if clock is not None else SystemClock().now
+        if clock is None and now is not None:
+            fixed_now = now
+
+            def read_now() -> datetime:
+                return fixed_now
+
+        now = read_now()
         if session.expires_hint is not None and session.expires_hint <= now:
             return injected_authorizations
         expired_scopes = [
@@ -1583,6 +1616,7 @@ class PlaywrightGateway:
             if (urlsplit(scope.origin).hostname or "") in hosts
             and scope.origin not in expired_origins
         }
+        scoped_hints = {scope.origin: scope.expires_hint for scope in session.bearer_scopes}
         if (
             session.bearer is not None
             and primary is not None
@@ -1596,8 +1630,16 @@ class PlaywrightGateway:
                 headers = route.request.headers
                 # The application may have refreshed its token since restoration. Its own
                 # credentials take precedence over the saved fallback, including other schemes.
-                bearer = scoped.get(auth_origin(route.request.url) or "")
-                if "authorization" in headers or bearer is None:
+                audience = auth_origin(route.request.url) or ""
+                bearer = scoped.get(audience)
+                at = read_now()
+                expired = (session.expires_hint is not None and session.expires_hint <= at) or (
+                    bearer is not None
+                    and bearer_expired(
+                        SecretStr(bearer), now=at, expires_hint=scoped_hints.get(audience)
+                    )
+                )
+                if "authorization" in headers or bearer is None or expired:
                     await route.continue_()
                 else:
                     authorization = f"Bearer {bearer}"
