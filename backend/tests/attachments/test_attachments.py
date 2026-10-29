@@ -30,6 +30,9 @@ OGG = b"OggS\x00\x02" + b"\x00" * 24
 MP3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 24
 M4A = b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00" + b"\x00" * 16
 WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 16
+MP3_FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 28  # MPEG-1 layer III, 128 kbit/s, 44.1 kHz, no tag
+UTF16_TSV = "Предмет\tДата\r\nАлгоритмы\t20.12\r\n".encode("utf-16")  # BOM FF FE: Excel's export
+UTF16_BE = b"\xfe\xff" + "Предмет\tДата\r\n".encode("utf-16-be")
 HEIC = b"\x00\x00\x00\x20ftypheic\x00\x00\x00\x00" + b"\x00" * 16
 HTML = b"<!doctype html><html><body><script>alert(document.cookie)</script></body></html>"
 
@@ -75,6 +78,10 @@ async def test_every_route_needs_a_login(client: httpx.AsyncClient, method: str,
         (WEBM, "voice.webm", "audio/webm;codecs=opus", "audio", "audio/webm"),
         (OGG, "voice.ogg", "audio/ogg", "audio", "audio/ogg"),
         (MP3, "a.mp3", "audio/mpeg", "audio", "audio/mpeg"),
+        (MP3_FRAME, "b.mp3", "audio/mpeg", "audio", "audio/mpeg"),
+        (UTF16_TSV, "t.tsv", "", "document", "text/tab-separated-values"),  # FF FE is a BOM
+        (UTF16_BE, "t.csv", "text/csv", "document", "text/csv"),
+        (UTF16_TSV, "notes.txt", "", "document", "text/plain"),
         (M4A, "a.m4a", "audio/mp4", "audio", "audio/mp4"),
         (WAV, "a.wav", "audio/wav", "audio", "audio/wav"),
         (make_pdf("Привет"), "a.pdf", "application/pdf", "document", "application/pdf"),
@@ -697,3 +704,18 @@ async def test_the_cleanup_of_unused_uploads_keeps_a_file_that_is_being_indexed(
     assert (await client.get(f"{URL}/{busy}")).status_code == 200  # in use: kept
     assert (await client.get(f"{URL}/{dead}")).status_code == 404  # a flag with no job: cleaned
     assert (await client.get(f"{URL}/{idle}")).status_code == 404
+
+
+async def test_a_utf16_text_is_read_not_taken_for_audio_or_binary(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    acc = await signup(client, tx_sessionmaker, clock)
+    tsv = await _make(tx_sessionmaker, acc.id, UTF16_TSV, "exams.tsv")
+    async with tx_sessionmaker() as s:
+        table = await service.extract_text(s, acc.id, tsv, 10_000)
+    assert table.error is None
+    assert "Предмет: Алгоритмы; Дата: 20.12" in table.text  # decoded, and read as a table
+    # without a byte order mark, UTF-16 is just binary with NULs: not a file we can read
+    plain = "Заметка про пересдачу".encode("utf-16-le")
+    refused = await _upload(client, plain, "n.txt", "text/plain")
+    assert refused.status_code == 422

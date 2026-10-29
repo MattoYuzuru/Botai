@@ -40,6 +40,11 @@ class Detected:
     format: DocFormat | None = None  # set for documents
 
 
+def _is_utf16(data: bytes) -> bool:
+    """A text with a byte order mark: what Excel's "Unicode text" export writes."""
+    return data[:2] in (b"\xff\xfe", b"\xfe\xff")
+
+
 def _starts(data: bytes, *prefixes: bytes) -> bool:
     return any(data.startswith(p) for p in prefixes)
 
@@ -62,9 +67,22 @@ def _media(data: bytes) -> tuple[AttachmentKind, str] | None:
         return "audio", "audio/mp4"
     if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "audio", "audio/wav"
-    if _starts(data, b"ID3") or (len(data) > 1 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0):
+    if _starts(data, b"ID3") or _mpeg_frame(data):
         return "audio", "audio/mpeg"
     return None
+
+
+def _mpeg_frame(data: bytes) -> bool:
+    """A valid header of an MPEG audio layer III frame (an mp3 without an ID3 tag).
+
+    The sync bits alone are not enough: a UTF-16 text starts with the byte order mark FF FE,
+    which looks like a sync. The version, layer, bitrate and sample rate must be real ones.
+    """
+    if len(data) < 4 or data[0] != 0xFF or data[1] & 0xE0 != 0xE0:
+        return False
+    version, layer = (data[1] >> 3) & 3, (data[1] >> 1) & 3
+    bitrate, rate = data[2] >> 4, (data[2] >> 2) & 3
+    return version != 1 and layer == 1 and bitrate not in (0, 15) and rate != 3
 
 
 def detect(data: bytes, filename: str | None, content_type: str | None) -> Detected:
@@ -72,7 +90,7 @@ def detect(data: bytes, filename: str | None, content_type: str | None) -> Detec
     if not data:
         raise BotaiError(ErrorCode.VALIDATION, "Файл пустой")
     declared = (content_type or "").split(";")[0].strip().lower()
-    media = _media(data)
+    media = None if _is_utf16(data) else _media(data)
     if media is not None:
         kind, mime = media
         if declared.startswith("video/"):  # the same containers carry video, which we do not play

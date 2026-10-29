@@ -63,6 +63,7 @@ def detect_format(
         if any(n.startswith("xl/") for n in names):
             return "xlsx"
         raise BotaiError(ErrorCode.VALIDATION, "Не удалось определить тип документа")
+    utf16 = data.startswith((b"\xff\xfe", b"\xfe\xff"))  # byte order mark: text full of NULs
     low = head[:200].lower()
     if (
         low.startswith((b"<!doctype html", b"<html"))
@@ -74,12 +75,17 @@ def detect_format(
         return "csv"
     if lower_name.endswith(".pdf") or "pdf" in ctype:
         raise BotaiError(ErrorCode.VALIDATION, "Файл не похож на PDF")
-    if b"\x00" in data[:4096]:
+    if b"\x00" in data[:4096] and not utf16:
         raise BotaiError(ErrorCode.VALIDATION, "Этот тип файла не поддерживается")
     return "text"
 
 
 def _decode(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16")  # the byte order mark picks the byte order
+        except UnicodeDecodeError:
+            pass
     for encoding in ("utf-8-sig", "cp1251"):
         try:
             return data.decode(encoding)
