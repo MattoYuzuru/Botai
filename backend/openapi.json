@@ -852,6 +852,42 @@
         "title": "DocumentStarted",
         "type": "object"
       },
+      "EventAttribute": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "EventAttribute",
+        "type": "object"
+      },
+      "EventLink": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "label"
+        ],
+        "title": "EventLink",
+        "type": "object"
+      },
       "GradeOut": {
         "properties": {
           "courseTitle": {
@@ -1470,6 +1506,17 @@
             "title": "Fetchedat",
             "type": "string"
           },
+          "openUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openurl"
+          },
           "sourceUrl": {
             "title": "Sourceurl",
             "type": "string"
@@ -1556,6 +1603,24 @@
       },
       "ScheduleEventOut": {
         "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "attributes": {
+            "items": {
+              "$ref": "#/components/schemas/EventAttribute"
+            },
+            "title": "Attributes",
+            "type": "array"
+          },
           "changed": {
             "title": "Changed",
             "type": "boolean"
@@ -1593,6 +1658,17 @@
             "title": "Format",
             "type": "string"
           },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1608,6 +1684,35 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "kindText": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kindtext"
+          },
+          "lessonNumber": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lessonnumber"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EventLink"
+            },
+            "title": "Links",
+            "type": "array"
           },
           "location": {
             "anyOf": [

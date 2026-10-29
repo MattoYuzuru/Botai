@@ -3,20 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
 from botai.core.api import ApiModel
 
 
 class Provenance(ApiModel):
-    # Defaults keep every constructor working; the API contract still lists the fields as present.
-    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
-
     connection_id: str
     space_id: str
     source_url: str  # where the record was read; for an API source this is not a page to open
     fetched_at: datetime
     stale: bool
+    # Always present in a response; a default keeps older constructors of the model working.
     open_url: str | None = None  # the page of the source that shows the record (FR-042)
 
 
@@ -31,8 +29,6 @@ class EventAttribute(ApiModel):
 
 
 class ScheduleEventOut(ApiModel):
-    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
-
     id: str
     title: str
     kind: Literal["lecture", "seminar", "lab", "exam", "consultation", "other"]

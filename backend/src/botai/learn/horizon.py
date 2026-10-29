@@ -132,7 +132,7 @@ def thin_question(
     which dates, and what the neighbouring windows hold. It carries counts and dates, no names."""
     noun = plural(count, kind_forms)
     where = f" за {_day(span[0])}–{_day(span[1])}" if span else ""
-    found = f"Вижу {count} {noun}{where}." if count else f"Не вижу ни одного занятия{where}."
+    found = f"Вижу {count} {noun}{where}." if count else f"Не вижу {kind_forms[2]}{where}."
     if len(per_window) > 1:
         found += f" По {unit}: " + ", ".join(str(n) for n in per_window) + "."
     return (
