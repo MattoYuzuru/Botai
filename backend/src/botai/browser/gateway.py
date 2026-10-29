@@ -145,9 +145,10 @@ def _browser_diagnostics(connection_id: str) -> dict[str, object]:
 def _initiator_url(request: Request) -> str | None:
     """The document of the frame that issued the request; a worker has no frame."""
     try:
-        return request.frame.url or None
+        url: object = request.frame.url
     except PlaywrightError:
         return None
+    return url if isinstance(url, str) and url else None
 
 
 def _method(method: str) -> str:
