@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 
 import httpx
 from pydantic import SecretStr, ValidationError
@@ -18,6 +20,24 @@ from botai.core.browser import SessionCookie, SessionState, auth_origin
 from botai.core.vault import SecretKind, Vault
 
 log = logging.getLogger(__name__)
+
+
+def recipe_requires_session(recipe: Mapping[str, Any]) -> bool:
+    """Only effective request bindings may require a session for a scoped recipe."""
+    auth = recipe.get("auth", {})
+    if auth.get("type") != "session":
+        return auth.get("type", "cookie") != "none"
+    referenced = {step.get("authBinding") for step in recipe.get("bootstrap", [])}
+    referenced.update(
+        endpoint["request"].get("authBinding")
+        for endpoint in recipe.get("endpoints", [])
+        if not endpoint["request"].get("render")
+    )
+    return any(
+        binding.get("cookies") is True or binding.get("bearer") == "observedAuthorization"
+        for name, binding in auth.get("bindings", {}).items()
+        if name in referenced
+    )
 
 
 def dump_session(state: SessionState) -> str:

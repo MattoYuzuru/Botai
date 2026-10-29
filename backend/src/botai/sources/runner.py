@@ -51,7 +51,7 @@ from botai.sources.adapter import (
 )
 from botai.sources.factory import AdapterFactory
 from botai.sources.scope import read_scope, scoped_spec
-from botai.sources.session import load_session
+from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import REQUIRED
 
 log = logging.getLogger(__name__)
@@ -458,20 +458,7 @@ async def fetch_with_reauth(
             ],
         )
     adapter = AdapterFactory().create(effective)
-    auth = effective.get("recipe", {}).get("auth", {})
-    needs_session = auth.get("type", "cookie") != "none"
-    if auth.get("type") == "session":
-        referenced = {step.get("authBinding") for step in effective["recipe"].get("bootstrap", [])}
-        referenced.update(
-            endpoint["request"].get("authBinding")
-            for endpoint in effective["recipe"]["endpoints"]
-            if not endpoint["request"].get("render")
-        )
-        needs_session = any(
-            binding.get("cookies") is True or binding.get("bearer") == "observedAuthorization"
-            for name, binding in auth.get("bindings", {}).items()
-            if name in referenced
-        )
+    needs_session = recipe_requires_session(effective.get("recipe", {}))
     reauthed = False
     while True:
         try:

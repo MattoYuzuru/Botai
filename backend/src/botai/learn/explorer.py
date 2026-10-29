@@ -87,7 +87,7 @@ from botai.sources.runner import (
     sync_connection,
 )
 from botai.sources.scope import scoped_spec
-from botai.sources.session import load_session
+from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
 
 log = logging.getLogger(__name__)
@@ -652,6 +652,10 @@ class Explorer:
             "Для этого сайта описание уже есть",
             "Подключаю по готовому описанию, без повторного разбора",
         )
+        if recipe_requires_session(scoped_spec(row.spec, scope)["recipe"]):
+            # Reuse still needs this student's verified entry. A login landing/probe alone
+            # may not load the SPA page that sends the recipe's bearer Authorization.
+            await self._ensure_session(info)
         host = urlsplit(info.origin).hostname or ""
         await self._set(
             info.connection_id,
