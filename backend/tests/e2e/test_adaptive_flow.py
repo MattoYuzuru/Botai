@@ -65,7 +65,7 @@ def courses_endpoint() -> dict[str, Any]:
     }
 
 
-class DeepPlanner(ScriptedLlm):
+class DeepPlanner(ls.EvidenceLlm):
     """Choose only server-owned refs. Fail immediately if a real browser observation is stale."""
 
     def __init__(self, *, restricted: bool) -> None:

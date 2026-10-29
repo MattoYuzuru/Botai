@@ -132,7 +132,7 @@ async def test_a_student_connects_a_university_and_asks_about_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env, gateway = stack.env, stack.gateway
-    learning_llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    learning_llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, learning_llm)
 
     # === 1. the API: the owner invites a friend, the friend registers and adds a university =====
@@ -240,7 +240,7 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             ensure_ascii=False,
         )
     )
-    learning_llm = ScriptedLlm(queue=[classifier, ls.timetable_answer()])
+    learning_llm = ls.EvidenceLlm(queue=[classifier, ls.timetable_answer()])
     start_worker(env, learning_llm)
     friend = env.new_client()
     account = await env.account(friend)
@@ -398,7 +398,7 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
 async def test_a_changed_university_is_repaired_and_the_data_come_back(stack: Stack) -> None:
     env, gateway = stack.env, stack.gateway
     moved = recipes.timetable_endpoint(path="/api/v3/schedule")
-    llm = ScriptedLlm(
+    llm = ls.EvidenceLlm(
         queue=[ls.timetable_answer(), ls.deadlines_answer(), ls.answer([moved])]  # ..., repair
     )
     start_worker(env, llm)
@@ -477,7 +477,7 @@ async def test_a_second_student_of_the_university_reuses_what_the_first_one_taug
     stack: Stack,
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     campus = Campus(env)
     anna = await campus.enrol("anna@example.com")
@@ -526,7 +526,7 @@ async def test_a_mistyped_password_is_asked_again_and_only_the_right_one_is_kept
     stack: Stack, wiretap: WireTap
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     anna = await Campus(env).enrol("anna@example.com")
     secrets = Secrets(env, anna)
@@ -559,7 +559,7 @@ async def test_an_outage_is_retried_by_the_runner_while_the_old_data_stay(
     stack: Stack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     monkeypatch.setattr(sources_runner, "RetryPolicy", lambda: FAST)  # not 0.5 + 2 + 8 s of sleep
     anna = await Campus(env).enrol("anna@example.com")
