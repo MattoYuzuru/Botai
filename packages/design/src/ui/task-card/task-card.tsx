@@ -36,7 +36,8 @@ const STATES: Record<TaskState, { tone: NonNullable<BadgeProps["tone"]>; icon: I
 
 /**
  * Карточка фоновой задачи в ленте чата: подключение, починка, обновление, индексация. Если задача идёт
- * в другом чате, карточка говорит об этом и ведёт туда через слот `action`.
+ * в другом чате, карточка говорит об этом и ведёт туда через слот `action`; у задачи этого чата в слоте —
+ * её действие («Отменить подключение»).
  */
 export function TaskCard({ title, kind, state, here = true, action, className }: TaskCardProps) {
   const meta = KINDS[kind];
@@ -61,10 +62,10 @@ export function TaskCard({ title, kind, state, here = true, action, className }:
           {status.label}
         </Badge>
       </div>
-      {!here && (
+      {(!here || action) && (
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="type-caption text-fg-muted">Идёт в другом чате</span>
-          {action}
+          {!here && <span className="type-caption text-fg-muted">Идёт в другом чате</span>}
+          {action && <span className="ml-auto">{action}</span>}
         </div>
       )}
     </Card>

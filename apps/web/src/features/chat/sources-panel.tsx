@@ -52,8 +52,11 @@ export function SourcesPanel({
               className="flex flex-col gap-2"
               aria-labelledby={`source-space-${space.id}`}
             >
-              <div className="flex items-center justify-between gap-3">
-                <h3 id={`source-space-${space.id}`} className="min-w-0 truncate type-subheading text-fg">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <h3
+                  id={`source-space-${space.id}`}
+                  className="min-w-0 flex-1 basis-40 break-words type-subheading text-fg"
+                >
                   {space.title}
                 </h3>
                 <Button variant="ghost" size="sm" leadingIcon="plus" data-touch-expanded="" asChild>

@@ -116,8 +116,12 @@ export function TimelineView({
       groupSources: links.groupSources,
       openAttachment: links.openAttachment,
       taskState: (jobId: string) => taskStates.get(jobId),
+      cancelTask: async (jobId: string) => {
+        await jobManager.cancel(jobId);
+        onChanged();
+      },
     }),
-    [nowMs, timeZone, threadId, links, taskStates],
+    [nowMs, timeZone, threadId, links, taskStates, onChanged],
   );
 
   const receipts = runtime?.receipts ?? [];
@@ -167,7 +171,14 @@ export function TimelineView({
 
 type BaseContext = Pick<
   BlockContext,
-  "nowMs" | "timeZone" | "threadId" | "resolveLink" | "groupSources" | "openAttachment" | "taskState"
+  | "nowMs"
+  | "timeZone"
+  | "threadId"
+  | "resolveLink"
+  | "groupSources"
+  | "openAttachment"
+  | "taskState"
+  | "cancelTask"
 >;
 
 function TurnView({

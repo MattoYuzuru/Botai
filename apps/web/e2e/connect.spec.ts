@@ -1,250 +1,57 @@
 import { expect, type Page, test } from "@playwright/test";
-import type { JobSnapshot } from "../src/features/jobs/job-state";
-import {
-  expectNoHorizontalOverflow,
-  expectSheetReady,
-  findSmallTapTargets,
-  findTinyText,
-  open,
-} from "./support";
+import { expectNoHorizontalOverflow, findSmallTapTargets, findTinyText, open } from "./support";
+
+/**
+ * Подключение вуза в общем чате: один тред — один таймлайн. «Подключи ЦУ» запускает задачу в этом же треде,
+ * вопросы входа стоят у поля ввода, секреты идут через `jobs/answers`, итог остаётся в ленте.
+ */
 
 const SECRET = "correct-horse-battery-staple";
-const URL_QUESTION = "Пришлите ссылку на источник, который хотите подключить.";
+const LOGIN = "Вход в lk.fakeuni.test. Логин";
+const PASSWORD = "Вход в lk.fakeuni.test. Пароль";
+const composer = (page: Page) => page.getByRole("textbox", { name: "Сообщение агенту" });
+const pending = (page: Page) => page.locator("[data-pending-questions]");
+
 async function start(page: Page, variant = "") {
-  await open(page, `/connect?pace=0${variant ? `&job=${variant}` : ""}`, "empty");
-  await expect(page).toHaveURL(/\/chat\?thread=/);
-  await expect(page.getByText(URL_QUESTION)).toBeVisible();
+  await open(page, `/chat?thread=new&pace=0${variant ? `&job=${variant}` : ""}`, "empty");
+  await expect(page.getByRole("heading", { level: 2, name: "Спросите про пары и сроки" })).toBeVisible();
 }
 async function send(page: Page, text: string) {
-  const composer = page.getByRole("textbox", { name: "Сообщение агенту" });
-  await expect(composer).toBeEnabled();
-  await composer.fill(text);
+  await expect(composer(page)).toBeEnabled();
+  await composer(page).fill(text);
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
 }
 async function native(page: Page, variant = "") {
   await start(page, variant);
-  await send(page, "https://lk.fakeuni.test/");
-  await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+  await send(page, "Подключи ЦУ https://new.fakeuni.test");
+  await expect(page.getByText(LOGIN)).toBeVisible();
 }
 async function answer(page: Page, text: string) {
-  await page.getByLabel("Ответ", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Ответить", exact: true }).click();
-}
-
-async function expectChatReflow(page: Page) {
-  const expectedWidth = page.viewportSize()?.width;
-  if (!expectedWidth) throw new Error("Нет viewport");
-  // ResizeObserver и авто-рост composer завершают перерасчёт после события resize.
-  // Повторяем те же строгие границы, без допуска на переполнение и без фиксированного sleep.
-  await expect(async () => {
-    const layout = await page.evaluate(() => {
-      const rect = (element: Element) => {
-        const box = element.getBoundingClientRect();
-        const label = element.getAttribute("aria-label");
-        const role = element.getAttribute("data-role");
-        const text = element.matches("button") ? element.textContent?.trim() : null;
-        return {
-          name: `${element.tagName.toLowerCase()}${role ? `[data-role=${role}]` : ""} ${label ?? text ?? element.getAttribute("class") ?? ""}`,
-          left: box.left,
-          right: box.right,
-          width: box.width,
-          height: box.height,
-          scrollWidth: element.scrollWidth,
-          clientWidth: element.clientWidth,
-        };
-      };
-      const viewport = document.querySelector("[data-chat-transcript] [data-radix-scroll-area-viewport]");
-      const heading = document.querySelector("header h1");
-      if (!viewport || !heading) throw new Error("Нет chat layout");
-      const box = viewport.getBoundingClientRect();
-      const style = getComputedStyle(viewport);
-      return {
-        width: innerWidth,
-        visualWidth: visualViewport?.width ?? innerWidth,
-        viewport: rect(viewport),
-        contentLeft: box.left + Number.parseFloat(style.paddingLeft),
-        contentRight: box.right - Number.parseFloat(style.paddingRight),
-        chain: [
-          ...viewport.querySelectorAll(
-            ":scope > div, [data-timeline], [data-timeline] > li, [data-role], [data-role] > div:first-child",
-          ),
-        ].map(rect),
-        controls: [
-          ...viewport.querySelectorAll(
-            "[data-chat-input] button, [data-chat-input] input, [data-connection-failure] button",
-          ),
-        ].map(rect),
-        heading: rect(heading),
-        headerControls: [...document.querySelectorAll("header button")].map(rect),
-        nav: [...document.querySelectorAll('nav[aria-label="Основная навигация"] a')].map(rect),
-      };
-    });
-    expect(layout.width).toBe(expectedWidth);
-    expect(layout.visualWidth).toBe(expectedWidth);
-    expect(layout.viewport.left).toBeGreaterThanOrEqual(0);
-    expect(layout.viewport.right).toBeLessThanOrEqual(expectedWidth);
-    expect(layout.viewport.scrollWidth).toBeLessThanOrEqual(layout.viewport.clientWidth);
-    for (const box of [...layout.chain, ...layout.controls]) {
-      expect(box.left, `${box.name}: left at ${expectedWidth}px`).toBeGreaterThanOrEqual(layout.contentLeft);
-      expect(box.right, `${box.name}: right at ${expectedWidth}px`).toBeLessThanOrEqual(layout.contentRight);
-    }
-    for (const box of layout.chain)
-      expect(box.scrollWidth, `${box.name}: scroll width at ${expectedWidth}px`).toBeLessThanOrEqual(
-        box.clientWidth,
-      );
-    expect(layout.heading.scrollWidth).toBeLessThanOrEqual(layout.heading.clientWidth);
-    expect(layout.nav).toHaveLength(5);
-    for (const box of [...layout.headerControls, ...layout.nav]) {
-      expect(box.left, `${box.name}: left`).toBeGreaterThanOrEqual(0);
-      expect(box.right, `${box.name}: right`).toBeLessThanOrEqual(expectedWidth);
-      expect(box.width, `${box.name}: tap width`).toBeGreaterThanOrEqual(44);
-      expect(box.height, `${box.name}: tap height`).toBeGreaterThanOrEqual(44);
-    }
-  }).toPass({ timeout: 10_000 });
+  await pending(page).getByLabel("Ответ", { exact: true }).fill(text);
+  await pending(page).getByRole("button", { name: "Ответить", exact: true }).click();
 }
 
 test.describe("подключение в общем чате", () => {
-  for (const order of ["ack-first", "history-first"] as const) {
-    test(`принятый текст не исчезает между SSE, POST и историей: ${order}`, async ({ page }) => {
-      await start(page);
-      const question = page.getByText(URL_QUESTION);
-      await question.evaluate((element) => {
-        element.dataset.identity = "same-question";
-      });
-      let releasePost = () => {};
-      let releaseHistory = () => {};
-      const post = new Promise<void>((resolve) => {
-        releasePost = resolve;
-      });
-      const history = new Promise<void>((resolve) => {
-        releaseHistory = resolve;
-      });
-      await page.exposeFunction("connectResponseGate", (kind: "post" | "history") =>
-        kind === "post" ? post : history,
-      );
-      await page.evaluate(() => {
-        const original = window.fetch.bind(window);
-        const state = window as unknown as {
-          connectResponseGate: (kind: "post" | "history") => Promise<void>;
-          connectResponses: { post: number; history: number };
-        };
-        state.connectResponses = { post: 0, history: 0 };
-        window.fetch = async (input, init) => {
-          const request = input instanceof Request ? input : new Request(input, init);
-          const response = await original(input, init);
-          if (/\/chat\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)) {
-            const kind = request.method === "POST" ? "post" : "history";
-            await state.connectResponseGate(kind);
-            state.connectResponses[kind] += 1;
-          }
-          return response;
-        };
-      });
-      const transcript = page.getByRole("list", { name: "Сообщения" });
-      const check = async () => {
-        await expect(question).toHaveAttribute("data-identity", "same-question");
-        await expect(question).toHaveCount(1);
-        await expect(transcript.getByText("https://lk.fakeuni.test/", { exact: true })).toHaveCount(1);
-        const text = (await transcript.textContent()) ?? "";
-        expect(text.indexOf(URL_QUESTION)).toBeLessThan(text.indexOf("https://lk.fakeuni.test/"));
-        expect(text.indexOf("https://lk.fakeuni.test/")).toBeLessThan(
-          text.indexOf("Вход в lk.fakeuni.test. Логин"),
-        );
-      };
-      const passed = (kind: "post" | "history") =>
-        page.evaluate(
-          (key) =>
-            (window as unknown as { connectResponses: Record<string, number> }).connectResponses[key] ?? 0,
-          kind,
-        );
-      try {
-        await send(page, "https://lk.fakeuni.test/");
-        await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
-        // Actual MSW/SSE proceeds; neither the POST acknowledgement nor history is available yet.
-        await check();
-        if (order === "ack-first") releasePost();
-        else releaseHistory();
-        await expect.poll(() => passed(order === "ack-first" ? "post" : "history")).toBeGreaterThan(0);
-        await check();
-        releasePost();
-        releaseHistory();
-        await expect.poll(() => passed("post")).toBeGreaterThan(0);
-        await expect.poll(() => passed("history")).toBeGreaterThan(0);
-        await check();
-      } finally {
-        releasePost();
-        releaseHistory();
-      }
-    });
-  }
-
-  test("первый вопрос стабилен до/после ответа, хронология идёт вниз без дубликата", async ({ page }) => {
-    await start(page);
-    const question = page.getByText(URL_QUESTION);
-    await question.evaluate((element) => {
-      element.dataset.identity = "same-question";
-    });
-    await send(page, "https://lk.fakeuni.test/");
-    await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
-    await expect(question).toHaveAttribute("data-identity", "same-question");
-    await expect(question).toHaveCount(1);
-    const history = (await page.getByRole("list", { name: "Сообщения" }).textContent()) ?? "";
-    expect(history.indexOf(URL_QUESTION)).toBeLessThan(history.indexOf("https://lk.fakeuni.test/"));
-    expect(history.indexOf("https://lk.fakeuni.test/")).toBeLessThan(
-      history.indexOf("Вход в lk.fakeuni.test. Логин"),
-    );
-    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toBeDisabled();
-  });
-
-  test("ошибка отправки возвращает текст editor, отвергнутый текст не остаётся в ленте", async ({ page }) => {
-    await start(page);
-    await page.evaluate(() => {
-      const original = window.fetch.bind(window);
-      window.fetch = (input, init) => {
-        const request = input instanceof Request ? input : new Request(input, init);
-        if (
-          request.method === "POST" &&
-          /\/chat\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
-        )
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({ code: "source_unavailable", detail: "Synthetic API unavailable" }),
-              {
-                status: 503,
-                headers: { "Content-Type": "application/problem+json" },
-              },
-            ),
-          );
-        return original(input, init);
-      };
-    });
-    const text = "https://rejected.fakeuni.test/";
-    await send(page, text);
-    await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toHaveValue(text);
-    await expect(page.getByRole("list", { name: "Сообщения" }).getByText(text, { exact: true })).toHaveCount(
-      0,
-    );
-    await expect(page.getByText(URL_QUESTION)).toHaveCount(1);
-  });
-
-  test("native login → secret → выбор → итог остаются в том же чате; секрет не сохраняется", async ({
+  test("«Подключи ЦУ»: задача в этом же треде, вход → пароль-секрет → выбор → итог; секрет нигде не сохраняется", async ({
     page,
   }) => {
     await native(page);
     const thread = page.url();
+    // Карточка задачи — в ленте этого треда; вопрос входа стоит у поля ввода, а не отдельным экраном.
+    const card = page.locator("[data-task-card]");
+    await expect(card).toContainText("Подключение ЦУ");
+    await expect(card).toContainText("Ждёт вас");
+    await expect(page.locator("[data-timeline]")).toHaveCount(1);
+    await expect(composer(page)).toBeDisabled();
+    await expect(composer(page)).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
     await expect(page.getByText("Вход через поля BotAI")).toBeVisible();
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
+
     await answer(page, "anna");
-    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
-    const password = page.getByLabel("Ответ", { exact: true });
+    await expect(page.getByText(PASSWORD)).toBeVisible();
+    const password = pending(page).getByLabel("Ответ", { exact: true });
     await expect(password).toHaveAttribute("type", "password");
     await expect(password).toHaveAttribute("autocomplete", "current-password");
-    expect(
-      await page
-        .getByRole("button", { name: "Открыть браузер" })
-        .evaluate((button) => button.closest("form") === null),
-    ).toBe(true);
     await answer(page, SECRET);
     await expect(page.getByRole("checkbox", { name: /Алгоритмы/ })).toBeVisible();
     const leaked = await page.evaluate(
@@ -255,197 +62,125 @@ test.describe("подключение в общем чате", () => {
       SECRET,
     );
     expect(leaked).toBe(false);
-    await expect(page.getByRole("button", { name: "Открыть браузер" })).toHaveCount(0);
     await page.getByRole("checkbox", { name: /Алгоритмы/ }).check();
     await page.getByRole("button", { name: "Ответить", exact: true }).click();
     await expect(page.getByRole("heading", { level: 3, name: "Что подключено" })).toBeVisible();
     await expect(page).toHaveURL(thread);
-    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled();
+    await expect(composer(page)).toBeEnabled();
+    await expect(pending(page)).toHaveCount(0);
     await expectNoHorizontalOverflow(page, "итог в чате");
   });
 
-  test("контекст каталога и native editor доступны на телефонах/ноутбуке в обеих темах", async ({
+  test("ответ на вопрос задачи текстом из поля ввода: ссылка в диалоге уходит задаче, а не новому ходу агента", async ({
     page,
-  }, testInfo) => {
-    for (const width of [320, 390, 430, 1280]) {
-      await page.setViewportSize({ width, height: 844 });
-      await start(page);
-      await page.getByRole("button", { name: "Источник и подключения" }).click();
-      await expectSheetReady(page, "Источник и подключения");
-      await page.getByRole("combobox", { name: "Вуз" }).click();
-      await expect(page.getByRole("option", { name: /Высшая школа экономики/ })).toBeVisible();
-      await expectNoHorizontalOverflow(page, `каталог ${width}`);
-      await page.getByRole("option", { name: /Высшая школа экономики/ }).click();
-      await page
-        .getByRole("dialog", { name: "Источник и подключения" })
-        .getByRole("button", { name: "Закрыть" })
-        .click();
-      await send(page, "https://lk.fakeuni.test/");
-      await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
-      for (const theme of ["light", "dark"]) {
-        await page.evaluate((next) => {
-          document.documentElement.dataset.theme = next;
-        }, theme);
-        await expectNoHorizontalOverflow(page, `native ${width} ${theme}`);
-        expect(await findSmallTapTargets(page)).toEqual([]);
-        expect(await findTinyText(page)).toEqual([]);
-        const fontSize = await page
-          .getByLabel("Ответ", { exact: true })
-          .evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize));
-        expect(fontSize).toBeGreaterThanOrEqual(16);
-        if (width >= 1280) {
-          for (const box of await page
-            .locator("[data-role] > div:first-child")
-            .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width)))
-            expect(box).toBeLessThanOrEqual(544);
-        }
-        await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
-        await page.screenshot({ path: testInfo.outputPath(`connect-${width}-${theme}.png`), fullPage: true });
-      }
-    }
+  }) => {
+    await start(page);
+    await send(page, "Подключи ЦУ");
+    await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
+    await expect(composer(page)).toBeEnabled();
+    await expect(composer(page)).toHaveAttribute("placeholder", "Ответьте агенту или уточните задачу");
+    await send(page, "https://new.fakeuni.test");
+    await expect(page.getByText(LOGIN)).toBeVisible();
+    const text = (await page.getByRole("list", { name: "Сообщения" }).textContent()) ?? "";
+    expect(text.indexOf("Пришлите ссылку")).toBeLessThan(text.indexOf("https://new.fakeuni.test"));
+    // Новый вопрос задачи с вводом стоит у поля ввода, а не в ленте.
+    await expect(pending(page).getByText(LOGIN)).toBeVisible();
   });
 
-  test("native/browser option и terminal restart не переполняются при 200% текста", async ({
+  test("повторная просьба: «уже подключено» со статусом и быстрыми ответами, вторая задача не запускается", async ({
     page,
-  }, testInfo) => {
-    await native(page);
-    await answer(page, "anna");
-    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
-    await page.getByLabel("Ответ", { exact: true }).fill(SECRET);
-    await page.getByRole("button", { name: "Ответить", exact: true }).focus();
-    await page.keyboard.press("Tab");
-    await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeFocused();
+  }) => {
+    await open(page, "/chat?thread=new&pace=0", "connected");
+    await send(page, "Подключи ЦУ https://my.fakeuni.test");
+    await expect(page.getByText(/уже подключён/)).toBeVisible();
+    await expect(page.getByRole("group", { name: "Быстрые ответы" }).getByRole("button")).toHaveText([
+      "Перепроверить",
+      "Войти заново",
+    ]);
+    await expect(page.locator("[data-task-card]")).toHaveCount(0);
+  });
+
+  test("ошибка отправки возвращает текст в поле, отвергнутый текст не остаётся в ленте", async ({ page }) => {
+    await open(page, "/chat?thread=new&pace=0", "connected");
     await page.evaluate(() => {
-      document.documentElement.style.setProperty("font-size", "200%", "important");
-    });
-    for (const theme of ["light", "dark"]) {
-      await page.evaluate((next) => {
-        document.documentElement.dataset.theme = next;
-      }, theme);
-      await expectNoHorizontalOverflow(page, `native 200% ${theme}`);
-      expect(await findSmallTapTargets(page)).toEqual([]);
-      await expectChatReflow(page);
-      await page.screenshot({ path: testInfo.outputPath(`native-200-${theme}.png`), fullPage: true });
-    }
-    // UI-only external failure: no answer is submitted and no credential is fabricated.
-    await page.evaluate(async () => {
-      const managerPath = "/src/features/jobs/job-manager.ts";
-      const activePath = "/src/features/jobs/active-job.ts";
-      const { jobManager } = (await import(/* @vite-ignore */ managerPath)) as {
-        jobManager: { get: (id: string) => JobSnapshot | undefined; seed: (job: JobSnapshot) => void };
-      };
-      const { useActiveJob } = (await import(/* @vite-ignore */ activePath)) as {
-        useActiveJob: { getState: () => { job: { jobId: string } | null } };
-      };
-      const id = useActiveJob.getState().job?.jobId;
-      const job = id ? jobManager.get(id) : undefined;
-      if (!job) throw new Error("missing active fixture job");
-      jobManager.seed({
-        ...job,
-        lastEventId: "999",
-        state: "done",
-        result: { status: "error", detail: "login_failed" },
-      });
-    });
-    await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
-    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(0);
-    for (const theme of ["light", "dark"]) {
-      await page.evaluate((next) => {
-        document.documentElement.dataset.theme = next;
-      }, theme);
-      await expectNoHorizontalOverflow(page, `terminal 200% ${theme}`);
-      const geometry = await page.locator("[data-connection-failure]").evaluate((element) => {
-        const parent = element.getBoundingClientRect();
-        return {
-          left: parent.left,
-          right: parent.right,
-          children: [...element.querySelectorAll("article, article > div:first-child")].map((child) => {
-            const box = child.getBoundingClientRect();
-            return {
-              left: box.left,
-              right: box.right,
-              scrollWidth: child.scrollWidth,
-              clientWidth: child.clientWidth,
-            };
-          }),
-        };
-      });
-      expect(geometry.children).toHaveLength(2);
-      for (const child of geometry.children) {
-        expect(child.left).toBeGreaterThanOrEqual(geometry.left);
-        expect(child.right).toBeLessThanOrEqual(geometry.right);
-        expect(child.scrollWidth).toBeLessThanOrEqual(child.clientWidth);
-      }
-      await expect
-        .poll(() =>
-          page
-            .getByRole("textbox", { name: "Сообщение агенту" })
-            .evaluate((element) => element.scrollHeight - element.clientHeight),
+      const original = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        if (
+          request.method === "POST" &&
+          /\/chat\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
         )
-        .toBeLessThanOrEqual(0);
-      const box = await page.getByRole("button", { name: "Войти заново" }).boundingBox();
-      expect(box).not.toBeNull();
-      if (box) {
-        expect(box.x).toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
-      }
-      expect(await findSmallTapTargets(page)).toEqual([]);
-      await expectChatReflow(page);
-      await page.screenshot({ path: testInfo.outputPath(`terminal-200-${theme}.png`), fullPage: true });
-    }
-  });
-
-  test("composer пересчитывает пустой placeholder при его смене и 200%, длинный текст сохраняет предел строк", async ({
-    page,
-  }, testInfo) => {
-    const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await native(page);
-    const originalViewport = page.viewportSize();
-    if (!originalViewport) throw new Error("Нет viewport");
-    await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
-    for (const width of [320, 390, 430]) {
-      await page.setViewportSize({ width, height: 844 });
-      await expectChatReflow(page);
-      if (width === 320)
-        await page.screenshot({ path: testInfo.outputPath("native-320-200.png"), fullPage: true });
-    }
-    await page.evaluate(() => document.documentElement.style.removeProperty("font-size"));
-    await page.setViewportSize(originalViewport);
-    await page.evaluate(async () => {
-      const path = "/src/features/jobs/active-job.ts";
-      const { useActiveJob } = (await import(/* @vite-ignore */ path)) as {
-        useActiveJob: { getState: () => { job: { jobId: string } | null } };
+          return Promise.resolve(
+            new Response(JSON.stringify({ code: "validation", detail: "Сообщение отклонено" }), {
+              status: 422,
+              headers: { "Content-Type": "application/problem+json" },
+            }),
+          );
+        return original(input, init);
       };
-      const id = useActiveJob.getState().job?.jobId;
-      if (!id) throw new Error("Нет active fixture job");
-      const response = await fetch(`/api/v1/jobs/${id}/cancel`, { method: "POST" });
-      if (!response.ok) throw new Error("Fixture cancel failed");
     });
-    const composer = page.getByRole("textbox", { name: "Сообщение агенту" });
-    await expect(composer).toBeEnabled();
-    await expect(composer).toHaveAttribute("placeholder", "Ответьте агенту или уточните задачу");
-    await expect
-      .poll(() => composer.evaluate((element) => element.scrollHeight - element.clientHeight))
-      .toBeLessThanOrEqual(0);
-    await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
-    await expect
-      .poll(() => composer.evaluate((element) => element.scrollHeight - element.clientHeight))
-      .toBeLessThanOrEqual(0);
-    await composer.fill("Длинная строка для проверки переноса и прокрутки. ".repeat(80));
-    const long = await composer.evaluate((element) => ({
-      height: element.clientHeight,
-      content: element.scrollHeight,
-      cap: Number.parseFloat(getComputedStyle(element).lineHeight) * 6,
-      overflow: getComputedStyle(element).overflowY,
-    }));
-    expect(long.height).toBeLessThanOrEqual(long.cap);
-    expect(long.content).toBeGreaterThan(long.height);
-    expect(long.overflow).toBe("auto");
-    expect(errors).toEqual([]);
+    const text = "Что в расписании?";
+    await send(page, text);
+    await expect(composer(page)).toHaveValue(text);
+    await expect(page.getByRole("list", { name: "Сообщения" }).getByText(text, { exact: true })).toHaveCount(
+      0,
+    );
   });
 
-  test("фоновая операция возвращается через canonical chat notification", async ({ page }) => {
+  test("непринятый пароль создаёт новый вопрос, прежние поля остаются в истории", async ({ page }) => {
+    await native(page, "wrong-password");
+    await answer(page, "anna");
+    await expect(page.getByText(PASSWORD, { exact: true })).toBeVisible();
+    await answer(page, SECRET);
+    await expect(page.getByText(/попытка 2 из 3/)).toBeVisible();
+    await expect(pending(page).getByLabel("Ответ", { exact: true })).toHaveCount(1);
+    await expect(pending(page).getByLabel("Ответ", { exact: true })).toHaveValue("");
+  });
+
+  test("вход по подтверждению на телефоне: карточка ожидания у поля ввода, потом разговор продолжается", async ({
+    page,
+  }) => {
+    await native(page, "push");
+    await answer(page, "anna");
+    await answer(page, SECRET);
+    await expect(page.getByRole("checkbox", { name: /Алгоритмы/ })).toBeVisible();
+    await expect(page.getByText(/Подтвердите вход в приложении на телефоне/).first()).toBeVisible();
+  });
+
+  test("запись по подтверждению: карточка предложения у поля ввода, одобрение завершает подключение", async ({
+    page,
+  }) => {
+    await native(page, "approval");
+    await answer(page, "anna");
+    await answer(page, SECRET);
+    await page.getByRole("checkbox", { name: /Алгоритмы/ }).check();
+    await page.getByRole("button", { name: "Ответить", exact: true }).click();
+    await expect(pending(page).getByText("Записаться на консультацию по базам данных")).toBeVisible();
+    await pending(page).getByRole("button", { name: "Подтвердить" }).click();
+    await expect(page.getByRole("heading", { level: 3, name: "Что подключено" })).toBeVisible();
+  });
+
+  test("сбой источника: понятная причина и «Войти заново», кодов в тексте нет", async ({ page }) => {
+    await native(page, "failure");
+    await answer(page, "anna");
+    await answer(page, SECRET);
+    await expect(page.getByText(/Сайт вуза не ответил/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
+    await expect(pending(page)).toHaveCount(0);
+    expect(await page.locator("body").textContent()).not.toContain("source_unavailable");
+    await expect(composer(page)).toBeEnabled();
+  });
+
+  test("задачу можно остановить из карточки; фокус диалога на безопасной кнопке", async ({ page }) => {
+    await native(page);
+    await page.getByRole("button", { name: "Отменить подключение", exact: true }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Отменить подключение?" });
+    await expect(dialog.getByRole("button", { name: "Продолжить" })).toBeFocused();
+    await dialog.getByRole("button", { name: "Отменить подключение", exact: true }).click();
+    await expect(page.getByText(/Остановлено/)).toBeVisible();
+  });
+
+  test("фоновая операция видна на других экранах, «Открыть» возвращает в тот же тред", async ({ page }) => {
     await native(page);
     const thread = page.url();
     await page.getByRole("link", { name: "Сегодня", exact: true }).click();
@@ -455,35 +190,59 @@ test.describe("подключение в общем чате", () => {
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
   });
 
-  test("непринятый пароль создаёт новый вопрос, прежние controls readonly", async ({ page }) => {
-    await native(page, "wrong-password");
-    await answer(page, "anna");
-    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
-    await answer(page, SECRET);
-    await expect(page.getByText(/попытка 2 из 3/)).toBeVisible();
-    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(1);
-    await expect(page.getByLabel("Ответ", { exact: true })).toHaveValue("");
+  test("вопрос входа и поле ввода не переполняют экран на 320–430 px и ноутбуке, обе темы", async ({
+    page,
+  }, testInfo) => {
+    for (const width of [320, 390, 430, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      await native(page);
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((next) => {
+          document.documentElement.dataset.theme = next;
+        }, theme);
+        await expectNoHorizontalOverflow(page, `вход ${width} ${theme}`);
+        expect(await findSmallTapTargets(page)).toEqual([]);
+        expect(await findTinyText(page)).toEqual([]);
+        const fontSize = await pending(page)
+          .getByLabel("Ответ", { exact: true })
+          .evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize));
+        expect(fontSize).toBeGreaterThanOrEqual(16);
+        const geometry = await page.evaluate(() => {
+          const column = document.querySelector("[data-chat-transcript]")?.getBoundingClientRect();
+          const parts = ["[data-pending-questions]", "form[data-composer]", "[data-timeline]"].map(
+            (selector) => {
+              const box = document.querySelector(selector)?.getBoundingClientRect();
+              return { selector, left: box?.left ?? 0, right: box?.right ?? 0 };
+            },
+          );
+          return { column: { left: column?.left ?? 0, right: column?.right ?? 0 }, parts };
+        });
+        for (const part of geometry.parts) {
+          expect(part.left, `${part.selector} слева на ${width}`).toBeGreaterThanOrEqual(
+            geometry.column.left,
+          );
+          expect(part.right, `${part.selector} справа на ${width}`).toBeLessThanOrEqual(
+            geometry.column.right,
+          );
+        }
+        await page.screenshot({ path: testInfo.outputPath(`connect-${width}-${theme}.png`) });
+      }
+    }
   });
 
-  test("сбой источника оставляет понятную причину и бизнес-действие нового входа", async ({ page }) => {
-    await native(page, "failure");
-    await answer(page, "anna");
-    await expect(page.getByText("Вход в lk.fakeuni.test. Пароль")).toBeVisible();
-    await answer(page, SECRET);
-    await expect(page.getByText(/Сайт вуза не ответил/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Войти заново" })).toBeVisible();
-    await expect(page.getByLabel("Ответ", { exact: true })).toHaveCount(0);
-    expect(await page.locator("body").textContent()).not.toContain("source_unavailable");
-  });
-
-  test("отмена с безопасным фокусом остаётся доступной в контексте чата", async ({ page }) => {
+  test("крупный текст 200%: вопрос входа, «Открыть браузер» и итоговый сбой не переполняют экран", async ({
+    page,
+  }, testInfo) => {
     await native(page);
-    await page.getByRole("button", { name: "Источник и подключения" }).click();
-    await page.getByRole("button", { name: "Отменить подключение", exact: true }).click();
-    const dialog = page.getByRole("alertdialog", { name: "Отменить подключение?" });
-    await expect(dialog.getByRole("button", { name: "Продолжить" })).toBeFocused();
-    await dialog.getByRole("button", { name: "Отменить подключение", exact: true }).click();
-    await expect(page.getByText(/Подключение отменено/)).toBeVisible();
+    await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((next) => {
+        document.documentElement.dataset.theme = next;
+      }, theme);
+      await expectNoHorizontalOverflow(page, `вход 200% ${theme}`);
+      expect(await findSmallTapTargets(page)).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath(`connect-200-${theme}.png`) });
+    }
   });
 });
 

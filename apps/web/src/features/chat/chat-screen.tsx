@@ -353,7 +353,7 @@ export function ChatScreen() {
           </div>
         }
       >
-        <div ref={stick.content} className="flex min-h-full flex-1 flex-col pt-4 pb-6" data-chat-content="">
+        <div ref={stick.content} className="flex min-h-full flex-1 flex-col pt-4 pb-10" data-chat-content="">
           {activeId && runtimeResult.isError ? (
             <Banner tone="danger" icon="warning">
               Не удалось открыть чат. {humanMessage(runtimeResult.error)}

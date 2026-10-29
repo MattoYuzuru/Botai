@@ -286,7 +286,7 @@ describe("Варя в чате: сцена, насест, реплики", () =>
     const user = userEvent.setup();
     renderApp("/chat");
     await screen.findByText("Что сегодня по расписанию?", { selector: "p" }, wait);
-    expect(document.querySelector("[data-chat-content]")?.className).toContain("pb-6");
+    expect(document.querySelector("[data-chat-content]")?.className).toContain("pb-10");
     await user.click(screen.getByRole("button", { name: "Новый чат" }));
     await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
     // На пустом чате место сцены входит в центрируемый блок, а не стоит пустой полосой над полем.
