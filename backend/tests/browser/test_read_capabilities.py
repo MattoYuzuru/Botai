@@ -148,6 +148,22 @@ async def test_body_completion_proof_does_not_create_response_finished_close_wai
         assert "Данные: 2026-10-29" in result.snapshot.text
 
 
+async def test_fresh_replay_keeps_observed_select_literal_despite_binding_name_collision(
+    gateway: PlaywrightGateway,
+) -> None:
+    async with environment(gateway) as (_, registry):
+        select = await one(registry, "select_option")
+        lectures = next(value for value in select.values if value.label == "Лекции")
+        compiled = await registry.apply(select.ref, value_ref=lectures.ref)
+        assert compiled.plan.steps[0].value == "lectures"
+    async with environment(gateway) as (handle, registry):
+        pages = await registry.replay(
+            compiled.plan, values={"lectures": "all"}, items_selector=".lesson"
+        )
+        assert await handle.page.input_value("#kind") == "lectures"
+        assert "Данные: lectures" in pages[0].text
+
+
 async def test_preloaded_hidden_tab_panel_becomes_visible_and_replays(
     gateway: PlaywrightGateway,
 ) -> None:
@@ -273,6 +289,33 @@ async def test_empty_requires_explicit_current_marker(
             await registry.replay(
                 BrowserPlan(emptyTarget=target), values={}, items_selector=".lesson"
             )
+
+
+async def test_replay_cannot_certify_empty_from_marker_moved_outside_owning_region(
+    gateway: PlaywrightGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    html = HTML.replace(
+        "rows.innerHTML='<article class=\"lesson\">'+data.title+'</article>';",
+        'rows.innerHTML=\'<p id="empty" role="status">Нет занятий</p>\';',
+    )
+    async with environment(gateway, html) as (_, registry):
+        date = await one(registry, "set_date")
+        compiled = await registry.apply(date.ref, value_ref="today")
+        assert compiled.plan.empty_target is not None
+        assert compiled.plan.empty_target.selector == "#empty"
+        assert compiled.plan.steps[0].region is not None
+        assert compiled.plan.steps[0].region.selector == "#rows"
+    moved = html.replace(
+        "rows.setAttribute('aria-busy','false');",
+        "document.querySelector('main').append(document.getElementById('empty'));"
+        "rows.textContent='Область результатов';"
+        "rows.setAttribute('aria-busy','false');",
+    )
+    monkeypatch.setattr(capabilities_module, "WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(capabilities_module, "QUIET_SECONDS", 0.05)
+    async with environment(gateway, moved) as (_, registry):
+        with pytest.raises(ReadEffectError, match="no_progress"):
+            await registry.replay(compiled.plan, values={}, items_selector=".lesson")
 
 
 async def test_same_origin_frame_replays_and_cross_origin_frame_is_not_a_capability(

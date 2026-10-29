@@ -630,7 +630,7 @@ class ReadCapabilityRegistry:
                         raise ReadEffectError("invalid_value")
             elif step.op == "select_option":
                 assert step.value is not None
-                value = values.get(step.value, step.value)
+                value = step.value  # an observed native option is a literal, never a binding
                 options = facts.get("options", [])
                 if not any(option.get("value") == value for option in options):
                     raise ReadEffectError("unknown_value")
@@ -760,12 +760,14 @@ class ReadCapabilityRegistry:
             nodes = select_items(parse_html(snapshot.html), items_selector)
             explicit_empty = False
             if not nodes and plan.empty_target is not None:
-                try:
-                    empty = await self._target(frame, plan.empty_target, actionable=False)
-                    explicit_empty = True
-                    await empty.dispose()
-                except ReadEffectError:
-                    pass
+                # Reapply the compiler's scope and explicit-empty semantics. A status with the
+                # same descriptor in a sidebar cannot certify this owning region as empty.
+                empty: Any = await frame.evaluate(_EMPTY, owner.selector if owner else None)
+                explicit_empty = (
+                    isinstance(empty, list)
+                    and len(empty) == 1
+                    and empty[0] == plan.empty_target.model_dump()
+                )
             signature = hashlib.sha256(
                 "\n".join(node.html or "" for node in nodes).encode()
             ).hexdigest()
