@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -24,6 +26,7 @@ HUE_MIN = 235.0
 HUE_MAX = 345.0
 SLUG_MAX = 50
 SHORT_TITLE_MAX = 16
+TYPO_RATIO = 0.8
 
 _TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
@@ -141,12 +144,28 @@ async def find_or_create(
     return created
 
 
-async def search(session: AsyncSession, q: str, *, limit: int = 20) -> list[University]:
-    """Merge learned rows with name-only suggestions, preserving learned ids and their metadata.
+@dataclass(frozen=True, slots=True)
+class UniversityCandidate:
+    """A university a name may mean: what to show a student and how sure the match is (0..1)."""
 
-    An empty query includes all learned rows: consumers resolve the short names of existing spaces.
-    Searching never persists a suggestion or implies support for its university's login.
-    """
+    id: str
+    title: str
+    short_title: str
+    aliases: tuple[str, ...]
+    score: float
+
+
+def aliases_of(row: University) -> tuple[str, ...]:
+    """Other names of a university, from the name-only catalog (a learned row has none of its own)."""
+    entry = catalog.identify(row.title, row.short_title, row.id)
+    if entry is None:
+        return ()
+    shown = {catalog.name_key(row.title), catalog.name_key(row.short_title)}
+    return tuple(a for a in entry.aliases if catalog.name_key(a) not in shown)
+
+
+async def known(session: AsyncSession) -> list[University]:
+    """Learned rows plus the catalog names nobody has learned yet (as transient, unsaved rows)."""
     rows = (await session.execute(select(University).order_by(University.title))).scalars().all()
     learned = list(rows)
     for entry in catalog.entries():
@@ -163,15 +182,64 @@ async def search(session: AsyncSession, q: str, *, limit: int = 20) -> list[Univ
                 third_party_warning=None,
             )
         )
-    needle = catalog.name_key(q)
-    if needle:
-        matches: list[University] = []
-        for row in learned:
-            entry = catalog.identify(row.title, row.short_title, row.id)
-            values = (row.title, row.short_title, row.id, *row.origins)
-            if entry:
-                values += catalog.names(entry)
-            if any(needle in catalog.name_key(value) for value in values):
-                matches.append(row)
-        return matches[:limit]
     return learned
+
+
+def _score(needle: str, row: University) -> float:
+    """How well a typed name matches a university: exact name 1, prefix, part, then a typo."""
+    entry = catalog.identify(row.title, row.short_title, row.id)
+    names = [row.title, row.short_title, row.id, *(catalog.names(entry) if entry else ())]
+    hosts = [urlsplit(origin).hostname or origin for origin in row.origins]
+    best = 0.0
+    for key in {catalog.name_key(value) for value in (*names, *hosts)} - {""}:
+        if key == needle:
+            return 1.0
+        if key.startswith(needle):
+            best = max(best, 0.8 + 0.1 * len(needle) / len(key))
+        elif needle in key:
+            best = max(best, 0.5 + 0.2 * len(needle) / len(key))
+        elif len(key) >= 3 and key in needle:
+            best = max(best, 0.4 + 0.2 * len(key) / len(needle))
+        elif len(needle) >= 4:
+            ratio = SequenceMatcher(None, needle, key).ratio()
+            if ratio >= TYPO_RATIO:
+                best = max(best, 0.5 * ratio)
+    return best
+
+
+async def _ranked(session: AsyncSession, query: str) -> list[tuple[University, float]]:
+    needle = catalog.name_key(query)
+    if not needle:
+        return []
+    scored = [(row, _score(needle, row)) for row in await known(session)]
+    return sorted(
+        ((row, score) for row, score in scored if score > 0),
+        key=lambda pair: (-pair[1], pair[0].title),
+    )
+
+
+async def search(session: AsyncSession, query: str, *, limit: int = 8) -> list[UniversityCandidate]:
+    """Universities a typed name or a site address may mean, best first (FR-037).
+
+    Learned rows and name-only catalog suggestions are merged; a learned id wins over the catalog
+    id of the same university. Searching never saves a suggestion or implies support for the
+    university's login.
+    """
+    return [
+        UniversityCandidate(
+            id=row.id,
+            title=row.title,
+            short_title=row.short_title,
+            aliases=aliases_of(row),
+            score=round(score, 3),
+        )
+        for row, score in (await _ranked(session, query))[:limit]
+    ]
+
+
+async def search_rows(session: AsyncSession, query: str, *, limit: int = 20) -> list[University]:
+    """The same search as rows, for the registry endpoint. An empty query lists everything known:
+    consumers resolve the short names of existing spaces."""
+    if not catalog.name_key(query):
+        return await known(session)
+    return [row for row, _ in (await _ranked(session, query))[:limit]]

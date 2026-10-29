@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from sqlalchemy import select
 
-from botai.api.deps import get_services
 from botai.core.clock import FrozenClock
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -28,139 +24,8 @@ TOKEN = "tok-FIXTURE-9f3a"
 PASSWORD = "P@ssw0rd-FIXTURE"
 
 
-async def _space(c: httpx.AsyncClient) -> str:
-    return (await c.post("/api/v1/spaces", json={"title": "Вуз"})).json()["id"]
-
-
-async def test_create_connection_starts_a_connect_job(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
-) -> None:
-    acc = await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    r = await client.post(
-        f"/api/v1/spaces/{space}/connections",
-        json={"kind": "lms", "url": "https://Lms.Example.org/login?next=/x", "title": "Мой LMS"},
-    )
-    assert r.status_code == 201, r.text
-    body = r.json()
-    conn = body["connection"]
-    assert conn["status"] == "draft"
-    assert conn["origin"] == "https://lms.example.org"
-    assert conn["kind"] == "lms"
-    assert conn["title"] == "Мой LMS"
-    assert conn["spaceId"] == space
-    assert conn["hasPassword"] is False
-    assert conn["adapter"] is None
-    assert conn["lastSyncAt"] is None
-
-    assert len(queue.jobs) == 1
-    job = queue.jobs[0]
-    assert job["id"] == body["jobId"]
-    assert job["kind"] == JobKind.CONNECT
-    assert job["user_id"] == acc.id
-    assert job["connection_id"] == conn["id"]
-    assert job["payload"] == {
-        "url": "https://lms.example.org/login?next=/x",
-        "kind": "lms",
-        "kinds": ["scheduleEvents", "deadlines"],
-    }  # Explicit legacy selection and hints only, never credentials.
-
-    async with tx_sessionmaker() as s:
-        row = (await s.execute(select(Connection))).scalar_one()
-    assert row.allow_hosts == [
-        "lms.example.org"
-    ]  # the agent widens it; the egress proxy enforces it
-
-
-async def test_create_connection_without_a_url_lets_the_agent_discover(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
-) -> None:
-    await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    r = await client.post(f"/api/v1/spaces/{space}/connections", json={})
-    assert r.status_code == 201
-    assert r.json()["connection"]["kind"] == "other"
-    assert r.json()["connection"]["origin"] == ""
-    assert queue.jobs[0]["kind"] == JobKind.CONNECT
-    assert queue.jobs[0]["payload"] == {"kinds": ["scheduleEvents", "deadlines"]}
-
-
-async def test_a_repeated_request_while_setup_runs_is_the_same_connection(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
-) -> None:
-    await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    payload = {"kind": "lms", "url": "https://lms.example.org"}
-    first = (await client.post(f"/api/v1/spaces/{space}/connections", json=payload)).json()
-    second = (await client.post(f"/api/v1/spaces/{space}/connections", json=payload)).json()
-    assert first["connection"]["id"] == second["connection"]["id"]
-    assert first["jobId"] == second["jobId"]
-    assert len(queue.jobs) == 1
-    async with tx_sessionmaker() as s:
-        assert len((await s.execute(select(Connection))).all()) == 1
-
-
-async def test_a_finished_connection_does_not_swallow_a_new_one(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
-) -> None:
-    acc = await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    await make_connection(tx_sessionmaker, acc.id, space, status="active")
-    r = await client.post(
-        f"/api/v1/spaces/{space}/connections",
-        json={"kind": "lms", "url": "https://lms.example.org"},
-    )
-    assert r.status_code == 201
-    async with tx_sessionmaker() as s:
-        assert len((await s.execute(select(Connection))).all()) == 2
-
-
-@pytest.mark.parametrize(
-    "url", ["ftp://x.example.org", "https://u:p@x.example.org", "https://" + "a" * 300 + ".org"]
-)
-async def test_bad_urls_are_rejected_without_a_connection(
-    client: httpx.AsyncClient,
-    tx_sessionmaker: Sm,
-    clock: FrozenClock,
-    queue: InMemoryJobQueue,
-    url: str,
-) -> None:
-    await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    r = await client.post(f"/api/v1/spaces/{space}/connections", json={"url": url})
-    assert r.status_code == 422
-    assert queue.jobs == []
-    async with tx_sessionmaker() as s:
-        assert (await s.execute(select(Connection))).first() is None
-
-
-async def test_unknown_kind_is_a_validation_error(
-    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
-) -> None:
-    await signup(client, tx_sessionmaker, clock)
-    space = await _space(client)
-    assert (
-        await client.post(f"/api/v1/spaces/{space}/connections", json={"kind": "bank"})
-    ).status_code == 422
-
-
-class _BrokenQueue:
-    async def enqueue(self, *_: Any, **__: Any) -> str:
-        raise RuntimeError("queue down")
-
-
-async def test_no_orphan_connection_when_the_job_cannot_be_queued(
-    app: FastAPI, tx_sessionmaker: Sm, clock: FrozenClock, services: Services, new_client: Make
-) -> None:
-    c = new_client()
-    await signup(c, tx_sessionmaker, clock)
-    space = await _space(c)
-    broken = dataclasses.replace(services, queue=_BrokenQueue())
-    app.dependency_overrides[get_services] = lambda: broken
-    with pytest.raises(RuntimeError, match="queue down"):
-        await c.post(f"/api/v1/spaces/{space}/connections", json={"url": "https://lms.example.org"})
-    async with tx_sessionmaker() as s:
-        assert (await s.execute(select(Connection))).first() is None
+async def _space(c: httpx.AsyncClient, title: str = "Вуз") -> str:
+    return (await c.post("/api/v1/spaces", json={"title": title})).json()["id"]
 
 
 async def test_list_and_get_connection(
@@ -168,7 +33,7 @@ async def test_list_and_get_connection(
 ) -> None:
     acc = await signup(client, tx_sessionmaker, clock)
     space = await _space(client)
-    other = await _space(client)
+    other = await _space(client, "Другой вуз")
     a = await make_connection(tx_sessionmaker, acc.id, space, origin="https://a.example.org")
     await make_connection(tx_sessionmaker, acc.id, other, origin="https://b.example.org")
     await services.vault.put(acc.id, a, SecretKind.PASSWORD, PASSWORD)
@@ -263,16 +128,14 @@ async def test_resume_setup_reuses_its_waiting_connect_job(
     queue: InMemoryJobQueue,
     path: str,
 ) -> None:
-    await signup(client, tx_sessionmaker, clock)
-    started = await client.post(
-        f"/api/v1/spaces/{await _space(client)}/connections",
-        json={"url": "https://fakeuni.test/"},
+    acc = await signup(client, tx_sessionmaker, clock)
+    conn = await make_connection(
+        tx_sessionmaker, acc.id, await _space(client), status="draft", origin="https://fakeuni.test"
     )
-    assert started.status_code == 201
-    body = started.json()
-    resumed = await client.post(f"/api/v1/connections/{body['connection']['id']}/{path}")
+    waiting = await queue.enqueue(JobKind.CONNECT, user_id=acc.id, connection_id=conn)
+    resumed = await client.post(f"/api/v1/connections/{conn}/{path}")
     assert resumed.status_code == 202
-    assert resumed.json()["jobId"] == body["jobId"]
+    assert resumed.json()["jobId"] == waiting
     assert len(queue.jobs) == 1
 
 
@@ -478,19 +341,14 @@ async def test_user_b_cannot_reach_user_a_connections(
     assert token.get_secret_value() == TOKEN
 
 
-async def test_a_space_id_of_another_user_cannot_host_my_connection(
-    new_client: Make, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
+async def test_the_connections_of_another_users_space_are_not_found(
+    new_client: Make, tx_sessionmaker: Sm, clock: FrozenClock
 ) -> None:
     a, b = new_client(), new_client()
     await signup(a, tx_sessionmaker, clock, email="a@example.com")
     bob = await signup(b, tx_sessionmaker, clock, email="b@example.com")
     alices_space = await _space(a)
-    r = await b.post(
-        f"/api/v1/spaces/{alices_space}/connections", json={"url": "https://x.example.org"}
-    )
-    assert r.status_code == 404
-    assert queue.jobs == []
-    assert bob.id
+    assert (await b.get(f"/api/v1/spaces/{alices_space}/connections")).status_code == 404
     other = await make_space(tx_sessionmaker, bob.id)
     assert (await b.get(f"/api/v1/spaces/{other}/connections")).json() == []
 

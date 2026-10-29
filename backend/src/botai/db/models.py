@@ -99,7 +99,25 @@ class University(Base):
 
 
 class Space(Base):
+    """One university of one user (`university_id` set), or the single "My materials" space of a
+    user for documents outside any university (`university_id` NULL)."""
+
     __tablename__ = "spaces"
+    __table_args__ = (
+        Index(
+            "uq_spaces_user_id_university_id",
+            "user_id",
+            "university_id",
+            unique=True,
+            postgresql_where=text("university_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_spaces_user_id_materials",
+            "user_id",
+            unique=True,
+            postgresql_where=text("university_id IS NULL"),
+        ),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     university_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("universities.id"))
@@ -149,11 +167,14 @@ class Connection(Base):
         String(26), ForeignKey("spaces.id", ondelete="CASCADE"), index=True, nullable=False
     )
     origin: Mapped[str] = mapped_column(String(255), nullable=False)
-    kind: Mapped[str] = mapped_column(
-        String(20), nullable=False
-    )  # lms | schedule | portal | sheet | document | mail | other
+    # portal | lms | schedule | site | sheet | doc | document | calendar | other
+    # (`spaces.sources.CONNECTION_KINDS`): sheet = a table, doc = a document or page behind a
+    # link, document = an uploaded file
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
     adapter: Mapped[str | None] = mapped_column(String(20))
-    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)  # human, never a bare host
+    # The UI page of the source that holds the data (no secret query), for "open in the portal".
+    entry_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     spec_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("adapter_specs.id", ondelete="SET NULL")
@@ -342,6 +363,39 @@ class Chunk(Base):
     tsv: Mapped[Any] = mapped_column(
         TSVECTOR, Computed("to_tsvector('russian', text)", persisted=True)
     )
+
+
+class Attachment(Base):
+    """A file of a chat (or of the "add a document" form): the bytes live here, owned by one user.
+
+    Created unbound by `POST /attachments`; sending a message binds it (`message_id`). A document
+    attachment is indexed by an INGEST job that reads these bytes (`document_id` appears once the
+    text is searchable, `ingest_state` says how far it got).
+    """
+
+    __tablename__ = "attachments"
+    __table_args__ = (Index("ix_attachments_user_id_thread_id", "user_id", "thread_id"),)
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    thread_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("chat_messages.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    mime: Mapped[str] = mapped_column(String(120), nullable=False)  # detected from the bytes
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)  # image|document|audio|other
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("documents.id", ondelete="SET NULL")
+    )
+    ingest_state: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="none", server_default="none"
+    )  # none | queued | indexed | failed
+    created_at: Mapped[datetime] = ts_now()
 
 
 class Fact(Base):

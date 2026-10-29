@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field
 
 from botai.core.api import ApiModel
+from botai.spaces.views import ConnectionKind
 
 ConnectionStatus = Literal[
     "draft",
@@ -19,7 +20,6 @@ ConnectionStatus = Literal[
     "error",
     "disabled",
 ]
-ConnectionKind = Literal["lms", "schedule", "portal", "sheet", "document", "mail", "other"]
 SecretKindIn = Literal["token", "ical_url", "api_key"]
 
 
@@ -27,6 +27,7 @@ class UniversityOut(ApiModel):
     id: str
     title: str
     short_title: str
+    aliases: list[str]
     origins: list[str]
     accent_hue: float
     third_party_warning: str | None = None
@@ -46,27 +47,34 @@ class SpaceUpdate(ApiModel):
 
 
 class SpaceOut(ApiModel):
+    """A university of the student (or "My materials", `universityId` null)."""
+
     id: str
     title: str
+    short_title: str
+    aliases: list[str]
     university_id: str | None
     accent_hue: float
     time_zone: str
     created_at: datetime
 
 
-class ConnectionCreate(ApiModel):
-    kind: ConnectionKind | None = None  # None: let the agent discover what to connect
-    url: str | None = Field(default=None, max_length=1000)
-    title: str | None = Field(default=None, max_length=120)
+class ActiveTaskOut(ApiModel):
+    job_id: str
+    kind: Literal["connect", "repair", "sync", "ingest"]
+    state: Literal["queued", "running", "waiting_user"]
 
 
 class ConnectionOut(ApiModel):
+    """A source of a university."""
+
     id: str
     space_id: str
     origin: str
     kind: ConnectionKind
     adapter: str | None
-    title: str
+    title: str  # human; never a bare host
+    entry_url: str | None = None  # the UI page of the source, for "open in the portal"
     status: ConnectionStatus
     has_password: bool
     # kinds of user-supplied secrets present, never their values
@@ -75,11 +83,8 @@ class ConnectionOut(ApiModel):
     next_sync_at: datetime | None
     error_code: str | None = None
     error_detail: str | None = None
-
-
-class ConnectionStarted(ApiModel):
-    connection: ConnectionOut
-    job_id: str
+    thread_id: str | None = None  # the thread of the latest task of this source
+    active_task: ActiveTaskOut | None = None
 
 
 class SecretIn(ApiModel):
