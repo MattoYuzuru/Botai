@@ -48,6 +48,7 @@ from tests.fakeuni import data, login
 pytestmark = pytest.mark.browser
 
 CU_ENTRY = f"{ORIGIN}/cu/app"
+CU_HOSTS = ("fakeuni.test", "id.fakeuni.test")
 
 
 @pytest.fixture(autouse=True)
@@ -58,9 +59,6 @@ def fresh_cu() -> None:
 @pytest.fixture
 def new_rig(make_rig: Callable[..., Rig]) -> Callable[..., Rig]:  # noqa: F811
     return make_rig
-
-
-CU_HOSTS = ("fakeuni.test", "id.fakeuni.test")
 
 
 async def open_entry(

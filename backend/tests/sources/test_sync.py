@@ -285,7 +285,18 @@ async def test_login_that_cannot_be_automated_stops_without_retries(
     assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
 
 
-async def bound_sync_job(env: Env, *, thread_id: str | None) -> tuple[str, InMemoryJobContext]:
+class WorkerContext(InMemoryJobContext):
+    """What a claimed job in the worker offers: a row to move and a claim to check."""
+
+    input_revision = 0
+
+    async def assert_current(
+        self, session: AsyncSession, *, input_revision: int | None = None
+    ) -> None:
+        return None
+
+
+async def bound_sync_job(env: Env, *, thread_id: str | None) -> tuple[str, WorkerContext]:
     """A scheduled sync as the worker holds it: a running job row, with or without a conversation."""
     job = m.Job(
         id=new_id(),
@@ -299,7 +310,7 @@ async def bound_sync_job(env: Env, *, thread_id: str | None) -> tuple[str, InMem
     )
     env.db.add(job)
     await env.db.commit()
-    ctx = InMemoryJobContext(
+    ctx = WorkerContext(
         user_id=env.seeded.user_id, connection_id=env.seeded.connection_id, job_id=job.id
     )
     return job.id, ctx

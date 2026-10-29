@@ -459,6 +459,8 @@ async def bind_login_to_source_thread(ctx: JobContext, services: Services, snap:
     is decided by `spaces.conversations.canonical_thread`, the conversation owner's function."""
     from botai.spaces.conversations import canonical_thread
 
+    if not isinstance(ctx, GuardedJobContext):
+        return  # a test double is no job row, and there is nothing to move
     try:
         async with services.db() as db, db.begin():
             job = await db.scalar(
@@ -468,7 +470,7 @@ async def bind_login_to_source_thread(ctx: JobContext, services: Services, snap:
             )
             if job is None or job.thread_id is not None:
                 return
-            await guard_job(ctx, db)
+            await ctx.assert_current(db)
             thread = await canonical_thread(db, snap.user_id, snap.connection_id)
             if thread is not None:
                 job.thread_id = thread.id
