@@ -33,7 +33,7 @@ async def upload_attachment(
         filename=file.filename,
         content_type=file.content_type,
         data=data,
-        thread_id=thread_id,
+        thread_id=thread_id or None,  # an empty form field is no thread
     )
     await session.commit()
     return service.out(att)

@@ -20,6 +20,7 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.db import models as m
 from botai.jobs.queue import enqueue_in_session
+from botai.sources import public_links
 from botai.sources.ingest import check_url, source_for_url
 from botai.sources.schemas import DocumentFromUrl, DocumentOut, DocumentStarted
 from botai.spaces import repo, views
@@ -47,6 +48,7 @@ async def start_url(
 ) -> DocumentStarted:
     """A link to a file, a page, or a link-shared Google document: a source and its INGEST job."""
     host = check_url(body.url)
+    public_links.export_url(body.url)  # a Google link that cannot be exported is refused at once
     source, hosts = source_for_url(body.url)
     space = await repo.get_space(session, user_id, space_id)
     kind = "sheet" if source["kind"] == "google_sheet" else "doc"

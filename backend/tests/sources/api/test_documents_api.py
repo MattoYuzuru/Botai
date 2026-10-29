@@ -185,6 +185,37 @@ async def test_a_link_starts_a_job_with_a_typed_source(
     assert (two.title, two.allow_hosts, two.kind) == ("Таблица", ["docs.google.com"], "sheet")
 
 
+async def test_google_slides_and_drive_links_are_documents_and_a_folder_is_refused(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    _, space = await _login_with_space(client, tx_sessionmaker, clock)
+    url = f"/api/v1/spaces/{space}/documents/url"
+    slides = await client.post(
+        url, json={"url": "https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUv/edit"}
+    )
+    drive = await client.post(
+        url, json={"url": "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUv/view"}
+    )
+    folder = await client.post(
+        url, json={"url": "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUv"}
+    )
+    form = await client.post(url, json={"url": "https://docs.google.com/forms/d/e/1FAIpQ/viewform"})
+    assert (slides.status_code, drive.status_code) == (201, 201)
+    assert (folder.status_code, form.status_code) == (422, 422)
+    assert "не на папку" in folder.json()["detail"]
+    jobs = await _jobs(tx_sessionmaker)
+    assert [j.payload["source"]["kind"] for j in jobs] == ["url", "url"]
+    async with tx_sessionmaker() as s:
+        hosts = {
+            c.origin: (c.kind, c.allow_hosts)
+            for c in (await s.execute(select(m.Connection))).scalars()
+        }
+    assert hosts == {
+        "https://docs.google.com": ("doc", ["docs.google.com"]),
+        "https://drive.google.com": ("doc", ["drive.google.com"]),
+    }
+
+
 @pytest.mark.parametrize(
     "link",
     [
@@ -301,6 +332,43 @@ async def test_delete_removes_the_document_its_text_its_spec_and_its_secrets(
         assert specs == 0
     assert not await services.vault.has(user_id, conn_id, SecretKind.API_KEY)
     assert (await client.delete(f"/api/v1/documents/{doc_id}")).status_code == 404
+
+
+async def test_deleting_a_document_drops_the_file_it_was_uploaded_as_unless_a_chat_carries_it(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    user_id, space = await _login_with_space(client, tx_sessionmaker, clock)
+    library, _ = await _document(tx_sessionmaker, user_id, space, title="Из библиотеки")
+    chat, _ = await _document(tx_sessionmaker, user_id, space, title="Из чата")
+    async with tx_sessionmaker() as s:
+        thread = m.ChatThread(user_id=user_id, title="Чат")
+        s.add(thread)
+        await s.flush()
+        message = m.ChatMessage(user_id=user_id, thread_id=thread.id, role="user", blocks=[])
+        s.add(message)
+        await s.flush()
+        for doc_id, message_id in ((library, None), (chat, message.id)):
+            s.add(
+                m.Attachment(
+                    user_id=user_id,
+                    thread_id=thread.id if message_id else None,
+                    message_id=message_id,
+                    document_id=doc_id,
+                    name=f"{doc_id}.txt",
+                    mime="text/plain",
+                    size=1,
+                    kind="document",
+                    data=b"x",
+                    sha256="0" * 64,
+                    ingest_state="indexed",
+                )
+            )
+        await s.commit()
+    assert (await client.delete(f"/api/v1/documents/{library}")).status_code == 204
+    assert (await client.delete(f"/api/v1/documents/{chat}")).status_code == 204
+    async with tx_sessionmaker() as s:
+        names = list(await s.scalars(select(m.Attachment.name)))
+    assert names == [f"{chat}.txt"]  # the message still shows its file; the library copy is gone
 
 
 async def test_a_document_of_someone_else_cannot_be_deleted(
