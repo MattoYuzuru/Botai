@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 import uvicorn
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from playwright.async_api import Error as PlaywrightError
 
 from botai.browser.egress import ProxyEgress
+from botai.browser.forms import has_credential_fields
 from botai.browser.gateway import PlaywrightGateway, PlaywrightHandle
 from botai.browser.login import LoginFlow
 from botai.browser.presets import InMemoryLoginStore
@@ -28,8 +31,17 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled
 from botai.core.vault import InMemoryVault, SecretKind
 from tests.browser.conftest import PROXY_SECRET, QuietServer, Tls
-from tests.browser.test_login import FAST, ORIGIN, FakeLink, FakeScreens, Rig, Student, preset_dict
-from tests.fakeuni import data
+from tests.browser.test_login import (
+    FAST,
+    ORIGIN,
+    FakeLink,
+    FakeScreens,
+    Rig,
+    Student,
+    make_rig,  # noqa: F401 - fixture
+    preset_dict,
+)
+from tests.fakeuni import data, deep
 
 pytestmark = pytest.mark.browser
 
@@ -44,6 +56,7 @@ class GuestStack:
     egress: ProxyEgress
     visited: list[str]
     sessions: set[str]
+    side_effects: dict[str, int]
 
     def rig(self, human: Any = None) -> Rig:
         user, conn = new_id(), new_id()
@@ -68,6 +81,7 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
     app = FastAPI()
     visited: list[str] = []
     sessions: set[str] = set()
+    side_effects = {"posts": 0, "sockets": 0}
 
     def page(body: str, *, student: bool = False) -> HTMLResponse:
         script = (
@@ -81,7 +95,9 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
             + "</main><script>"
             + script
             + "fetch('/api/client-bootstrap', {headers:{Authorization:"
-            "'Bearer '+sessionStorage.getItem('client')}});</script>"
+            "'Bearer '+sessionStorage.getItem('client')}});"
+            "fetch('/data-write',{method:'POST'}).catch(()=>{});"
+            "new WebSocket('wss://fakeuni.test/data-socket').onerror=()=>{};</script>"
         )
         response.set_cookie("client_device", GUEST, secure=True, httponly=True)
         return response
@@ -100,6 +116,17 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
         if request.cookies.get("client_device") == GUEST:
             return JSONResponse({"client": "anonymous-browser"})
         return JSONResponse({"error": "client-required"}, status_code=401)
+
+    @app.post("/data-write")
+    async def side_effect() -> dict[str, bool]:
+        side_effects["posts"] += 1
+        return {"written": True}
+
+    @app.websocket("/data-socket")
+    async def socket_side_effect(socket: WebSocket) -> None:
+        side_effects["sockets"] += 1
+        await socket.accept()
+        await socket.close()
 
     @app.get("/private/classes")
     async def classes(request: Request) -> HTMLResponse:
@@ -131,9 +158,52 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
             student=request.cookies.get("student_session") in sessions,
         )
 
+    @app.get("/spa-auth")
+    async def spa_auth(request: Request) -> HTMLResponse:
+        if request.cookies.get("student_session") in sessions:
+            return page("<h1>Мои занятия</h1>", student=True)
+        return page(
+            '<h1>Please sign in</h1><form id="auth">'
+            '<label for="u">Логин</label><input id="u" name="username" autocomplete="username">'
+            '<label for="p">Пароль</label><input id="p" name="password" type="password">'
+            '<button type="submit">Войти</button></form><script>'
+            "document.querySelector('form').onsubmit=async e=>{e.preventDefault();"
+            "const form=new URLSearchParams(new FormData(e.target));"
+            "const r=await fetch('/api/client-login',{method:'POST',body:form});"
+            "if(r.ok){document.querySelector('main').innerHTML='<h1>Мои занятия</h1>';"
+            "fetch('/data-write',{method:'POST'}).catch(()=>{});}};</script>"
+        )
+
+    @app.post("/api/client-login")
+    async def client_login(username: str = Form(), password: str = Form()) -> JSONResponse:
+        if username != data.USERNAME or password != data.PASSWORD:
+            return JSONResponse({"accepted": False}, status_code=401)
+        session = new_id()
+        sessions.add(session)
+        response = JSONResponse({"accepted": True})
+        response.set_cookie("student_session", session, secure=True, httponly=True)
+        return response
+
+    @app.get("/email-entry")
+    async def title_auth() -> HTMLResponse:
+        return HTMLResponse(
+            '<!doctype html><title>Sign in</title><form action="/api/email-step" method="post">'
+            '<label for="email">Email</label><input id="email" type="email" name="email" '
+            'autocomplete="email"><button type="submit">Continue</button></form>'
+        )
+
+    @app.post("/api/email-step")
+    async def email_step(email: str = Form()) -> JSONResponse:
+        visited.append("/api/email-step")
+        return JSONResponse({"accepted": email == data.USERNAME})
+
     @app.get("/private/canonical")
     async def canonical() -> RedirectResponse:
         return RedirectResponse("/private/classes", status_code=302)
+
+    @app.get("/private/public-redirect")
+    async def public_redirect() -> RedirectResponse:
+        return RedirectResponse("/", status_code=302)
 
     @app.get("/private/refused")
     async def refused() -> HTMLResponse:
@@ -170,7 +240,7 @@ async def guest_stack(tls: Tls) -> AsyncIterator[GuestStack]:
     egress = ProxyEgress(PROXY_SECRET, proxy=proxy)
     gateway = PlaywrightGateway(egress, sandbox=False, ignore_https_errors=True)
     try:
-        yield GuestStack(gateway, egress, visited, sessions)
+        yield GuestStack(gateway, egress, visited, sessions, side_effects)
     finally:
         await gateway.aclose()
         await proxy.close()
@@ -310,10 +380,12 @@ async def test_manual_mode_opens_screen_despite_valid_stored_probe_and_waits_for
     await rig.vault.put(rig.user, rig.conn, SecretKind.PASSWORD, data.PASSWORD)
 
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
         assert await handle.page.input_value("#u") == ""
         assert await handle.page.input_value("#p") == ""
         await handle.page.fill("#u", data.USERNAME)
         await handle.page.fill("#p", data.PASSWORD)
+        await handle.arm_human_auth()
         await handle.page.click('button[type="submit"]')
         await asyncio.sleep(FAST.poll_s * 2)
         assert not link.succeeded
@@ -339,11 +411,13 @@ async def test_manual_done_cannot_override_target_authentication_or_captcha(
     guest_stack: GuestStack, trust_fakeuni: Path, path: str
 ) -> None:
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
         # A genuine authenticated landing and a passing bootstrap API are still
         # insufficient when the requested target independently refuses access.
         await handle.page.goto(ENTRY)
         await handle.page.fill("#u", data.USERNAME)
         await handle.page.fill("#p", data.PASSWORD)
+        await handle.arm_human_auth()
         await handle.page.click('button[type="submit"]')
         link.request_done()
         await asyncio.sleep(FAST.poll_s * 3)
@@ -384,10 +458,13 @@ async def test_public_landing_after_wrong_password_cannot_hide_the_fresh_refused
     )
 
 
-async def test_entry_allows_source_canonical_redirect_after_actual_login(
+async def test_entry_material_canonical_redirect_requires_human_confirmation(
     guest_stack: GuestStack, trust_fakeuni: Path
 ) -> None:
-    rig = guest_stack.rig()
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.request_done()
+
+    rig = guest_stack.rig(human)
     student = Student()
     await rig.flow.ensure_for_entry(
         rig.ctx(student),
@@ -395,7 +472,263 @@ async def test_entry_allows_source_canonical_redirect_after_actual_login(
         connection_id=rig.conn,
         entry_url=ORIGIN + "/private/canonical?filter=private",
     )
+    await rig.screens.settle()
     assert [kind for kind, _ in student.asked] == ["login", "password"]
+    assert len(rig.screens.links) == 1
+    assert rig.screens.links[0].succeeded
+
+
+async def test_entry_initial_login_redirect_and_final_documents_cannot_write(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    before = guest_stack.side_effects.copy()
+    await rig.flow.ensure_for_entry(
+        rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=ENTRY
+    )
+    assert guest_stack.side_effects == before
+
+
+async def test_real_deep_portal_script_never_writes_during_login_entry_verification(
+    make_rig: Callable[..., Rig],  # noqa: F811
+) -> None:
+    rig = make_rig()
+    student = Student()
+    before = deep.STATE.writes
+    await rig.flow.ensure_for_entry(
+        rig.ctx(student),
+        user_id=rig.user,
+        connection_id=rig.conn,
+        entry_url=ORIGIN + "/deep-portal?begin_date=2026-10-26",
+    )
+    assert [kind for kind, _ in student.asked] == ["login", "password", "code"]
+    assert deep.STATE.writes == before
+
+
+async def test_soft_refusal_does_not_authorize_background_writes_from_a_human_screen(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.side_effects.copy()
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/private/refused")
+        await handle.arm_human_auth()
+        await handle.page.evaluate("fetch('/data-write',{method:'POST'}).catch(()=>null)")
+        assert guest_stack.side_effects == before
+    finally:
+        await handle.close()
+
+
+async def test_spa_auth_fetch_can_complete_without_granting_its_data_page_a_write(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    before = guest_stack.side_effects.copy()
+    student = Student()
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student),
+        user_id=rig.user,
+        connection_id=rig.conn,
+        entry_url=ORIGIN + "/spa-auth",
+    )
+    assert [kind for kind, _ in student.asked] == ["login", "password"]
+    assert any(
+        cookie.name == "student_session" and cookie.value.get_secret_value() in guest_stack.sessions
+        for cookie in state.cookies
+    )
+    assert guest_stack.side_effects == before
+
+
+@pytest.mark.parametrize("document", [False, True], ids=["xhr-post", "document-post"])
+async def test_get_completion_cannot_leave_a_stale_auth_permit_after_same_url_dom_change(
+    guest_stack: GuestStack, trust_fakeuni: Path, document: bool
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.side_effects.copy()
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ENTRY)
+        await handle.arm_human_auth()
+        await handle.page.evaluate(
+            "async()=>{await fetch('/api/client-bootstrap');"
+            "document.querySelector('main').innerHTML='<h1>Мои занятия</h1>'; }"
+        )
+        async with handle.page.expect_event(
+            "requestfailed", predicate=lambda request: request.url == ORIGIN + "/data-write"
+        ) as refused:
+            if document:
+                # Chromium's blocked document can replace the evaluated renderer.
+                with contextlib.suppress(PlaywrightError):
+                    await handle.page.evaluate(
+                        "()=>{const f=document.createElement('form');f.method='POST';"
+                        "f.action='/data-write';document.body.append(f);f.submit();}"
+                    )
+            else:
+                assert (
+                    await handle.page.evaluate(
+                        "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
+                    )
+                    is False
+                )
+        assert (await refused.value).method == "POST"
+        assert guest_stack.side_effects == before
+    finally:
+        await handle.close()
+
+
+async def test_other_data_tab_and_iframe_cannot_inherit_the_selected_auth_page_permission(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.side_effects.copy()
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/private/refused")
+        data_tab = handle.page
+        auth_tab = await handle.context.new_page()
+        await auth_tab.goto(ENTRY)
+        await auth_tab.evaluate(
+            "()=>{const f=document.createElement('iframe');f.src='/private/refused';document.body.append(f);}"
+        )
+        data_frame = await auth_tab.wait_for_selector("iframe")
+        frame = await data_frame.content_frame()
+        assert frame is not None
+        await frame.wait_for_selector("h1")
+        await handle.arm_human_auth()
+        assert (
+            await data_tab.evaluate(
+                "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
+            )
+            is False
+        )
+        assert (
+            await frame.evaluate(
+                "fetch('/data-write',{method:'POST'}).then(()=>true).catch(()=>false)"
+            )
+            is False
+        )
+        assert guest_stack.side_effects == before
+    finally:
+        await handle.close()
+
+
+@pytest.mark.parametrize("document", [False, True], ids=["xhr-post", "document-post"])
+async def test_title_only_email_auth_context_is_preserved_for_both_post_kinds(
+    guest_stack: GuestStack, trust_fakeuni: Path, document: bool
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.visited.count("/api/email-step")
+    try:
+        async with handle.read_only_entry():
+            snap = await handle.goto(ORIGIN + "/email-entry")
+        assert has_credential_fields(snap)
+        assert not has_credential_fields(snap.model_copy(update={"title": ""}))
+        await handle.fill("#email", data.USERNAME)
+        async with handle.auth_document():
+            if document:
+                await handle.click("button")
+            else:
+                assert (
+                    await handle.page.evaluate(
+                        "async()=>{const r=await fetch('/api/email-step',{method:'POST',"
+                        "body:new URLSearchParams(new FormData(document.querySelector('form')))});"
+                        "return r.ok;}"
+                    )
+                    is True
+                )
+        assert guest_stack.visited.count("/api/email-step") == before + 1
+    finally:
+        await handle.close()
+
+
+async def test_entry_trailing_slash_and_query_canonicalization_do_not_require_a_screen(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    await rig.flow.ensure_for_entry(
+        rig.ctx(Student()),
+        user_id=rig.user,
+        connection_id=rig.conn,
+        entry_url=ORIGIN + "/private/classes/?filter=private",
+    )
+    assert not rig.screens.links
+
+
+async def test_stored_guest_probe_cannot_verify_a_private_to_public_redirect(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    preset = preset_dict(ORIGIN + "/")
+    preset["success"]["probe"]["url"] = ORIGIN + "/api/client-bootstrap"
+    rig.store.seed_preset(ORIGIN, preset)
+    sealed = encode_session(await guest_session(rig))
+    await rig.vault.put(rig.user, rig.conn, SecretKind.SESSION, sealed)
+    ctx = rig.ctx(Student())
+    running = asyncio.create_task(
+        rig.flow.ensure_for_entry(
+            ctx,
+            user_id=rig.user,
+            connection_id=rig.conn,
+            entry_url=ORIGIN + "/private/public-redirect",
+        )
+    )
+    try:
+        async with asyncio.timeout(5):
+            while not rig.screens.links:
+                assert not running.done()
+                await asyncio.sleep(0.05)
+        await asyncio.sleep(FAST.poll_s * 2)
+        assert not running.done()
+        saved = await rig.vault.get(rig.user, rig.conn, SecretKind.SESSION)
+        assert saved is not None
+        assert saved.get_secret_value() == sealed
+        assert not any(
+            isinstance(block, TextBlock) and "Вход выполнен" in block.markdown
+            for block in ctx.blocks
+        )
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_wrong_manual_password_and_public_redirect_do_not_prove_access(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
+        await handle.page.goto(ENTRY)
+        await handle.page.fill("#u", data.USERNAME)
+        await handle.page.fill("#p", "synthetic-wrong-password")
+        await handle.arm_human_auth()
+        await handle.page.click('button[type="submit"]')
+        await asyncio.sleep(FAST.poll_s * 3)
+        assert not link.succeeded
+        await link.close("synthetic incomplete login")
+
+    rig = guest_stack.rig(human)
+    ctx = rig.ctx(Student())
+    with pytest.raises(JobCancelled):
+        await rig.flow.ensure_for_entry(
+            ctx,
+            user_id=rig.user,
+            connection_id=rig.conn,
+            entry_url=ORIGIN + "/private/public-redirect",
+        )
+    await rig.screens.settle()
+    assert not await rig.vault.has(rig.user, rig.conn, SecretKind.SESSION)
 
 
 @pytest.mark.parametrize(

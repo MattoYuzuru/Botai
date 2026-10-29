@@ -23,7 +23,7 @@ from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import SecretStr
 
@@ -369,7 +369,10 @@ class LoginFlow:
         info: ConnectionInfo,
         preset: LoginPreset | None,
         snap: PageSnapshot,
+        entry_url: str,
         login_paths: Sequence[str] = (),
+        *,
+        human_confirmed: bool = False,
     ) -> bool:
         if (
             storage_origin(snap.url, (urlsplit(info.origin).hostname or "",)) != info.origin
@@ -377,6 +380,13 @@ class LoginFlow:
             or requires_authentication(snap)
             or not isinstance(detect(snap), UnknownPage)
         ):
+            return False
+        # A guest bootstrap session may turn a protected link into a public
+        # catalogue. A material redirect is not browser authorization evidence.
+        # Query canonicalization and a trailing slash do not change the view.
+        requested_path = unquote(urlsplit(entry_url).path).rstrip("/") or "/"
+        actual_path = unquote(urlsplit(snap.url).path).rstrip("/") or "/"
+        if not human_confirmed and actual_path != requested_path:
             return False
         path = urlsplit(snap.url).path
         known = preset.expired.get("redirectPathPrefix", []) if preset else []
@@ -409,7 +419,11 @@ class LoginFlow:
                 raise handle.navigation_failure() or BotaiError(
                     ErrorCode.SOURCE_UNAVAILABLE, "Страница источника не открылась"
                 )
-            return await handle.export_session() if self._entry_ready(info, preset, snap) else None
+            return (
+                await handle.export_session()
+                if self._entry_ready(info, preset, snap, entry_url)
+                else None
+            )
         except BotaiError as exc:
             if exc.code == ErrorCode.EGRESS_BLOCKED:
                 # The fresh login handles an exact-host consent, rather than a
@@ -541,7 +555,11 @@ class LoginFlow:
             await handle.close()
 
     async def _drive(self, run: _Run) -> SessionState:
-        snap = await run.handle.goto(run.entry_url or run.start_url)
+        if run.entry_url is not None:
+            async with run.handle.read_only_entry():
+                snap = await run.handle.goto(run.entry_url)
+        else:
+            snap = await run.handle.goto(run.start_url)
         if run.entry_url is not None and requires_authentication(snap):
             run.entry_form_path = urlsplit(snap.url).path
         for _ in range(self._timing.max_pages):
@@ -642,7 +660,8 @@ class LoginFlow:
             run.verified_page = signature
             return None
         if run.entry_url is not None:
-            fresh = await run.handle.goto(run.entry_url)
+            async with run.handle.read_only_entry():
+                fresh = await run.handle.goto(run.entry_url)
             found = detect(fresh)
             if isinstance(found, ErrorPage):
                 raise self._navigation_failure(run)
@@ -652,7 +671,9 @@ class LoginFlow:
             paths = [
                 p for p in run.recorder.login_paths if p not in {private_path, run.entry_form_path}
             ]
-            if not self._entry_ready(run.info, run.preset, fresh, paths):
+            if not self._entry_ready(
+                run.info, run.preset, fresh, run.entry_url, paths, human_confirmed=force
+            ):
                 run.verified_page = page_signature(fresh)
                 return None
             snap = fresh
@@ -934,12 +955,15 @@ class LoginFlow:
             raise _ManualRequested
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
-        if step.submit:
-            try:
-                return await run.handle.click(step.submit)
-            except BotaiError:
-                pass  # the learned or guessed button is gone: Enter in the last field
-        return await run.handle.press(step.fields[-1].selector, "Enter")
+        async with run.handle.auth_document():
+            if step.submit:
+                try:
+                    await run.handle.click(step.submit)
+                except BotaiError:
+                    await run.handle.press(step.fields[-1].selector, "Enter")
+            else:
+                await run.handle.press(step.fields[-1].selector, "Enter")
+        return await run.handle.snapshot()
 
     # -- push approval -------------------------------------------------------------------------
 
