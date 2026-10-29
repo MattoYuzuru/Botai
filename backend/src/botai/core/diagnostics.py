@@ -237,6 +237,7 @@ _CODES: dict[str, set[str]] = {
     "reason": {
         "missing_key",
         "invalid_key",
+        "access_denied",
         "invalid_config",
         "invalid_response",
         "credits_exhausted",
