@@ -769,15 +769,20 @@ describe("QuickReplies", () => {
 });
 
 describe("TaskCard", () => {
-  it("задача в этом чате: без подписи «в другом чате» и без действия", () => {
+  it("задача в этом чате: без подписи «в другом чате»; в слоте — её собственное действие", () => {
     const { container } = render(
-      <TaskCard title="Подключение ЦУ" kind="connect" state="running" action={<a href="/chat">Открыть</a>} />,
+      <TaskCard
+        title="Подключение ЦУ"
+        kind="connect"
+        state="running"
+        action={<button type="button">Отменить подключение</button>}
+      />,
     );
     expect(screen.getByText("Подключение")).toBeInTheDocument();
     expect(screen.getByText("Подключение ЦУ")).toBeInTheDocument();
     expect(screen.getByText("Работает")).toBeInTheDocument();
     expect(screen.queryByText("Идёт в другом чате")).toBeNull();
-    expect(screen.queryByRole("link", { name: "Открыть" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Отменить подключение" })).toBeInTheDocument();
     expect(container.querySelector("[data-task-card]")).toHaveAttribute("data-state", "running");
   });
 
