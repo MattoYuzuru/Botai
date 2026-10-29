@@ -40,7 +40,8 @@ async def test_thread_migration_backfills_read_state_and_can_roll_back(database_
 
     async def columns(table: str) -> set[str]:
         rows = await execute(
-            f"SELECT column_name FROM information_schema.columns WHERE table_name='{table}'"
+            "SELECT column_name FROM information_schema.columns "  # noqa: S608 - fixed table names
+            f"WHERE table_name='{table}'"
         )
         return {str(row[0]) for row in rows}
 
