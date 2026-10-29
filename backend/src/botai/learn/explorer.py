@@ -1457,7 +1457,11 @@ class Explorer:
         scope = self._data_scope()
         bound_mode = any(
             value.candidate.auth.get("type") == "session" for value in chosen.values()
-        ) or (base_spec is not None and base_spec["recipe"]["auth"].get("type") == "session")
+        ) or (
+            base_spec is not None
+            and base_spec["recipe"]["auth"].get("type") == "session"
+            and any(endpoint["kind"] not in chosen for endpoint in base_spec["recipe"]["endpoints"])
+        )
         bindings: dict[str, dict[str, Any]] = {}
         if base_spec is not None:
             base = base_spec["recipe"]
