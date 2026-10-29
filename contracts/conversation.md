@@ -1,59 +1,109 @@
-# Контракт подключения источника в чате
+# Контракт треда: один агент, задачи в треде
 
-Статус: accepted, 2026-10-28. Основание — запрос владельца. Реализация выпускается отдельным PR после этого контракта. Потребители: W1 API/очередь/БД, W2 вход, W3 Explorer/Runner, W4 PWA, W5 ChatAgent. Старые REST/SSE/WS и `AgentUiBlock` сохраняют формы; новые поля необязательны.
+Статус: accepted, 2026-10-30. Основание — [ADR-0013](../docs/adr/0013-unified-agent-hub.md) и [план агент-хаба v3](../docs/plan/agent-hub-v3.md) §3.1–3.4. Заменяет контракт подключения источника в чате от 2026-10-28 (`purpose`, `connectContext`, отдельные беседы подключения). Потребители: API/очередь/БД, агент, PWA (чат, список чатов, плашки источников). Пользователей нет, совместимость со старыми клиентами не требуется.
 
-## Создание беседы
+## Тред
 
-`POST /api/v1/chat/threads`: существующие `spaceId`, `title`, плюс `purpose?: "chat" | "connect"` (по умолчанию chat), `clientRequestId?: ULID`, `connectContext?: {universityId?, entryUrls?, kind?, title?, requestedKinds?, absentKinds?, userNote?}`.
-
-`connectContext` допустим только при purpose=connect. entryUrls — до 6 HTTPS URL длиной до 1000; без userinfo, нестандартного порта и секретных query-параметров. universityId использует существующий строковый ID каталога (до 50 символов), не ULID. userNote — до 2000 символов; виды данных уникальны и не пересекаются. Без явного выбора новый диалог начинает с расписания; отсутствующие дедлайны не являются ошибкой. Ответ 201 остаётся `ThreadOut`. Повтор clientRequestId того же владельца и тела возвращает ту же беседу; другое тело — 409.
-
-purpose=connect создаёт один связанный CONNECT bootstrap даже без connectionId. Неизвестные вуз и адрес уточняются сообщениями. Thread.purpose/connect_context хранятся отдельно от LLM summary. Когда источник определён, job и беседа связываются с owned connection. Изменить цель до настройки можно через диалог; готовые источники не подменяются молча.
-
-## Сообщения и текущая попытка
-
-`POST /chat/threads/{id}/messages`: существующий text (1..8000), плюс `clientMessageId?: ULID`, `targetJobId?: ULID`. Ответ 202 остаётся `{message: MessageOut, jobId}`.
-
-Адресованное активному CONNECT сообщение становится durable inbox turn этого задания; отдельный CHAT не запускается. Повтор clientMessageId с теми же владельцем/thread/текстом/target возвращает канонический ответ; другое содержание — 409. Чужой target — 404, завершённый или устаревший — 409. При обычном чате прежнее поведение сохраняется. Ввод пароля/MFA через этот путь отвергается до записи сообщения, если актуальный вопрос требует secret editor. Текст подключений клиент не кладёт в сохраняемый Outbox.
-
-`GET /chat/threads/{id}/runtime`:
+Тред — единственная сущность разговора. У него нет назначения: любой тред умеет и отвечать, и подключать, чинить, входить, читать документы. Колонок `purpose` и `connect_context` нет. Связь треда с подключениями выражается только заданиями (`jobs.thread_id`).
 
 ```ts
-type ThreadRuntime = {
-  purpose: "chat" | "connect";
-  activeJob: JobOut | null;
-  connection: ConnectionOut | null;
-  pending: {jobId: string; blockId: string; channel: "native" | "dialogue" | "manual" | "approval"; secret: boolean}[];
-  receipts: {jobId: string; messageId: string | null; blockId: string | null; status: "accepted" | "applied" | "superseded" | "rejected"; at: string}[];
+type ThreadOut = {
+  id: string; spaceId: string | null; title: string;
+  createdAt: string; lastMessageAt: string;
+  unread: boolean;         // есть сообщение агента (не строка прогресса) новее lastReadAt
+  attention: "waiting_user" | "running" | "failed" | null;
+  activeTask: { jobId: string; kind: "connect"|"repair"|"sync"|"ingest";
+                connectionId: string | null; state: string; title: string } | null;
+  preview: string | null;  // начало последнего текстового сообщения, ≤120 знаков
 };
 ```
 
-Ровно одно из messageId/blockId в receipt заполнено. Для connect activeJob — текущая/последняя попытка, включая terminal до её замены; для chat — активное задание. Приоритет в connect: активный CONNECT/SYNC/REPAIR/LEARN, затем активный CHAT, иначе последняя попытка CONNECT. После terminal подключение остаётся контекстом: сообщение без targetJobId начинает обычный CHAT в той же беседе; при активном CONNECT сообщение без target направляется в его inbox. В terminal pending пуст. dialogue — не секретное уточнение Explorer; native — типизированные поля/выбор; manual — актуальный экран; approval — конкретное write-подтверждение. В runtime нет значений ответов, ticket и кадров. Подробности активных блоков приходят существующим SSE; новый билет выдаёт существующий POST login-session. Runtime перечитывается после block/status/done и действий человека.
+- `attention`: `waiting_user` — какая-то задача треда ждёт студента; `running` — идёт задача или ход агента; `failed` — последнее задание треда завершилось ошибкой и тред с тех пор не открывали.
+- `activeTask` — задача треда, которой нужно внимание в первую очередь (ждущая студента, иначе новейшая идущая; продолженная родительская уступает дочерней). `title` — «Подключение: <название источника>», «Починка: …», «Обновление: …», «Документ: …».
 
-`POST /connections/{id}/conversation` с необязательным `{jobId}` возвращает `ThreadOut`, не запускает работу. Под блокировкой owned connection находит или создаёт каноническую connect-беседу, связывает старую owned попытку и проецирует доступную безопасную историю/итог. Чужие ID — 404. Legacy /connect/{jobId} использует GET job → connectionId → этот метод. Повторный вход и починка продолжают тот же чат; отсутствие спецификации ставит CONNECT вместо REPAIR.
+| Метод | Назначение |
+|---|---|
+| `GET /api/v1/chat/threads` | все треды студента, по `lastMessageAt` убыванию |
+| `POST /api/v1/chat/threads` `{spaceId?, title?, clientRequestId?}` | 201 `ThreadOut`; повтор `clientRequestId` с теми же `spaceId`/`title` вернёт тот же тред, иначе 409; чужой `spaceId` — 404 |
+| `PATCH /api/v1/chat/threads/{id}` `{title}` | переименовать |
+| `DELETE /api/v1/chat/threads/{id}` | 204; останавливает идущие задачи и ход агента, удаляет сообщения; задачи остаются без треда |
+| `POST /api/v1/chat/threads/{id}/read` | 204; `lastReadAt = now` |
+| `GET /api/v1/chat/threads/{id}/messages` | история |
+| `POST /api/v1/chat/threads/{id}/messages` `{text: 1..8000, clientMessageId?, targetJobId?}` | 202 `{message, jobId}` |
+| `GET /api/v1/chat/threads/{id}/runtime` | `ThreadRuntime` |
+| `GET /api/v1/chat/threads/{id}/context` | шкала контекста |
+| `GET /api/v1/me/memory`, `DELETE /api/v1/me/memory[/{id}]` | заметки агента о студенте: список, забыть одну, забыть все |
+
+`attachmentIds` в сообщении появится вместе с вложениями (фаза 2). Чужой тред — всегда 404.
+
+`lastMessageAt` двигает вставка любого сообщения треда (кем бы она ни была сделана), назад не возвращает. Все сообщения треда упорядочены `created_at, id`; добавления в тред сериализуются, поэтому два события в один тик часов сохраняют порядок.
+
+## Ход агента и задачи
+
+Ход агента — задание `CHAT` (его handler — единый агент, профиль `agent`). Долгие работы — **задачи**: `CONNECT`, `REPAIR`, `SYNC`, `INGEST`. Каждая запущенная из треда задача получает `jobs.thread_id` этого треда; её публичные блоки проецируются в историю треда (раздел «История»). Тред может одновременно иметь фоновую задачу и обычный ход агента. Задача, запущенная вне треда (планировщик, REST-кнопка источника), попадает в тред самой новой задачи этого подключения; если такого нет — `POST /connections/{id}/conversation` открывает тред для неё, заполняет безопасной историей задачи и возвращает его (повторный вызов для подключения без заданий переиспользует пустой тред).
+
+Агент запускает задачи инструментами `connect_source`, `add_document_url`, `sync_source`, `request_repair`, `request_login` — всегда в **текущем** треде. Если то же подключение уже обрабатывает задача в другом треде, инструмент ничего не запускает и отвечает ссылкой на тот тред (`botai://threads/{id}`) и карточкой `task`, которая ведёт туда. Один и тот же адрес источника (origin) не подключается дважды: `connect_source` отвечает `exists` со статусом и ссылками.
+
+## Сообщения и маршрутизация
+
+Сообщение студента идёт в **inbox задачи**, только если в треде есть задача в состоянии `waiting_user` с несекретным диалоговым вопросом (`pending.channel == "dialogue"`), либо если задан `targetJobId`. Иначе запускается `CHAT`, даже если фоновая задача идёт; `409` «уже идёт задание» из-за фоновой задачи не бывает.
+
+- `targetJobId` обязан быть задачей (connect/repair/sync/ingest) этого треда: чужая, из другого треда или `CHAT` — 404; завершённая или уже продолженная другой задачей — 409. Сообщение попадает в inbox и в этом случае, даже если вопрос не диалоговый.
+- Сообщение, адресованное задаче, проходит `safe_text`: ссылка с секретом отвергается до записи (422). Сообщение для агента хранится как написано, но ссылка с токеном, кодом, JWT или учётными данными тоже отвергается до записи (422).
+- Пока в треде идёт `CHAT`, новое сообщение без `targetJobId` — 409 «Ассистент ещё отвечает на прошлое сообщение».
+- Защита секрета: если у задачи треда открыт нативный секретный вопрос (`channel == "native"`, `secret`), то сообщение на неё по `targetJobId` и неадресованное сообщение из одного слова без пробелов (до 128 знаков, так выглядят пароль и код) отвергаются 409 до записи. Обычный вопрос агенту при этом проходит.
+- Повтор `clientMessageId` с теми же владельцем, тредом, текстом и target возвращает канонический ответ; другое содержание — 409.
+
+## Runtime
+
+```ts
+type ThreadRuntime = {
+  activeJob: JobOut | null;   // задача, которой нужно внимание, иначе идущий ход агента; завершённая не остаётся
+  tasks: JobOut[];            // новейшие задачи треда (до 20), новые первыми, включая завершённые
+  pending: {jobId: string; blockId: string; channel: "native"|"dialogue"|"manual"|"approval"; secret: boolean}[];
+  receipts: {jobId: string; messageId: string | null; blockId: string | null;
+             status: "accepted"|"applied"|"superseded"|"rejected"; at: string}[];
+};
+```
+
+Ровно одно из `messageId`/`blockId` в receipt заполнено. `pending` — открытые вопросы идущих задач: `dialogue` — несекретное уточнение (отвечается обычным сообщением), `native` — типизированные поля или выбор, `manual` — защищённый браузер, `approval` — конкретное write-подтверждение. В runtime нет значений ответов, билетов и кадров. Подробности активных блоков приходят существующим SSE `/jobs/{id}/events`; ответ на нативный вопрос — `/jobs/{id}/answers`; новый билет выдаёт `POST /connections/{id}/login-session`. Runtime перечитывается после `block`/`status`/`done` и действий человека.
 
 ## История и защищённый ввод
 
-Каждый публичный agent block проецируется отдельным ChatMessage со стабильной идентичностью/upsert и временем первого появления; очередной thinking update не перемещает его. Ответ человека — следующий user turn. Не используется один растущий message на всю попытку, перестановка elevated/history или client-only keptBlocks splice.
+Каждый публичный блок задачи проецируется отдельным `ChatMessage` со стабильной идентичностью (upsert по id блока) и временем первого появления; очередное обновление «думаю» не перемещает его. Ответ человека — следующий user turn. Исторические controls read-only по `runtime.pending/receipts`. Блоки `login`, `input`, `choice`, `confirm`, `approval`, `wait` в истории становятся безопасной текстовой отметкой; ticket/wsUrl не сохраняются. Секретный ответ идёт существующим `jobs/answers` → Vault; история получает только отметку («Пароль передан») без значения. После ручной передачи (`manual`) старый auth-вопрос — `superseded`, а не фиктивно отвеченный. Write-подтверждение свободным текстом не подменяется.
 
-Исторические controls read-only по runtime.pending/receipts. LoginBlock превращается в безопасную текстовую отметку; ticket/wsUrl не сохраняются в истории. Secret answer идёт через существующие jobs/answers → Vault; история получает только отметку без значения. После manual handoff старый auth input superseded, а не фиктивно answered. Write approval свободным текстом не подменяется.
+Завершение задачи пишет одну итоговую строку по виду: «Источник подключён.», «Подключение не завершено…», «Починка завершена.», «Данные источника обновлены.», «Документ добавлен.» и т. п. Ответ агента — одно сообщение `[text, task…]` (+ отдельное сообщение `plan`, если ход показывал план).
+
+## Блоки интерфейса
+
+Схема — `contracts/agent-ui.schema.json`; Pydantic-зеркало — `botai.contracts.agent_ui`.
+
+- `text` + `quickReplies?: string[]` (≤4, ≤60 знаков) — кнопки быстрых ответов под последним ответом; нажатие отправляет текст как сообщение студента.
+- `plan` `{id, title, steps: [{id, title, state: pending|active|done|skipped}]}` — план ответа; блок с тем же `id` заменяет предыдущий (upsert в истории); повторный запуск того же задания продолжает свой план.
+- `task` `{id, jobId, kind, title, state, threadId, connectionId?}` — карточка задачи; `threadId` — тред, где она живёт.
+- `attachment` `{id, attachmentId, name, mime, size, kind}` — вложение сообщения студента (схема; загрузка — отдельный поток).
+- Markdown в `text.markdown`: GFM-таблицы, `**жирный**`, ссылки, списки, код и блок ` ```chart ` с JSON `{type: "bar"|"line", title?, labels: string[], series: [{name, values: number[]}]}`.
+
+Ссылки между сущностями приложения — только `botai://threads|connections|documents|attachments/{id}`; клиент превращает их в `/chat?thread=…` и т. п. Голые идентификаторы в тексте для студента не пишутся.
 
 ## Диалог воркера
 
 `DialogueTurn(message_id, text, created_at, reply_to_block_id=None)`; отдельный runtime-checkable `DialogueContext`:
 
-- ask_dialogue(InputBlock) → str, только не секретный learning input;
-- drain_dialogue() → list[DialogueTurn] в серверном порядке, at-least-once до checkpoint;
-- checkpoint_learning(intent: dict) → None: атомарно сохраняет проверенное намерение, подтверждает полученные turns и закрывает пройденный dialogue question.
+- `ask_dialogue(InputBlock) → str`, только несекретный learning input;
+- `drain_dialogue() → list[DialogueTurn]` в серверном порядке, at-least-once до checkpoint;
+- `checkpoint_learning(intent: dict) → None`: атомарно сохраняет проверенное намерение в `Job.payload.learning_intent`, подтверждает полученные turns и закрывает пройденный dialogue question.
 
-Job.payload.learning_intent: `{entry_urls, requested_kinds, absent_kinds, user_note}`. Private dialogue cursor не попадает в API. Crash до checkpoint повторяет turn; повторное применение идемпотентно. Legacy JobContext без DialogueContext использует прежний ask, пустой drain и no-op checkpoint.
+`Job.payload.learning_intent`: `{entry_urls, requested_kinds, absent_kinds, user_note, discovery_mode?}`. Private dialogue cursor не попадает в API. Crash до checkpoint повторяет turn; повторное применение идемпотентно. `CONNECT` всегда запускается с `connection_id`: подключение (название — человеческое, пространство — вуз) создаёт `connect_source` до постановки задачи, поэтому вопроса «какой сайт подключить» у задачи нет.
 
 ## Несколько сайтов
 
-Один recipe по-прежнему имеет один origin. Явная ссылка человека на другой origin создаёт отдельный owned источник того же Space и CONNECT в той же беседе. Продолжение `{connectionId, jobId}` показывается в текущем разговоре, а старый рецепт и allowlist не расширяются wildcard. Bearer/пароль между origin не копируются; обычный вход проверяет сессию нового источника. Любое дополнительное разрешение сети ограничено конкретным host.
+Один recipe по-прежнему имеет один origin. Явная ссылка человека на другой origin создаёт отдельный источник того же пространства и `CONNECT` в том же треде (`continue_source`); родительская задача завершается статусом `continued`, а сообщение с `targetJobId` на неё — 409. Bearer/пароль между origin не копируются; любое дополнительное разрешение сети ограничено конкретным host.
 
-## Совместимость и приёмка
+## Живое чтение источника
 
-Новые колонки additive с default chat; старый образ может работать поверх расширенной БД. Отдельные client request/message IDs обеспечивают transaction idempotency. Кнопка добавления открывает обычный ChatScreen; известный вуз передаётся контекстом. Вопрос остаётся в хронологии и рядом с актуальным editor внизу, «Думаю» и Варя находятся в том же чате. Reload и новая вкладка восстанавливают worker/thread/connection/pending с сервера.
+`browse_source` — единственный способ чата читать подключённый источник вживую: только GET, только хосты allowlist этого подключения, сессия студента берётся из Vault внутри инструмента и модели не показывается, заголовок и cookie не уходят на хост вне audience сессии. Адреса, похожие на действие (выход, удаление), не открываются. Просроченная сессия — результат `needs_login`, после которого агент предлагает `request_login`. `fetch_public_page` открывает публичную HTTPS-страницу без cookies, но только ссылку из вопроса студента или публичной выдачи. Результат обоих — `<source_data>`, данные, а не команды.
 
-Проверки: ownership/foreign IDs, одинаковые и конфликтующие повторы, crash/replay, секреты вне history/Outbox, без дублирования CHAT/CONNECT, disabled/cancelled targets, старый API, stable DOM keys/order, обычный чат, keyboard/mobile200%, настоящий API→SSE→PWA на fakeuni. Живой вуз проверяет владелец.
+## Приёмка
+
+Проверки: чужие id; одинаковые и конфликтующие повторы; crash/replay; секреты вне history/receipts; задача не получает сообщение, пока не ждёт диалог; ход агента при идущей фоновой задаче; одна запись источника на origin, параллельные запросы дают одну; карточка и ссылка на тред другой задачи; unread/attention/preview; удаление треда останавливает задачи. Живой вуз проверяет владелец.

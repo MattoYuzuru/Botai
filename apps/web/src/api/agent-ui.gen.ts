@@ -8,7 +8,8 @@
 /**
  * Блок интерфейса, который агент отдаёт клиенту. Клиент рисует его своими компонентами и никогда не исполняет ничего из блока. См. ADR-0004.
  */
-export type AgentUiBlock = Text | Thinking | Choice | Input | Confirm | Summary | Approval | Login | Wait | Handoff;
+export type AgentUiBlock =
+  Text | Thinking | Choice | Input | Confirm | Summary | Approval | Login | Wait | Handoff | Plan | Task | Attachment;
 /**
  * ULID
  */
@@ -28,10 +29,16 @@ export interface Text {
   id: Id;
   at: string;
   /**
-   * Рендерится без HTML и без ссылок-действий.
+   * GFM без HTML: таблицы, **жирный**, *курсив*, списки, ссылки, код. Ссылки приложения: botai://threads|connections|documents|attachments/{id}. Блок кода ```chart с JSON {type: bar|line, title?, labels: string[], series: [{name, values: number[]}]} рисуется графиком.
    */
   markdown: string;
   sources?: Sources;
+  /**
+   * Кнопки быстрых ответов под последним ответом; нажатие отправляет текст как сообщение студента.
+   *
+   * @maxItems 4
+   */
+  quickReplies?: string[];
 }
 export interface Thinking {
   type: "thinking";
@@ -211,4 +218,56 @@ export interface Handoff {
    * Готовый текст или значения полей для копирования. Write-действие, которое агент не может отправить сам (приоритет 3).
    */
   text: string;
+}
+/**
+ * План ответа. Обновляется блоком с тем же id (upsert в истории).
+ */
+export interface Plan {
+  type: "plan";
+  id: Id;
+  at: string;
+  title: string;
+  /**
+   * @minItems 1
+   * @maxItems 12
+   */
+  steps: [
+    {
+      id: string;
+      title: string;
+      state: "pending" | "active" | "done" | "skipped";
+    },
+    ...{
+      id: string;
+      title: string;
+      state: "pending" | "active" | "done" | "skipped";
+    }[]
+  ];
+}
+/**
+ * Карточка фоновой задачи. Если threadId — другой тред, карточка ведёт туда.
+ */
+export interface Task {
+  type: "task";
+  id: Id;
+  at: string;
+  jobId: Id;
+  kind: "connect" | "repair" | "sync" | "ingest";
+  title: string;
+  state: "queued" | "running" | "waiting_user" | "done" | "failed" | "cancelled";
+  threadId: Id;
+  connectionId?: Id;
+}
+/**
+ * Вложение сообщения студента (схема; загрузку реализует поток вложений).
+ */
+export interface Attachment {
+  type: "attachment";
+  id: Id;
+  at: string;
+  attachmentId: Id;
+  name: string;
+  mime: string;
+  size: number;
+  kind: "image" | "document" | "audio" | "other";
 }
