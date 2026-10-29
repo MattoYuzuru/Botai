@@ -57,7 +57,9 @@ class Settings(BaseSettings):
 
     # Staged rollout of the private, versioned research engine (ADR-0011).
     botai_research_enabled: bool = False
-    botai_factory_v2_enabled: bool = False  # producer gate only; persisted v2 recipes remain readable
+    botai_factory_v2_enabled: bool = (
+        False  # producer gate only; persisted v2 recipes remain readable
+    )
     botai_research_slice_seconds: float = Field(default=90, gt=0, le=300)
     botai_research_slice_steps: int = Field(default=10, ge=1, le=50)
     botai_research_max_seconds: float = Field(default=1800, gt=0, le=21600)

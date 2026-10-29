@@ -141,11 +141,11 @@ class FactoryLlm(ScriptedLlm):
         )
 
 
-async def requested_schedule(env: Env, learner: Learner) -> None:
+async def requested_schedule(env: Env, learner: Learner, *, entry: str = ENTRY) -> None:
     async with env.sm() as session, session.begin():
         job = await session.get(m.Job, learner.connect_job)
         assert job is not None
-        job.payload = {**job.payload, "url": ENTRY, "kinds": ["scheduleEvents"]}
+        job.payload = {**job.payload, "url": entry, "kinds": ["scheduleEvents"]}
 
 
 async def connect(
@@ -339,8 +339,10 @@ async def test_observed_cookie_bearer_nested_schedule_replays_for_new_runtime_an
             assert new_gateway.active_for(alice.user_id) is None
 
             # The shared recipe reuses policy only; the second student's credentials are new.
-            bob = await campus.enrol("factory-bob@example.com", url=ENTRY)
-            await requested_schedule(env, bob)
+            # An explicit deep page intentionally requires observation. Origin-level connection
+            # exercises ordinary shared-recipe reuse; LoginFlow follows its learned entry.
+            bob = await campus.enrol("factory-bob@example.com", url=data.ORIGIN + "/")
+            await requested_schedule(env, bob, entry=data.ORIGIN + "/")
             reused = await connect(env, replay, bob, http)
             attendances.append(reused)
             assert reused.result["status"] == "ok"

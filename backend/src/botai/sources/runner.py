@@ -458,12 +458,19 @@ async def fetch_with_reauth(
             ],
         )
     adapter = AdapterFactory().create(effective)
-    auth = snap.spec.get("recipe", {}).get("auth", {})
+    auth = effective.get("recipe", {}).get("auth", {})
     needs_session = auth.get("type", "cookie") != "none"
     if auth.get("type") == "session":
+        referenced = {step.get("authBinding") for step in effective["recipe"].get("bootstrap", [])}
+        referenced.update(
+            endpoint["request"].get("authBinding")
+            for endpoint in effective["recipe"]["endpoints"]
+            if not endpoint["request"].get("render")
+        )
         needs_session = any(
             binding.get("cookies") is True or binding.get("bearer") == "observedAuthorization"
-            for binding in auth.get("bindings", {}).values()
+            for name, binding in auth.get("bindings", {}).items()
+            if name in referenced
         )
     reauthed = False
     while True:

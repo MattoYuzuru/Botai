@@ -896,7 +896,9 @@ class PlaywrightHandle:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "План недоступен для чтения")
         self._read_view_registry.invalidate()
-        return await self._read_capability_registry.replay(plan, values=values, items_selector=items_selector)
+        return await self._read_capability_registry.replay(
+            plan, values=values, items_selector=items_selector
+        )
 
     async def read_views(self) -> list[ReadView]:
         if not self.read_only or self.closed:

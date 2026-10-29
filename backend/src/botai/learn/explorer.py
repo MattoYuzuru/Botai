@@ -1162,8 +1162,10 @@ class Explorer:
             factory_kwargs: dict[str, Any] = {}
             if self.services.settings.botai_factory_v2_enabled:
                 factory_kwargs = {
-                    "factory_v2": True, "request_facts": self._request_facts,
-                    "browser_plans": self._browser_plans, "browser_plan_urls": self._browser_plan_urls,
+                    "factory_v2": True,
+                    "request_facts": self._request_facts,
+                    "browser_plans": self._browser_plans,
+                    "browser_plan_urls": self._browser_plan_urls,
                     "time_zone": info.tz,
                 }
             try:
@@ -1426,9 +1428,9 @@ class Explorer:
         require: list[Kind] = []
         retained_kinds: set[Kind] = set()
         scope = self._data_scope()
-        bound_mode = any(value.candidate.auth.get("type") == "session" for value in chosen.values()) or (
-            base_spec is not None and base_spec["recipe"]["auth"].get("type") == "session"
-        )
+        bound_mode = any(
+            value.candidate.auth.get("type") == "session" for value in chosen.values()
+        ) or (base_spec is not None and base_spec["recipe"]["auth"].get("type") == "session")
         bindings: dict[str, dict[str, Any]] = {}
         if base_spec is not None:
             base = base_spec["recipe"]
@@ -1444,7 +1446,9 @@ class Explorer:
             candidate_bootstrap = copy.deepcopy(ch.candidate.bootstrap)
             candidate_endpoint = copy.deepcopy(ch.candidate.endpoint)
             if bound_mode:
-                bindings.update(bind_parts(ch.candidate.auth, [candidate_endpoint], candidate_bootstrap))
+                bindings.update(
+                    bind_parts(ch.candidate.auth, [candidate_endpoint], candidate_bootstrap)
+                )
             merged = merge_bootstrap(bootstrap, candidate_bootstrap)
             if merged is None:
                 await self.ui.note(
@@ -1468,6 +1472,13 @@ class Explorer:
             await stage.finish("failed")
             return None
         if bound_mode:
+            referenced_bindings = {step["authBinding"] for step in bootstrap}
+            referenced_bindings.update(
+                endpoint["request"]["authBinding"]
+                for endpoint in endpoints
+                if not endpoint["request"].get("render")
+            )
+            bindings = {key: value for key, value in bindings.items() if key in referenced_bindings}
             auth_options = [{"type": "session", "version": 1, "bindings": bindings}]
         problems: list[str] = []
         for auth in auth_options:

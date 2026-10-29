@@ -326,11 +326,17 @@ class RecipeAdapter:
             return EndpointOutcome(endpoint.id, endpoint.kind, False, problem="format"), []
         selector = response_spec.items_selector
         if selector is None:
-            selector = " ".join(
-                collection.selector for collection in response_spec.collections or []
-                if collection.selector != "."
-            ) or "body"
-        outcome = EndpointOutcome(endpoint.id, endpoint.kind, True, source_url=url, transport="browser")
+            selector = (
+                " ".join(
+                    collection.selector
+                    for collection in response_spec.collections or []
+                    if collection.selector != "."
+                )
+                or "body"
+            )
+        outcome = EndpointOutcome(
+            endpoint.id, endpoint.kind, True, source_url=url, transport="browser"
+        )
         request = httpx.Request("GET", url, params=query)
         try:
             pages = await reader.read_many(
@@ -344,12 +350,16 @@ class RecipeAdapter:
         identities: set[str] = set()
         for snapshot in pages:
             response = httpx.Response(
-                200, text=snapshot.html, headers={"content-type": "text/html; charset=utf-8"},
+                200,
+                text=snapshot.html,
+                headers={"content-type": "text/html; charset=utf-8"},
                 request=httpx.Request("GET", snapshot.url),
             )
             try:
                 parsed = self._parse(
-                    endpoint, response, ctx,
+                    endpoint,
+                    response,
+                    ctx,
                     remaining_nodes=MAX_COLLECTION_NODES - nodes_seen,
                     remaining_leaves=MAX_LEAVES - leaves_seen,
                     remaining_instances=MAX_INSTANCES - len(collected),

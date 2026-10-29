@@ -72,7 +72,9 @@ class SessionExpired(Exception):
         super().__init__(reason)
         self.reason = reason
         self.reauth = reauth
-        self.code: Literal["auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"] = code
+        self.code: Literal[
+            "auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"
+        ] = code
         self.status = status
 
 
