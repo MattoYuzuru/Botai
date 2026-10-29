@@ -53,8 +53,8 @@ export function ConnectionComposer({
     [onTyping],
   );
   useEffect(() => {
-    if (protectedRequest) setValue("");
-  }, [protectedRequest]);
+    if (protectedRequest && !busy && !error) setValue("");
+  }, [protectedRequest, busy, error]);
 
   const send = async (text: string) => {
     if (!ready || busy || request.current || !threadId) return;
