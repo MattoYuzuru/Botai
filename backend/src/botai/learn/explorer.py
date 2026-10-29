@@ -137,6 +137,7 @@ class Explorer:
         self._scope_auto_base = False
         self._scope_replaced = False
         self._manual_login = False
+        self._manual_connect = False
         self._prepared_session: SessionState | None = None
 
     # --- small helpers -----------------------------------------------------------------------
@@ -358,6 +359,28 @@ class Explorer:
         return {"status": "continued", **result}
 
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._manual_connect = payload.get("manual_login") is True
+        result = await self._connect(connection_id, payload)
+        if not self._manual_connect or result.get("status") != "repairing":
+            return result
+        # The manual CONNECT still owns the source interlock. Queueing its repair
+        # would deduplicate back to this very job and leave the source repairing forever.
+        # Run the existing repair state machine here, outside _connect's cancellation
+        # restoration: Repairer itself leaves stopped/failed repairs stale, with old data.
+        from botai.learn.repair import Repairer
+
+        repairer = Repairer(self.ctx, self.services, transport=self.transport, retry=self.retry)
+        repairer.tokens = self.tokens
+        try:
+            repaired = await repairer.run(connection_id, {"reason": "drift"})
+        finally:
+            self.tokens = repairer.tokens
+        metadata = {key: value for key, value in result.items() if key != "sync"}
+        if "sync" in result:
+            metadata["initial_sync"] = result["sync"]
+        return {**metadata, **repaired}
+
+    async def _connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._scope_connection_id = connection_id
         self._start_intent(payload)
         info = await self._info(connection_id)
@@ -400,6 +423,7 @@ class Explorer:
                         connection_id,
                         transport=self.transport,
                         retry=self.retry,
+                        queue_repair=not self._manual_connect,
                     )
                     await self._report_sync(outcome, prefix="Вход проверен.")
                     return {"status": outcome.status, "login_resumed": True}
@@ -548,7 +572,12 @@ class Explorer:
             status="active",
         )
         outcome = await sync_connection(
-            self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
+            self.ctx,
+            self.services,
+            info.connection_id,
+            transport=self.transport,
+            retry=self.retry,
+            queue_repair=not self._manual_connect,
         )
         await stage.finish("ok" if outcome.status == "ok" else "failed")
         await self._report_sync(outcome, prefix="Готово.")
@@ -1126,7 +1155,12 @@ class Explorer:
             revision = row.revision
         await stage.finish("ok", f"Версия описания: {revision}")
         outcome = await sync_connection(
-            self.ctx, self.services, info.connection_id, transport=self.transport, retry=self.retry
+            self.ctx,
+            self.services,
+            info.connection_id,
+            transport=self.transport,
+            retry=self.retry,
+            queue_repair=not self._manual_connect,
         )
         await self._report_sync(outcome, prefix="Готово.")
         diagnostic_event(
