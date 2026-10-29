@@ -32,7 +32,15 @@ from botai.sources.adapter import (
     Record,
     SyncContext,
 )
-from botai.sources.documents import DocFormat, Extracted, Table, detect_format, extract, to_chunks
+from botai.sources.documents import (
+    MAX_UPLOAD,
+    DocFormat,
+    Extracted,
+    Table,
+    detect_format,
+    extract,
+    to_chunks,
+)
 from botai.sources.extract import apply_transform, collapse, parse_datetime, parse_time, to_utc_iso
 from botai.sources.fetch import SourceClient
 from botai.sources.vocab import REQUIRED, VOCAB
@@ -74,7 +82,7 @@ def _disposition_name(header: str | None) -> str | None:
 
 async def _get(ctx: SyncContext, target: str) -> httpx.Response:
     async with SourceClient(ctx, auth_type="none", use_session=False) as client:
-        return await client.request("GET", target, check_session=False)
+        return await client.request("GET", target, check_session=False, max_bytes=MAX_UPLOAD)
 
 
 async def _get_google(
@@ -90,7 +98,9 @@ async def _get_google(
         async with SourceClient(
             hop, auth_type="none", use_session=False, follow_redirects=False
         ) as client:
-            response = await client.request("GET", current, check_session=False)
+            response = await client.request(
+                "GET", current, check_session=False, max_bytes=MAX_UPLOAD
+            )
         location = response.headers.get("location")
         if not (response.is_redirect and location):
             return response
