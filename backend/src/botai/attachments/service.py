@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import ColumnElement, delete, exists, func, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -23,7 +23,8 @@ from botai.attachments.schemas import AttachmentOut
 from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
-from botai.db.models import Attachment, ChatMessage, ChatThread, Chunk, Connection
+from botai.db.models import Attachment, ChatMessage, ChatThread, Chunk, Connection, Job
+from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import enqueue_in_session
 from botai.sources.documents import (
     MAX_UPLOAD,
@@ -68,7 +69,27 @@ class IngestStarted:
     job_id: str
 
 
-def out(att: Attachment) -> AttachmentOut:
+def _live_ingest() -> ColumnElement[bool]:
+    """An INGEST job of this attachment that is queued, running or waiting for the student."""
+    return exists().where(
+        Job.user_id == Attachment.user_id,
+        Job.kind == JobKind.INGEST.value,
+        Job.state.in_(sorted(IN_FLIGHT)),
+        Job.payload["attachment_id"].as_string() == Attachment.id,
+    )
+
+
+async def ingest_state(session: AsyncSession, att: Attachment) -> str:
+    """What the student is told about indexing. `queued` is a claim of the flag; the job decides:
+    a job that was cancelled before it started, or died, leaves the flag behind, and that is a
+    failed indexing, not a wait that never ends."""
+    if att.ingest_state != "queued":
+        return att.ingest_state
+    live = await session.scalar(select(exists().where(Attachment.id == att.id, _live_ingest())))
+    return "queued" if live else "failed"
+
+
+def out(att: Attachment, ingest: str | None = None) -> AttachmentOut:
     return AttachmentOut(
         id=att.id,
         name=att.name,
@@ -77,7 +98,7 @@ def out(att: Attachment) -> AttachmentOut:
         kind=att.kind,  # type: ignore[arg-type]  # validated by the response model
         created_at=att.created_at,
         document_id=att.document_id,
-        ingest=att.ingest_state,  # type: ignore[arg-type]
+        ingest=ingest or att.ingest_state,  # type: ignore[arg-type]
     )
 
 
@@ -109,6 +130,8 @@ async def create(
             Attachment.message_id.is_(None),
             Attachment.document_id.is_(None),
             Attachment.created_at < func.now() - text(f"interval '{STALE_AFTER}'"),
+            # a file that is being indexed is in use; a `queued` flag with no live job is not
+            not_((Attachment.ingest_state == "queued") & _live_ingest()),
         )
     )
     used = await session.scalar(
@@ -149,8 +172,10 @@ async def get(
 
 async def delete_unsent(session: AsyncSession, user_id: str, attachment_id: str) -> None:
     att = await get(session, user_id, attachment_id)
-    if att.message_id is not None or att.ingest_state == "queued":
+    if att.message_id is not None:
         raise BotaiError(ErrorCode.CONFLICT, "Это вложение уже отправлено, его нельзя удалить")
+    if await ingest_state(session, att) == "queued":
+        raise BotaiError(ErrorCode.CONFLICT, "Файл сейчас обрабатывается, его нельзя удалить")
     await session.delete(att)
 
 
@@ -221,7 +246,7 @@ async def start_ingest(
     """
     if attachment.kind != "document":
         raise BotaiError(ErrorCode.VALIDATION, "Этот файл не содержит текста для индексации")
-    if attachment.ingest_state in {"queued", "indexed"}:
+    if attachment.ingest_state == "indexed" or await ingest_state(session, attachment) == "queued":
         raise BotaiError(ErrorCode.CONFLICT, "Файл уже обрабатывается")
     space = await repo.get_space(session, attachment.user_id, space_id)
     if thread_id is not None and not await session.scalar(

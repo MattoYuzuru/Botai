@@ -615,3 +615,85 @@ async def test_extract_text_of_someone_elses_file_is_not_found(
         with pytest.raises(BotaiError) as exc:
             await service.extract_text(s, bob.id, att_id, 100)
     assert exc.value.status == 404
+
+
+# --- a queued flag is only as good as the job behind it -----------------------------------------------
+
+
+async def _queued_without_a_job(sm: Sm, user_id: str, name: str = "rules.docx") -> str:
+    """What a job cancelled before it started, or one that died, leaves behind."""
+    att_id = await _make(sm, user_id, make_docx(), name)
+    async with sm() as s:
+        await s.execute(
+            update(m.Attachment).where(m.Attachment.id == att_id).values(ingest_state="queued")
+        )
+        await s.commit()
+    return att_id
+
+
+async def _ingest_job(sm: Sm, user_id: str, attachment_id: str, state: str) -> None:
+    async with sm() as s:
+        s.add(
+            m.Job(
+                user_id=user_id,
+                kind="ingest",
+                state=state,
+                payload={"attachment_id": attachment_id},
+                run_after=datetime.now(UTC),
+            )
+        )
+        await s.commit()
+
+
+async def test_a_queued_file_without_a_live_job_is_failed_deletable_and_can_be_indexed_again(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    acc = await signup(client, tx_sessionmaker, clock)
+    space = await make_space(tx_sessionmaker, acc.id)
+    stuck = await _queued_without_a_job(tx_sessionmaker, acc.id)
+    cancelled = await _queued_without_a_job(tx_sessionmaker, acc.id, "other.docx")
+    await _ingest_job(tx_sessionmaker, acc.id, cancelled, "cancelled")  # finished: not alive
+    for att_id in (stuck, cancelled):
+        assert (await client.get(f"{URL}/{att_id}")).json()["ingest"] == "failed"
+    async with tx_sessionmaker() as s:
+        started = await service.start_ingest(s, await service.get(s, acc.id, stuck), space, None)
+        await s.commit()
+    assert started.job_id
+    assert (await client.get(f"{URL}/{stuck}")).json()["ingest"] == "queued"  # a job lives now
+    assert (await client.delete(f"{URL}/{cancelled}")).status_code == 204
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "waiting_user"])
+async def test_a_file_with_a_live_ingest_job_is_busy(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, state: str
+) -> None:
+    acc = await signup(client, tx_sessionmaker, clock)
+    space = await make_space(tx_sessionmaker, acc.id)
+    busy = await _queued_without_a_job(tx_sessionmaker, acc.id)
+    await _ingest_job(tx_sessionmaker, acc.id, busy, state)
+    assert (await client.get(f"{URL}/{busy}")).json()["ingest"] == "queued"
+    refused = await client.delete(f"{URL}/{busy}")
+    assert (refused.status_code, refused.json()["code"]) == (409, "conflict")
+    async with tx_sessionmaker() as s:
+        with pytest.raises(BotaiError) as twice:
+            await service.start_ingest(s, await service.get(s, acc.id, busy), space, None)
+    assert twice.value.status == 409
+
+
+async def test_the_cleanup_of_unused_uploads_keeps_a_file_that_is_being_indexed(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    acc = await signup(client, tx_sessionmaker, clock)
+    busy = await _queued_without_a_job(tx_sessionmaker, acc.id, "busy.docx")
+    dead = await _queued_without_a_job(tx_sessionmaker, acc.id, "dead.docx")
+    idle = await _make(tx_sessionmaker, acc.id, PNG, "idle.png")
+    await _ingest_job(tx_sessionmaker, acc.id, busy, "running")
+    async with tx_sessionmaker() as s:
+        await s.execute(
+            update(m.Attachment).values(created_at=datetime.now(UTC) - timedelta(days=3))
+        )
+        await s.commit()
+    assert (await _upload(client, GIF, "fresh.gif")).status_code == 201
+    assert (await client.get(f"{URL}/{busy}")).status_code == 200  # in use: kept
+    assert (await client.get(f"{URL}/{dead}")).status_code == 404  # a flag with no job: cleaned
+    assert (await client.get(f"{URL}/{idle}")).status_code == 404

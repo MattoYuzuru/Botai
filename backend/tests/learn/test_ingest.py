@@ -493,3 +493,28 @@ def test_the_handler_is_registered_for_ingest() -> None:
         )
     )
     assert InMemoryJobContext  # the shared test context is what the tests above run on
+
+
+async def test_a_source_switched_off_meanwhile_publishes_nothing_and_fails_the_attachment(
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source is disabled after the job has read it as active: the text is not stored, and the
+    file does not stay `queued` for good."""
+    import dataclasses
+
+    from botai.sources import ingest as ingest_module
+
+    env = await document_env(make_env, [], status="disabled")
+    payload = await upload(env, pages.rules_docx(), "rules.docx")
+    real = ingest_module.load_conn_info
+
+    async def stale(*args: Any, **kwargs: Any) -> Any:
+        return dataclasses.replace(await real(*args, **kwargs), status="active")
+
+    monkeypatch.setattr(ingest_module, "load_conn_info", stale)
+    result = await env.run(JobKind.INGEST, payload)
+    assert result["status"] == "skipped"
+    env.db.expire_all()
+    att = (await env.db.execute(select(m.Attachment))).scalar_one()
+    assert (att.ingest_state, att.document_id) == ("failed", None)
+    assert await env.chunks() == 0

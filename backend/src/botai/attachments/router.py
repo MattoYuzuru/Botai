@@ -41,7 +41,8 @@ async def upload_attachment(
 
 @router.get("/{attachment_id}", response_model=AttachmentOut)
 async def get_attachment(attachment_id: str, user: AuthUser, session: DbSession) -> AttachmentOut:
-    return service.out(await service.get(session, user.id, attachment_id))
+    att = await service.get(session, user.id, attachment_id)
+    return service.out(att, await service.ingest_state(session, att))
 
 
 @router.get("/{attachment_id}/content", response_class=Response)

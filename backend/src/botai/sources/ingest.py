@@ -237,7 +237,8 @@ class Ingestor:
 
         # The text is searchable and readable from here on, before any question about a table.
         spec: dict[str, Any] = {**base_spec, "format": loaded.format}
-        await self._publish(info, loaded)
+        if not await self._publish(info, loaded):  # the source is gone or switched off meanwhile
+            return {"status": "skipped", "detail": "disabled"}
         self._published = Published(spec, loaded, sctx)
 
         table: TableChoice | None = None
@@ -283,12 +284,13 @@ class Ingestor:
             raise BotaiError(ErrorCode.VALIDATION, "Файл пустой или больше 20 МБ")
         return content, name
 
-    async def _publish(self, info: ConnInfo, loaded: LoadedDocument) -> None:
-        """Stores the document, its text and its search fragments, in one short transaction."""
+    async def _publish(self, info: ConnInfo, loaded: LoadedDocument) -> bool:
+        """Stores the document, its text and its search fragments, in one short transaction.
+        False when nothing was stored because the source is gone or switched off."""
         async with self.services.db() as db, db.begin():
             conn = await db.get(m.Connection, info.connection_id)
             if conn is None or conn.status == "disabled":
-                return
+                return False
             document_id = await normalize.store_document(
                 db,
                 user_id=info.user_id,
@@ -301,6 +303,7 @@ class Ingestor:
                 att = await db.get(m.Attachment, self._attachment_id)
                 if att is not None and att.user_id == info.user_id:
                     att.document_id, att.ingest_state = document_id, "indexed"
+        return True
 
     # --- the table ---------------------------------------------------------------------------
 
