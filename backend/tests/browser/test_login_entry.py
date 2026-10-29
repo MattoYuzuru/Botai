@@ -522,6 +522,21 @@ async def test_generic_root_after_native_login_can_reach_the_real_cabinet_withou
     assert not rig.screens.links
 
 
+async def test_generic_entry_and_later_legacy_reauth_keep_one_complete_canonical_preset(
+    make_rig: Callable[..., Rig],  # noqa: F811
+) -> None:
+    rig = make_rig()
+    await rig.flow.ensure_for_entry(
+        rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=ORIGIN + "/"
+    )
+    first = rig.store.presets[ORIGIN][0]
+    assert [step["id"] for step in first["steps"]] == ["username-password", "otp"]
+    assert first["expired"]["redirectPathPrefix"] == ["/auth/"]
+    await rig.flow.ensure(rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, force=True)
+    assert len(rig.store.presets[ORIGIN]) == 1
+    assert rig.store.presets[ORIGIN][0] == first
+
+
 @pytest.mark.parametrize(
     ("entry", "allowed"),
     [

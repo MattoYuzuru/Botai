@@ -759,11 +759,14 @@ class LoginFlow:
         hosts = list(dict.fromkeys([*run.hosts, *reached]))
         try:
             recorder = run.recorder
-            if run.entry_url is not None:
-                private_path = urlsplit(run.entry_url).path
+            entry = urlsplit(run.entry_url) if run.entry_url is not None else None
+            if entry is not None and (entry.path not in {"", "/"} or entry.query or entry.fragment):
+                private_path = entry.path
                 private_paths = {private_path, run.entry_form_path}
                 # A login form served directly at a supplied private URL must
-                # not teach that URL to other users of this origin.
+                # not teach that URL to other users of this origin. A generic
+                # root carries no private view: keep its discovered auth steps,
+                # as the legacy entrance does, without a later revision churn.
                 recorder = replace(
                     recorder,
                     forms=[f for f in recorder.forms if urlsplit(f.url).path not in private_paths],
