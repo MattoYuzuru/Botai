@@ -30,6 +30,7 @@ from botai.agent.bench import (
 from botai.agent.llm import BudgetExceeded
 from botai.core.jobs import JobKind
 from botai.core.llm import LlmRequest, LlmResponse, LlmToolCall, LlmUsage, ScriptedLlm
+from botai.usage.service import cost_usd
 from tests.agent.conftest import make_settings
 
 CONNS = {"news": "N" * 26, "schedule": "S" * 26}
@@ -336,17 +337,34 @@ async def test_a_careless_agent_fails_where_it_should(
     assert row["honestUnknown"] == 0.0
 
 
+@pytest.mark.parametrize("peak", [False, True], ids=["off-peak", "peak"])
 async def test_a_blown_fuse_stops_the_launch_and_keeps_what_was_measured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, peak: bool
 ) -> None:
-    monkeypatch.setattr(bench, "provider_for", lambda _l, _c: Golden())
+    golden = Golden()
+
+    def provider(_launch: Launch, _cell: Cell) -> Golden:
+        return golden
+
+    def tariff(_at: object) -> bool:
+        return peak
+
+    monkeypatch.setattr(bench, "provider_for", provider)
+    monkeypatch.setattr(bench, "is_peak", tariff)
     ln = launch(tmp_path, concurrency=1)
-    ln.fuse.run_cap_usd = 0.000_3  # a few calls at most
-    records, stop = await B4Chat().run(ln, [Cell("flash", "low")])
+    scenario = B4Chat()
+    first_case_calls = len(PLAN[scenario.data["cases"][0]["question"]])
+    call_usd = cost_usd(USAGE, peak=peak)
+    # Finish the first measured case, then pay one call crossing the fuse. Derive
+    # the fixture's cap from its scripted usage instead of the wall-clock tariff.
+    ln.fuse.run_cap_usd = call_usd * (first_case_calls + 0.5)
+    records, stop = await scenario.run(ln, [Cell("flash", "low")])
     assert stop is not None
     assert "launch cap" in stop
     assert 0 < len(records) < 10
     assert ln.fuse.ledger.total_usd >= ln.fuse.run_cap_usd  # the call that crossed the cap is paid
+    assert len(golden.requests) == first_case_calls + 1
+    assert ln.fuse.spent_usd == pytest.approx(call_usd * len(golden.requests))
 
 
 async def test_replay_of_recorded_exchanges_needs_no_model(
