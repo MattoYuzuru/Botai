@@ -65,6 +65,7 @@ def ctx(env: Env, user: str, job_id: str, connection: str | None = None) -> PgJo
         vault=env.services.vault,
         clock=env.clock,
         notifier=Notifier(None),
+        allow_unclaimed=True,
         poll_seconds=0.01,
         ask_ttl=timedelta(seconds=2),
     )
@@ -509,8 +510,12 @@ async def test_cross_host_continuation_is_same_chat_but_separate_connection_and_
     }
     accepted = await client.post(f"/api/v1/chat/threads/{thread}/messages", json=before_handoff)
     assert accepted.status_code == 202
+    handoff = ctx(env, user, parent_job, parent)
+    turns = await handoff.drain_dialogue()
+    assert [turn.text for turn in turns] == [before_handoff["text"]]
+    await handoff.checkpoint_learning(INTENT)
     result = await continue_source(
-        ctx(env, user, parent_job, parent),
+        handoff,
         env.services,
         parent,
         "https://study.fakeuni.test/courses?week=4",

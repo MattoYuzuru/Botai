@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,7 +13,7 @@ from botai.contracts.agent_ui import AgentUiBlock, InputBlock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.ids import new_id
-from botai.db.models import ChatMessage, ChatThread, Job
+from botai.db.models import ChatMessage, ChatThread, Job, JobEvent
 from botai.jobs.events import TERMINAL, iso
 
 
@@ -23,6 +24,22 @@ def state_of(job: Job) -> dict[str, Any]:
 
 def save_state(job: Job, state: dict[str, Any]) -> None:
     job.payload = {**job.payload, "dialogue": state}
+
+
+def input_revision(job: Job) -> int:
+    return payload_input_revision(job.payload)
+
+
+def payload_input_revision(payload: Mapping[str, Any]) -> int:
+    state = payload.get("dialogue")
+    value = state.get("input_revision", 0) if isinstance(state, dict) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def advance_input(job: Job) -> None:
+    state = state_of(job)
+    state["input_revision"] = input_revision(job) + 1
+    save_state(job, state)
 
 
 def is_auth_input(block: AgentUiBlock) -> bool:
@@ -81,6 +98,7 @@ def set_pending(job: Job, block: AgentUiBlock, *, channel: str, now: datetime) -
         "channel": channel,
         "secret": isinstance(block, InputBlock) and block.secret,
     }
+    state["pending_kind"] = block.type
     save_state(job, state)
 
 
@@ -90,7 +108,38 @@ def complete_pending(job: Job, block_id: str, *, now: datetime, status: str = "a
     pending = state.get("pending")
     if isinstance(pending, dict) and pending.get("block_id") == block_id:
         state.pop("pending", None)
+        state.pop("pending_kind", None)
     save_state(job, state)
+
+
+async def supersede_old_question(session: AsyncSession, job: Job, now: datetime) -> None:
+    """New research input retires a previous data choice, never authentication or approval."""
+    engine = job.payload.get("_research_engine")
+    if type(engine) is not int or engine != 1:
+        return
+    state = state_of(job)
+    pending = state.get("pending")
+    if not isinstance(pending, dict) or pending.get("channel") != "native" or pending.get("secret"):
+        return
+    block_id = pending.get("block_id")
+    if not isinstance(block_id, str):
+        return
+    kind = state.get("pending_kind")
+    if not isinstance(kind, str):
+        # Legacy pending descriptors have no kind; absent/trimmed evidence is not
+        # permission to retire a protected control.
+        kind = await session.scalar(
+            select(JobEvent.data["type"].astext)
+            .where(
+                JobEvent.job_id == job.id,
+                JobEvent.type == "block",
+                JobEvent.data["id"].astext == block_id,
+            )
+            .order_by(JobEvent.seq.desc())
+            .limit(1)
+        )
+    if kind in {"choice", "confirm"}:
+        complete_pending(job, block_id, now=now, status="superseded")
 
 
 async def read_turns(session: AsyncSession, job: Job) -> list[DialogueTurn]:

@@ -31,6 +31,7 @@ from botai.core.ids import new_id
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import ChatMessage, Job, JobAnswer, JobEvent
 from botai.jobs import dialogue
+from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.events import TERMINAL, append_event, status_data
 from botai.jobs.notify import CHANNEL_ANSWERS, CHANNEL_CANCEL
 from botai.jobs.schemas import AnswerIn
@@ -220,6 +221,7 @@ async def record_answer(
                 {"message_id": message_id, "reply_to_block_id": body.block_id},
             ]
             dialogue.save_state(job, state)
+            dialogue.advance_input(job)
             dialogue.receipt(job, now=accepted_at, status="accepted", message_id=message_id)
         elif job.thread_id is not None:
             # A durable acknowledgement is not the native answer and never joins the LLM inbox.
@@ -257,9 +259,7 @@ async def cancel_job(
     session: AsyncSession, vault: Vault, clock: Clock, user_id: str, job_id: str
 ) -> None:
     """Stops a job of the user. A job that already ended is left alone (idempotent)."""
-    job = await session.scalar(
-        select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
-    )
+    job, connection = await lock_job_and_connection(session, user_id, job_id)
     if job is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
     if job.state in TERMINAL:
@@ -270,6 +270,8 @@ async def cancel_job(
     job.stage = "Остановлено"
     job.finished_at = now
     job.locked_by = None
+    job.locked_at = None
+    await restore_source_after_stop(session, job, connection)
     await dialogue.project_terminal(session, job, now)
     await append_event(session, job.id, "status", status_data(job, now))
     await session.execute(select(func.pg_notify(CHANNEL_CANCEL, job.id)))

@@ -19,26 +19,32 @@ skips the exploration (FR-009).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import ValidationError
 
-from botai.browser.session import EntrySessionProvider
+from botai.browser.session import EntrySessionProvider, encode_session
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import guard_job, save_secret
 from botai.core.http import RetryPolicy
-from botai.core.jobs import JobCancelled, JobContext
+from botai.core.jobs import JobCancelled, JobClaimLost, JobContext, JobDeferred
+from botai.core.llm import LlmProvider
+from botai.core.research import ResearchContext
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db import models as m
@@ -58,7 +64,10 @@ from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
 from botai.learn.discovery import DiscoveryBudget, adaptive_observe
 from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
+from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
+from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandidate, intent_key
+from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
 from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
@@ -66,8 +75,10 @@ from botai.search import institutional_search_query
 from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
+    SpecPin,
     SyncOutcome,
     context_for,
+    guard_source_write,
     load_conn_info,
     load_snapshot,
     set_connection,
@@ -82,6 +93,8 @@ log = logging.getLogger(__name__)
 DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents",)
 TOKEN_BUDGET = 1_500_000
 MAX_LINK_ROUNDS = 2
+MAX_CANARY_AUTHOR_ROUNDS = 2
+MAX_CANARY_FEEDBACK = 12
 
 
 @dataclass(slots=True)
@@ -139,6 +152,7 @@ class Explorer:
         self._manual_login = False
         self._manual_connect = False
         self._prepared_session: SessionState | None = None
+        self._research: ResearchLedger | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -147,10 +161,52 @@ class Explorer:
             return await load_conn_info(db, self.ctx.user_id, connection_id)
 
     async def _set(self, connection_id: str, **values: Any) -> None:
-        await set_connection(self.services, connection_id, self.ctx.user_id, **values)
+        await set_connection(self.services, connection_id, self.ctx.user_id, ctx=self.ctx, **values)
 
     def _sync_context(self, info: ConnInfo, session: SessionState | None) -> SyncContext:
-        return context_for(self.services, info, session, transport=self.transport, retry=self.retry)
+        result = context_for(
+            self.services, info, session, transport=self.transport, retry=self.retry
+        )
+        if self._research is not None:
+            result.before_request = self._research.before_request
+        return result
+
+    def _llm(self) -> LlmProvider:
+        return self._research.llm(self.services.llm) if self._research else self.services.llm
+
+    def _token_limit(self) -> int:
+        return self.services.settings.botai_research_max_tokens if self._research else TOKEN_BUDGET
+
+    async def _research_for(self, info: ConnInfo) -> None:
+        if not self.services.settings.botai_research_enabled or not isinstance(
+            self.ctx, ResearchContext
+        ):
+            return
+        if self._research is not None and self._research.state.intent_key == intent_key(
+            self.intent
+        ):
+            return
+        self._research = await ResearchLedger.load(
+            self.ctx,
+            self.services.settings,
+            user_id=info.user_id,
+            job_id=self.ctx.job_id,
+            connection_id=info.connection_id,
+            origin=info.origin,
+            allow_hosts=info.allow_hosts,
+            intent=self.intent,
+            initial_tokens=self.tokens,
+        )
+        self.tokens = max(self.tokens, self._research.state.tokens)
+        await self._research.save()
+
+    async def _canary(
+        self, spec: dict[str, Any], sctx: SyncContext, *, require: Collection[Kind]
+    ) -> CanaryReport:
+        if self._research is None:
+            return await run_canary(spec, sctx, require=require)
+        async with self._research.operation("verify"):
+            return await run_canary(spec, sctx, require=require)
 
     async def _ensure_session(
         self,
@@ -211,8 +267,7 @@ class Explorer:
             r.know(login.get_secret_value())
         password = await vault.get(info.user_id, info.connection_id, SecretKind.PASSWORD)
         if password is not None:  # never shown to a model; replaced if a page ever echoes it
-            r.known.add(password.get_secret_value())
-            r.observed.add(password.get_secret_value())
+            r.protect_values([password.get_secret_value()])
         session = await load_session(vault, info.user_id, info.connection_id)
         if session is not None:
             r.protect_session(session)
@@ -233,6 +288,9 @@ class Explorer:
                 discovery_mode="requested" if "kinds" in payload else "auto",
             )
         self._initial_note_pending = bool(self.intent.user_note)
+        if payload.get("_research_engine") == 1:
+            self._initial_note_pending = False
+            self._manual_login = False  # The previous slice already completed that human step.
         self._trace_intent()
 
     def _trace_intent(self, *, changed: bool = False, rejected_count: int = 0) -> None:
@@ -296,7 +354,7 @@ class Explorer:
                 self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
             )
         elif turn.text:
-            response = await self.services.llm.complete(intent_request(turn, self.intent))
+            response = await self._llm().complete(intent_request(turn, self.intent))
             usage = response.usage
             self.tokens += usage.input_cache_miss + usage.input_cache_hit + usage.output
             try:
@@ -427,12 +485,17 @@ class Explorer:
                     )
                     await self._report_sync(outcome, prefix="Вход проверен.")
                     return {"status": outcome.status, "login_resumed": True}
+            if payload.get("_research_engine") == 1:
+                await self._research_for(info)
             await self._initial_note(await self._redactor(info))
             await self._checkpoint()
             await self._drain(await self._redactor(info))
             continued = await self._continue_foreign(info)
             if continued is not None:
                 return continued
+            resumed = await self._resume_activation(info)
+            if resumed is not None:
+                return resumed
             reused = await self._reuse(info)
             if reused is not None:
                 return reused
@@ -440,10 +503,11 @@ class Explorer:
         except (JobCancelled, asyncio.CancelledError):
             # nobody answered in time (JobCancelled), or the student stopped the job and the
             # runner cancelled its task (CancelledError): either way the setup is not running
-            await self._set(
-                connection_id,
-                status=(self._previous_status or "draft") if manual_existing else "draft",
-            )
+            with contextlib.suppress(JobClaimLost):
+                await self._set(
+                    connection_id,
+                    status=(self._previous_status or "draft") if manual_existing else "draft",
+                )
             raise
         except BotaiError as err:
             return await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
@@ -465,7 +529,13 @@ class Explorer:
             )
         )
         try:
+            if payload.get("_research_engine") == 1:
+                await self._research_for(snap)
             await self._checkpoint()
+            await self._drain(await self._redactor(snap))
+            resumed = await self._resume_activation(snap)
+            if resumed is not None:
+                return resumed
             return await self._explore(snap, wanted_kinds(payload), base_spec=snap.spec)
         except BotaiError as err:
             await self.ui.say(err.detail or "Не удалось выучить новые данные.")
@@ -620,6 +690,9 @@ class Explorer:
         if continued is not None:
             return continued
         sctx = self._sync_context(info, session)
+        await self._research_for(info)
+        if self._research is not None:
+            sctx.before_request = self._research.before_request
         digest = author_digest(info.user_id)
         async with svc.db() as db:
             revision = await revisions.latest_revision(db, info.origin, "recipe") + 1
@@ -646,6 +719,9 @@ class Explorer:
             if not pending and self.intent.discovery_mode != "auto":
                 break
             round_intent = self.intent
+            await self._research_for(info)
+            if self._research is not None:
+                sctx.before_request = self._research.before_request
             obs = await self._observe(info, session, redactor, extra)
             if obs.limited and not self._observation_limited:
                 await ui.say(
@@ -670,8 +746,21 @@ class Explorer:
                 round_intent = self.intent  # discovery is not a concurrent user correction
                 pending = [kind for kind in self.intent.requested_kinds if kind not in chosen]
             if round_no == 0 and not obs.empty:
-                warning, spent = await find_warning(svc.llm, obs.plain_text)
+                warning, spent = await find_warning(self._llm(), obs.plain_text)
                 self.tokens += spent
+            if self._research is not None:
+                lint_ctx = LintContext(
+                    allowed_hosts=info.allow_hosts,
+                    expected_origin=info.origin,
+                    observed=obs.observed,
+                )
+                for kind in list(pending):
+                    restored = await self._restore_candidate(
+                        kind, lint_ctx, sctx, info, revision, digest
+                    )
+                    if restored is not None:
+                        chosen[kind] = restored
+                        pending.remove(kind)
             if not obs.empty:
                 lint_ctx = LintContext(
                     allowed_hosts=info.allow_hosts,
@@ -688,7 +777,7 @@ class Explorer:
                 for kind in list(pending):
                     if await self._drain(redactor):
                         break  # Re-observe a changed entry/view before authoring another kind.
-                    if self.tokens > TOKEN_BUDGET:
+                    if self.tokens > self._token_limit():
                         diagnostic_event("learn.selection", outcome="failed", reason="token_budget")
                         break
                     found = await self._author_and_verify(
@@ -699,10 +788,29 @@ class Explorer:
                     if found is not None:
                         chosen[kind] = found
                         pending.remove(kind)
+                        if self._research is not None:
+                            self._research.state.candidates[kind] = SavedCandidate.of(
+                                found.candidate
+                            )
+                            self._research.account_total(self.tokens)
+                            await self._research.save()
             if self.intent != round_intent:
                 continue
             if not pending or round_no == MAX_LINK_ROUNDS:
                 break
+            if self._research is not None:
+                memory = self._research.state.memory
+                if memory.exhausted or memory.overflowed:
+                    break
+                if memory.frontier:
+                    # An authored read failed, but there are still executor-observed pages.
+                    # Continue that frontier before asking the student for the same link.
+                    memory.finished = False
+                    memory.pending_url = memory.frontier[0]
+                    memory.resume_needed = True
+                    self._research.state.phase = "observe"
+                    await self._research.save()
+                    raise JobDeferred("Продолжаю поиск доступных разделов")
             continued = await self._continue_foreign(info)
             if continued is not None:
                 return continued
@@ -765,6 +873,9 @@ class Explorer:
             )
         if warning:
             await ui.say(f"**Важно.** {warning} Учитывайте это перед подтверждением подключения.")
+        if self._research is not None:
+            self._research.state.phase = "confirm"
+            await self._research.save()
         await self._show_summary(info, chosen, report)
         confirmed = await ui.confirm(
             "Всё верно? После подтверждения данные будут обновляться автоматически.",
@@ -789,6 +900,9 @@ class Explorer:
                     ErrorCode.VALIDATION,
                 )
             return await self._explore(info, list(self.intent.requested_kinds), base_spec=base_spec)
+        if self._research is not None:
+            self._research.state.phase = "activate"
+            await self._research.save()
         return await self._activate(info, spec, chosen, warning, digest, base_spec is not None)
 
     def _scoped_selection(self, chosen: dict[Kind, Chosen]) -> dict[Kind, Chosen]:
@@ -817,6 +931,19 @@ class Explorer:
                 background=True,
             )
             try:
+                research = self._research
+                settings = self.services.settings
+                if research is not None:
+                    research.state.pending_active_ms = int(
+                        min(settings.botai_research_slice_seconds, research.remaining_seconds())
+                        * 1000
+                    )
+                    if research.state.pending_active_ms <= 0:
+                        raise BotaiError(
+                            ErrorCode.SOURCE_UNAVAILABLE,
+                            "Исследование достигло общего бюджета времени",
+                        )
+                    await research.save()
                 obs = await adaptive_observe(
                     handle,
                     info.origin,
@@ -824,13 +951,70 @@ class Explorer:
                     start_urls=start_urls,
                     intent=self.intent,
                     llm=self.services.llm,
-                    budget=DiscoveryBudget(tokens=min(150_000, max(0, TOKEN_BUDGET - self.tokens))),
+                    budget=DiscoveryBudget(
+                        steps=settings.botai_research_slice_steps if research else 10,
+                        seconds=min(
+                            settings.botai_research_slice_seconds, research.remaining_seconds()
+                        )
+                        if research
+                        else 90.0,
+                        tokens=min(150_000, max(0, self._token_limit() - self.tokens)),
+                    ),
+                    memory=research.state.memory if research else None,
+                    checkpoint=research.observed if research else None,
+                    run_limits=MemoryLimits(
+                        max_steps=settings.botai_research_max_steps,
+                        max_requests=max(
+                            1, settings.botai_research_max_requests - research.state.other_requests
+                        ),
+                        max_tokens=max(
+                            1, settings.botai_research_max_tokens - research.state.other_tokens
+                        ),
+                        max_active_ms=max(
+                            1,
+                            int(settings.botai_research_max_seconds * 1000)
+                            - research.state.other_active_ms,
+                        ),
+                    )
+                    if research
+                    else None,
                 )
+                if research is not None:
+                    research.state.pending_active_ms = 0
+                    await research.save()
+                if not obs.auth_required and not obs.bot_protection:
+                    # The SPA can rotate credentials while discovering data. Canary and the
+                    # first sync must use this state, not the snapshot restored before browsing.
+                    try:
+                        async with asyncio.timeout(5.0):
+                            refreshed = await handle.export_session()
+                        redactor.protect_session(refreshed)
+                    except Exception:
+                        raise BotaiError(
+                            ErrorCode.SOURCE_UNAVAILABLE,
+                            "Не удалось сохранить обновлённое состояние браузера",
+                        ) from None
+                    await save_secret(
+                        self.ctx,
+                        self.services.vault,
+                        info.user_id,
+                        info.connection_id,
+                        SecretKind.SESSION,
+                        encode_session(refreshed),
+                        expires_at=refreshed.expires_hint,
+                    )
+                    session = refreshed
             finally:
                 await handle.close()
             self.tokens += obs.planner_tokens
+            if self._research is not None:
+                self._research.account_total(self.tokens)
+                await self._research.save()
             if not obs.auth_required and not obs.bot_protection:
                 self._observed_session = session
+                if self._research is not None and self._research.state.memory.resume_needed:
+                    await stage.finish("ok", "Исследование сохранено, продолжаю просмотр")
+                    raise JobDeferred("Продолжаю исследование источника")
                 break
             if self._reauth_attempted:
                 await stage.finish("failed")
@@ -857,6 +1041,7 @@ class Explorer:
                 "skipped",
             )
             async with self.services.db() as db, db.begin():
+                await guard_job(self.ctx, db, check_input=True)
                 db.add(
                     m.AuditLog(
                         user_id=info.user_id,
@@ -869,6 +1054,44 @@ class Explorer:
                     )
                 )
         return obs
+
+    async def _restore_candidate(
+        self,
+        kind: Kind,
+        lint_ctx: LintContext,
+        sctx: SyncContext,
+        info: ConnInfo,
+        revision: int,
+        digest: str,
+    ) -> Chosen | None:
+        research = self._research
+        if research is None:
+            return None
+        saved = research.state.candidates.get(kind)
+        proposals = [saved] if saved else research.state.proposals.get(kind, [])
+        if not proposals:
+            return None
+        stage = await self.ui.stage(f"Повторно проверяю: {KIND_LABELS[kind].lower()}")
+        verified: list[Chosen] = []
+        for index, proposal in enumerate(proposals):
+            if proposal.kind != kind:
+                raise BotaiError(
+                    ErrorCode.RECIPE_REJECTED, "Вид данных сохранённого описания не совпал"
+                )
+            checked, _ = await self._verify_candidate(
+                kind, proposal.candidate(), index, sctx, info, revision, digest, lint_ctx
+            )
+            if checked is not None:
+                bound, report = checked
+                verified.append(Chosen(kind, bound, report, None))
+        if verified:
+            await stage.finish("ok")
+            return await self._pick(kind, verified, sctx.tz)
+        research.state.candidates.pop(kind, None)
+        research.state.proposals.pop(kind, None)
+        await research.save()
+        await stage.finish("failed", "Свежая проверка требует уточнить описание")
+        return None
 
     async def _author_and_verify(
         self,
@@ -889,63 +1112,80 @@ class Explorer:
         ui = self.ui
         label = KIND_LABELS[kind].lower()
         stage = await ui.stage(f"Разбираю: {label}" if previous is None else f"Чиню: {label}")
-        try:
-            authored = await author_kind(
-                self.services.llm,
-                kind,
-                observation,
-                lint_ctx=lint_ctx,
-                origin=info.origin,
-                revision=revision,
-                now=self.services.clock.now(),
-                digest=digest,
-                previous=previous,
-                problem=problem,
-            )
-        except AuthorError:
-            self._verification_failed = True
-            await stage.finish("failed", "Модель не вернула пригодный ответ")
-            return None
-        self.tokens += authored.tokens
-        if not authored.candidates:
-            self._verification_failed = self._verification_failed or bool(authored.rejected)
-            reason = (
-                "Проверка отклонила все варианты"
-                if authored.rejected
-                else "Подходящих данных не видно"
-            )
-            await stage.finish("skipped" if not authored.rejected else "failed", reason)
-            diagnostic_event(
-                "learn.selection",
-                kind=kind,
-                outcome="rejected" if authored.rejected else "not_found",
-                reason="lint_rejected" if authored.rejected else "no_candidates",
-                candidate_count=0,
-            )
-            return None
         verified: list[Chosen] = []
-        for i, cand in enumerate(authored.candidates):
-            spec = candidate_spec(
-                cand,
-                origin=info.origin,
-                revision=revision,
-                now=self.services.clock.now(),
-                digest=digest,
-                index=i,
-            )
+        feedback: list[str] | None = None
+        candidate_count = 0
+        for attempt in range(MAX_CANARY_AUTHOR_ROUNDS):
             try:
-                report = await run_canary(spec, sctx, require={kind})
-            except SessionExpired:
-                raise BotaiError(
-                    ErrorCode.SOURCE_AUTH_REQUIRED, "Сайт не принял сессию сразу после входа"
-                ) from None
-            if report.ok:
-                comparison = (
-                    compare(kind, baseline.get(kind), report.valid.get(kind, []), sctx.tz)
-                    if baseline is not None
-                    else None
+                authored = await author_kind(
+                    self._llm(),
+                    kind,
+                    observation,
+                    lint_ctx=lint_ctx,
+                    origin=info.origin,
+                    revision=revision,
+                    now=self.services.clock.now(),
+                    digest=digest,
+                    previous=previous,
+                    problem=problem,
+                    verification_feedback=feedback,
                 )
-                verified.append(Chosen(kind, cand, report, comparison))
+            except AuthorError:
+                self._verification_failed = True
+                await stage.finish("failed", "Модель не вернула пригодный ответ")
+                return None
+            self.tokens += authored.tokens
+            candidate_count = len(authored.candidates)
+            if not authored.candidates:
+                rejected = bool(authored.rejected) or feedback is not None
+                self._verification_failed = self._verification_failed or rejected
+                reason = (
+                    "Проверка отклонила все варианты" if rejected else "Подходящих данных не видно"
+                )
+                await stage.finish("failed" if rejected else "skipped", reason)
+                diagnostic_event(
+                    "learn.selection",
+                    kind=kind,
+                    outcome="rejected" if rejected else "not_found",
+                    reason="canary_rejected"
+                    if feedback is not None
+                    else "lint_rejected"
+                    if authored.rejected
+                    else "no_candidates",
+                    candidate_count=0,
+                )
+                return None
+            feedback = []
+            if self._research is not None:
+                self._research.state.proposals[kind] = [
+                    SavedCandidate.of(c) for c in authored.candidates
+                ]
+                self._research.account_total(self.tokens)
+                await self._research.save()
+            for i, cand in enumerate(authored.candidates):
+                checked, findings = await self._verify_candidate(
+                    kind, cand, i, sctx, info, revision, digest, lint_ctx
+                )
+                feedback.extend(findings[: max(0, MAX_CANARY_FEEDBACK - len(feedback))])
+                if checked is not None:
+                    bound, report = checked
+                    comparison = (
+                        compare(kind, baseline.get(kind), report.valid.get(kind, []), sctx.tz)
+                        if baseline is not None
+                        else None
+                    )
+                    verified.append(Chosen(kind, bound, report, comparison))
+            if verified or self.tokens >= self._token_limit():
+                break
+            if attempt + 1 < MAX_CANARY_AUTHOR_ROUNDS:
+                diagnostic_event(
+                    "learn.selection",
+                    kind=kind,
+                    outcome="retry",
+                    reason="canary_rejected",
+                    attempt=attempt + 1,
+                    candidate_count=candidate_count,
+                )
         if not verified:
             self._verification_failed = True
             await stage.finish("failed", "Проверка на вашей сессии не прошла")
@@ -954,7 +1194,7 @@ class Explorer:
                 kind=kind,
                 outcome="rejected",
                 reason="canary_rejected",
-                candidate_count=len(authored.candidates),
+                candidate_count=candidate_count,
                 verified_count=0,
             )
             return None
@@ -968,11 +1208,93 @@ class Explorer:
             "learn.selection",
             kind=kind,
             outcome="accepted",
-            candidate_count=len(authored.candidates),
+            candidate_count=candidate_count,
             verified_count=len(verified),
             record_count=picked.report.count(kind),
         )
         return picked
+
+    async def _verify_candidate(
+        self,
+        kind: Kind,
+        candidate: Candidate,
+        index: int,
+        sctx: SyncContext,
+        info: ConnInfo,
+        revision: int,
+        digest: str,
+        lint_ctx: LintContext,
+    ) -> tuple[tuple[Candidate, CanaryReport] | None, list[str]]:
+        """Try an authored read and at most one supported alternative auth binding.
+
+        A refused HTTP replay is evidence about this candidate, not proof that the browser
+        login expired. Credentials remain executor-owned and are never part of feedback.
+        """
+        variants = [candidate]
+        rendered = candidate.endpoint.get("request", {}).get("render") is True
+        state = sctx.session
+        if not rendered and state is not None and state.origin == info.origin:
+            auth_type = candidate.auth.get("type")
+            if auth_type == "cookie" and state.bearer is not None:
+                variants.append(replace(candidate, auth={"type": "bearer"}))
+            elif auth_type == "bearer" and state.cookies:
+                variants.append(replace(candidate, auth={"type": "cookie"}))
+        findings: list[str] = []
+        for bound in variants:
+            spec = candidate_spec(
+                bound,
+                origin=info.origin,
+                revision=revision,
+                now=self.services.clock.now(),
+                digest=digest,
+                index=index,
+            )
+            # Auth alternatives can only change a supported mode; recheck the complete spec
+            # before any request so it retains the same origin, paths and read-only boundary.
+            lint = lint_spec(spec, lint_ctx)
+            if not lint.ok:
+                findings.extend(lint.reasons())
+                continue
+            facts = {
+                "kind": kind,
+                "candidate_index": index,
+                "auth_type": bound.auth.get("type"),
+                "transport": "rendered" if rendered else "http",
+                "rendered": rendered,
+                "bearer_present": state is not None and state.bearer is not None,
+            }
+            diagnostic_event("canary.candidate", phase="request", **facts)
+            try:
+                report = await self._canary(spec, sctx, require={kind})
+            except SessionExpired:
+                diagnostic_event(
+                    "canary.candidate",
+                    phase="response",
+                    outcome="rejected",
+                    reason="session_expired",
+                    **facts,
+                )
+                findings.append(
+                    f"вариант {index + 1}: доступ к данным не воспроизведён "
+                    f"с авторизацией {bound.auth.get('type')}. "
+                    "Это не доказывает потерю входа в браузере; проверь наблюдаемый запрос "
+                    "или предложи render=true для подтверждённого HTML DOM."
+                )
+                continue
+            diagnostic_event(
+                "canary.candidate",
+                phase="response",
+                outcome="accepted" if report.ok else "rejected",
+                reason="ok" if report.ok else "canary_rejected",
+                problem_count=len(report.problems),
+                **facts,
+            )
+            if report.ok:
+                return (bound, report), findings
+            # The source responded: changing auth cannot repair a schema/field mismatch.
+            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.problems)
+            break
+        return None, findings
 
     async def _pick(self, kind: Kind, verified: list[Chosen], tz: ZoneInfo) -> Chosen:
         """One candidate. A repair prefers the one that reads the confirmed data again; several
@@ -1049,13 +1371,17 @@ class Explorer:
         stage = await self.ui.stage("Проверяю описание целиком")
         endpoints: list[dict[str, Any]] = []
         bootstrap: list[dict[str, Any]] = []
-        auth: dict[str, Any] | None = None
+        auth_options: list[dict[str, Any]] = []
         require: list[Kind] = []
+        retained_kinds: set[Kind] = set()
+        scope = self._data_scope()
         if base_spec is not None:
             base = base_spec["recipe"]
             endpoints = [e for e in copy.deepcopy(base["endpoints"]) if e["kind"] not in chosen]
             bootstrap = copy.deepcopy(base.get("bootstrap", []))
-            auth = copy.deepcopy(base["auth"])
+            retained_kinds = {e["kind"] for e in endpoints}
+            if endpoints:
+                auth_options.append(copy.deepcopy(base["auth"]))
             require = [k for k in base["validation"]["requireKinds"] if k not in chosen]
         for kind, ch in chosen.items():
             merged = merge_bootstrap(bootstrap, copy.deepcopy(ch.candidate.bootstrap))
@@ -1071,38 +1397,65 @@ class Explorer:
             endpoint["id"] = f"{kind}1"
             endpoints.append(endpoint)
             require.append(kind)
-            auth = auth or ch.candidate.auth
+            if ch.candidate.auth not in auth_options and (
+                not retained_kinds or scope is None or retained_kinds <= set(scope)
+            ):
+                # A changed recipe-wide binding must also work for retained endpoints. Do
+                # not read excluded kinds just to prove it or silently change their auth.
+                auth_options.append(copy.deepcopy(ch.candidate.auth))
         if not endpoints:
             await stage.finish("failed")
             return None
-        spec = build_spec(
-            origin=info.origin,
-            revision=revision,
-            now=self.services.clock.now(),
-            digest=digest,
-            endpoints=endpoints,
-            bootstrap=bootstrap,
-            auth=auth or {"type": "cookie"},
-            require_kinds=require,
-        )
-        verdict = lint_spec(spec, lint_ctx)  # with the same observations the candidates met
-        if not verdict.ok:
-            await stage.finish("failed", "; ".join(verdict.reasons()[:3]))
-            return None
-        try:
-            report = await run_canary(
-                scoped_spec(spec, self._data_scope()),
-                sctx,
-                require=[k for k in require if k in chosen],
+        problems: list[str] = []
+        for auth in auth_options:
+            spec = build_spec(
+                origin=info.origin,
+                revision=revision,
+                now=self.services.clock.now(),
+                digest=digest,
+                endpoints=endpoints,
+                bootstrap=bootstrap,
+                auth=auth,
+                require_kinds=require,
             )
-        except SessionExpired:
-            await stage.finish("failed", "Сайт не принял сессию")
-            return None
-        if not report.ok:
-            await stage.finish("failed", "; ".join(report.problems[:3]))
-            return None
-        await stage.finish("ok")
-        return spec, report
+            verdict = lint_spec(spec, lint_ctx)
+            if not verdict.ok:
+                await stage.finish("failed", "; ".join(verdict.reasons()[:3]))
+                return None
+            facts = {"auth_type": auth.get("type"), "endpoint_count": len(endpoints)}
+            diagnostic_event("canary.assembly", phase="request", **facts)
+            try:
+                report = await self._canary(
+                    scoped_spec(spec, scope),
+                    sctx,
+                    require=[k for k in require if k in chosen],
+                )
+            except SessionExpired:
+                diagnostic_event(
+                    "canary.assembly",
+                    phase="response",
+                    outcome="rejected",
+                    reason="session_expired",
+                    **facts,
+                )
+                continue
+            diagnostic_event(
+                "canary.assembly",
+                phase="response",
+                outcome="accepted" if report.ok else "rejected",
+                reason="ok" if report.ok else "canary_rejected",
+                **facts,
+            )
+            if report.ok:
+                await stage.finish("ok")
+                return spec, report
+            problems = report.problems
+        await stage.finish(
+            "failed",
+            "; ".join(problems[:3])
+            or "Не удалось проверить единый способ чтения для собранного описания",
+        )
+        return None
 
     async def _show_summary(
         self,
@@ -1126,6 +1479,49 @@ class Explorer:
         )
         await self.ui.summary(title, groups)
 
+    async def _resume_activation(self, info: ConnInfo) -> dict[str, Any] | None:
+        if not self.services.settings.botai_research_enabled:
+            return None
+        async with self.services.db() as db, db.begin():
+            conn = await guard_source_write(db, self.ctx, info.user_id, info.connection_id)
+            if conn is None or conn.status == "disabled":
+                return None
+            job = await db.get(m.Job, self.ctx.job_id)
+            raw = job.payload.get("_research_activation") if job is not None else None
+            if raw is None:
+                return None
+            try:
+                receipt = ActivationReceipt.model_validate(raw)
+            except ValidationError:
+                raise BotaiError(
+                    ErrorCode.RECIPE_REJECTED, "Не удалось проверить сохранённую активацию"
+                ) from None
+            if receipt.intent_key != intent_key(self.intent):
+                return None  # A new instruction requires new proof and confirmation.
+            row = await db.get(m.AdapterSpecRow, receipt.spec_id)
+            if (
+                row is None
+                or row.origin != info.origin
+                or row.adapter != "recipe"
+                or row.state != "active"
+                or row.revision != receipt.revision
+                or conn.spec_id != row.id
+                or research_digest(row.spec) != receipt.spec_digest
+            ):
+                raise BotaiError(
+                    ErrorCode.RECIPE_REJECTED,
+                    "Активированное описание изменилось; нужна новая проверка",
+                )
+        await self._set(info.connection_id, status="active", clear_error=True)
+        return await self._finish_activation(
+            info,
+            receipt.kinds,
+            receipt.revision,
+            receipt.relearn,
+            resumed=True,
+            expected_spec=SpecPin(receipt.spec_id, receipt.revision, receipt.spec_digest),
+        )
+
     async def _activate(
         self,
         info: ConnInfo,
@@ -1138,22 +1534,60 @@ class Explorer:
         stage = await self.ui.stage("Сохраняю описание")
         host = urlsplit(info.origin).hostname or ""
         async with self.services.db() as db, db.begin():
+            conn = await guard_source_write(
+                db, self.ctx, info.user_id, info.connection_id, origin=info.origin
+            )
+            if conn is None or conn.status == "disabled":
+                return {"status": "skipped", "detail": "disabled"}
             row = await revisions.add_revision(
                 db, origin=info.origin, adapter="recipe", spec=spec, state="canary", digest=digest
             )
             await revisions.activate(db, row, now=self.services.clock.now())
-            conn = await db.get(m.Connection, info.connection_id)
-            if conn is not None and conn.status != "disabled":
-                conn.adapter = "recipe"
-                conn.spec_id = row.id
-                conn.spec_revision = row.revision
-                known_hosts: list[str] = list(conn.allow_hosts or [])
-                conn.allow_hosts = sorted({*known_hosts, host})
-                conn.status = "active"
-                conn.error_code = conn.error_detail = conn.error_at = None
+            conn.adapter = "recipe"
+            conn.spec_id = row.id
+            conn.spec_revision = row.revision
+            known_hosts: list[str] = list(conn.allow_hosts or [])
+            conn.allow_hosts = sorted({*known_hosts, host})
+            conn.status = "active"
+            conn.error_code = conn.error_detail = conn.error_at = None
             await update_university(db, info.university_id, info.origin, warning)
             revision = row.revision
+            if self._research is not None:
+                # Hash the persisted JSON representation, including JSONB numeric normalization.
+                await db.refresh(row, attribute_names=["spec"])
+                job = await db.get(m.Job, self.ctx.job_id)  # already fenced/locked above
+                if job is None:
+                    raise JobClaimLost
+                receipt = ActivationReceipt(
+                    intent_key=intent_key(self.intent),
+                    spec_id=row.id,
+                    revision=revision,
+                    spec_digest=research_digest(row.spec),
+                    kinds=sorted(chosen),
+                    relearn=relearn,
+                )
+                job.payload = {**job.payload, "_research_activation": receipt.model_dump()}
         await stage.finish("ok", f"Версия описания: {revision}")
+        return await self._finish_activation(
+            info,
+            sorted(chosen),
+            revision,
+            relearn,
+            expected_spec=SpecPin(row.id, revision, research_digest(row.spec))
+            if self._research is not None
+            else None,
+        )
+
+    async def _finish_activation(
+        self,
+        info: ConnInfo,
+        kinds: list[Kind],
+        revision: int,
+        relearn: bool,
+        *,
+        resumed: bool = False,
+        expected_spec: SpecPin | None = None,
+    ) -> dict[str, Any]:
         outcome = await sync_connection(
             self.ctx,
             self.services,
@@ -1161,25 +1595,32 @@ class Explorer:
             transport=self.transport,
             retry=self.retry,
             queue_repair=not self._manual_connect,
+            expected_spec=expected_spec,
         )
         await self._report_sync(outcome, prefix="Готово.")
         diagnostic_event(
             "learn.outcome",
             connection_id=info.connection_id,
             outcome="ok" if outcome.status == "ok" else "failed",
-            chosen_count=len(chosen),
+            chosen_count=len(kinds),
             revision=revision,
         )
         return {
             "status": outcome.status,
-            "kinds": sorted(chosen),
+            "kinds": sorted(kinds),
             "revision": revision,
             "relearn": relearn,
+            **({"resumed_activation": True} if resumed else {}),
             "sync": outcome.as_dict(),
         }
 
     async def _registry(self, info: ConnInfo, origin: str, warning: str | None) -> None:
         async with self.services.db() as db, db.begin():
+            connection = await guard_source_write(
+                db, self.ctx, info.user_id, info.connection_id, origin=origin
+            )
+            if connection is None or connection.status == "disabled":
+                return
             await update_university(db, info.university_id, origin, warning)
 
     async def _fail(

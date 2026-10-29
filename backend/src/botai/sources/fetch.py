@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.http import build_client, host_allowed, request_with_retries
 from botai.sources.adapter import ExpiredRules, SessionExpired, SyncContext
@@ -58,6 +59,7 @@ class SourceClient:
     ) -> None:
         self._ctx = ctx
         self._requests = 0
+        self._auth_type = auth_type
         session = ctx.session if use_session else None
         if auth_type != "none" and session is not None and known_expired(session, ctx.now):
             raise SessionExpired("session is past its expiry hint")
@@ -117,6 +119,8 @@ class SourceClient:
             raise BotaiError(
                 ErrorCode.SOURCE_RATE_LIMITED, "Слишком много запросов за одну синхронизацию"
             )
+        if self._ctx.before_request is not None:
+            await self._ctx.before_request()
         kwargs: dict[str, Any] = {"policy": self._ctx.retry}
         if params:
             kwargs["params"] = dict(params)
@@ -127,8 +131,25 @@ class SourceClient:
         if self._client is None:
             raise RuntimeError("SourceClient must be used as `async with`")
         response = await request_with_retries(self._client, method, url, **kwargs)
-        if check_session:
-            check_expired(response, self._ctx.expired)
+        auth_required = False
+        try:
+            if check_session:
+                check_expired(response, self._ctx.expired)
+        except SessionExpired:
+            auth_required = True
+            raise
+        finally:
+            diagnostic_event(
+                "auth.source_response",
+                method=method,
+                status=response.status_code,
+                auth_type=self._auth_type,
+                transport="http",
+                auth_required=auth_required,
+                redirected=bool(response.history),
+                outcome="rejected" if auth_required else "ok",
+                **url_facts(str(response.request.url)),
+            )
         if len(response.content) > MAX_BODY:
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Ответ источника слишком большой")
         return response

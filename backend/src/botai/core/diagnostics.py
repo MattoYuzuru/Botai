@@ -35,6 +35,8 @@ _EVENT = re.compile(
 _NUMBERS = set(
     [
         "attempt",
+        "action_count",
+        "uncertain_calls",
         "up_bytes",
         "down_bytes",
         "attempts",
@@ -128,6 +130,7 @@ _NUMBERS = set(
 _BOOLEANS = set(
     [
         "read_only",
+        "rendered",
         "limited",
         "json_response",
         "html_response",
@@ -182,6 +185,8 @@ _BOOLEANS = set(
     ]
 )
 _CODES: dict[str, set[str]] = {
+    "auth_type": {"none", "cookie", "bearer"},
+    "transport": {"http", "rendered"},
     "stop_reason": {
         "data_request_failed",
         "navigation_failed",
@@ -215,7 +220,19 @@ _CODES: dict[str, set[str]] = {
         "documents",
     },
     "job_kind": {"connect", "learn", "repair", "sync", "chat", "action", "ingest"},
-    "phase": {"requested", "final", "request", "response", "parse", "selection"},
+    "phase": {
+        "requested",
+        "final",
+        "request",
+        "response",
+        "parse",
+        "selection",
+        "observe",
+        "author",
+        "verify",
+        "confirm",
+        "activate",
+    },
     "outcome": {
         "requested",
         "absent",
@@ -237,6 +254,13 @@ _CODES: dict[str, set[str]] = {
         "answer",
     },
     "reason": {
+        "auth_read_only",
+        "auth_no_permit",
+        "auth_context_changed",
+        "auth_action_mismatch",
+        "auth_ui_missing",
+        "auth_scan_failed",
+        "auth_permit_used",
         "missing_key",
         "invalid_key",
         "access_denied",

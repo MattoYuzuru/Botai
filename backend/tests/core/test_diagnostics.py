@@ -102,6 +102,17 @@ async def test_concurrent_jobs_do_not_exchange_correlation(traces: Path) -> None
     assert "job_id" not in next(row for row in rows if row["event"] == "job.exit")
 
 
+def test_replay_binding_vocabulary_accepts_only_static_modes(traces: Path) -> None:
+    d.diagnostic_event("canary.candidate", auth_type="bearer", transport="http", rendered=False)
+    d.diagnostic_event("canary.candidate", auth_type=MARKER, transport=MARKER, rendered=MARKER)
+    first, second = records(traces)
+    assert first["auth_type"] == "bearer"
+    assert first["transport"] == "http"
+    assert first["rendered"] is False
+    assert not {"auth_type", "transport", "rendered"} & second.keys()
+    assert MARKER not in json.dumps(records(traces))
+
+
 def test_urls_are_correlatable_without_path_query_host_or_credentials(traces: Path) -> None:
     url = f"https://login:{MARKER}@{MARKER}.test/students/{MARKER}?token={MARKER}#private"
     facts = d.url_facts(url)

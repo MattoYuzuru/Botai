@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ApiError, humanMessage } from "@/api/errors";
 import {
   activeAttention,
   applyEvent,
@@ -148,6 +149,48 @@ describe("вопросы и ожидание человека", () => {
     expect(jobFailed(done)).toBe(false);
     expect(jobProblem(done)).toBeNull();
   });
+
+  it.each([
+    ["source_auth_required", "Нужно снова войти в личный кабинет вуза."],
+    [
+      "recipe_rejected",
+      "Описание подключения не прошло проверку или не было подтверждено. Подключение не завершено.",
+    ],
+  ])("done с %s сохраняет причину для сообщения в истории", (code, message) => {
+    const job = applyEvent(initialJob("J"), ev("done", { result: { status: "error", detail: code } }));
+    const problem = jobProblem(job);
+    expect(jobFailed(job)).toBe(true);
+    expect(problem).toEqual({ code, detail: "", extra: {} });
+    expect(humanMessage(new ApiError(500, problem?.code ?? "unknown", problem?.detail ?? ""))).toBe(message);
+  });
+
+  it.each([
+    "source_unavailable",
+    "source_rate_limited",
+    "source_bot_protection",
+    "recipe_drift",
+    "egress_blocked",
+    "quota_exceeded",
+    "injection_blocked",
+    "llm_unavailable",
+    "not_found",
+    "validation",
+  ])("done сохраняет известный код подключения %s", (code) => {
+    const job = applyEvent(initialJob("J"), ev("done", { result: { status: "error", detail: code } }));
+    expect(jobProblem(job)).toEqual({ code, detail: "", extra: {} });
+  });
+
+  it.each(["private diagnostic: student@example.test", "source_new_error", null, { private: "value" }])(
+    "произвольный detail %j не превращается в код или сообщение пользователю",
+    (detail) => {
+      const job = applyEvent(initialJob("J"), ev("done", { result: { status: "error", detail } }));
+      const problem = jobProblem(job);
+      expect(problem).toEqual({ code: "unknown", detail: "", extra: {} });
+      expect(humanMessage(new ApiError(500, problem?.code ?? "unknown", problem?.detail ?? ""))).toBe(
+        "У BotAI сейчас неполадка. Мы уже разбираемся.",
+      );
+    },
+  );
 
   it("вопрос без ответа ждёт, отвеченный — нет; после завершения вопросов не остаётся", () => {
     let job = applyEvent(

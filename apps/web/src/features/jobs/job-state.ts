@@ -43,11 +43,39 @@ export interface JobSnapshot {
   lastEventId: string | null;
 }
 
+/** Известные коды backend/core/errors.py; произвольный legacy detail не становится кодом или текстом UI. */
+const RESULT_ERROR_CODES = new Set([
+  "source_auth_required",
+  "source_unavailable",
+  "source_rate_limited",
+  "source_bot_protection",
+  "login_failed",
+  "recipe_drift",
+  "recipe_rejected",
+  "egress_blocked",
+  "action_changed",
+  "action_expired",
+  "quota_exceeded",
+  "injection_blocked",
+  "llm_unavailable",
+  "not_found",
+  "forbidden",
+  "unauthorized",
+  "validation",
+  "conflict",
+  "block_answered",
+  "not_implemented",
+  "too_many_attempts",
+  "internal_error",
+]);
+
 /** Старые задания могли завершиться done с бизнес-ошибкой внутри result. */
 export function jobProblem(job: JobSnapshot): JobProblem | null {
   if (job.problem) return job.problem;
   if (job.state !== "done" || job.result?.status !== "error") return null;
-  return { code: job.result.detail === "login_failed" ? "login_failed" : "unknown", detail: "", extra: {} };
+  const detail = job.result.detail;
+  const code = typeof detail === "string" && RESULT_ERROR_CODES.has(detail) ? detail : "unknown";
+  return { code, detail: "", extra: {} };
 }
 
 export function jobFailed(job: JobSnapshot): boolean {

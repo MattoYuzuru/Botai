@@ -7,7 +7,7 @@ calls a model. Persisting is the Normalizer's job (`sources/normalize.py`).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol
@@ -88,6 +88,7 @@ class SyncContext:
     filename: str | None = None
     known_hash: str | None = None  # hash of the previously ingested document
     browser: BrowserGateway | None = field(default=None, repr=False)
+    before_request: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

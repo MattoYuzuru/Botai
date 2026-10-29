@@ -16,6 +16,9 @@ A transport failure re-raises after recording the state, so the job runner appli
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -30,9 +33,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import GuardedJobContext, guard_job
 from botai.core.handlers import Handler
 from botai.core.http import RetryPolicy
-from botai.core.jobs import JobContext, JobKind
+from botai.core.jobs import JobClaimLost, JobContext, JobDeferred, JobInputChanged, JobKind
 from botai.core.services import Services
 from botai.db import models as m
 from botai.learn import revisions
@@ -363,11 +367,39 @@ def assess(spec: dict[str, Any], result: AdapterResult, baseline: dict[Kind, int
 # --- state writes ---------------------------------------------------------------------------
 
 
+async def guard_source_write(
+    db: AsyncSession,
+    ctx: JobContext | None,
+    user_id: str,
+    connection_id: str,
+    *,
+    origin: str | None = None,
+    adapter: str = "recipe",
+) -> m.Connection | None:
+    """Lock in the shared order and fence a handler in the transaction it will mutate."""
+    if ctx is not None and ctx.user_id != user_id:
+        raise JobClaimLost("source owner changed")
+    if isinstance(ctx, GuardedJobContext) and ctx.connection_id != connection_id:
+        raise JobClaimLost("source binding changed")
+    if origin is not None:
+        await revisions.lock_origin(db, origin, adapter)
+    await normalize.lock_connection(db, connection_id)
+    connection = await db.scalar(
+        select(m.Connection)
+        .where(m.Connection.id == connection_id, m.Connection.user_id == user_id)
+        .with_for_update()
+    )
+    if ctx is not None:
+        await guard_job(ctx, db, check_input=True)
+    return connection
+
+
 async def set_connection(
     services: Services,
     connection_id: str,
     user_id: str,
     *,
+    ctx: JobContext | None = None,
     status: str | None = None,
     error: tuple[str, str] | None = None,
     clear_error: bool = False,
@@ -383,15 +415,10 @@ async def set_connection(
     if clear_error:
         cols.update(error_code=None, error_detail=None, error_at=None)
     async with services.db() as db, db.begin():
-        await db.execute(
-            update(m.Connection)
-            .where(
-                m.Connection.id == connection_id,
-                m.Connection.user_id == user_id,
-                m.Connection.status != "disabled",
-            )
-            .values(**cols)
-        )
+        connection = await guard_source_write(db, ctx, user_id, connection_id)
+        if connection is not None and connection.status != "disabled":
+            for key, value in cols.items():
+                setattr(connection, key, value)
 
 
 # --- the sync itself ------------------------------------------------------------------------
@@ -451,10 +478,13 @@ async def fetch_with_reauth(
                     status="needs_reauth",
                     error=(code.value, "Нужно войти заново или дать новую ссылку или токен"),
                     next_sync_at=None,
+                    ctx=ctx,
                 )
                 return SyncOutcome("needs_reauth", detail=code.value)
             reauthed = True
-            await set_connection(services, snap.connection_id, snap.user_id, status="needs_reauth")
+            await set_connection(
+                services, snap.connection_id, snap.user_id, status="needs_reauth", ctx=ctx
+            )
             await ctx.status("Вхожу заново")
             try:
                 sctx.session = await services.sessions.ensure(
@@ -470,9 +500,35 @@ async def fetch_with_reauth(
                     status="needs_reauth",
                     error=(err.code.value, err.detail or "Не удалось войти"),
                     next_sync_at=None,
+                    ctx=ctx,
                 )
                 return SyncOutcome("needs_reauth", detail=err.code.value)
-            await set_connection(services, snap.connection_id, snap.user_id, status="syncing")
+            await set_connection(
+                services, snap.connection_id, snap.user_id, status="syncing", ctx=ctx
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SpecPin:
+    """Exact already-approved revision for the first sync of a research activation."""
+
+    spec_id: str
+    revision: int
+    digest: str
+
+    def matches(self, spec_id: str, revision: int, spec: dict[str, Any]) -> bool:
+        value = json.dumps(spec, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return (
+            self.spec_id == spec_id
+            and self.revision == revision
+            and self.digest == hashlib.sha256(value.encode()).hexdigest()
+        )
+
+    @staticmethod
+    def changed() -> BotaiError:
+        return BotaiError(
+            ErrorCode.RECIPE_REJECTED, "Подтверждённое описание изменилось; нужна новая проверка"
+        )
 
 
 async def sync_connection(
@@ -484,6 +540,7 @@ async def sync_connection(
     retry: RetryPolicy | None = None,
     accept_empty: bool = False,
     queue_repair: bool = True,
+    expected_spec: SpecPin | None = None,
 ) -> SyncOutcome:
     """One sync. `accept_empty` takes an empty answer as the truth (a repair concluded that the
     source really has nothing); `queue_repair=False` is for the repair job itself, which handles
@@ -491,15 +548,19 @@ async def sync_connection(
     user_id = ctx.user_id
     async with services.db() as db:
         snap = await load_snapshot(db, user_id, connection_id)
+    if expected_spec is not None and not expected_spec.matches(
+        snap.spec_id, snap.spec_revision, snap.spec
+    ):
+        raise expected_spec.changed()
     if snap.status in {"disabled", "learning", "draft", "repairing"}:
         return SyncOutcome("skipped", detail=snap.status)
     if snap.data_scope == ():
-        await set_connection(services, connection_id, user_id, next_sync_at=None)
+        await set_connection(services, connection_id, user_id, next_sync_at=None, ctx=ctx)
         return SyncOutcome("skipped", detail="scope_empty")
     if snap.adapter == "document" and snap.spec.get("source", {}).get("kind") == "upload":
         return SyncOutcome("skipped", detail="upload")  # nothing to fetch again: no source address
     previous_status = snap.status
-    await set_connection(services, connection_id, user_id, status="syncing")
+    await set_connection(services, connection_id, user_id, status="syncing", ctx=ctx)
     await ctx.status("Обновляю данные")
     try:
         sctx = build_context(
@@ -516,10 +577,17 @@ async def sync_connection(
         if isinstance(fetched, SyncOutcome):
             return fetched
         return await commit_result(
-            services, snap, fetched, sctx.now, accept_empty=accept_empty, queue_repair=queue_repair
+            services,
+            snap,
+            fetched,
+            sctx.now,
+            accept_empty=accept_empty,
+            queue_repair=queue_repair,
+            ctx=ctx,
+            expected_spec=expected_spec,
         )
     except BotaiError as err:
-        return await _record_failure(services, snap, err)
+        return await _record_failure(services, snap, err, ctx=ctx)
     except NeedsUserInput as need:
         await set_connection(
             services,
@@ -528,14 +596,20 @@ async def sync_connection(
             status="active" if previous_status == "syncing" else previous_status,
             error=("validation", f"Нужно значение профиля: {need.param}"),
             next_sync_at=None,
+            ctx=ctx,
         )
         return SyncOutcome("needs_input", detail=need.param)
+    except (JobClaimLost, JobDeferred, JobInputChanged):
+        raise
     except BaseException:
-        await set_connection(services, connection_id, user_id, status=previous_status)
+        with contextlib.suppress(JobClaimLost):
+            await set_connection(services, connection_id, user_id, status=previous_status, ctx=ctx)
         raise
 
 
-async def _record_failure(services: Services, snap: Snapshot, err: BotaiError) -> SyncOutcome:
+async def _record_failure(
+    services: Services, snap: Snapshot, err: BotaiError, *, ctx: JobContext | None = None
+) -> SyncOutcome:
     now = services.clock.now()
     transient = err.code in {ErrorCode.SOURCE_UNAVAILABLE, ErrorCode.SOURCE_RATE_LIMITED}
     if transient:
@@ -554,6 +628,7 @@ async def _record_failure(services: Services, snap: Snapshot, err: BotaiError) -
             status="stale" if stale else "active",
             error=(err.code.value, err.detail),
             next_sync_at=now + retry_in,
+            ctx=ctx,
         )
         raise err  # the job runner backs off 1, 5, 30 minutes
     await set_connection(
@@ -563,6 +638,7 @@ async def _record_failure(services: Services, snap: Snapshot, err: BotaiError) -
         status="error",
         error=(err.code.value, err.detail),
         next_sync_at=None,
+        ctx=ctx,
     )
     return SyncOutcome("error", detail=err.code.value)
 
@@ -575,16 +651,31 @@ async def commit_result(
     *,
     accept_empty: bool,
     queue_repair: bool,
+    ctx: JobContext | None = None,
+    expected_spec: SpecPin | None = None,
 ) -> SyncOutcome:
     async with services.db() as db, db.begin():
-        await normalize.lock_connection(db, snap.connection_id)
-        current = (
-            await db.execute(
-                select(m.Connection).where(m.Connection.id == snap.connection_id).with_for_update()
-            )
-        ).scalar_one_or_none()
+        current = await guard_source_write(
+            db,
+            ctx,
+            snap.user_id,
+            snap.connection_id,
+            origin=snap.origin,
+            adapter=snap.adapter or "recipe",
+        )
         if current is None or current.status == "disabled":
             return SyncOutcome("skipped", detail="disabled")
+        if expected_spec is not None:
+            approved = await db.get(m.AdapterSpecRow, expected_spec.spec_id)
+            if (
+                approved is None
+                or approved.state != "active"
+                or current.spec_id != expected_spec.spec_id
+                or not expected_spec.matches(snap.spec_id, snap.spec_revision, snap.spec)
+                or not expected_spec.matches(approved.id, approved.revision, approved.spec)
+                or result.spec_revision != expected_spec.revision
+            ):
+                raise expected_spec.changed()
         current_scope = read_scope(current.data_scope)
         if snap.adapter == "recipe" and current_scope is not None:
             # A clarification can narrow the connection while an older fetch is in flight.

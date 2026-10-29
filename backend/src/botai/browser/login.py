@@ -47,6 +47,7 @@ from botai.browser.presets import (
     MAX_HOSTS,
     ConnectionInfo,
     LoginStore,
+    PgLoginStore,
     Recorder,
     build_preset,
     comparable,
@@ -61,6 +62,7 @@ from botai.core.browser import PageSnapshot, SessionState
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import authentication_job, save_secret
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobContext, JobState
 from botai.core.vault import SecretKind, Vault
@@ -259,7 +261,7 @@ class LoginFlow:
         force: bool = False,
         manual: bool = False,
     ) -> SessionState:
-        job = cast(JobContext, ctx)  # the SessionProvider protocol types it as `object`
+        job = authentication_job(cast(JobContext, ctx))
         key = (user_id, connection_id)
         async with self._locks.setdefault(key, asyncio.Lock()):
             self._check_cooldown(key)
@@ -291,7 +293,9 @@ class LoginFlow:
                     )
                     if refreshed is not None:
                         if entry_url is not None:
-                            await self._vault.put(
+                            await save_secret(
+                                job,
+                                self._vault,
                                 user_id,
                                 connection_id,
                                 SecretKind.SESSION,
@@ -345,7 +349,10 @@ class LoginFlow:
                             f"Переход на {host} не разрешён. Вход остановлен.",
                             extra={"host": host},
                         ) from None
-                    await self._store.allow_host(user_id, connection_id, host)
+                    if isinstance(self._store, PgLoginStore):
+                        await self._store.allow_host(user_id, connection_id, host, ctx=job)
+                    else:
+                        await self._store.allow_host(user_id, connection_id, host)
                     info = await self._store.connection(user_id, connection_id)
                     preset = await self._store.preset_for(info.origin)
                     hosts = self._hosts(info, preset)
@@ -732,14 +739,27 @@ class LoginFlow:
 
     async def _finish(self, run: _Run, session: SessionState) -> None:
         user, conn = run.user_id, run.connection_id
-        await self._vault.put(
-            user, conn, SecretKind.SESSION, encode_session(session), expires_at=session.expires_hint
+        await save_secret(
+            run.job,
+            self._vault,
+            user,
+            conn,
+            SecretKind.SESSION,
+            encode_session(session),
+            expires_at=session.expires_hint,
         )
         if run.creds.typed_username and run.creds.username:
-            await self._vault.put(user, conn, SecretKind.LOGIN, run.creds.username)
+            await save_secret(
+                run.job, self._vault, user, conn, SecretKind.LOGIN, run.creds.username
+            )
         if run.creds.typed_password and run.creds.password is not None:
-            await self._vault.put(
-                user, conn, SecretKind.PASSWORD, run.creds.password.get_secret_value()
+            await save_secret(
+                run.job,
+                self._vault,
+                user,
+                conn,
+                SecretKind.PASSWORD,
+                run.creds.password.get_secret_value(),
             )
         await self._remember_preset(run, session)
         await run.job.emit(
@@ -789,9 +809,14 @@ class LoginFlow:
                 # the device and asked for no code): the others stay in the shared preset
                 preset = keep_known(preset, known)
             if known is None or comparable(known) != comparable(preset):
-                revision = await self._store.save_preset(
-                    run.info.origin, preset, connection_id=run.connection_id
-                )
+                if isinstance(self._store, PgLoginStore):
+                    revision = await self._store.save_preset(
+                        run.info.origin, preset, connection_id=run.connection_id, ctx=run.job
+                    )
+                else:
+                    revision = await self._store.save_preset(
+                        run.info.origin, preset, connection_id=run.connection_id
+                    )
                 log.info("login preset for %s saved as revision %d", run.info.origin, revision)
         except ValueError:
             log.warning("learned login preset for %s did not validate; not saved", run.info.origin)

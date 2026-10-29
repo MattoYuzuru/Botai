@@ -186,6 +186,26 @@ class Redactor:
         value = self._scrub(value)
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
+    def contains_secret(self, value: str) -> bool:
+        """Whether a value contains a protected credential, including bounded URL encodings.
+
+        The matcher deliberately excludes ordinary profile values in ``known``. Callers must
+        reject credential-bearing replay addresses, not substitute a redacted URL for them.
+        Excessive encoding is rejected because it cannot be safely inspected.
+        """
+        return self._secret_text(value) is not None
+
+    def contains_secret_address(self, url: str) -> bool:
+        """Check private address components after the caller validates the public origin.
+
+        Origin is public metadata. A protected storage scalar such as a locale ``ru`` must
+        not turn every address at the already allowed ``.ru`` origin into a credential URL.
+        """
+        parts = urlsplit(url)
+        return any(
+            self.contains_secret(value) for value in (parts.path, parts.query, parts.fragment)
+        )
+
     def _secret_text(self, value: str) -> str | None:
         """Protect exact values before shape/type fast paths, including percent encodings."""
         candidate = value

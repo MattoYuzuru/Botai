@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,6 +25,7 @@ from botai.contracts import schemas
 from botai.contracts.specs import LoginPreset, LoginStep
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import GuardedJobContext, guard_authentication_job
 from botai.core.ids import new_id
 from botai.db.models import Connection, LoginPresetRow
 
@@ -142,7 +143,13 @@ class PgLoginStore:
             normalize_origin(row.origin), tuple(row.allow_hosts or ()), row.login_preset_id
         )
 
-    async def allow_host(self, user_id: str, connection_id: str, host: str) -> None:
+    async def allow_host(
+        self, user_id: str, connection_id: str, host: str, *, ctx: object | None = None
+    ) -> None:
+        if isinstance(ctx, GuardedJobContext) and (
+            ctx.user_id != user_id or ctx.connection_id != connection_id
+        ):
+            raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
         async with self._db() as session:
             row = (
                 await session.execute(
@@ -155,6 +162,7 @@ class PgLoginStore:
                 raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
             if row.status == "disabled":
                 raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
+            await guard_authentication_job(ctx, session)
             row.allow_hosts = list(_with_allowed_host(row.allow_hosts or (), host))
             await session.commit()
 
@@ -173,10 +181,31 @@ class PgLoginStore:
             ).scalar_one_or_none()
         return LoginPreset.model_validate(row.preset) if row else None
 
-    async def save_preset(self, origin: str, preset: dict[str, Any], *, connection_id: str) -> int:
+    async def save_preset(
+        self,
+        origin: str,
+        preset: dict[str, Any],
+        *,
+        connection_id: str,
+        ctx: object | None = None,
+    ) -> int:
         key = normalize_origin(origin)
         for attempt in (1, 2):  # a concurrent login of another student may take our revision
             async with self._db() as session:
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                    {"key": f"login-preset:{key}"},
+                )
+                connection = await session.scalar(
+                    select(Connection).where(Connection.id == connection_id).with_for_update()
+                )
+                if connection is None or connection.status == "disabled":
+                    raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
+                if isinstance(ctx, GuardedJobContext) and (
+                    connection.user_id != ctx.user_id or ctx.connection_id != connection_id
+                ):
+                    raise BotaiError(ErrorCode.NOT_FOUND, "Подключение не найдено")
+                await guard_authentication_job(ctx, session)
                 latest = (
                     await session.execute(
                         select(LoginPresetRow.revision)

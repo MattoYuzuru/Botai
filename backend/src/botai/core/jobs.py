@@ -40,6 +40,23 @@ class JobCancelled(Exception):
     """Raised inside a handler when the user cancelled or the wait TTL expired."""
 
 
+class JobClaimLost(JobCancelled):
+    """The immutable worker claim was revoked; it must not publish or clean up anything."""
+
+
+class JobInputChanged(Exception):
+    """New inbox input arrived after the handler's last read."""
+
+
+class JobDeferred(Exception):
+    """A healthy handler yielded its slice and will continue the same durable job."""
+
+    def __init__(self, stage: str = "Продолжаю исследование", delay_seconds: float = 0) -> None:
+        super().__init__(stage)
+        self.stage = stage
+        self.delay_seconds = max(0.0, delay_seconds)
+
+
 class JobContext(Protocol):
     job_id: str
     user_id: str

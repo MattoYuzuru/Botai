@@ -54,3 +54,40 @@ async def test_secrets_unique_slot_exists(engine: AsyncEngine) -> None:
             .all()
         )
     assert ["connection_id", "kind", "user_id"] in cols
+
+
+async def test_research_checkpoint_is_private_one_to_one_with_cascade(engine: AsyncEngine) -> None:
+    async with engine.connect() as conn:
+        columns = list(
+            await conn.scalars(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='job_research_checkpoints' ORDER BY ordinal_position"
+                )
+            )
+        )
+        constraints = (
+            await conn.execute(
+                text(
+                    "SELECT contype::text,confdeltype::text FROM pg_constraint "
+                    "WHERE conrelid='job_research_checkpoints'::regclass"
+                )
+            )
+        ).all()
+    assert set(columns) == {
+        "job_id",
+        "user_id",
+        "connection_id",
+        "revision",
+        "format_version",
+        "intent_key",
+        "updated_at",
+        "expires_at",
+        "kek_id",
+        "wrapped_dek",
+        "nonce",
+        "ciphertext",
+        "aad_version",
+    }
+    assert sum(kind == "p" for kind, _ in constraints) == 1
+    assert sum(kind == "f" and on_delete == "c" for kind, on_delete in constraints) == 3

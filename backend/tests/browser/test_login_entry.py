@@ -8,13 +8,15 @@ import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 import uvicorn
 from fastapi import FastAPI, Form, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Request as BrowserRequest
 
 from botai.browser.egress import ProxyEgress
 from botai.browser.forms import has_credential_fields
@@ -730,6 +732,142 @@ async def test_title_only_email_auth_context_is_preserved_for_both_post_kinds(
                     is True
                 )
         assert guest_stack.visited.count("/api/email-step") == before + 1
+    finally:
+        await handle.close()
+
+
+async def test_unmatched_document_post_keeps_the_permit_for_the_auth_form(
+    guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    before = guest_stack.visited.count("/api/email-step")
+    side_effects = guest_stack.side_effects.copy()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def emit(event: str, **facts: object) -> None:
+        events.append((event, facts))
+
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/email-entry")
+        await handle.fill("#email", data.USERNAME)
+        monkeypatch.setattr(handle, "_diagnostic", emit)
+        unmatched = Mock(spec=BrowserRequest)
+        unmatched.frame = handle.page.main_frame
+        unmatched.method = "POST"
+        unmatched.url = ORIGIN + "/data-write?private=private-auth-fixture"
+        unmatched.is_navigation_request.return_value = True
+        async with handle.auth_document():
+            assert not await handle._entry_auth_allowed(cast(BrowserRequest, unmatched))
+            # The unmatched request never reaches the server. The real matching
+            # browser navigation must still have its one permitted submission.
+            await handle.click("button")
+        assert guest_stack.visited.count("/api/email-step") == before + 1
+        assert guest_stack.side_effects == side_effects
+        refused = [facts for name, facts in events if name == "browser.auth_permit_refused"]
+        assert len(refused) == 1
+        assert refused[0]["reason"] == "auth_action_mismatch"
+        assert any(name == "browser.auth_action" for name, _ in events)
+        encoded = json.dumps(events)
+        assert "private-auth-fixture" not in encoded
+        assert data.USERNAME not in encoded
+        assert "/api/email-step" not in encoded
+    finally:
+        await handle.close()
+
+
+async def test_auth_submission_preserves_current_navigation_failure_and_ignores_old_failure(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/email-entry")
+        stale = BotaiError(ErrorCode.EGRESS_BLOCKED, "Прежняя навигация была отклонена")
+        handle._navigation_error = stale
+        async with handle.auth_document():
+            pass
+
+        failure = BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Текущая навигация была отклонена")
+
+        async def fail_navigation() -> None:
+            async with handle.auth_document():
+                handle._navigation_request = cast(BrowserRequest, Mock(spec=BrowserRequest))
+                handle._navigation_error = failure
+
+        with pytest.raises(BotaiError) as raised:
+            await fail_navigation()
+        assert raised.value is failure
+    finally:
+        await handle.close()
+
+
+async def test_concurrent_auth_requests_cannot_consume_the_same_permit_twice(
+    guest_stack: GuestStack, trust_fakeuni: Path
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/email-entry")
+        request = Mock(spec=BrowserRequest)
+        request.frame = handle.page.main_frame
+        request.method = "POST"
+        request.url = ORIGIN + "/api/email-step"
+        request.is_navigation_request.return_value = False
+        async with handle.auth_document():
+            results = await asyncio.gather(
+                handle._entry_auth_allowed(cast(BrowserRequest, request)),
+                handle._entry_auth_allowed(cast(BrowserRequest, request)),
+            )
+        assert sorted(results) == [False, True]
+    finally:
+        await handle.close()
+
+
+async def test_navigation_during_an_auth_scan_cannot_restore_the_revoked_permit(
+    guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = guest_stack.rig()
+    handle = await rig.gateway.open(
+        user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN
+    )
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(ORIGIN + "/email-entry")
+        frame = handle.page.main_frame
+        request = Mock(spec=BrowserRequest)
+        request.frame = frame
+        request.method = "POST"
+        request.url = ORIGIN + "/api/email-step"
+        request.is_navigation_request.return_value = False
+        scan_started, scan_released = asyncio.Event(), asyncio.Event()
+        original_evaluate = frame.evaluate
+
+        async def paused_scan(script: str) -> Any:
+            scan_started.set()
+            await scan_released.wait()
+            return await original_evaluate(script)
+
+        async with handle.auth_document():
+            monkeypatch.setattr(frame, "evaluate", paused_scan)
+            checking = asyncio.create_task(
+                handle._entry_auth_allowed(cast(BrowserRequest, request))
+            )
+            async with asyncio.timeout(2):
+                await scan_started.wait()
+            handle._revoke_auth_document(frame)
+            scan_released.set()
+            assert await checking is False
+            assert frame not in handle._auth_permits
     finally:
         await handle.close()
 

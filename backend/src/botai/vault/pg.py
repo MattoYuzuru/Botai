@@ -2,8 +2,9 @@
 
 Every value is sealed with `core.vault.seal` (AES-256-GCM, a fresh DEK per secret, the DEK wrapped
 by the KEK, AAD bound to user, connection and kind). The KEK never touches the database; the
-table holds ciphertext only. Methods open their own short transactions, so a caller's request
-session never carries plaintext and a rolled-back request cannot leave a half-written secret.
+table holds ciphertext only. Ordinary methods open short transactions. Guarded publishers use
+`put_in_transaction` to commit or roll back the secret together with the caller's fenced write.
+The optional pure cipher capability seals private external storage without persisting a secret.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from botai.core.clock import Clock, SystemClock
 from botai.core.ids import new_id
 from botai.core.vault import (
+    AAD_VERSION,
     SealedSecret,
     SecretKind,
     VaultError,
@@ -53,8 +55,45 @@ class PgVault:
         self._clock = clock or SystemClock()
         self._transient_ttl = transient_ttl
 
+    def seal_value(self, user_id: str, scope_id: str, kind: SecretKind, value: str) -> SealedSecret:
+        aad = aad_for(user_id, scope_id, kind, self._current)
+        try:
+            plaintext = value.encode()
+        except UnicodeError:
+            raise VaultError("secret is not valid UTF-8") from None
+        return seal(self._keks[self._current], self._current, aad, plaintext)
+
+    def open_value(
+        self, user_id: str, scope_id: str, kind: SecretKind, sealed: SealedSecret
+    ) -> SecretStr:
+        if sealed.aad_version != AAD_VERSION:
+            raise VaultError("secret uses an unsupported AAD version")
+        kek = self._keks.get(sealed.kek_id)
+        if kek is None:
+            raise VaultError("secret was sealed with a key that is not loaded")
+        aad = aad_for(user_id, scope_id, kind, sealed.kek_id, sealed.aad_version)
+        try:
+            return SecretStr(unseal(kek, aad, sealed).decode())
+        except UnicodeError:
+            raise VaultError("secret is not valid UTF-8") from None
+
     async def put(
         self,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        async with self._db() as session, session.begin():
+            await self.put_in_transaction(
+                session, user_id, connection_id, kind, value, expires_at=expires_at
+            )
+
+    async def put_in_transaction(
+        self,
+        session: AsyncSession,
         user_id: str,
         connection_id: str,
         kind: SecretKind,
@@ -66,8 +105,7 @@ class PgVault:
         if kind is SecretKind.TRANSIENT and expires_at is None:
             # A transient secret must never become immortal because a caller forgot the TTL.
             expires_at = now + self._transient_ttl
-        aad = aad_for(user_id, connection_id, kind, self._current)
-        sealed = seal(self._keks[self._current], self._current, aad, value.encode())
+        sealed = self.seal_value(user_id, connection_id, kind, value)
         columns = {
             "kek_id": sealed.kek_id,
             "wrapped_dek": sealed.wrapped_dek,
@@ -87,23 +125,17 @@ class PgVault:
             index_elements=[SecretRow.user_id, SecretRow.connection_id, SecretRow.kind],
             set_={**columns, "rotated_at": now},
         )
-        async with self._db() as session:
-            await session.execute(stmt)
-            await session.commit()
+        await session.execute(stmt)
 
     async def get(self, user_id: str, connection_id: str, kind: SecretKind) -> SecretStr | None:
         async with self._db() as session:
             row = await self._row(session, user_id, connection_id, kind)
         if row is None or self._expired(row.expires_at):
             return None
-        kek = self._keks.get(row.kek_id)
-        if kek is None:
-            raise VaultError("secret was sealed with a key that is not loaded")
-        aad = aad_for(user_id, connection_id, kind, row.kek_id, row.aad_version)
         sealed = SealedSecret(
             row.kek_id, row.wrapped_dek, row.nonce, row.ciphertext, row.aad_version
         )
-        return SecretStr(unseal(kek, aad, sealed).decode())
+        return self.open_value(user_id, connection_id, kind, sealed)
 
     async def delete(self, user_id: str, connection_id: str, kind: SecretKind) -> None:
         async with self._db() as session:

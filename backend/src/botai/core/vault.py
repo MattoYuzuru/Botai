@@ -12,11 +12,14 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import SecretStr
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 AAD_VERSION = 1
 
@@ -30,6 +33,7 @@ class SecretKind(StrEnum):
     API_KEY = "api_key"
     LLM_KEY = "llm_key"
     TRANSIENT = "transient"  # secret answers to agent blocks, TTL 10 min
+    RESEARCH = "research"  # private, bounded research checkpoint; stored separately from secrets
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +102,35 @@ class Vault(Protocol):
     async def has(self, user_id: str, connection_id: str, kind: SecretKind) -> bool: ...
 
 
+@runtime_checkable
+class CipherVault(Protocol):
+    """Pure cipher capability: keys stay inside Vault; the caller owns durable storage."""
+
+    def seal_value(
+        self, user_id: str, scope_id: str, kind: SecretKind, value: str
+    ) -> SealedSecret: ...
+
+    def open_value(
+        self, user_id: str, scope_id: str, kind: SecretKind, sealed: SealedSecret
+    ) -> SecretStr: ...
+
+
+@runtime_checkable
+class TransactionalVault(Protocol):
+    """Write a secret in the caller's guarded transaction, without committing it."""
+
+    async def put_in_transaction(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None: ...
+
+
 class InMemoryVault:
     """Test implementation with the same crypto as the real one."""
 
@@ -105,6 +138,27 @@ class InMemoryVault:
         self._kek = kek or AESGCM.generate_key(bit_length=256)
         self._kek_id = kek_id
         self._rows: dict[tuple[str, str, SecretKind], SealedSecret] = {}
+
+    def seal_value(self, user_id: str, scope_id: str, kind: SecretKind, value: str) -> SealedSecret:
+        aad = aad_for(user_id, scope_id, kind, self._kek_id)
+        try:
+            plaintext = value.encode()
+        except UnicodeError:
+            raise VaultError("secret is not valid UTF-8") from None
+        return seal(self._kek, self._kek_id, aad, plaintext)
+
+    def open_value(
+        self, user_id: str, scope_id: str, kind: SecretKind, sealed: SealedSecret
+    ) -> SecretStr:
+        if sealed.aad_version != AAD_VERSION:
+            raise VaultError("secret uses an unsupported AAD version")
+        if sealed.kek_id != self._kek_id:
+            raise VaultError("secret was sealed with a key that is not loaded")
+        aad = aad_for(user_id, scope_id, kind, sealed.kek_id, sealed.aad_version)
+        try:
+            return SecretStr(unseal(self._kek, aad, sealed).decode())
+        except UnicodeError:
+            raise VaultError("secret is not valid UTF-8") from None
 
     async def put(
         self,
@@ -115,17 +169,28 @@ class InMemoryVault:
         *,
         expires_at: datetime | None = None,
     ) -> None:
-        aad = aad_for(user_id, connection_id, kind, self._kek_id)
-        self._rows[(user_id, connection_id, kind)] = seal(
-            self._kek, self._kek_id, aad, value.encode()
+        self._rows[(user_id, connection_id, kind)] = self.seal_value(
+            user_id, connection_id, kind, value
         )
+
+    async def put_in_transaction(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        connection_id: str,
+        kind: SecretKind,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        """Protocol double only; unlike PgVault, in-memory writes do not roll back with SQL."""
+        await self.put(user_id, connection_id, kind, value, expires_at=expires_at)
 
     async def get(self, user_id: str, connection_id: str, kind: SecretKind) -> SecretStr | None:
         sealed = self._rows.get((user_id, connection_id, kind))
         if sealed is None:
             return None
-        aad = aad_for(user_id, connection_id, kind, sealed.kek_id, sealed.aad_version)
-        return SecretStr(unseal(self._kek, aad, sealed).decode())
+        return self.open_value(user_id, connection_id, kind, sealed)
 
     async def delete(self, user_id: str, connection_id: str, kind: SecretKind) -> None:
         self._rows.pop((user_id, connection_id, kind), None)
