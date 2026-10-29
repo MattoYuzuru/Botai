@@ -200,6 +200,8 @@ class RecipeAdapter:
         if req.method == "POST" and not (req.read_only_post and is_read_only_post(req.path, query)):
             return fail("status", url)
 
+        if req.browser_plan is not None:
+            return await self._browser_endpoint(endpoint, ctx, reader, url, query, params)
         pagination = endpoint.pagination
         pages = self._page_count(pagination)
         collected: list[Record] = []
@@ -310,6 +312,70 @@ class RecipeAdapter:
             return fail("fields", outcome.source_url)
         return outcome, collected
 
+    async def _browser_endpoint(
+        self,
+        endpoint: Endpoint,
+        ctx: SyncContext,
+        reader: RenderedPageReader,
+        url: str,
+        query: Mapping[str, str],
+        params: Mapping[str, str],
+    ) -> tuple[EndpointOutcome, list[Record]]:
+        response_spec = endpoint.response
+        if not isinstance(response_spec, HtmlResponse) or endpoint.request.browser_plan is None:
+            return EndpointOutcome(endpoint.id, endpoint.kind, False, problem="format"), []
+        selector = response_spec.items_selector
+        if selector is None:
+            selector = " ".join(
+                collection.selector for collection in response_spec.collections or []
+                if collection.selector != "."
+            ) or "body"
+        outcome = EndpointOutcome(endpoint.id, endpoint.kind, True, source_url=url, transport="browser")
+        request = httpx.Request("GET", url, params=query)
+        try:
+            pages = await reader.read_many(
+                str(request.url), selector, plan=endpoint.request.browser_plan, values=params
+            )
+        except RenderedPageError as exc:
+            outcome.ok, outcome.problem = False, exc.problem
+            return outcome, []
+        collected: list[Record] = []
+        nodes_seen = leaves_seen = 0
+        identities: set[str] = set()
+        for snapshot in pages:
+            response = httpx.Response(
+                200, text=snapshot.html, headers={"content-type": "text/html; charset=utf-8"},
+                request=httpx.Request("GET", snapshot.url),
+            )
+            try:
+                parsed = self._parse(
+                    endpoint, response, ctx,
+                    remaining_nodes=MAX_COLLECTION_NODES - nodes_seen,
+                    remaining_leaves=MAX_LEAVES - leaves_seen,
+                    remaining_instances=MAX_INSTANCES - len(collected),
+                )
+            except ExpressionError as exc:
+                outcome.ok, outcome.problem = False, exc.problem
+                return outcome, []
+            if isinstance(parsed, str):
+                outcome.ok, outcome.problem = False, parsed
+                return outcome, []
+            root_count, records, _document, nodes, leaves = parsed
+            if records and not {row.external_id for row in records}.difference(identities):
+                outcome.ok, outcome.problem = False, "no_progress"
+                return outcome, []
+            identities.update(row.external_id for row in records)
+            collected.extend(records)
+            nodes_seen, leaves_seen = nodes_seen + nodes, leaves_seen + leaves
+            outcome.items_seen += root_count
+            outcome.source_url, outcome.status = snapshot.url, 200
+        outcome.items_valid = len(collected)
+        if not leaves_seen:
+            outcome.problem = "empty"
+        elif not collected and response_spec.expand is None:
+            outcome.ok, outcome.problem = False, "fields"
+        return outcome, collected
+
     @staticmethod
     def _page_count(pagination: Pagination | None) -> int:
         if pagination is None or pagination.type == "none":
@@ -344,7 +410,7 @@ class RecipeAdapter:
         remaining_nodes: int = MAX_COLLECTION_NODES,
         remaining_leaves: int = MAX_LEAVES,
         remaining_instances: int = MAX_INSTANCES,
-    ) -> tuple[int, list[Record], Any, int, int] | str:
+    ) -> tuple[int, list[Record], Any, int, int] | Problem:
         spec = endpoint.response
         source_url = str(response.url)
         if self.recipe.version == 2:

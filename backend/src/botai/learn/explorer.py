@@ -35,8 +35,9 @@ from pydantic import ValidationError
 
 from botai.browser.session import EntrySessionProvider, encode_session
 from botai.contracts.agent_ui import SummaryGroup
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
-from botai.core.browser import SessionState
+from botai.core.browser import ObservedRequest, SessionState
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -66,6 +67,7 @@ from botai.learn.intent import LearningIntent, apply_intent, intent_request, pre
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
+from botai.learn.policies import bind_parts
 from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandidate, intent_key
 from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
@@ -153,6 +155,9 @@ class Explorer:
         self._manual_connect = False
         self._prepared_session: SessionState | None = None
         self._research: ResearchLedger | None = None
+        self._request_facts: dict[str, ObservedRequest] = {}
+        self._browser_plans: dict[str, BrowserPlan] = {}
+        self._browser_plan_urls: dict[str, str] = {}
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -930,6 +935,7 @@ class Explorer:
     async def _observe(
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
+        self._request_facts, self._browser_plans, self._browser_plan_urls = {}, {}, {}
         research = self._research
         if research is not None:
             state = research.state
@@ -985,6 +991,7 @@ class Explorer:
                     intent=self.intent,
                     llm=self.services.llm,
                     budget=DiscoveryBudget(
+                        capabilities=settings.botai_factory_v2_enabled,
                         steps=settings.botai_research_slice_steps if research else 10,
                         seconds=min(
                             settings.botai_research_slice_seconds, research.remaining_seconds()
@@ -1086,6 +1093,9 @@ class Explorer:
                         },
                     )
                 )
+        self._request_facts = obs.request_facts
+        self._browser_plans = obs.browser_plans
+        self._browser_plan_urls = obs.browser_plan_urls
         return obs
 
     async def _restore_candidate(
@@ -1149,6 +1159,13 @@ class Explorer:
         feedback: list[str] | None = None
         candidate_count = 0
         for attempt in range(MAX_CANARY_AUTHOR_ROUNDS):
+            factory_kwargs: dict[str, Any] = {}
+            if self.services.settings.botai_factory_v2_enabled:
+                factory_kwargs = {
+                    "factory_v2": True, "request_facts": self._request_facts,
+                    "browser_plans": self._browser_plans, "browser_plan_urls": self._browser_plan_urls,
+                    "time_zone": info.tz,
+                }
             try:
                 authored = await author_kind(
                     self._llm(),
@@ -1162,6 +1179,7 @@ class Explorer:
                     previous=previous,
                     problem=problem,
                     verification_feedback=feedback,
+                    **factory_kwargs,
                 )
             except AuthorError:
                 self._verification_failed = True
@@ -1408,16 +1426,26 @@ class Explorer:
         require: list[Kind] = []
         retained_kinds: set[Kind] = set()
         scope = self._data_scope()
+        bound_mode = any(value.candidate.auth.get("type") == "session" for value in chosen.values()) or (
+            base_spec is not None and base_spec["recipe"]["auth"].get("type") == "session"
+        )
+        bindings: dict[str, dict[str, Any]] = {}
         if base_spec is not None:
             base = base_spec["recipe"]
             endpoints = [e for e in copy.deepcopy(base["endpoints"]) if e["kind"] not in chosen]
             bootstrap = copy.deepcopy(base.get("bootstrap", []))
+            if bound_mode:
+                bindings.update(bind_parts(base["auth"], endpoints, bootstrap))
             retained_kinds = {e["kind"] for e in endpoints}
             if endpoints:
                 auth_options.append(copy.deepcopy(base["auth"]))
             require = [k for k in base["validation"]["requireKinds"] if k not in chosen]
         for kind, ch in chosen.items():
-            merged = merge_bootstrap(bootstrap, copy.deepcopy(ch.candidate.bootstrap))
+            candidate_bootstrap = copy.deepcopy(ch.candidate.bootstrap)
+            candidate_endpoint = copy.deepcopy(ch.candidate.endpoint)
+            if bound_mode:
+                bindings.update(bind_parts(ch.candidate.auth, [candidate_endpoint], candidate_bootstrap))
+            merged = merge_bootstrap(bootstrap, candidate_bootstrap)
             if merged is None:
                 await self.ui.note(
                     f"Пропускаю: {KIND_LABELS[kind].lower()}",
@@ -1426,7 +1454,7 @@ class Explorer:
                 )
                 continue
             bootstrap = merged
-            endpoint = copy.deepcopy(ch.candidate.endpoint)
+            endpoint = candidate_endpoint
             endpoint["id"] = f"{kind}1"
             endpoints.append(endpoint)
             require.append(kind)
@@ -1439,6 +1467,8 @@ class Explorer:
         if not endpoints:
             await stage.finish("failed")
             return None
+        if bound_mode:
+            auth_options = [{"type": "session", "version": 1, "bindings": bindings}]
         problems: list[str] = []
         for auth in auth_options:
             spec = build_spec(

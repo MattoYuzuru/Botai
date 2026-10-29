@@ -67,6 +67,7 @@ class DiscoveryBudget:
     seconds: float = 90.0
     tokens: int = 150_000
     links_per_page: int = 80
+    capabilities: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +163,7 @@ class ObservationSession:
                 self.links[link_ref] = (label, target)
                 self.current_links.append(link_ref)
                 known.add(target)
-        if isinstance(self.handle, ReadCapabilityBrowser):
+        if self.budget.capabilities and isinstance(self.handle, ReadCapabilityBrowser):
             for i, capability in enumerate(await self.handle.read_capabilities()):
                 if i >= 24:
                     break

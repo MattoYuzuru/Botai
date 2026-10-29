@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +44,7 @@ from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.forms import CaptchaPage, PushWait, detect, has_credential_fields
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
+from botai.browser.read_capabilities import ReadCapabilityRegistry
 from botai.browser.read_views import ReadView, ReadViewRegistry
 from botai.browser.session import (
     MAX_STORAGE_BYTES,
@@ -55,6 +56,7 @@ from botai.browser.session import (
     jwt_expiry,
     storage_origin,
 )
+from botai.contracts.browser_plan import BrowserPlan
 from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
@@ -67,6 +69,7 @@ from botai.core.browser import (
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_context, diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.read_capabilities import ReadActionResult, ReadCapability
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +264,8 @@ class PlaywrightHandle:
         self.connection_id = connection_id
         self._diagnostic_facts = _browser_diagnostics(connection_id)
         self._read_view_registry = ReadViewRegistry()
+        self._read_capability_registry = ReadCapabilityRegistry(page, now=clock.now)
+        self._retired_capability_tasks: set[asyncio.Task[None]] = set()
         self.allow_hosts = tuple(allow_hosts)
         self.origin = origin
         self._capture = capture
@@ -552,7 +557,13 @@ class PlaywrightHandle:
         page.on("framenavigated", self._revoke_auth_document)
         page.on("framedetached", self._forget_auth_document)
         self._read_view_registry.invalidate()
+        old = self._read_capability_registry
+        old.invalidate()
+        cleanup = asyncio.create_task(old.aclose())
+        self._retired_capability_tasks.add(cleanup)
+        cleanup.add_done_callback(self._retired_capability_tasks.discard)
         self._page = page
+        self._read_capability_registry = ReadCapabilityRegistry(page, now=self._clock.now)
         self._navigation_request = None
         self._navigation_error = None
         for callback in list(self._page_callbacks):
@@ -774,6 +785,7 @@ class PlaywrightHandle:
 
     async def goto(self, url: str) -> PageSnapshot:
         self._read_view_registry.invalidate()
+        self._read_capability_registry.reset()
         started = monotonic()
         self._diagnostic(
             "browser.navigation.start",
@@ -824,6 +836,7 @@ class PlaywrightHandle:
 
     async def snapshot(self) -> PageSnapshot:
         self._read_view_registry.invalidate()
+        self._read_capability_registry.invalidate()
         last: PlaywrightError | None = None
         for _ in range(4):
             page = self._page
@@ -853,6 +866,7 @@ class PlaywrightHandle:
         ) from last
 
     async def fill(self, selector: str, value: str) -> None:
+        self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
@@ -863,12 +877,34 @@ class PlaywrightHandle:
                 ErrorCode.SOURCE_UNAVAILABLE, "Поле на странице вуза не найдено"
             ) from None
 
+    async def read_capabilities(self) -> list[ReadCapability]:
+        if not self.read_only or self.closed:
+            return []
+        return await self._read_capability_registry.discover()
+
+    async def apply_read_capability(
+        self, ref: str, *, value_ref: str | None = None
+    ) -> ReadActionResult:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "Действие недоступно для чтения")
+        self._read_view_registry.invalidate()
+        return await self._read_capability_registry.apply(ref, value_ref=value_ref)
+
+    async def replay_browser_plan(
+        self, plan: BrowserPlan, *, values: Mapping[str, str], items_selector: str
+    ) -> list[PageSnapshot]:
+        if not self.read_only or self.closed:
+            raise BotaiError(ErrorCode.CONFLICT, "План недоступен для чтения")
+        self._read_view_registry.invalidate()
+        return await self._read_capability_registry.replay(plan, values=values, items_selector=items_selector)
+
     async def read_views(self) -> list[ReadView]:
         if not self.read_only or self.closed:
             return []
         return await self._read_view_registry.discover(self._page)
 
     async def activate_read_view(self, ref: str) -> PageSnapshot:
+        self._read_capability_registry.invalidate()
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
         panel_id = self._read_view_registry.panel_id(self._page, ref)
@@ -934,6 +970,7 @@ class PlaywrightHandle:
                 await monitor.dispose()
 
     async def click(self, selector: str) -> PageSnapshot:
+        self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
         try:
@@ -1180,6 +1217,10 @@ class PlaywrightHandle:
 
     async def _finish_close(self) -> None:
         try:
+            with contextlib.suppress(PlaywrightError, TimeoutError):
+                async with asyncio.timeout(2):
+                    await self._read_capability_registry.aclose()
+                    await asyncio.gather(*self._retired_capability_tasks, return_exceptions=True)
             with contextlib.suppress(PlaywrightError, TimeoutError):
                 async with asyncio.timeout(10):
                     await self.context.close()

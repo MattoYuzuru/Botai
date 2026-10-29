@@ -55,7 +55,7 @@ class ExpressionError(Exception):
 
     def __init__(self, problem: Literal["format", "fields", "limit"]) -> None:
         super().__init__(problem)
-        self.problem = problem
+        self.problem: Literal["format", "fields", "limit"] = problem
 
 
 @dataclass(frozen=True, slots=True)

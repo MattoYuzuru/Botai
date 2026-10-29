@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from botai.contracts.browser_plan import BrowserPlan
+
 Kind = Literal[
     "courses", "scheduleEvents", "deadlines", "assignments", "grades", "people", "locations", "news"
 ]
@@ -222,6 +224,7 @@ def _scalar_sources(value: _M) -> list[JsonScalar | HtmlScalar]:
 class RecipeRequest(_M):
     render: bool = False
     auth_binding: str | None = None
+    browser_plan: BrowserPlan | None = None
     method: Literal["GET", "POST"]
     read_only_post: bool = Field(default=False)
     path: str
@@ -254,6 +257,11 @@ class Endpoint(_M):
             or not isinstance(self.response, HtmlResponse)
         ):
             raise ValueError("rendered endpoints require GET HTML without a body")
+        if self.request.browser_plan is not None and (
+            not self.request.render
+            or (self.pagination is not None and self.pagination.type != "none")
+        ):
+            raise ValueError("browser replay requires rendered GET and owns its pagination")
         if self.response.expand is not None and self.kind != "scheduleEvents":
             raise ValueError("weekly expansion only supports scheduleEvents")
         if self.response.expand is not None and {
@@ -333,6 +341,8 @@ class Recipe(_M):
                 if isinstance(request, dict):
                     request.pop("authBinding", None)
                     request.pop("auth_binding", None)
+                    request.pop("browserPlan", None)
+                    request.pop("browser_plan", None)
             # Added defaults must not become explicit v2 syntax in a typed v1 round trip.
             for endpoint in data.get("endpoints", []):
                 response = endpoint.get("response")
@@ -359,7 +369,9 @@ class Recipe(_M):
                 raise ValueError("request refers to an unknown auth binding")
         if self.version == 1:
             if any("auth_binding" in step.model_fields_set for step in self.bootstrap) or any(
-                "auth_binding" in endpoint.request.model_fields_set for endpoint in self.endpoints
+                "auth_binding" in endpoint.request.model_fields_set
+                or "browser_plan" in endpoint.request.model_fields_set
+                for endpoint in self.endpoints
             ):
                 raise ValueError("request auth bindings require recipe v2")
             for endpoint in self.endpoints:
