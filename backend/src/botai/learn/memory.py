@@ -10,6 +10,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
 from botai.learn.addresses import navigation_url, url_origin
 
@@ -63,6 +64,15 @@ class NegativeOutcome(BaseModel):
     intent_key: str = Field(default="", max_length=64, repr=False)
 
 
+class PortableBrowserPlan(BaseModel):
+    """Executor-compiled descriptors, never current DOM/element/frame references."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    start_url: str = Field(max_length=1000, repr=False)
+    result_url: str = Field(max_length=1000, repr=False)
+    plan: BrowserPlan = Field(repr=False)
+
+
 class DiscoveryMemory(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
 
@@ -72,6 +82,9 @@ class DiscoveryMemory(BaseModel):
     frontier: list[str] = Field(default_factory=list, max_length=MAX_KNOWN_URLS, repr=False)
     visited: list[str] = Field(default_factory=list, max_length=MAX_KNOWN_URLS, repr=False)
     evidence_urls: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_URLS, repr=False)
+    browser_plans: dict[str, PortableBrowserPlan] = Field(
+        default_factory=dict, max_length=8, repr=False
+    )
     negative_outcomes: list[NegativeOutcome] = Field(
         default_factory=list, max_length=MAX_NEGATIVE_OUTCOMES, repr=False
     )
@@ -103,6 +116,10 @@ class DiscoveryMemory(BaseModel):
     @model_validator(mode="after")
     def private_addresses(self) -> Self:
         addresses = [*self.frontier, *self.visited, *self.evidence_urls]
+        for key, portable in self.browser_plans.items():
+            if key not in {f"bp{i}" for i in range(8)}:
+                raise ValueError("invalid portable browser plan reference")
+            addresses.extend([portable.start_url, portable.result_url])
         addresses.extend(url for url in (self.last_url, self.pending_url) if url is not None)
         addresses.extend(row.url for row in self.negative_outcomes if row.url is not None)
         for value in addresses:

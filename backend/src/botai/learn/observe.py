@@ -22,6 +22,7 @@ from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from botai.browser.probe import requires_authentication
 from botai.browser.session import ObservationSecretBrowser
+from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, PageSnapshot
 from botai.core.diagnostics import diagnostic_event, url_facts
@@ -90,6 +91,9 @@ class Observations:
     # Executor-owned navigation target, never rendered or supplied to a model.
     auth_target_url: str | None = field(default=None, repr=False)
     request_facts: dict[str, ObservedRequest] = field(default_factory=dict, repr=False)
+    browser_plans: dict[str, BrowserPlan] = field(default_factory=dict, repr=False)
+    browser_plan_urls: dict[str, str] = field(default_factory=dict, repr=False)
+    browser_plan_results: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
     def empty(self) -> bool:
@@ -98,6 +102,13 @@ class Observations:
     def render(self, limit: int = 30_000) -> str:
         """The bundle as the model sees it, wrapped so that it reads as data."""
         parts = [f'<observation origin="{self.origin}">']
+        for ref, plan in self.browser_plans.items():
+            # The author selects a certified ref. Raw replay selectors/option values remain
+            # executor-owned, rather than being copied into the model prompt.
+            parts.append(
+                f"[browserPlan] {ref} | operations: {','.join(step.op for step in plan.steps)}"
+                f" | frameDepth: {len(plan.frame_path)} | pagination: {plan.pagination is not None}"
+            )
         headers: list[str] = []
         for index, page in enumerate(self.pages):
             links = "; ".join(f"{text} -> {path}" for text, path in page.links)
