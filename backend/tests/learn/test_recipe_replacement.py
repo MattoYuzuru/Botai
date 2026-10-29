@@ -119,14 +119,17 @@ def fake_cookie_present(request: httpx.Request) -> bool:
     return "FAKEUNI_SESSION=" in request.headers.get("cookie", "")
 
 
+@pytest.mark.parametrize("retain_browser_kind", [False, True])
 async def test_complete_rendered_replacement_does_not_inherit_empty_session_bindings(
-    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch, retain_browser_kind: bool
 ) -> None:
     old = recipes.timetable_endpoint()
     old["request"]["authBinding"] = "oldMixed"
+    old_news = recipes.news_endpoint()
+    old_news["request"]["render"] = True
     base = recipes.recipe_spec(
-        [old],
-        require=("scheduleEvents",),
+        [old, *([old_news] if retain_browser_kind else [])],
+        require=("scheduleEvents", "news") if retain_browser_kind else ("scheduleEvents",),
         auth={
             "type": "session",
             "version": 1,

@@ -27,6 +27,8 @@ def recipe_requires_session(recipe: Mapping[str, Any]) -> bool:
     auth = recipe.get("auth", {})
     if auth.get("type") != "session":
         return auth.get("type", "cookie") != "none"
+    if any(endpoint["request"].get("render") for endpoint in recipe.get("endpoints", [])):
+        return True  # Browser requests carry their own session, without HTTP binding references.
     referenced = {step.get("authBinding") for step in recipe.get("bootstrap", [])}
     referenced.update(
         endpoint["request"].get("authBinding")

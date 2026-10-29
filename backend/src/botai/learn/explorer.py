@@ -1510,7 +1510,12 @@ class Explorer:
                 if not endpoint["request"].get("render")
             )
             bindings = {key: value for key, value in bindings.items() if key in referenced_bindings}
-            auth_options = [{"type": "session", "version": 1, "bindings": bindings}]
+            auth_options = (
+                [{"type": "session", "version": 1, "bindings": bindings}]
+                if bindings
+                # Only browser requests survive: their own session supplies authentication.
+                else [{"type": "cookie"}]
+            )
         problems: list[str] = []
         for auth in auth_options:
             spec = build_spec(

@@ -13,10 +13,26 @@ from botai.core.browser import SessionBearer, SessionCookie, SessionState
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import SessionExpired
 from botai.sources.fetch import SourceClient
+from botai.sources.session import recipe_requires_session
 from tests.sources.helpers import NOW, make_ctx
 
 ORIGIN = "https://fakeuni.test"
 MIXED = {"cookies": True, "bearer": "observedAuthorization"}
+
+
+def test_browser_authority_survives_scope_without_unrelated_http_bindings() -> None:
+    recipe: dict[str, Any] = {
+        "auth": {
+            "type": "session",
+            "bindings": {"old": MIXED, "public": {"cookies": False, "bearer": "none"}},
+        },
+        "endpoints": [{"request": {"authBinding": "public"}}],
+    }
+    assert not recipe_requires_session(recipe)  # Excluded protected HTTP kinds must not log in.
+    recipe["endpoints"] = [{"request": {"render": True}}]
+    assert recipe_requires_session(recipe)  # A rendered kind owns browser-session authority.
+    recipe["auth"] = {"type": "none"}
+    assert not recipe_requires_session(recipe)
 
 
 def session(generation: str = "first", **changes: Any) -> SessionState:
