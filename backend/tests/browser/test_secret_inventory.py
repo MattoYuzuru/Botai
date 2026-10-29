@@ -88,6 +88,7 @@ async def test_inventory_preserves_distinct_tab_stores_and_every_sent_bearer_rot
         request.is_navigation_request.return_value = False
         request.url, request.method, request.resource_type = f"https://{host}/data", "GET", "fetch"
         request.headers = {"authorization": "Bearer " + token}
+        request.all_headers = AsyncMock(return_value=request.headers)
         handle._on_request(cast(Request, request))
     redactor = Redactor()
     await protect_observation(handle, redactor)

@@ -58,9 +58,11 @@ from botai.browser.session import (
 from botai.core.browser import (
     ObservedRequest,
     PageSnapshot,
+    SessionBearer,
     SessionCookie,
     SessionOriginStorage,
     SessionState,
+    auth_origin,
 )
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_context, diagnostic_event, url_facts
@@ -270,12 +272,16 @@ class PlaywrightHandle:
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._samples: set[asyncio.Task[None]] = set()
+        self._auth_captures: set[asyncio.Task[None]] = set()
         self._inflight: set[Request] = set()
         self._last_activity = monotonic()
         self._activity_generation = 0
         self._sampled = 0
         self._failed_diagnostics = 0
-        self._bearer: dict[str, str] = {}  # host -> last Authorization the browser sent
+        self._bearer: dict[str, str] = {}  # exact origin -> last bearer the browser sent
+        self._bearer_versions: dict[str, int] = {}
+        self._bearer_captured_at: dict[str, datetime] = {}
+        self._request_serial = 0
         self._observation_bearers: set[str] = set()
         self._observation_bearer_bytes = 0
         self._secret_inventory_failed = False
@@ -560,26 +566,11 @@ class PlaywrightHandle:
                     self._navigation_request = request
                     self._navigation_error = None
         host = urlsplit(request.url).hostname
+        self._request_serial += 1
+        serial = self._request_serial
         if host:
             self._visited.setdefault(host.lower(), None)
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("bearer ") and host.lower() in self.allow_hosts:
-                token = auth[7:].strip()
-                self._bearer[host.lower()] = token
-                if token not in self._observation_bearers:
-                    try:
-                        size = len(token.encode("utf-8"))
-                    except UnicodeError:
-                        self._secret_inventory_failed = True
-                    else:
-                        if (
-                            len(self._observation_bearers) >= 4096
-                            or self._observation_bearer_bytes + size > 1_048_576
-                        ):
-                            self._secret_inventory_failed = True
-                        else:
-                            self._observation_bearers.add(token)
-                            self._observation_bearer_bytes += size
+            self._remember_bearer(request.url, request.headers.get("authorization", ""), serial)
         if request.resource_type not in _OBSERVED_TYPES or len(self._log) >= MAX_LOG:
             return
         entry = ObservedRequest(
@@ -587,9 +578,13 @@ class PlaywrightHandle:
             url=request.url,
             resource_type=request.resource_type,
             request_content_type=request.headers.get("content-type"),
+            evidence_id=f"r{serial}",
         )
         self._log.append(entry)
         self._entries[request] = entry
+        task = asyncio.get_running_loop().create_task(self._capture_auth(request, entry, serial))
+        self._auth_captures.add(task)
+        task.add_done_callback(self._auth_captures.discard)
         self._diagnostic(
             "browser.request",
             connection_id=self.connection_id,
@@ -598,6 +593,65 @@ class PlaywrightHandle:
             read_only=self.read_only,
             **url_facts(request.url),
         )
+
+    def _remember_bearer(self, url: str, authorization: str, serial: int) -> None:
+        origin = auth_origin(url)
+        host = (urlsplit(url).hostname or "").lower()
+        if origin is None or host not in self.allow_hosts:
+            return
+        if authorization:
+            self._remember_secret(authorization)
+            self._remember_secret(authorization.partition(" ")[2].strip())
+        if not authorization.lower().startswith("bearer "):
+            return
+        token = authorization[7:].strip()
+        if not token:
+            return
+        if len(token) > 32_768:
+            self._secret_inventory_failed = True
+            return
+        if serial >= self._bearer_versions.get(origin, 0):
+            self._bearer[origin] = token
+            self._bearer_versions[origin] = serial
+            self._bearer_captured_at[origin] = self._clock.now()
+
+    def _remember_secret(self, token: str) -> None:
+        if token and token not in self._observation_bearers:
+            try:
+                size = len(token.encode("utf-8"))
+            except UnicodeError:
+                self._secret_inventory_failed = True
+                return
+            if (
+                len(self._observation_bearers) >= 4096
+                or self._observation_bearer_bytes + size > 1_048_576
+            ):
+                self._secret_inventory_failed = True
+            else:
+                self._observation_bearers.add(token)
+                self._observation_bearer_bytes += size
+
+    async def _capture_auth(self, request: Request, entry: ObservedRequest, serial: int) -> None:
+        try:
+            async with asyncio.timeout(2.0):
+                headers = await request.all_headers()
+            authorization = headers.get("authorization", "").strip()
+            entry.has_cookie = bool(headers.get("cookie", "").strip())
+            for pair in headers.get("cookie", "").split(";"):
+                self._remember_secret(pair.partition("=")[2].strip().strip('"'))
+            entry.has_authorization = bool(authorization)
+            entry.authorization_scheme = (
+                "bearer"
+                if authorization.lower().startswith("bearer ") and authorization[7:].strip()
+                else "other"
+                if authorization
+                else "none"
+            )
+            self._remember_bearer(request.url, authorization, serial)
+            entry.auth_proven = True
+        except (PlaywrightError, TimeoutError):
+            # Without a complete inventory, reflected headers may not be passed to the model.
+            self._secret_inventory_failed = True
 
     def _on_response(self, response: Response) -> None:
         entry = self._entries.get(response.request)
@@ -677,8 +731,9 @@ class PlaywrightHandle:
             self._activity_generation += 1
 
     async def network_log(self) -> list[ObservedRequest]:
-        if self._samples:
-            await asyncio.wait(list(self._samples), timeout=2.0)
+        pending = self._samples | self._auth_captures
+        if pending:
+            await asyncio.wait(list(pending), timeout=2.0)
         return [e.model_copy() for e in self._log]
 
     # -- actions -----------------------------------------------------------------------------
@@ -912,6 +967,10 @@ class PlaywrightHandle:
         The caller applies its two-second deadline and the cumulative redaction byte bound.
         """
         try:
+            if self._auth_captures:
+                _, pending = await asyncio.wait(list(self._auth_captures), timeout=2.0)
+                if pending:
+                    self._secret_inventory_failed = True
             if self._secret_inventory_failed:
                 raise ValueError("incomplete bearer inventory")
             values = [SecretStr(value) for value in self._observation_bearers]
@@ -978,6 +1037,8 @@ class PlaywrightHandle:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single
         explicitly named key). Bounded browser storage stays only in the encrypted session,
         separate from bearer discovery and from observations supplied to the model."""
+        if self._auth_captures:
+            await asyncio.wait(list(self._auth_captures), timeout=2.0)
         hosts = self._cookie_hosts()
         cookies: list[SessionCookie] = []
         for c in await self.context.cookies():
@@ -997,16 +1058,28 @@ class PlaywrightHandle:
                 )
             )
         bearer: str | None = None
+        bearer_scopes: list[SessionBearer] = []
         source = self._capture.bearer_from
+        now = self._clock.now()
         if source == "authorizationHeader":
-            primary = (urlsplit(self.origin).hostname or "").lower()
-            # the origin's own; failing that, the one token the browser sent anywhere (an API
-            # host next to the page host). Two different tokens: no guess.
-            sent = set(self._bearer.values())
-            bearer = self._bearer.get(primary) or (next(iter(sent)) if len(sent) == 1 else None)
+            primary = auth_origin(self.origin)
+            bearer = self._bearer.get(primary) if primary is not None else None
+            for origin, token in self._bearer.items():
+                if (
+                    auth_origin(origin) != origin
+                    or (urlsplit(origin).hostname or "") not in self.allow_hosts
+                ):
+                    continue
+                bearer_scopes.append(
+                    SessionBearer(
+                        origin=origin,
+                        token=SecretStr(token),
+                        captured_at=self._bearer_captured_at.get(origin, now),
+                        expires_hint=jwt_expiry(token),
+                    )
+                )
         elif source in ("localStorage", "sessionStorage") and self._capture.bearer_key:
             bearer = await self._bearer_from_storage(source, self._capture.bearer_key)
-        now = self._clock.now()
         expiries = [datetime.fromtimestamp(c.expires, UTC) for c in cookies if c.expires]
         hint: datetime | None = None
         if cookies and len(expiries) == len(cookies):
@@ -1028,6 +1101,7 @@ class PlaywrightHandle:
             origin=self.origin,
             cookies=cookies,
             bearer=SecretStr(bearer) if bearer else None,
+            bearer_scopes=bearer_scopes,
             captured_at=now,
             expires_hint=hint,
             browser_storage=browser_storage,
@@ -1080,7 +1154,7 @@ class PlaywrightHandle:
             self.closed = True
             if self._reaper is not None and self._reaper is not asyncio.current_task():
                 self._reaper.cancel()
-            for task in list(self._samples):
+            for task in list(self._samples | self._auth_captures):
                 task.cancel()
             self._closing = asyncio.create_task(self._finish_close())
         # A fetch deadline may stop waiting for cleanup. The context and its pool slot still
@@ -1405,18 +1479,28 @@ class PlaywrightGateway:
                     for c in session.cookies
                 ]
             )
-        if session.bearer is not None:
-            bearer = session.bearer.get_secret_value()
-            primary = urlsplit(session.origin)
-            pattern = f"{primary.scheme}://{primary.hostname}/**"
+        scoped = {
+            scope.origin: scope.token.get_secret_value()
+            for scope in session.bearer_scopes
+            if (urlsplit(scope.origin).hostname or "") in hosts
+        }
+        primary = auth_origin(session.origin)
+        if (
+            session.bearer is not None
+            and primary is not None
+            and (urlsplit(primary).hostname or "") in hosts
+        ):
+            scoped.setdefault(primary, session.bearer.get_secret_value())
+        if scoped:
 
             async def add_authorization(route: Route) -> None:
                 headers = route.request.headers
                 # The application may have refreshed its token since restoration. Its own
                 # credentials take precedence over the saved fallback, including other schemes.
-                if "authorization" in headers:
+                bearer = scoped.get(auth_origin(route.request.url) or "")
+                if "authorization" in headers or bearer is None:
                     await route.continue_()
                 else:
                     await route.continue_(headers={**headers, "authorization": f"Bearer {bearer}"})
 
-            await context.route(pattern, add_authorization)
+            await context.route("**/*", add_authorization)

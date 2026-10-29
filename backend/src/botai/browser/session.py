@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import SecretStr
 
-from botai.core.browser import SessionOriginStorage, SessionState
+from botai.core.browser import SessionOriginStorage, SessionState, auth_origin
 
 MAX_STORAGE_ORIGINS = 12
 MAX_STORAGE_ENTRIES = 64
@@ -131,6 +131,15 @@ def encode_session(state: SessionState) -> str:
                 for c in state.cookies
             ],
             "bearer": state.bearer.get_secret_value() if state.bearer else None,
+            "bearer_scopes": [
+                {
+                    "origin": scope.origin,
+                    "token": scope.token.get_secret_value(),
+                    "captured_at": scope.captured_at.isoformat(),
+                    "expires_hint": scope.expires_hint.isoformat() if scope.expires_hint else None,
+                }
+                for scope in state.bearer_scopes
+            ],
             "captured_at": state.captured_at.isoformat(),
             "expires_hint": state.expires_hint.isoformat() if state.expires_hint else None,
             "browser_storage": [
@@ -163,9 +172,15 @@ def httpx_cookies(state: SessionState) -> httpx.Cookies:
     return jar
 
 
-def request_headers(state: SessionState) -> dict[str, str]:
+def request_headers(state: SessionState, *, url: str | None = None) -> dict[str, str]:
     """Headers a sync request must carry besides cookies."""
-    if state.bearer is None:
+    origin = auth_origin(url or state.origin)
+    if origin is None:
+        return {}
+    for scope in state.bearer_scopes:
+        if scope.origin == origin:
+            return {"authorization": f"Bearer {scope.token.get_secret_value()}"}
+    if state.bearer is None or auth_origin(state.origin) != origin:
         return {}
     return {"authorization": f"Bearer {state.bearer.get_secret_value()}"}
 

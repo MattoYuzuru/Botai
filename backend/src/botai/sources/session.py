@@ -12,9 +12,9 @@ import logging
 from datetime import datetime
 
 import httpx
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
-from botai.core.browser import SessionCookie, SessionState
+from botai.core.browser import SessionCookie, SessionState, auth_origin
 from botai.core.vault import SecretKind, Vault
 
 log = logging.getLogger(__name__)
@@ -26,6 +26,14 @@ def dump_session(state: SessionState) -> str:
     for cookie, plain in zip(data["cookies"], state.cookies, strict=True):
         cookie["value"] = plain.value.get_secret_value()
     data["bearer"] = state.bearer.get_secret_value() if state.bearer else None
+    for scope, plain in zip(data["bearer_scopes"], state.bearer_scopes, strict=True):
+        scope["token"] = plain.token.get_secret_value()
+    for origin, plain in zip(data["browser_storage"], state.browser_storage, strict=True):
+        for name, store in (
+            ("local_storage", plain.local_storage),
+            ("session_storage", plain.session_storage),
+        ):
+            origin[name] = {key: value.get_secret_value() for key, value in store.items()}
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -67,11 +75,39 @@ def cookie_jar(state: SessionState | None, now: datetime) -> httpx.Cookies:
 
 
 def auth_headers(
-    state: SessionState | None, *, auth_type: str, header_name: str | None
+    state: SessionState | None,
+    *,
+    auth_type: str,
+    header_name: str | None,
+    origin: str | None = None,
 ) -> dict[str, str]:
-    if auth_type != "bearer" or state is None or state.bearer is None:
+    if auth_type != "bearer" or state is None:
         return {}
-    token = state.bearer.get_secret_value()
+    secret = scoped_bearer(state, origin or state.origin, allow_legacy=True)
+    if secret is None:
+        return {}
+    token = secret.get_secret_value()
     if header_name and header_name.lower() != "authorization":
         return {header_name: token}
     return {"Authorization": f"Bearer {token}"}
+
+
+def scoped_bearer(
+    state: SessionState | None,
+    origin: str,
+    *,
+    now: datetime | None = None,
+    allow_legacy: bool = False,
+) -> SecretStr | None:
+    """A token's audience is an exact origin; old scalar tokens never prove a new binding."""
+    target = auth_origin(origin)
+    if state is None or target is None:
+        return None
+    for scope in state.bearer_scopes:
+        if scope.origin == target:
+            if now is not None and scope.expires_hint is not None and scope.expires_hint <= now:
+                return None
+            return scope.token
+    if allow_legacy and auth_origin(state.origin) == target:
+        return state.bearer
+    return None

@@ -8,7 +8,7 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import Mock, PropertyMock
+from unittest.mock import AsyncMock, Mock, PropertyMock
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
@@ -429,6 +429,7 @@ async def test_navigation_before_its_frame_does_not_escape_the_event_callback(
     request.url = "https://id.fakeuni.test/early-popup"
     request.method = "GET"
     request.headers = {}
+    request.all_headers = AsyncMock(return_value={})
     request.resource_type = "document"
     request.failure = "net::ERR_TUNNEL_CONNECTION_FAILED"
 
@@ -485,14 +486,25 @@ async def test_a_context_is_not_left_behind_when_opening_fails(
     assert len(browser.contexts) == before
 
 
-async def test_bearer_comes_from_the_origin_or_the_only_token_sent(open_browser: Opener) -> None:
-    handle = await open_browser(origin="https://fakeuni.test")
-    handle._bearer = {"api.fakeuni.test": "T1"}
-    assert (await handle.export_session()).bearer == SecretStr("T1")  # one token, an API host
-    handle._bearer = {"api.fakeuni.test": "T1", "id.fakeuni.test": "T2"}
-    assert (await handle.export_session()).bearer is None  # two candidates: no guess
-    handle._bearer = {"api.fakeuni.test": "T1", "fakeuni.test": "T0"}
-    assert (await handle.export_session()).bearer == SecretStr("T0")  # the origin's own wins
+async def test_bearers_keep_their_observed_audiences_without_an_unrelated_fallback(
+    open_browser: Opener,
+) -> None:
+    handle = await open_browser(
+        hosts=("fakeuni.test", "api.fakeuni.test"), origin="https://fakeuni.test"
+    )
+    handle._bearer = {"https://api.fakeuni.test": "T1"}
+    state = await handle.export_session()
+    assert state.bearer is None
+    assert [(scope.origin, scope.token) for scope in state.bearer_scopes] == [
+        ("https://api.fakeuni.test", SecretStr("T1"))
+    ]
+    handle._bearer["https://fakeuni.test"] = "T0"
+    state = await handle.export_session()
+    assert state.bearer == SecretStr("T0")
+    assert {scope.origin: scope.token for scope in state.bearer_scopes} == {
+        "https://api.fakeuni.test": SecretStr("T1"),
+        "https://fakeuni.test": SecretStr("T0"),
+    }
 
 
 async def test_downloads_are_cancelled(open_browser: Opener) -> None:
