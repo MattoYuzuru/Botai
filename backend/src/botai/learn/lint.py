@@ -350,6 +350,9 @@ def _endpoint(
             )
         )
 
+    if request.get("browserPlan") is not None:
+        _browser_plan(request["browserPlan"], (*req_base, "browserPlan"), issues)
+
     pagination = endpoint.get("pagination")
     response = endpoint["response"]
     if pagination:
@@ -372,6 +375,20 @@ def _endpoint(
                 )
             )
     _response(kind, response, (*base, "response"), issues)
+
+
+def _browser_plan(node: Any, base: tuple[Any, ...], issues: list[LintIssue]) -> None:
+    """Apply the same CSS policy to every nested, schema-validated replay descriptor."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            where = (*base, key)
+            if key == "selector":
+                _selector(value, _p(*where), issues)
+            elif isinstance(value, (Mapping, list)):
+                _browser_plan(value, where, issues)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            _browser_plan(item, (*base, index), issues)
 
 
 def _response(
