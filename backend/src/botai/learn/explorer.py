@@ -1448,8 +1448,8 @@ class Explorer:
                 await stage.finish("ok", f"Найдено записей: {count}")
             else:
                 await stage.finish("skipped", "Соседние недели не подтвердились")
-        if count > horizon.SPARSE:
-            return found
+        if count > horizon.SPARSE or kind != "scheduleEvents":
+            return found  # a few deadlines or news are ordinary; a thin timetable is a question
         self._horizon_asked.add(kind)
         now = self.services.clock.now()
         endpoint = found.candidate.endpoint
