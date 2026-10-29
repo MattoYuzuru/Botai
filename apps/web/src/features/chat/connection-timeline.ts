@@ -22,6 +22,14 @@ export type ConnectTurn =
       finishedAt?: number;
     };
 
+export type ConnectionEcho = {
+  id: string;
+  text: string;
+  at: number;
+  precedingKeys: readonly string[];
+  message: Message | null;
+};
+
 const stamp = (at: string | null | undefined) => (at ? Date.parse(at) : null);
 export const interactionKey = (jobId: string, blockId: string) => `${jobId}:${blockId}`;
 
@@ -61,6 +69,7 @@ export function connectionTurns(
   messages: readonly Message[],
   job: JobSnapshot | null,
   runtime: ThreadRuntime,
+  echoes: readonly ConnectionEcho[] = [],
 ): ConnectTurn[] {
   const turns: ConnectTurn[] = [];
   const rows = new Map<string, number>();
@@ -99,7 +108,7 @@ export function connectionTurns(
     if (message.role === "user") {
       turns.push({
         kind: "user",
-        key: `message:${message.id}`,
+        key: `message:${echoes.find((echo) => echo.message?.id === message.id)?.id ?? message.id}`,
         text: userText(message),
         at: stamp(message.createdAt) ?? 0,
       });
@@ -136,6 +145,21 @@ export function connectionTurns(
       jobId: job.jobId,
       steps: [{ id: "waiting", label: job.stage ?? "Думаю", state: "running", at: job.startedAt ?? 0 }],
       running: true,
+    });
+  }
+  for (const echo of echoes) {
+    const key = `message:${echo.id}`;
+    const existing = turns.findIndex((turn) => turn.key === key);
+    if (existing >= 0) turns.splice(existing, 1);
+    // A thinking group keeps its key while new steps arrive, so it cannot
+    // anchor a user's reply relative to future questions in that group.
+    const preceding = new Set(echo.precedingKeys.filter((item) => !item.startsWith("thinking:")));
+    const after = turns.findLastIndex((turn) => preceding.has(turn.key));
+    turns.splice(after + 1, 0, {
+      kind: "user",
+      key,
+      text: echo.message ? userText(echo.message) : echo.text,
+      at: echo.message ? (stamp(echo.message.createdAt) ?? echo.at) : echo.at,
     });
   }
   return turns;

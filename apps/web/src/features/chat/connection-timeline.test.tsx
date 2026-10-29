@@ -98,6 +98,43 @@ describe("плоская source timeline", () => {
     );
   });
 
+  it("echo остаётся между старым вопросом и новым SSE, ACK/GET сохраняют ключ и не создают дубль", () => {
+    const initial = connectionTurns([], job, runtime);
+    const next = block({
+      type: "input",
+      id: ID(20),
+      question: "Теперь логин",
+      inputKind: "text",
+      required: true,
+    });
+    const updated = { ...job, blocks: [question, next] };
+    const message = row(21, block({ type: "text", id: ID(22), markdown: "Ссылка на источник" }), "user");
+    const echo = {
+      id: "local-attempt",
+      text: "Ссылка на источник",
+      at: Date.parse(AT),
+      precedingKeys: initial.map((turn) => turn.key),
+      message: null as Message | null,
+    };
+    const pending = connectionTurns([], updated, runtime, [echo]);
+    // ACK can seed the cache before the original SSE question has durable history.
+    const accepted = connectionTurns([message], updated, runtime, [{ ...echo, message }]);
+    const observed = connectionTurns([row(3, question), message, row(23, next)], updated, runtime, [
+      { ...echo, message },
+    ]);
+    for (const turns of [pending, accepted, observed]) {
+      expect(turns.filter((turn) => turn.kind === "user")).toHaveLength(1);
+      const user = turns.findIndex((turn) => turn.kind === "user");
+      expect(turns.findIndex((turn) => turn.kind === "block" && turn.block.id === question.id)).toBeLessThan(
+        user,
+      );
+      expect(user).toBeLessThan(
+        turns.findIndex((turn) => turn.kind === "block" && turn.block.id === next.id),
+      );
+      expect(turns[user]?.key).toBe("message:local-attempt");
+    }
+  });
+
   it("только pending matching Login может заменить durable placeholder, ticket не возрождается в history", () => {
     const id = ID(6);
     const placeholder = block({ type: "text", id, markdown: "Вход через браузер" });

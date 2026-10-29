@@ -104,6 +104,80 @@ async function expectChatReflow(page: Page) {
 }
 
 test.describe("подключение в общем чате", () => {
+  for (const order of ["ack-first", "history-first"] as const) {
+    test(`принятый текст не исчезает между SSE, POST и историей: ${order}`, async ({ page }) => {
+      await start(page);
+      const question = page.getByText(URL_QUESTION);
+      await question.evaluate((element) => {
+        element.dataset.identity = "same-question";
+      });
+      let releasePost = () => {};
+      let releaseHistory = () => {};
+      const post = new Promise<void>((resolve) => {
+        releasePost = resolve;
+      });
+      const history = new Promise<void>((resolve) => {
+        releaseHistory = resolve;
+      });
+      await page.exposeFunction("connectResponseGate", (kind: "post" | "history") =>
+        kind === "post" ? post : history,
+      );
+      await page.evaluate(() => {
+        const original = window.fetch.bind(window);
+        const state = window as unknown as {
+          connectResponseGate: (kind: "post" | "history") => Promise<void>;
+          connectResponses: { post: number; history: number };
+        };
+        state.connectResponses = { post: 0, history: 0 };
+        window.fetch = async (input, init) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          const response = await original(input, init);
+          if (/\/chat\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)) {
+            const kind = request.method === "POST" ? "post" : "history";
+            await state.connectResponseGate(kind);
+            state.connectResponses[kind] += 1;
+          }
+          return response;
+        };
+      });
+      const transcript = page.getByRole("list", { name: "Сообщения" });
+      const check = async () => {
+        await expect(question).toHaveAttribute("data-identity", "same-question");
+        await expect(question).toHaveCount(1);
+        await expect(transcript.getByText("https://lk.fakeuni.test/", { exact: true })).toHaveCount(1);
+        const text = (await transcript.textContent()) ?? "";
+        expect(text.indexOf(URL_QUESTION)).toBeLessThan(text.indexOf("https://lk.fakeuni.test/"));
+        expect(text.indexOf("https://lk.fakeuni.test/")).toBeLessThan(
+          text.indexOf("Вход в lk.fakeuni.test. Логин"),
+        );
+      };
+      const passed = (kind: "post" | "history") =>
+        page.evaluate(
+          (key) =>
+            (window as unknown as { connectResponses: Record<string, number> }).connectResponses[key] ?? 0,
+          kind,
+        );
+      try {
+        await send(page, "https://lk.fakeuni.test/");
+        await expect(page.getByText("Вход в lk.fakeuni.test. Логин")).toBeVisible();
+        // Actual MSW/SSE proceeds; neither the POST acknowledgement nor history is available yet.
+        await check();
+        if (order === "ack-first") releasePost();
+        else releaseHistory();
+        await expect.poll(() => passed(order === "ack-first" ? "post" : "history")).toBeGreaterThan(0);
+        await check();
+        releasePost();
+        releaseHistory();
+        await expect.poll(() => passed("post")).toBeGreaterThan(0);
+        await expect.poll(() => passed("history")).toBeGreaterThan(0);
+        await check();
+      } finally {
+        releasePost();
+        releaseHistory();
+      }
+    });
+  }
+
   test("первый вопрос стабилен до/после ответа, хронология идёт вниз без дубликата", async ({ page }) => {
     await start(page);
     const question = page.getByText(URL_QUESTION);
@@ -120,6 +194,38 @@ test.describe("подключение в общем чате", () => {
       history.indexOf("Вход в lk.fakeuni.test. Логин"),
     );
     await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toBeDisabled();
+  });
+
+  test("ошибка отправки возвращает текст editor, отвергнутый текст не остаётся в ленте", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const original = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        if (
+          request.method === "POST" &&
+          /\/chat\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
+        )
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ code: "source_unavailable", detail: "Synthetic API unavailable" }),
+              {
+                status: 503,
+                headers: { "Content-Type": "application/problem+json" },
+              },
+            ),
+          );
+        return original(input, init);
+      };
+    });
+    const text = "https://rejected.fakeuni.test/";
+    await send(page, text);
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Сообщение агенту" })).toHaveValue(text);
+    await expect(page.getByRole("list", { name: "Сообщения" }).getByText(text, { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(page.getByText(URL_QUESTION)).toHaveCount(1);
   });
 
   test("native login → secret → выбор → итог остаются в том же чате; секрет не сохраняется", async ({
