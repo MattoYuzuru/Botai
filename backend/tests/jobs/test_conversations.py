@@ -11,15 +11,17 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from botai.agent.tools import ChatEnv, request_repair
+from botai.agent.tools import ChatEnv, request_login, request_repair
 from botai.contracts.agent_ui import InputBlock, LoginBlock, TextBlock, ThinkingBlock
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobKind
 from botai.core.vault import SecretKind
 from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, Space, University
+from botai.jobs import dialogue
 from botai.jobs.context import PgJobContext
 from botai.jobs.events import append_event, purge_finished
 from botai.jobs.notify import Notifier
+from botai.learn.intent import LearningIntent
 from botai.spaces.conversations import bind_bootstrap, continue_source
 from tests.jobs.env import Env
 
@@ -614,6 +616,143 @@ async def test_chat_repair_resumes_unconfigured_connect_with_durable_followup(en
     assert any("Нужно продолжить вход" in m["blocks"][0].get("markdown", "") for m in history)
 
 
+@pytest.mark.parametrize("status", ["error", "needs_reauth"])
+@pytest.mark.parametrize("requested", [None, ["scheduleEvents"]])
+async def test_manual_login_resumes_canonical_connect_and_preserves_intent(
+    env: Env, status: str, requested: list[str] | None
+) -> None:
+    context: dict[str, Any] = {"entryUrls": [URL], "absentKinds": ["deadlines"]}
+    if requested is not None:
+        context["requestedKinds"] = requested
+    client, user, thread, old_id = await start(env, context=context)
+    connection, _ = await bind_bootstrap(ctx(env, user, old_id), env.services, {})
+    async with env.sm() as session:
+        old = await session.get(Job, old_id)
+        conn = await session.get(Connection, connection)
+        assert old is not None
+        assert conn is not None
+        old.state = "done"
+        conn.status = status
+        await session.commit()
+    other_thread = (await client.post("/api/v1/chat/threads", json={})).json()["id"]
+    tools = ChatEnv(
+        services=env.services, user_id=user, thread_id=other_thread, job_id=None, space_id=None
+    )
+    results = await asyncio.gather(
+        *(request_login(tools, {"connection_id": connection}) for _ in range(2))
+    )
+    runtime = (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+    new_id = runtime["activeJob"]["id"]
+    assert new_id != old_id
+    resumed = await env.job(new_id)
+    assert resumed.kind == "connect"
+    assert resumed.thread_id == thread
+    assert resumed.payload["url"] == URL
+    assert resumed.payload["manual_login"] is True
+    assert resumed.payload["source"] == "chat"
+    intent = LearningIntent.restore(resumed.payload["learning_intent"])
+    assert intent.discovery_mode == ("auto" if requested is None else "requested")
+    assert intent.entry_urls == (URL,)
+    assert intent.absent_kinds == ("deadlines",)
+    assert all(new_id in result for result in results)
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Job).where(Job.connection_id == connection)
+            )
+            == 2
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "state"),
+    [("connect", "waiting_user"), ("learn", "running"), ("repair", "queued"), ("sync", "running")],
+)
+async def test_manual_login_returns_active_source_without_replacing_it(
+    env: Env, kind: str, state: str
+) -> None:
+    client, user, thread, old_id = await start(env, context={"entryUrls": [URL]})
+    connection, _ = await bind_bootstrap(ctx(env, user, old_id), env.services, {})
+    active_id = new_id()
+    active_payload: dict[str, Any] = {"existing": True}
+    async with env.sm() as session:
+        old = await session.get(Job, old_id)
+        assert old is not None
+        old.state = "done"
+        active_job = Job(
+            id=active_id,
+            user_id=user,
+            connection_id=connection,
+            thread_id=thread,
+            kind=kind,
+            state=state,
+            payload=active_payload,
+            run_after=env.clock.now(),
+        )
+        if kind == "connect":
+            dialogue.set_pending(
+                active_job,
+                InputBlock(
+                    id=new_id(),
+                    at=env.clock.now(),
+                    question="Пароль",
+                    input_kind="password",
+                    secret=True,
+                ),
+                channel="native",
+                now=env.clock.now(),
+            )
+            active_payload = dict(active_job.payload)
+        session.add(active_job)
+        await session.commit()
+    tools = ChatEnv(
+        services=env.services, user_id=user, thread_id=thread, job_id=None, space_id=None
+    )
+    result = await request_login(tools, {"connection_id": connection})
+    assert active_id in result
+    assert "уже идёт" in result
+    assert "Новый вход не запущен" in result
+    assert thread in result
+    active = await env.job(active_id)
+    assert active.kind == kind
+    assert active.state == state
+    assert active.payload == active_payload
+    if kind == "connect":
+        assert "защищённые поля" in result
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Job).where(Job.connection_id == connection)
+            )
+            == 2
+        )
+    runtime = (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
+    assert runtime["activeJob"]["id"] == active_id
+
+
+async def test_manual_login_rejects_foreign_missing_and_disabled_connections(env: Env) -> None:
+    client, user, thread, _ = await start(env)
+    other = (await env.account()).id
+    _, foreign = await env.connection(other, status="needs_reauth")
+    _, disabled = await env.connection(user, status="disabled")
+    tools = ChatEnv(
+        services=env.services, user_id=user, thread_id=thread, job_id=None, space_id=None
+    )
+    assert "Такого подключения" in await request_login(tools, {"connection_id": foreign})
+    assert "Такого подключения" in await request_login(tools, {"connection_id": new_id()})
+    assert "отключено" in await request_login(tools, {"connection_id": disabled})
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.connection_id.in_([foreign, disabled]))
+            )
+            == 0
+        )
+    assert (await client.get(f"/api/v1/chat/threads/{thread}/runtime")).status_code == 200
+
+
 async def test_attach_replays_safe_legacy_updates_and_rejects_mismatch_disabled(env: Env) -> None:
     client = env.new_client()
     user = (await env.account(client)).id
@@ -868,7 +1007,7 @@ async def test_unconfigured_repair_restores_own_intent_url_query_and_current_job
     assert retried.kind == "connect"
     assert retried.thread_id == thread
     assert retried.payload["url"] == URL
-    assert retried.payload["learning_intent"] == INTENT
+    assert retried.payload["learning_intent"] == {**INTENT, "discovery_mode": "auto"}
     assert retried.payload["kinds"] == ["scheduleEvents"]
     assert "child.fakeuni.test" not in json.dumps(retried.payload)
     assert SECRET not in json.dumps(retried.payload)

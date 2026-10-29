@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -9,11 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Connection, Job, Space
+from botai.jobs.queue import PgJobQueue, enqueue_in_session
 from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities
 from botai.spaces.schemas import (
@@ -206,6 +209,7 @@ def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
                 "requested_kinds": data["requested_kinds"],
                 "absent_kinds": data.get("absent_kinds", []),
                 "user_note": data.get("user_note", ""),
+                **({"discovery_mode": data["discovery_mode"]} if "discovery_mode" in data else {}),
             }
         )
     )
@@ -272,12 +276,16 @@ async def enqueue_for_connection(
     *,
     thread_id: str | None = None,
     payload: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> str:
     """Manual `sync` / `repair`. Deduplicated: a job already queued or running is returned."""
     conn = await repo.get_connection(session, user_id, connection_id)
     if conn.status == "disabled":
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
-    if (
+    manual_login = kind == JobKind.CONNECT and (payload or {}).get("manual_login") is True
+    if manual_login:
+        pass  # Explicit human login can resume both unfinished and configured sources.
+    elif (
         kind in {JobKind.SYNC, JobKind.REPAIR}
         and conn.status in {"draft", "learning", "error"}
         and conn.adapter is None
@@ -299,6 +307,38 @@ async def enqueue_for_connection(
         payload = await _connect_retry_payload(
             session, conn, thread.connect_context if thread else None, payload
         )
+    if manual_login and isinstance(queue, PgJobQueue):
+        job = await enqueue_in_session(
+            session,
+            kind,
+            user_id=user_id,
+            connection_id=conn.id,
+            thread_id=target_thread,
+            payload=payload,
+            dedupe=True,
+            now=now or SystemClock().now(),
+        )
+        if target_thread is not None and job.thread_id is None:
+            job.thread_id = target_thread
+        await session.commit()
+        return job.id
+    if manual_login:
+        running = await session.scalar(
+            select(Job)
+            .where(
+                Job.user_id == user_id,
+                Job.connection_id == conn.id,
+                Job.kind.in_(("connect", "learn", "repair", "sync")),
+                Job.state.in_(("queued", "running", "waiting_user")),
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(1)
+        )
+        if running is not None:
+            if target_thread is not None and running.thread_id is None:
+                running.thread_id = target_thread
+            await session.commit()
+            return running.id
     await session.commit()  # the queue works in its own transaction
     job_id = await queue.enqueue(
         kind,

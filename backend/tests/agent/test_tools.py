@@ -71,11 +71,13 @@ def test_chat_agent_has_exactly_these_read_only_tools() -> None:
         "search_facts",
         "search_public_web",
         "request_repair",
+        "request_login",
     }
     # T5: nothing that opens an address or sends data out.
     for spec in TOOL_SPECS.values():
         assert "url" not in spec.parameters["properties"]
         assert spec.parameters["additionalProperties"] is False
+    assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {"connection_id"}
 
 
 async def test_schedule_is_shown_in_the_space_time_zone_with_sources(sm: Sm, user_id: str) -> None:

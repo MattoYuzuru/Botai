@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent import chat
-from botai.agent.chat import INJECTION_NOTE, handle_chat
+from botai.agent.chat import INJECTION_NOTE, bound_connection_context, handle_chat
 from botai.agent.llm import DeepSeekProvider
 from botai.contracts.agent_ui import ThinkingBlock
 from botai.core.errors import BotaiError, ErrorCode
@@ -19,7 +19,7 @@ from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.core.llm import LlmResponse, ScriptedLlm
 from botai.core.vault import SecretKind
-from botai.db.models import AuditLog, ChatThread
+from botai.db.models import AuditLog, ChatThread, Connection
 from tests.agent.conftest import add_user, make_settings
 from tests.agent.rig import (
     agent_messages,
@@ -214,6 +214,51 @@ async def test_needs_reauth_is_not_repaired_by_the_agent(sm: Sm, user_id: str) -
     assert r.queue.jobs == []
     tool_msg = next(m for m in r.llm.requests[1].messages if m.role == "tool")
     assert "нужен повторный вход" in tool_msg.content
+
+
+async def test_explicit_browser_login_can_start_protected_connect_from_chat(
+    sm: Sm, user_id: str
+) -> None:
+    r = await make_rig(sm, user_id, ScriptedLlm(), conn_status="needs_reauth")
+    r.llm._queue.extend(
+        [
+            step(call("list_connections")),
+            step(call("request_login", connection_id=r.conn_id)),
+            final("Запросил защищённый вход. Введите данные в полях приложения, не в чате."),
+        ]
+    )
+    await r.ask("Откройте браузер для входа, я войду сам")
+    (job,) = r.queue.jobs
+    assert job["kind"] == JobKind.CONNECT
+    assert job["connection_id"] == r.conn_id
+    assert job["thread_id"] == r.thread_id
+    assert job["payload"]["manual_login"] is True
+    assert job["payload"]["source"] == "chat"
+    assert "request_login" in {tool.name for tool in r.llm.requests[0].tools}
+
+
+async def test_bound_connection_context_contains_only_owned_ids_and_safe_status(
+    sm: Sm, user_id: str
+) -> None:
+    r = await make_rig(sm, user_id, ScriptedLlm(), conn_status="error")
+    other = await add_user(sm, "unrelated-context")
+    other_space = await add_space(sm, other)
+    foreign = await add_connection(sm, other, other_space, "Чужой источник")
+    async with sm() as session:
+        thread = await session.get(ChatThread, r.thread_id)
+        conn = await session.get(Connection, r.conn_id)
+        assert thread is not None
+        assert conn is not None
+        thread.connect_context = {"connection_ids": [r.conn_id, foreign]}
+        conn.error_code = "source_auth_required"
+        conn.error_detail = "private-content-must-not-enter-context"
+        await session.commit()
+        context = await bound_connection_context(r.services, user_id, thread)
+    assert r.conn_id in context
+    assert "source_auth_required" in context
+    assert foreign not in context
+    assert "private-content-must-not-enter-context" not in context
+    assert "fakeuni.test" not in context
 
 
 # --- data, not commands -------------------------------------------------------------------------

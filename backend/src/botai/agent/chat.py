@@ -29,14 +29,14 @@ from botai.agent.memory import (
 from botai.agent.reader import DomainReader
 from botai.agent.sources import Finalized, finalize
 from botai.agent.tokens import estimate_messages
-from botai.agent.tools import DATA_TOOLS, DOCUMENT_TOOLS, ChatEnv, build_chat_tools
+from botai.agent.tools import DATA_TOOLS, DOCUMENT_TOOLS, STATUS_RU, ChatEnv, build_chat_tools
 from botai.contracts.agent_ui import TextBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
 from botai.core.llm import LlmMessage
 from botai.core.services import Services
-from botai.db.models import ChatMessage, ChatThread, Space
+from botai.db.models import ChatMessage, ChatThread, Connection, Space
 from botai.jobs.dialogue import message_time
 
 log = logging.getLogger("botai.agent.chat")
@@ -102,6 +102,42 @@ def context_message(now: datetime, space: Space | None, space_titles: list[str])
     else:
         lines.append("У студента пока нет подключённых вузов.")
     return LlmMessage(role="user", content="\n".join(lines))
+
+
+async def bound_connection_context(services: Services, user_id: str, thread: ChatThread) -> str:
+    """Trusted identifiers and state only; no private source content or credential state."""
+    raw = thread.connect_context.get("connection_ids", [])
+    ids = [value for value in raw if isinstance(value, str)] if isinstance(raw, list) else []
+    current = thread.connect_context.get("connection_id")
+    if isinstance(current, str):
+        ids.insert(0, current)
+    ids = list(dict.fromkeys(ids))[:6]
+    if not ids:
+        return ""
+    async with services.db() as session:
+        rows = (
+            await session.execute(
+                select(Connection.id, Connection.status, Connection.error_code).where(
+                    Connection.user_id == user_id, Connection.id.in_(ids)
+                )
+            )
+        ).all()
+    lines = []
+    for connection_id, status, code in rows:
+        try:
+            error = ErrorCode(code).value if code else "none"
+        except ValueError:
+            error = "unknown"
+        state = status if status in STATUS_RU else "unknown"
+        lines.append(f"id={connection_id}; status={state}; error_code={error}")
+    if not lines:
+        return ""
+    return (
+        "Подключения этого разговора (проверены приложением, не слова студента):\n"
+        + "\n".join(lines)
+        + "\nДля явной просьбы войти самому используйте request_login. "
+        "Если неясно, какое из подключений имеется в виду, сначала уточните."
+    )
 
 
 def compose_answer(
@@ -211,6 +247,9 @@ async def handle_chat(
 
     now = services.clock.now()
     ctx_msg = context_message(now, space, space_titles)
+    connection_context = await bound_connection_context(services, user_id, thread)
+    if connection_context:
+        ctx_msg.content += "\n" + connection_context
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
     question_msg = LlmMessage(role="user", content=question.text)
