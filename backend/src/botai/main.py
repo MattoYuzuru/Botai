@@ -13,6 +13,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from botai.agent.router import router as agent_router
+from botai.attachments.router import router as attachments_router
 from botai.auth.router import router as auth_router
 from botai.browser.router import router as browser_router
 from botai.core.diagnostics import diagnostic_event, diagnostic_scope, url_facts
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
         usage_router,
         browser_router,
         sources_router,
+        attachments_router,
         agent_router,
     ):
         app.include_router(r)

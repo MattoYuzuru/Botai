@@ -26,6 +26,8 @@ MAX_TEXT_CHARS = 2_000_000
 MAX_UNZIPPED = 120 * 1024 * 1024  # DOCX/XLSX are zip files: a small file may unpack to gigabytes
 MAX_ZIP_ENTRIES = 5000
 CHUNK_CHARS = 1200
+MAX_UPLOAD = 20 * 1024 * 1024  # one uploaded file: a chat attachment or a document
+UPLOAD_ORIGIN = "https://upload.botai.local"  # uploads have no host; the allowlist stays empty
 
 
 @dataclass(slots=True)
@@ -273,7 +275,8 @@ def chunk_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     return pieces
 
 
-def to_chunks(extracted: Extracted) -> list[str]:
+def plain_text(extracted: Extracted) -> str:
+    """The whole readable content: the text, then every table as `header: value` lines."""
     parts: list[str] = []
     if extracted.text:
         parts.append(extracted.text)
@@ -282,4 +285,8 @@ def to_chunks(extracted: Extracted) -> list[str]:
         if lines:
             header = f"Таблица {table.name}" if len(extracted.tables) > 1 else ""
             parts.append("\n".join(([header] if header else []) + lines))
-    return chunk_text("\n".join(parts))
+    return "\n".join(parts)
+
+
+def to_chunks(extracted: Extracted) -> list[str]:
+    return chunk_text(plain_text(extracted))

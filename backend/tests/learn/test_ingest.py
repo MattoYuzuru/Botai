@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import json
 from datetime import timedelta
@@ -14,8 +13,15 @@ import pytest
 from openpyxl import Workbook
 from sqlalchemy import func, select
 
-from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock
-from botai.core.jobs import InMemoryJobContext, JobKind
+from botai.attachments import service as attachments
+from botai.contracts.agent_ui import (
+    AgentUiAnswer,
+    AgentUiBlock,
+    ChoiceBlock,
+    ConfirmBlock,
+    InputBlock,
+)
+from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
 from botai.core.llm import LlmResponse, LlmUsage
 from botai.db import models as m
 from botai.sources.ingest import make_ingest_handler
@@ -55,12 +61,15 @@ def proposal(**override: Any) -> LlmResponse:
     )
 
 
-def upload(content: bytes, filename: str, *, note: str = "") -> dict[str, Any]:
+async def upload(env: Env, content: bytes, filename: str, *, note: str = "") -> dict[str, Any]:
+    """The payload of the INGEST job of a file the student uploaded: the bytes are an attachment."""
+    att = await attachments.create(
+        env.db, env.seeded.user_id, filename=filename, content_type=None, data=content
+    )
     return {
         "source": {"kind": "upload"},
-        "content_b64": base64.b64encode(content).decode(),
+        "attachment_id": att.id,
         "filename": filename,
-        "content_type": "",
         "note": note,
     }
 
@@ -187,7 +196,7 @@ async def test_an_uploaded_text_document_needs_no_model_and_is_not_refreshed(
     make_env: EnvFactory,
 ) -> None:
     env = await document_env(make_env, [], origin="https://upload.botai.local", allow_hosts=[])
-    result = await env.run(JobKind.INGEST, upload(pages.rules_docx(), "rules.docx"))
+    result = await env.run(JobKind.INGEST, await upload(env, pages.rules_docx(), "rules.docx"))
     assert result["status"] == "ok"
     assert env.llm.requests == []
     assert env.asked == []
@@ -205,26 +214,91 @@ async def test_an_uploaded_text_document_needs_no_model_and_is_not_refreshed(
     assert "Документ «rules» добавлен" in ls.blocks_of(env.ctx, "text")[-1].markdown
 
 
-async def test_the_uploaded_bytes_do_not_stay_in_the_job_payload(make_env: EnvFactory) -> None:
+async def test_an_uploaded_file_is_read_from_its_attachment_and_marks_it_indexed(
+    make_env: EnvFactory,
+) -> None:
     env = await document_env(make_env, [])
-    payload = upload(pages.rules_docx(), "rules.docx")
-    env.db.add(
-        m.Job(
-            id="01J00000000000000000000JOB",
-            user_id=env.seeded.user_id,
-            kind="ingest",
-            state="running",
-            connection_id=env.seeded.connection_id,
-            payload=payload,
-            run_after=NOW,
-        )
-    )
-    await env.db.flush()
-    await env.run(JobKind.INGEST, payload)
+    payload = await upload(env, pages.rules_docx(), "rules.docx")
+    assert "content_b64" not in payload  # the bytes live in the attachment, not in the job
+    result = await env.run(JobKind.INGEST, payload)
+    assert result["status"] == "ok"
     env.db.expire_all()
-    stored = (await env.db.execute(select(m.Job.payload))).scalar_one()
-    assert "content_b64" not in stored
-    assert stored["filename"] == "rules.docx"
+    att = (await env.db.execute(select(m.Attachment))).scalar_one()
+    doc = (await env.db.execute(select(m.Document))).scalars().one()
+    assert (att.ingest_state, att.document_id) == ("indexed", doc.id)
+    assert (await env.conn()).kind == "document"
+
+
+async def test_a_missing_attachment_ends_in_an_honest_error(make_env: EnvFactory) -> None:
+    env = await document_env(make_env, [])
+    payload = {"source": {"kind": "upload"}, "attachment_id": "01J0000000000000000MISSING"}
+    result = await env.run(JobKind.INGEST, payload)
+    assert result["status"] == "error"
+    assert (await env.conn()).error_code == "not_found"
+
+
+class QuestionProbe(InMemoryJobContext):
+    """Looks at the database at the moment the student is asked a question."""
+
+    def __init__(self, env: Env, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.env = env
+        self.chunks_when_asked: list[int] = []
+        self.attachment_when_asked: list[tuple[str, str | None]] = []
+
+    async def ask(self, block: AgentUiBlock) -> AgentUiAnswer:
+        self.chunks_when_asked.append(await self.env.chunks())
+        att = (await self.env.db.execute(select(m.Attachment))).scalars().one()
+        await self.env.db.refresh(att)
+        self.attachment_when_asked.append((att.ingest_state, att.document_id))
+        return await super().ask(block)
+
+
+async def test_the_document_is_searchable_before_the_student_answers_about_its_tables(
+    make_env: EnvFactory,
+) -> None:
+    ambiguous = proposal(
+        columns={
+            "title": {"column": "Предмет", "alternatives": ["Аудитория"]},
+            "date": {"column": "Дата", "transform": "date"},
+            "startTime": {"column": "Время", "transform": "time"},
+        }
+    )
+    env = await document_env(make_env, [ambiguous])
+    payload = await upload(env, pages.exams_xlsx(), "exams.xlsx", note="Мои экзамены")
+    probe = QuestionProbe(
+        env,
+        user_id=env.seeded.user_id,
+        connection_id=env.seeded.connection_id,
+        responder=lambda block: True if isinstance(block, ConfirmBlock) else "Предмет",
+    )
+    result = await env.handlers[JobKind.INGEST](probe, env.services, payload)
+    assert result is not None
+    assert result["status"] == "ok"
+    # the first question (which column is the subject?) found the text indexed and readable
+    assert probe.chunks_when_asked[0] > 0
+    assert probe.attachment_when_asked[0][0] == "indexed"
+    assert probe.attachment_when_asked[0][1] is not None
+    assert "Текст документа уже можно искать" in ls.all_text(probe)
+
+
+async def test_a_table_the_student_never_answers_leaves_a_searchable_text_source(
+    make_env: EnvFactory,
+) -> None:
+    env = await document_env(make_env, [proposal()])
+    payload = await upload(env, pages.exams_xlsx(), "exams.xlsx")
+    # nobody answers "are these your rows?": the wait ends unanswered
+    ctx = InMemoryJobContext(
+        user_id=env.seeded.user_id,
+        connection_id=env.seeded.connection_id,
+        responder=lambda _block: None,
+    )
+    with pytest.raises(JobCancelled):
+        await env.handlers[JobKind.INGEST](ctx, env.services, payload)
+    assert await env.chunks() > 0
+    conn = await env.conn()
+    assert (conn.status, conn.adapter) == ("active", "document")  # a source of text, not a draft
+    assert await env.count(m.ScheduleEvent) == 0
 
 
 async def test_an_ingest_the_student_stops_leaves_a_draft(make_env: EnvFactory) -> None:
@@ -233,13 +307,15 @@ async def test_an_ingest_the_student_stops_leaves_a_draft(make_env: EnvFactory) 
     env = await document_env(make_env, [])
     ctx = ls.StoppedByStudent(user_id=env.seeded.user_id, connection_id=env.seeded.connection_id)
     with pytest.raises(asyncio.CancelledError):
-        await env.handlers[JobKind.INGEST](ctx, env.services, upload(pages.rules_docx(), "r.docx"))
+        await env.handlers[JobKind.INGEST](
+            ctx, env.services, await upload(env, pages.rules_docx(), "r.docx")
+        )
     assert (await env.conn()).status == "draft"
 
 
 async def test_a_broken_file_ends_in_an_honest_error(make_env: EnvFactory) -> None:
     env = await document_env(make_env, [])
-    result = await env.run(JobKind.INGEST, upload(b"%PDF-1.4 garbage", "scan.pdf"))
+    result = await env.run(JobKind.INGEST, await upload(env, b"%PDF-1.4 garbage", "scan.pdf"))
     assert result["status"] == "error"
     assert "Не получилось добавить документ" in ls.blocks_of(env.ctx, "text")[-1].markdown
     conn = await env.conn()
@@ -355,7 +431,7 @@ async def test_instructions_inside_a_table_never_reach_the_model(make_env: EnvFa
         rowFilter=None,
     )
     env = await document_env(make_env, [answer])
-    result = await env.run(JobKind.INGEST, upload(buf.getvalue(), "plan.xlsx"))
+    result = await env.run(JobKind.INGEST, await upload(env, buf.getvalue(), "plan.xlsx"))
     assert result["rows"] == 1
     sent = "\n".join(msg.content for r in env.llm.requests for msg in r.messages)
     assert "evil.test" not in sent

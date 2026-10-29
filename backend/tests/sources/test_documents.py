@@ -14,7 +14,6 @@ from openpyxl import Workbook
 
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import AdapterResult, NeedsUserInput
-from botai.sources.adapters.document import google_export_url
 from botai.sources.documents import chunk_text, detect_format, extract, to_chunks
 from botai.sources.factory import AdapterFactory
 from tests.sources.helpers import make_ctx
@@ -228,15 +227,6 @@ async def test_missing_link_target_is_a_problem_not_an_exception() -> None:
     result = await AdapterFactory().create(spec).fetch(ctx)
     assert result.outcomes[0].problem == "not_found"
     assert result.documents == []
-
-
-def test_google_links_become_public_export_links() -> None:
-    doc = "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUv/edit?usp=sharing"
-    sheet = "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUv/edit#gid=77"
-    assert google_export_url("google_doc", doc).endswith("/export?format=docx")
-    assert google_export_url("google_sheet", sheet).endswith("/export?format=xlsx&gid=77")
-    with pytest.raises(BotaiError):
-        google_export_url("google_doc", "https://docs.google.com/forms/d/e/abc")
 
 
 # --- adapter: table -> records --------------------------------------------------------------

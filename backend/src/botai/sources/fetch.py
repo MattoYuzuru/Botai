@@ -60,8 +60,10 @@ class SourceClient:
         header_name: str | None = None,
         use_session: bool = True,
         headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = True,
     ) -> None:
         self._ctx = ctx
+        self._follow_redirects = follow_redirects
         self._requests = 0
         self._auth_type = auth_type
         self._use_session = use_session
@@ -106,6 +108,7 @@ class SourceClient:
             headers=self._headers,
             transport=self._ctx.transport,
         )
+        self._client.follow_redirects = self._follow_redirects
         self._client.event_hooks["request"].append(self._scope_credentials)
         await self._client.__aenter__()
         return self
