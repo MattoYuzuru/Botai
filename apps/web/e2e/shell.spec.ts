@@ -340,7 +340,8 @@ test.describe("каркас", () => {
     await expect(page.getByText("Вузов пока нет")).toBeVisible();
     await expect(page.getByText(/сдано/i)).toHaveCount(0);
     await page.getByRole("link", { name: "Подключить вуз" }).click();
-    await expect(page).toHaveURL(/\/chat\?thread=/);
+    await expect(page).toHaveURL(/\/chat\?draft=/);
+    expect(new URL(page.url()).searchParams.get("draft")).toBe("Давай подключим вуз ");
   });
 });
 
