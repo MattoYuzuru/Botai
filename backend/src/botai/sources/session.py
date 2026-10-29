@@ -46,6 +46,7 @@ def dump_session(state: SessionState) -> str:
     for cookie, plain in zip(data["cookies"], state.cookies, strict=True):
         cookie["value"] = plain.value.get_secret_value()
     data["bearer"] = state.bearer.get_secret_value() if state.bearer else None
+    data["entry_url"] = state.entry_url.get_secret_value() if state.entry_url else None
     for scope, plain in zip(data["bearer_scopes"], state.bearer_scopes, strict=True):
         scope["token"] = plain.token.get_secret_value()
     for origin, plain in zip(data["browser_storage"], state.browser_storage, strict=True):

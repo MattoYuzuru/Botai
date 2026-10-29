@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import ValidationError
 
-from botai.browser.session import EntrySessionProvider, encode_session
+from botai.browser.session import EntrySessionProvider, encode_session, session_storage_expiry
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
@@ -1046,7 +1046,7 @@ class Explorer:
                         info.connection_id,
                         SecretKind.SESSION,
                         encode_session(refreshed),
-                        expires_at=refreshed.expires_hint,
+                        expires_at=session_storage_expiry(refreshed),
                     )
                     session = refreshed
             finally:

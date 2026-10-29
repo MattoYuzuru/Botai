@@ -55,7 +55,13 @@ from botai.browser.presets import (
 )
 from botai.browser.probe import check_session, learn_probe, probe_ok, requires_authentication
 from botai.browser.proxy import is_ip_literal, normalize_host
-from botai.browser.session import decode_session, encode_session, storage_origin
+from botai.browser.session import (
+    decode_session,
+    encode_session,
+    session_storage_expiry,
+    storage_origin,
+    with_confirmed_entry,
+)
 from botai.contracts.agent_ui import ConfirmBlock, InputBlock, LoginBlock, TextBlock, WaitBlock
 from botai.contracts.specs import LoginPreset
 from botai.core.browser import PageSnapshot, SessionState
@@ -174,6 +180,7 @@ class _Run:
     manual_signal: asyncio.Event = field(default_factory=asyncio.Event)
     manual_ready: asyncio.Future[bool] | None = None
     human_confirmed: bool = False
+    entry_verified: bool = False
     human_progress: bool = False
     push_confirmed: bool = False
 
@@ -270,7 +277,11 @@ class LoginFlow:
             hosts = self._hosts(info, preset)
             if entry_url is not None:
                 self._validate_entry(info, hosts, entry_url)
-            stored = None if force else await self._stored_session(user_id, connection_id)
+            acquisition = await self._stored_session(user_id, connection_id)
+            if entry_url is None and acquisition is not None and acquisition.entry_url is not None:
+                entry_url = acquisition.entry_url.get_secret_value()
+                self._validate_entry(info, hosts, entry_url)
+            stored = None if force else acquisition
             diagnostic_event(
                 "auth.session.check",
                 connection_id=connection_id,
@@ -300,7 +311,7 @@ class LoginFlow:
                                 connection_id,
                                 SecretKind.SESSION,
                                 encode_session(refreshed),
-                                expires_at=refreshed.expires_hint,
+                                expires_at=session_storage_expiry(refreshed),
                             )
                         diagnostic_event("auth.session.reused", connection_id=connection_id)
                         return refreshed
@@ -434,11 +445,9 @@ class LoginFlow:
                 raise handle.navigation_failure() or BotaiError(
                     ErrorCode.SOURCE_UNAVAILABLE, "Страница источника не открылась"
                 )
-            return (
-                await handle.export_session()
-                if self._entry_ready(info, preset, snap, entry_url)
-                else None
-            )
+            if not self._entry_ready(info, preset, snap, entry_url):
+                return None
+            return with_confirmed_entry(await handle.export_session(), entry_url)
         except BotaiError as exc:
             if exc.code == ErrorCode.EGRESS_BLOCKED:
                 # The fresh login handles an exact-host consent, rather than a
@@ -699,6 +708,7 @@ class LoginFlow:
                 run.verified_page = page_signature(fresh)
                 return None
             snap = fresh
+            run.entry_verified = True
             network = await run.handle.network_log()
             state = await run.handle.export_session()
         if run.probe is not None:
@@ -740,6 +750,9 @@ class LoginFlow:
 
     async def _finish(self, run: _Run, session: SessionState) -> None:
         user, conn = run.user_id, run.connection_id
+        if run.entry_verified and run.entry_url is not None:
+            # A supplied link is promoted only after the independent entry check succeeded.
+            session.entry_url = with_confirmed_entry(session, run.entry_url).entry_url
         await save_secret(
             run.job,
             self._vault,
@@ -747,7 +760,7 @@ class LoginFlow:
             conn,
             SecretKind.SESSION,
             encode_session(session),
-            expires_at=session.expires_hint,
+            expires_at=session_storage_expiry(session),
         )
         if run.creds.typed_username and run.creds.username:
             await save_secret(

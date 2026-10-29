@@ -131,6 +131,7 @@ def encode_session(state: SessionState) -> str:
                 for c in state.cookies
             ],
             "bearer": state.bearer.get_secret_value() if state.bearer else None,
+            "entry_url": state.entry_url.get_secret_value() if state.entry_url else None,
             "bearer_scopes": [
                 {
                     "origin": scope.origin,
@@ -163,6 +164,16 @@ def encode_session(state: SessionState) -> str:
 
 def decode_session(raw: str) -> SessionState:
     return SessionState.model_validate_json(raw)
+
+
+def with_confirmed_entry(state: SessionState, entry_url: str) -> SessionState:
+    """Called only after LoginFlow independently verified the owner's actual entry page."""
+    return SessionState.model_validate({**state.model_dump(), "entry_url": SecretStr(entry_url)})
+
+
+def session_storage_expiry(state: SessionState) -> datetime | None:
+    """Private acquisition context outlives authentication; individual credentials still expire."""
+    return None if state.entry_url is not None else state.expires_hint
 
 
 def httpx_cookies(state: SessionState) -> httpx.Cookies:

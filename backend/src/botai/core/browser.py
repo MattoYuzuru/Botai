@@ -121,11 +121,27 @@ class SessionState(BaseModel):
     captured_at: datetime
     expires_hint: datetime | None = None
     browser_storage: list[SessionOriginStorage] = Field(default_factory=list, repr=False)
+    entry_url: SecretStr | None = Field(default=None, repr=False, min_length=1, max_length=2000)
 
     @model_validator(mode="after")
     def unique_bearer_audiences(self) -> SessionState:
         if len({scope.origin for scope in self.bearer_scopes}) != len(self.bearer_scopes):
             raise ValueError("a session has conflicting bearer audiences")
+        if self.entry_url is not None:
+            entry = self.entry_url.get_secret_value()
+            if (
+                not entry
+                or len(entry) > 2000
+                or entry != entry.strip()
+                or "\\" in entry
+                or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in entry)
+                or urlsplit(entry).username is not None
+                or auth_origin(entry) is None
+                or auth_origin(entry) != auth_origin(self.origin)
+            ):
+                raise ValueError(
+                    "the private acquisition entry must be a bounded same-origin HTTPS URL"
+                )
         return self
 
 

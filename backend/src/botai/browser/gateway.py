@@ -256,6 +256,7 @@ class PlaywrightHandle:
         clock: Clock,
         read_only: bool = False,
         injected_authorizations: dict[Request, str] | None = None,
+        confirmed_entry_url: SecretStr | None = None,
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -271,6 +272,7 @@ class PlaywrightHandle:
         self._capture = capture
         self._clock = clock
         self.read_only = read_only
+        self._confirmed_entry_url = confirmed_entry_url
         self._entry_guarded = False
         self._entry_verifying = 0
         self._auth_epochs: dict[Frame, int] = {}
@@ -1161,6 +1163,7 @@ class PlaywrightHandle:
             captured_at=now,
             expires_hint=hint,
             browser_storage=browser_storage,
+            entry_url=self._confirmed_entry_url,
         )
 
     async def _export_browser_storage(self) -> list[SessionOriginStorage]:
@@ -1468,6 +1471,11 @@ class PlaywrightGateway:
             clock=self._clock,
             read_only=read_only,
             injected_authorizations=injected_authorizations,
+            confirmed_entry_url=(
+                session.entry_url
+                if session is not None and auth_origin(primary) == auth_origin(session.origin)
+                else None
+            ),
         )
         self._handles.add(handle)
         self._by_user[user_id] = handle
