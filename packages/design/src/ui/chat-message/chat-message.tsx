@@ -1,16 +1,14 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { DEFAULT_TIME_ZONE, formatTime } from "../../lib/format";
+import { attachmentIcon, attachmentKindLabel, type ViewerAttachment } from "../attachments";
 import { Badge } from "../badge/badge";
+import { type CitationGroup, CitationGroups } from "../citation-groups/citation-groups";
+import { formatBytes } from "../file-picker/file-picker";
 import { Icon } from "../icon";
-import { SafeMarkdown } from "../markdown/safe-markdown";
-import { SourceCitation, type SourceCitationProps } from "../source-citation/source-citation";
+import { type LinkResolver, SafeMarkdown } from "../markdown/safe-markdown";
 
 export type MessageStatus = "sending" | "sent" | "queued" | "streaming";
-
-export interface ChatCitation extends Omit<SourceCitationProps, "nowMs" | "className"> {
-  id: string;
-}
 
 export interface ChatMessageProps {
   role: "user" | "agent";
@@ -28,15 +26,90 @@ export interface ChatMessageProps {
   status?: MessageStatus;
   /** `unsure` — агент не уверен: перед текстом «Не уверен», в тексте сказано, чего не хватает. */
   confidence?: "ok" | "unsure";
-  citations?: readonly ChatCitation[];
+  /** Источники ответа, сгруппированные по источнику (одна запись на источник). */
+  citationGroups?: readonly CitationGroup[];
+  /** Вложения сообщения: изображения — сеткой миниатюр, остальное — строками. Нажатие открывает вьюер. */
+  attachments?: readonly ViewerAttachment[];
+  onOpenAttachment?: (id: string) => void;
+  /** Внутренние ссылки текста (`botai://threads/…`, `botai://attachments/…`): куда вести в приложении. */
+  resolveLink?: LinkResolver;
   /** Действия под сообщением (бизнес-кнопки блока). */
   actions?: ReactNode;
   className?: string;
 }
 
+function AttachmentList({
+  attachments,
+  onOpen,
+  align,
+}: {
+  attachments: readonly ViewerAttachment[];
+  onOpen?: (id: string) => void;
+  align: "start" | "end";
+}) {
+  const images = attachments.filter((item) => item.kind === "image");
+  const rest = attachments.filter((item) => item.kind !== "image");
+  return (
+    <div
+      data-message-attachments=""
+      className={cn("flex w-full min-w-0 flex-col gap-2", align === "end" ? "items-end" : "items-start")}
+    >
+      {images.length > 0 && (
+        <ul
+          aria-label="Изображения"
+          className={cn(
+            "grid gap-1.5",
+            images.length === 1 ? "w-full max-w-72 grid-cols-1" : "w-full max-w-md grid-cols-2",
+            images.length > 2 && "grid-cols-3",
+          )}
+        >
+          {images.map((item) => (
+            <li key={item.id} className="min-w-0">
+              <button
+                type="button"
+                aria-label={`Открыть ${item.name}`}
+                onClick={() => onOpen?.(item.id)}
+                className="block aspect-4/3 w-full cursor-pointer overflow-hidden rounded-md border border-border bg-bg-subtle transition-opacity duration-fast ease-soft hover:opacity-90"
+              >
+                <img src={item.url} alt={item.name} loading="lazy" className="size-full object-cover" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rest.length > 0 && (
+        <ul aria-label="Файлы" className="flex w-full max-w-sm flex-col gap-1.5">
+          {rest.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                aria-label={`Открыть ${item.name}`}
+                onClick={() => onOpen?.(item.id)}
+                className="flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed"
+              >
+                <span className="grid size-10 shrink-0 place-items-center rounded-sm bg-pressed text-fg-muted">
+                  <Icon name={attachmentIcon(item.kind)} size={20} />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate type-label text-fg">{item.name}</span>
+                  <span className="truncate type-caption text-fg-muted" data-numeric="">
+                    {`${attachmentKindLabel(item.kind)} · ${formatBytes(item.size)}`}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /**
- * Сообщение чата, 16 px. Агент — карточка `surface` на всю ширину колонки, человек — плашка справа.
- * Ответ без источника не имитирует источник; неуверенный ответ помечен. Появление — прозрачность и сдвиг 4 px.
+ * Сообщение чата, 16 px. Агент — плоский текст на фоне страницы на всю ширину колонки (без карточки и рамки), как в
+ * ChatGPT и Claude; если внутри форма вопроса (`children`, `actions`), она остаётся карточкой. Человек — плашка
+ * справа. Вложения стоят над текстом. Ответ без источника не имитирует источник; неуверенный ответ помечен.
+ * Появление — прозрачность и сдвиг 4 px.
  */
 export function ChatMessage({
   role,
@@ -47,11 +120,22 @@ export function ChatMessage({
   timeZone = DEFAULT_TIME_ZONE,
   status = "sent",
   confidence = "ok",
-  citations,
+  citationGroups,
+  attachments,
+  onOpenAttachment,
+  resolveLink,
   actions,
   className,
 }: ChatMessageProps) {
   const isUser = role === "user";
+  const hasText = markdown !== undefined && markdown !== "";
+  const card = !isUser && Boolean(children || actions);
+  const hasBody =
+    hasText ||
+    Boolean(children) ||
+    confidence === "unsure" ||
+    Boolean(citationGroups?.length) ||
+    Boolean(actions);
   return (
     <article
       data-role={role}
@@ -63,33 +147,43 @@ export function ChatMessage({
         className,
       )}
     >
-      <div
-        className={cn(
-          "flex max-w-[min(100%,var(--container-reading))] min-w-0 flex-col gap-3 rounded-lg px-4 py-3 [overflow-wrap:anywhere]",
-          isUser ? "bg-accent-subtle text-fg" : "w-full border border-border bg-surface",
-          status === "queued" && "opacity-80",
-        )}
-      >
-        {confidence === "unsure" && (
-          <div>
-            <Badge tone="warning" icon="help">
-              Не уверен
-            </Badge>
-          </div>
-        )}
-        {markdown !== undefined && <SafeMarkdown source={markdown} caret={status === "streaming"} />}
-        {children}
-        {citations && citations.length > 0 && (
-          <ul className="flex flex-col gap-2" aria-label="Источники">
-            {citations.map(({ id, ...citation }) => (
-              <li key={id}>
-                <SourceCitation {...citation} nowMs={nowMs} />
-              </li>
-            ))}
-          </ul>
-        )}
-        {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
-      </div>
+      {attachments && attachments.length > 0 && (
+        <AttachmentList
+          attachments={attachments}
+          onOpen={onOpenAttachment}
+          align={isUser ? "end" : "start"}
+        />
+      )}
+      {hasBody && (
+        <div
+          data-card={card || undefined}
+          className={cn(
+            "flex min-w-0 flex-col gap-3 [overflow-wrap:anywhere]",
+            isUser &&
+              "max-w-[min(85%,var(--container-reading))] rounded-lg bg-accent-subtle px-4 py-3 text-fg",
+            !isUser && !card && "w-full",
+            card && "w-full rounded-lg border border-border bg-surface px-4 py-3",
+            status === "queued" && "opacity-80",
+          )}
+        >
+          {confidence === "unsure" && (
+            <div>
+              <Badge tone="warning" icon="help">
+                Не уверен
+              </Badge>
+            </div>
+          )}
+          {hasText && (
+            <SafeMarkdown source={markdown} caret={status === "streaming"} resolveLink={resolveLink} />
+          )}
+          {markdown !== undefined && !hasText && status === "streaming" && <SafeMarkdown source="" caret />}
+          {children}
+          {citationGroups && citationGroups.length > 0 && (
+            <CitationGroups groups={citationGroups} nowMs={nowMs} timeZone={timeZone} />
+          )}
+          {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+        </div>
+      )}
       <div className="flex items-center gap-2 px-1 type-caption text-fg-subtle">
         {status === "queued" && (
           <span className="inline-flex items-center gap-1">
