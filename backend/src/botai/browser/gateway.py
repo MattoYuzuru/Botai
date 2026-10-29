@@ -80,9 +80,9 @@ SETTLE_MS = 3_000
 READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
 AUTH_EVALUATE_S = 0.5
-# One step of the login (an e-mail, a password, a code) opens this window for its auth frame: the page's
-# own scripts may then post to the login hosts of the connection. Never longer: a script that outlives
-# the step is not part of it.
+# One step of the login (an e-mail, a password, a code) opens this window for its auth frame: the
+# page's own scripts may then post to the login hosts of the connection. Never longer: a script that
+# outlives the step is not part of it.
 AUTH_WINDOW_S = 15.0
 AUTH_WINDOW_POSTS = 4  # a check of the login, the submission itself and a spare
 _AUTH_SCAN_JS = (
@@ -218,7 +218,7 @@ def scrub_sample(text: str) -> str | None:
 
 
 def guard_refusal_error() -> BotaiError:
-    """What the user is told when our own guard stopped a login request: not that the site is down."""
+    """What the user is told when our own guard stopped a request of the login: not an outage."""
     return BotaiError(
         ErrorCode.LOGIN_GUARD_REFUSED,
         "Ботай остановил отправку формы входа: сайт вуза отправляет её способом, который мы не "
