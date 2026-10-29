@@ -74,7 +74,7 @@ export function AttachmentChip({ attachment, onRemove, onOpen, className }: Atta
           type="button"
           aria-label={`Открыть ${name}`}
           onClick={() => onOpen?.(id)}
-          className="flex min-w-0 max-w-56 cursor-pointer items-center gap-2 rounded-sm text-left transition-colors duration-fast ease-soft hover:bg-hover"
+          className="flex min-h-11 min-w-0 max-w-56 cursor-pointer items-center gap-2 rounded-sm text-left transition-colors duration-fast ease-soft hover:bg-hover"
         >
           {body}
         </button>

@@ -191,7 +191,7 @@ export function ChatComposer({
         tabIndex={-1}
         aria-hidden="true"
         data-composer-file=""
-        className="sr-only"
+        className="sr-only type-body"
         onChange={(event) => add(pickedFiles(event.target), "picker")}
       />
       <input
@@ -202,7 +202,7 @@ export function ChatComposer({
         tabIndex={-1}
         aria-hidden="true"
         data-composer-photo=""
-        className="sr-only"
+        className="sr-only type-body"
         onChange={(event) => add(pickedFiles(event.target), "picker")}
       />
       <input
@@ -213,7 +213,7 @@ export function ChatComposer({
         tabIndex={-1}
         aria-hidden="true"
         data-composer-camera=""
-        className="sr-only"
+        className="sr-only type-body"
         onChange={(event) => add(pickedFiles(event.target), "camera")}
       />
       <span role="status" aria-live="polite" className="sr-only">
