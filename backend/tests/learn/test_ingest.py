@@ -320,6 +320,27 @@ async def test_a_broken_file_ends_in_an_honest_error(make_env: EnvFactory) -> No
     assert "Не получилось добавить документ" in ls.blocks_of(env.ctx, "text")[-1].markdown
     conn = await env.conn()
     assert (conn.status, conn.error_code) == ("error", "validation")
+    env.db.expire_all()
+    att = (await env.db.execute(select(m.Attachment))).scalar_one()
+    assert (att.ingest_state, att.document_id) == ("failed", None)  # the chat can say so
+    assert await env.chunks() == 0
+
+
+async def test_a_disabled_source_is_skipped_and_its_attachment_is_not_left_queued(
+    make_env: EnvFactory,
+) -> None:
+    env = await document_env(make_env, [], status="disabled")
+    payload = await upload(env, pages.rules_docx(), "rules.docx")
+    env.db.expire_all()
+    att = (await env.db.execute(select(m.Attachment))).scalar_one()
+    att.ingest_state = "queued"
+    await env.db.flush()
+    result = await env.run(JobKind.INGEST, payload)
+    assert result["status"] == "skipped"
+    env.db.expire_all()
+    att = (await env.db.execute(select(m.Attachment))).scalar_one()
+    assert att.ingest_state == "failed"
+    assert await env.chunks() == 0
 
 
 async def test_a_dead_link_ends_in_an_error_without_a_spec(make_env: EnvFactory) -> None:

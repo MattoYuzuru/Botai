@@ -12,7 +12,9 @@ from botai.db.session import DbSession
 from botai.domain import repo as domain_repo
 from botai.spaces import conversations, repo, service, universities
 from botai.spaces.schemas import (
+    ConnectionCreate,
     ConnectionOut,
+    ConnectionStarted,
     ConversationIn,
     JobRef,
     SecretIn,
@@ -92,6 +94,22 @@ async def list_connections(
     await repo.get_space(session, user.id, space_id)
     rows = await repo.list_connections(session, user.id, space_id)
     return await service.connection_outs(session, services.vault, user.id, rows)
+
+
+@router.post("/spaces/{space_id}/connections", response_model=ConnectionStarted, status_code=201)
+async def create_connection(
+    space_id: str,
+    body: ConnectionCreate,
+    user: AuthUser,
+    session: DbSession,
+    services: ServicesDep,
+) -> ConnectionStarted:
+    """Creates the connection and enqueues a `connect` job (login + learn)."""
+    conn, job_id = await service.create_connection(session, services.queue, user.id, space_id, body)
+    return ConnectionStarted(
+        connection=(await service.connection_outs(session, services.vault, user.id, [conn]))[0],
+        job_id=job_id,
+    )
 
 
 @router.get("/connections/{connection_id}", response_model=ConnectionOut)

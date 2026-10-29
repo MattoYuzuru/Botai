@@ -655,7 +655,11 @@ export interface paths {
         /** List Connections */
         get: operations["list_connections_api_v1_spaces__space_id__connections_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create Connection
+         * @description Creates the connection and enqueues a `connect` job (login + learn).
+         */
+        post: operations["create_connection_api_v1_spaces__space_id__connections_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -918,6 +922,15 @@ export interface components {
              */
             userNote: string;
         };
+        /** ConnectionCreate */
+        ConnectionCreate: {
+            /** Kind */
+            kind?: ("portal" | "lms" | "schedule" | "site" | "sheet" | "doc" | "document" | "calendar" | "other") | null;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url?: string | null;
+        };
         /**
          * ConnectionOut
          * @description A source of a university.
@@ -960,6 +973,12 @@ export interface components {
             threadId?: string | null;
             /** Title */
             title: string;
+        };
+        /** ConnectionStarted */
+        ConnectionStarted: {
+            connection: components["schemas"]["ConnectionOut"];
+            /** Jobid */
+            jobId: string;
         };
         /**
          * ContextOut
@@ -2865,6 +2884,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_connection_api_v1_spaces__space_id__connections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionStarted"];
                 };
             };
             /** @description Validation Error */

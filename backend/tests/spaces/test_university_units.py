@@ -108,13 +108,15 @@ async def test_one_materials_space_per_user_for_documents_outside_a_university(
     ]
 
 
-async def test_two_requests_at_once_still_make_one_space(engine: object, database_url: str) -> None:
+async def test_two_requests_at_once_still_make_one_space(database_url: str) -> None:
     """Real, concurrent transactions (not the shared test one): the advisory lock and the unique
     index leave exactly one space."""
+    from sqlalchemy import delete
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     eng = create_async_engine(database_url)
     sm = async_sessionmaker(eng, expire_on_commit=False)
+    user_id = None
     try:
         async with sm() as s:
             user = m.User(
@@ -126,19 +128,20 @@ async def test_two_requests_at_once_still_make_one_space(engine: object, databas
 
         async def one() -> str:
             async with sm() as s:
-                space = await service.ensure_space(s, user_id, "tsentralnyi-universitet")
+                space = await service.ensure_space(s, user.id, "tsentralnyi-universitet")
                 await s.commit()
                 return space.id
 
         ids = await asyncio.gather(*(one() for _ in range(6)))
         assert len(set(ids)) == 1
+    finally:  # these rows are really committed: leave the database as it was
         async with sm() as s:
-            await s.execute(m.User.__table__.delete().where(m.User.id == user_id))
+            if user_id is not None:
+                await s.execute(delete(m.User).where(m.User.id == user_id))
             await s.execute(
-                m.University.__table__.delete().where(m.University.id == "tsentralnyi-universitet")
+                delete(m.University).where(m.University.id == "tsentralnyi-universitet")
             )
             await s.commit()
-    finally:
         await eng.dispose()
 
 
@@ -418,3 +421,60 @@ def test_entry_urls_keep_pages_and_refuse_secrets() -> None:
         None,
     ):
         assert views.clean_entry_url(bad) is None, bad
+
+
+async def test_ensure_source_makes_a_draft_with_a_human_title_and_the_page_that_was_given(
+    tx_sessionmaker: Sm,
+) -> None:
+    user = await make_user(tx_sessionmaker)
+    async with tx_sessionmaker() as s:
+        space = await service.ensure_space(s, user, "vysshaya-shkola-ekonomiki")
+        portal, new = await service.ensure_source(
+            s,
+            user,
+            space.id,
+            url="https://LK.hse.example/schedule?week=3#/day",
+            kind="portal",
+            page_title="Единый личный кабинет",
+        )
+        again, second = await service.ensure_source(
+            s, user, space.id, url="https://lk.hse.example/other", title="Другое имя"
+        )
+        bare, _ = await service.ensure_source(s, user, space.id, url="https://lms.hse.example/")
+        odd, _ = await service.ensure_source(
+            s, user, space.id, url="https://docs.hse.example/", kind="mail"
+        )
+        await s.commit()
+    assert new
+    assert not second
+    assert again.id == portal.id  # a site is one source of a university
+    assert (portal.origin, portal.kind, portal.status) == (
+        "https://lk.hse.example",
+        "portal",
+        "draft",
+    )
+    assert portal.title == "Единый личный кабинет"
+    assert portal.entry_url == "https://lk.hse.example/schedule?week=3#/day"
+    assert portal.allow_hosts == ["lk.hse.example"]
+    assert (bare.title, bare.kind) == ("Источник", "other")  # nothing better is known: not the host
+    assert odd.kind == "other"  # a kind outside the vocabulary
+
+
+async def test_ensure_source_refuses_secret_links_and_foreign_spaces(tx_sessionmaker: Sm) -> None:
+    user, other = await make_user(tx_sessionmaker), await make_user(tx_sessionmaker)
+    async with tx_sessionmaker() as s:
+        space = await service.ensure_space(s, user, "vysshaya-shkola-ekonomiki")
+        foreign = await service.ensure_space(s, other, "vysshaya-shkola-ekonomiki")
+        for url in (
+            "https://lk.hse.example/cb?access_token=abc",
+            "http://lk.hse.example",
+            "https://u:p@lk.hse.example",
+            "https://" + "a" * 260 + ".example",
+        ):
+            with pytest.raises(BotaiError) as bad:
+                await service.ensure_source(s, user, space.id, url=url)
+            assert bad.value.status == 422, url
+        with pytest.raises(BotaiError) as not_mine:
+            await service.ensure_source(s, user, foreign.id, url="https://lk.hse.example")
+        assert not_mine.value.status == 404
+        assert await s.scalar(select(func.count()).select_from(m.Connection)) == 0

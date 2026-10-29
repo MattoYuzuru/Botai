@@ -59,6 +59,12 @@ class SpaceOut(ApiModel):
     created_at: datetime
 
 
+class ConnectionCreate(ApiModel):
+    kind: ConnectionKind | None = None  # None: let the agent discover what to connect
+    url: str | None = Field(default=None, max_length=1000)
+    title: str | None = Field(default=None, max_length=120)
+
+
 class ActiveTaskOut(ApiModel):
     job_id: str
     kind: Literal["connect", "repair", "sync", "ingest"]
@@ -85,6 +91,11 @@ class ConnectionOut(ApiModel):
     error_detail: str | None = None
     thread_id: str | None = None  # the thread of the latest task of this source
     active_task: ActiveTaskOut | None = None
+
+
+class ConnectionStarted(ApiModel):
+    connection: ConnectionOut
+    job_id: str
 
 
 class SecretIn(ApiModel):

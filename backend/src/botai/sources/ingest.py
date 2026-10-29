@@ -149,11 +149,20 @@ class Ingestor:
         await set_connection(self.services, connection_id, self.ctx.user_id, **values)
 
     async def run(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.services.db() as db:
-            info = await load_conn_info(db, self.ctx.user_id, connection_id)
-        if info.status == "disabled":
-            return {"status": "skipped", "detail": "disabled"}
-        await self._set(connection_id, status="learning", clear_error=True)
+        self._attachment_id = str(payload.get("attachment_id") or "") or None
+        try:
+            async with self.services.db() as db:
+                info = await load_conn_info(db, self.ctx.user_id, connection_id)
+            if info.status == "disabled":
+                return {"status": "skipped", "detail": "disabled"}
+            await self._set(connection_id, status="learning", clear_error=True)
+            return await self._run(info, payload)
+        finally:
+            if self._attachment_id and self._published is None:
+                await self._mark_attachment("failed")
+
+    async def _run(self, info: ConnInfo, payload: dict[str, Any]) -> dict[str, Any]:
+        connection_id = info.connection_id
         try:
             return await self._ingest(info, payload)
         except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
@@ -168,9 +177,6 @@ class Ingestor:
             await self.ui.say(f"{lead}: {err.detail or 'ошибка'}.")
             await self._set(connection_id, status="error", error=(err.code.value, err.detail))
             return {"status": "error", "detail": err.code.value}
-        finally:
-            if self._attachment_id and self._published is None:
-                await self._mark_attachment("failed")
 
     async def _settle(self, info: ConnInfo) -> None:
         """A job that ends unanswered keeps a document that is already readable as a plain text
@@ -275,7 +281,6 @@ class Ingestor:
             content, name = att.data, att.name
         if not content or len(content) > MAX_UPLOAD:
             raise BotaiError(ErrorCode.VALIDATION, "Файл пустой или больше 20 МБ")
-        self._attachment_id = attachment_id
         return content, name
 
     async def _publish(self, info: ConnInfo, loaded: LoadedDocument) -> None:

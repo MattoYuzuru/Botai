@@ -313,6 +313,58 @@
         "title": "ConnectContext",
         "type": "object"
       },
+      "ConnectionCreate": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "portal",
+                  "lms",
+                  "schedule",
+                  "site",
+                  "sheet",
+                  "doc",
+                  "document",
+                  "calendar",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "ConnectionCreate",
+        "type": "object"
+      },
       "ConnectionOut": {
         "description": "A source of a university.",
         "properties": {
@@ -482,6 +534,23 @@
           "nextSyncAt"
         ],
         "title": "ConnectionOut",
+        "type": "object"
+      },
+      "ConnectionStarted": {
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ConnectionOut"
+          },
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection",
+          "jobId"
+        ],
+        "title": "ConnectionStarted",
         "type": "object"
       },
       "ContextOut": {
@@ -4070,6 +4139,57 @@
           }
         },
         "summary": "List Connections",
+        "tags": [
+          "spaces"
+        ]
+      },
+      "post": {
+        "description": "Creates the connection and enqueues a `connect` job (login + learn).",
+        "operationId": "create_connection_api_v1_spaces__space_id__connections_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Connection",
         "tags": [
           "spaces"
         ]

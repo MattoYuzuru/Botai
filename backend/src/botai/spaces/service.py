@@ -26,6 +26,7 @@ from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities, views
 from botai.spaces.schemas import (
     ActiveTaskOut,
+    ConnectionCreate,
     ConnectionOut,
     SecretIn,
     SpaceCreate,
@@ -273,6 +274,126 @@ async def find_source(session: AsyncSession, user_id: str, origin: str) -> Conne
 
 
 # --- connections ----------------------------------------------------------------------------------
+
+_ORIGIN_MAX = 255
+
+
+async def create_connection(
+    session: AsyncSession, queue: JobQueue, user_id: str, space_id: str, body: ConnectionCreate
+) -> tuple[Connection, str]:
+    """Creates a `draft` connection and enqueues its `connect` job (login + learn)."""
+    space = await repo.get_space(session, user_id, space_id)
+    from botai.spaces.conversations import safe_url
+
+    url = safe_url(body.url) if body.url else None
+    origin = universities.origin_of(url) if url else ""
+    if len(origin) > _ORIGIN_MAX:
+        raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
+    kind = views.normalize_kind(body.kind)
+
+    conn: Connection | None = None
+    if origin:
+        # A repeated request while the first one is still being set up is the same connection.
+        conn = await session.scalar(
+            select(Connection).where(
+                Connection.user_id == user_id,
+                Connection.space_id == space.id,
+                Connection.origin == origin,
+                Connection.kind == kind,
+                Connection.status.in_(("draft", "learning")),
+            )
+        )
+    created = conn is None
+    if conn is None:
+        conn = Connection(
+            user_id=user_id,
+            space_id=space.id,
+            origin=origin,
+            kind=kind,
+            title=views.source_title(kind=kind, title=body.title),
+            entry_url=views.clean_entry_url(url),
+            status="draft",
+            allow_hosts=[urlsplit(origin).hostname or ""] if origin else [],
+        )
+        session.add(conn)
+    # End our transaction before the queue (which works in its own) is called.
+    await session.commit()
+
+    try:
+        job_id = await queue.enqueue(
+            JobKind.CONNECT,
+            user_id=user_id,
+            connection_id=conn.id,
+            # Keep the pre-chat REST entry point's original data selection explicit.
+            # Chat bootstrap supplies its own schedule-only LearningIntent instead.
+            payload={
+                **({"url": url, "kind": body.kind} if url or body.kind else {}),
+                "kinds": ["scheduleEvents", "deadlines"],
+            },
+            dedupe=True,
+        )
+    except Exception:
+        if created:  # no job means nobody would ever finish this connection
+            await session.delete(conn)
+            await session.commit()
+        raise
+    return conn, job_id
+
+
+async def ensure_source(
+    session: AsyncSession,
+    user_id: str,
+    space_id: str,
+    *,
+    url: str,
+    kind: str | None = None,
+    title: str | None = None,
+    page_title: str | None = None,
+) -> tuple[Connection, bool]:
+    """The source of a site in a university: the one already there, or a new `draft` one.
+
+    The title is human (the given one, else the title of the page, else the name of the kind -
+    never the host) and `entry_url` is the page the student pointed at, if it is safe to keep.
+    The second value tells whether the source is new; starting its job is the caller's.
+    """
+    entry = views.clean_entry_url(url)
+    if entry is None:
+        raise BotaiError(
+            ErrorCode.VALIDATION,
+            "Нужна обычная HTTPS-ссылка без паролей, токенов и служебных кодов",
+        )
+    origin = universities.origin_of(entry)
+    if len(origin) > _ORIGIN_MAX:
+        raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
+    space = await repo.get_space(session, user_id, space_id)
+    await session.execute(  # two requests for one site queue up here
+        select(func.pg_advisory_xact_lock(func.hashtextextended(f"source:{user_id}:{origin}", 0)))
+    )
+    existing = await session.scalar(
+        select(Connection)
+        .where(
+            Connection.user_id == user_id,
+            Connection.space_id == space.id,
+            Connection.origin == origin,
+        )
+        .order_by(Connection.created_at, Connection.id)
+        .limit(1)
+    )
+    if existing is not None:
+        return existing, False
+    conn = Connection(
+        user_id=user_id,
+        space_id=space.id,
+        origin=origin,
+        kind=views.normalize_kind(kind),
+        title=views.source_title(kind=kind, title=title, page_title=page_title),
+        entry_url=entry,
+        status="draft",
+        allow_hosts=[urlsplit(origin).hostname or ""],
+    )
+    session.add(conn)
+    await session.flush()
+    return conn, True
 
 
 async def delete_connection(session: AsyncSession, user_id: str, connection_id: str) -> None:
