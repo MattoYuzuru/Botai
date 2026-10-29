@@ -7,14 +7,14 @@
 
 ## Подготовка включения ADR-0011
 
-Новый исследовательский путь по умолчанию выключен (`BOTAI_RESEARCH_ENABLED=false`).
-Сначала выпускается совместимый binary с fencing и migration `e4a91b7c603d`, сохраняя flag
-выключенным. После проверки CI, миграции и rollback-совместимости его можно включить отдельной
-выкладкой через `compose.vars`; Compose передаёт `BOTAI_RESEARCH_*` API и worker. Обычный
-deploy сохраняет неизвестные ему параметры этого файла. Не выводить файл целиком: там пароль БД.
+С 2026-10-30 флаги `BOTAI_RESEARCH_ENABLED` и `BOTAI_FACTORY_V2_ENABLED` удалены: возобновляемое
+исследование включено всегда (в production оба режима уже были включены). Compose передаёт
+пределы `BOTAI_RESEARCH_*` API и worker. Обычный deploy сохраняет неизвестные ему параметры
+`compose.vars`; в файле могут остаться строки удалённых флагов — они игнорируются. Не выводить файл
+целиком: там пароль БД.
 
-Перед включением текущий и предыдущий rollback-образ должны понимать marker engine 1 и
-сохранять незавершённые checkpoints при выключенном flag. Старый binary этого не умеет;
+Текущий и предыдущий rollback-образ должны понимать marker engine 1 и
+сохранять незавершённые checkpoints. Старый binary этого не умеет;
 на него нельзя автоматически возвращать активные новые runs. Перед таким откатом нужны
 остановка workers и явная парковка новых runs, с сохранением таблицы checkpoint. Смешанная
 работа прежнего unfenced worker и нового worker не поддерживается.
@@ -25,38 +25,27 @@ Migration additive: добавляется `job_research_checkpoints`, суще�
 [source-research](../architecture/source-research.md). Подготовка этих файлов не означает,
 что новый путь включён или живые источники перепроверены.
 
-## Rollout factory v2: reader до producer
+## Выпуск factory v2: reader и producer вместе
 
-BOTAI_FACTORY_V2_ENABLED=false — producer gate, отдельный от BOTAI_RESEARCH_ENABLED.
-Compose интеграционной ветки передаёт его API/worker/proxy с default false; .env.example
-содержит выключенный пример. Чтение сохранённых v1/v2 работает при выключенном producer.
-Ни контрактный PR, ни foundation release сами по себе не разрешают включение нового producer.
-Worker получает 45 с на остановку контейнера при внутреннем shutdown grace 20 с: это даёт
-время завершить/отменить задачи и сохранить checkpoint до принудительного завершения.
+С 2026-10-30 нет отдельных переключателей producer и исследовательского движка (флаги
+`BOTAI_FACTORY_V2_ENABLED` и `BOTAI_RESEARCH_ENABLED` удалены, оба режима уже работали в
+production). Автор создаёт v2, reader читает v1/v2. Worker получает 45 с на остановку контейнера при
+внутреннем shutdown grace 20 с: это даёт время завершить/отменить задачи и сохранить checkpoint
+до принудительного завершения.
 
 1. Финальный интегрированный SHA проходит полный CI (включая generation, PG/Chromium/proxy,
-   factory v2 E2E, web и guards). До зелёного результата rollout v2 не считать готовым.
-2. Проверить wiring BOTAI_FACTORY_V2_ENABLED в API/worker и operator configuration, без
-   печати compose.vars/app.secrets. Сначала выпустить reader с producer off; сверить revision
-   labels, health, миграцию и сохранность старых v1-подключений.
-3. Подготовить rollback-образ, который тоже понимает recipe v2, engine marker и cumulative
-   Job usage. До включения producer старый pre-v2 rollback возможен только при отсутствии
-   активированных v2 и с учётом требований ADR-0011 к незавершённым runs.
-4. После проверки reader отдельной операторской операцией на **том же проверенном v2-образе**
-   включить producer и research flags. Под server deploy lock сохранить защищённую прежнюю
-   конфигурацию с flags off, дождаться остановки worker, атомарно изменить vars, поднять
-   процессы и проверить фактические flags, image revision и health. При отказе вернуть
-   прежние vars и тот же совместимый образ; значения секретов не печатать.
-5. Владелец выполняет ограниченный L3: вход, canary, нормализованный экран, повторный sync.
+   factory v2 E2E, web и guards). До зелёного результата выпуск не считать готовым.
+2. Выпускается образ, который понимает recipe v2, engine marker, cumulative Job usage и
+   миграции до `b5d1c8e7a42f`; проверяются revision labels, health, миграция и сохранность
+   старых v1-подключений. Rollback-образ тоже должен понимать recipe v2.
+3. Владелец выполняет ограниченный L3: вход, canary, нормализованный экран, повторный sync.
    Fixture success или API health не подтверждают поддержку университета.
 
-При проблеме отключение producer прекращает выпуск новых v2, **но не переводит уже
-активированные v2 на v1**. Такие подключения продолжают требовать совместимого reader.
-Откат на pre-v2 binary требует остановки/парковки этих подключений или адресного возврата
-проверенных v1-ревизий с сохранением domain snapshots. Сохранить таблицу checkpoint, usage
-в Job и activation receipts; TTL cleanup знаний не является возвратом budget или rollback.
-Автоматический backup/health rollback не решает семантическую несовместимость reader.
-Фактический выпуск/откат фиксируется по SHA; этот раздел не утверждает, что flags включены.
+Откат на pre-v2 binary после активации v2-рецептов требует остановки/парковки этих подключений
+или адресного возврата проверенных v1-ревизий с сохранением domain snapshots. Сохранить таблицу
+checkpoint, usage в Job и activation receipts; TTL cleanup знаний не является возвратом budget или
+rollback. Автоматический backup/health rollback не решает семантическую несовместимость reader.
+Фактический выпуск/откат фиксируется по SHA.
 
 ## Что сделано на сервере (2026-10-27)
 

@@ -120,7 +120,7 @@ def test_the_cells_profile_drives_the_purpose(
 async def test_b1_learns_the_json_university(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     use_model(monkeypatch, llm)
     records, stop, ln = await run("B1", tmp_path)
 
@@ -144,7 +144,7 @@ async def test_b1_learns_the_json_university(
 async def test_b2_learns_the_html_university(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    llm = ScriptedLlm(queue=[ls.answer([recipes.news_endpoint()])])
+    llm = ls.EvidenceLlm(queue=[ls.answer([recipes.news_endpoint()])])
     use_model(monkeypatch, llm)
     records, stop, _ = await run("B2", tmp_path)
 
@@ -160,7 +160,7 @@ async def test_b2_learns_the_html_university(
 async def test_b3_repairs_the_moved_endpoint_and_measures_only_the_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    llm = ScriptedLlm(queue=[ls.answer([moved_timetable()])])
+    llm = ls.EvidenceLlm(queue=[ls.answer([moved_timetable()])])
     use_model(monkeypatch, llm)
     records, stop, _ = await run("B3", tmp_path)
 
@@ -184,7 +184,7 @@ async def test_wrong_fields_are_caught_by_the_reference(
     """Four rows are not enough: they must be the university's rows."""
     wrong = recipes.timetable_endpoint()
     wrong["response"]["fields"]["title"] = {"path": "/place/room", "required": True}
-    use_model(monkeypatch, ScriptedLlm(queue=[ls.answer([wrong]), ls.deadlines_answer()]))
+    use_model(monkeypatch, ls.EvidenceLlm(queue=[ls.answer([wrong]), ls.deadlines_answer()]))
     (r,), _, _ = await run("B1", tmp_path)
 
     assert not r.success
@@ -203,7 +203,7 @@ async def test_a_second_question_fails_b1_even_with_the_right_data(
     other = recipes.deadlines_endpoint()
     other["response"]["fields"]["externalId"] = {"path": "/name"}  # other ids, same rows
     both = ls.answer([recipes.deadlines_endpoint(), other])
-    use_model(monkeypatch, ScriptedLlm(queue=[ls.timetable_answer(), both]))
+    use_model(monkeypatch, ls.EvidenceLlm(queue=[ls.timetable_answer(), both]))
     (r,), _, _ = await run("B1", tmp_path)
 
     assert r.questions == 2
@@ -217,7 +217,7 @@ async def test_a_job_that_waits_for_an_answer_nobody_gives_is_a_failure_not_a_ha
 ) -> None:
     """The model finds the timetable only; the Explorer offers to send a link; the scripted
     student has none."""
-    use_model(monkeypatch, ScriptedLlm(queue=[ls.timetable_answer(), ls.nothing()]))
+    use_model(monkeypatch, ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.nothing()]))
     (r,), stop, _ = await run("B1", tmp_path)
 
     assert stop is None
@@ -231,7 +231,7 @@ async def test_a_job_that_waits_for_an_answer_nobody_gives_is_a_failure_not_a_ha
 async def test_b3_fails_when_the_repair_finds_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    use_model(monkeypatch, ScriptedLlm(queue=[ls.nothing()] * 3))
+    use_model(monkeypatch, ls.EvidenceLlm(queue=[ls.nothing()] * 3))
     (r,), _, _ = await run("B3", tmp_path)
 
     assert not r.success
@@ -264,7 +264,7 @@ async def test_every_run_has_its_own_database_so_none_reuses_anothers_recipe(
     would find it and skip the model. Recorded answers are replayed by request, so any number of
     runs can share them."""
     fixtures = tmp_path / "fixtures"
-    seed_llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    seed_llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     use_model(monkeypatch, RecordingLlm(seed_llm, fixtures / "flash-high"))
     first, _, _ = await run("B1", tmp_path / "a")
     assert all(r.success for r in first)
@@ -285,7 +285,7 @@ async def test_a_blown_fuse_stops_the_launch_and_keeps_the_finished_runs(
     use_model(
         monkeypatch,
         RecordingLlm(
-            ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()]),
+            ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()]),
             fixtures / "flash-high",
         ),
     )
@@ -322,7 +322,7 @@ async def test_command_line_replay_writes_a_learning_report_and_its_table(
     fixtures = tmp_path / "fixtures"
     use_model(
         monkeypatch,
-        RecordingLlm(ScriptedLlm(queue=[ls.answer([moved_timetable()])]), fixtures / "flash-high"),
+        RecordingLlm(ls.EvidenceLlm(queue=[ls.answer([moved_timetable()])]), fixtures / "flash-high"),
     )
     (ok,), _, _ = await run("B3", tmp_path / "rec")
     assert ok.success

@@ -188,14 +188,14 @@ parent context, date/time composition и weekly expansion. Поддержива�
 личных значений. Reader принимает v1/v2 независимо от producer flag; существующие рецепты
 не переписываются автоматически.
 
-Конфигурация первого этапа: `BOTAI_RESEARCH_ENABLED` (по умолчанию `false`),
+Конфигурация (флаг `BOTAI_RESEARCH_ENABLED` удалён 2026-10-30, движок включён всегда):
 `BOTAI_RESEARCH_SLICE_SECONDS=90`, `BOTAI_RESEARCH_SLICE_STEPS=10`,
 `BOTAI_RESEARCH_MAX_SECONDS=1800`, `BOTAI_RESEARCH_MAX_TOKENS=1500000`,
 `BOTAI_RESEARCH_MAX_STEPS=100`, `BOTAI_RESEARCH_MAX_REQUESTS=2000`,
 `BOTAI_RESEARCH_CHECKPOINT_TTL_HOURS=24`. Максимальный размер ciphertext envelope —
-512 КиБ. Отдельный producer flag — BOTAI_FACTORY_V2_ENABLED=false. Его выключение не
-отключает чтение сохранённых v2. Пределы — проектные настройки, не обещанный срок или стоимость
-подключения. Порядок совместимого rollout и rollback — [deployment](../plan/deployment.md).
+512 КиБ. Пределы — проектные настройки, не обещанный срок или стоимость
+подключения. Пробы (`probe`) входят в общий учёт запросов исследования. Порядок
+совместимого rollout и rollback — [deployment](../plan/deployment.md).
 
 Основа row locking — [документация PostgreSQL](https://www.postgresql.org/docs/17/explicit-locking.html).
 Вывод о необходимости fencing относится к нашему lifecycle поверх коротких транзакций;
