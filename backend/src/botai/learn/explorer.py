@@ -34,9 +34,9 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import ValidationError
+from sqlalchemy import func, select
 
 from botai.browser.session import EntrySessionProvider, encode_session, session_storage_expiry
-from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, SessionState
@@ -77,8 +77,18 @@ from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
 from botai.learn.sitemap import save_site_map
-from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
+from botai.learn.summary import (
+    UNITS,
+    confirm_details,
+    counted,
+    finished_text,
+    found_text,
+    plain,
+    weeks_ahead,
+)
+from botai.learn.ui import Ui, describe, kinds_text, sample_of
 from botai.search.service import SearchResult
+from botai.sources import schedule
 from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
@@ -93,6 +103,7 @@ from botai.sources.runner import (
 from botai.sources.scope import scoped_spec
 from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
+from botai.spaces.views import source_title
 
 log = logging.getLogger(__name__)
 
@@ -507,7 +518,7 @@ class Explorer:
                         retry=self.retry,
                         queue_repair=not self._manual_connect,
                     )
-                    await self._report_sync(outcome, prefix="Вход проверен.")
+                    await self._report_sync(outcome, info, connected=False)
                     return {"status": outcome.status, "login_resumed": True}
             if payload.get("_research_engine") == 1:
                 await self._research_for(info)
@@ -572,7 +583,10 @@ class Explorer:
         host = urlsplit(origin).hostname or ""
         hosts = sorted({*info.allow_hosts, host})
         await self._set(
-            info.connection_id, origin=origin, allow_hosts=hosts, title=info.title or host
+            info.connection_id,
+            origin=origin,
+            allow_hosts=hosts,
+            title=info.title or source_title(kind=info.kind),
         )
         return origin
 
@@ -672,23 +686,84 @@ class Explorer:
             queue_repair=not self._manual_connect,
         )
         await stage.finish("ok" if outcome.status == "ok" else "failed")
-        await self._report_sync(outcome, prefix="Готово.")
+        await self._report_sync(outcome, info)
         await self._registry(info, row.spec["recipe"]["origin"], None)
         return {"status": outcome.status, "reused": True, "revision": row.revision}
 
-    async def _report_sync(self, outcome: SyncOutcome, *, prefix: str) -> None:
+    async def _report_sync(
+        self, outcome: SyncOutcome, info: ConnInfo, *, connected: bool = True
+    ) -> None:
         if outcome.status == "ok":
-            what = kinds_text(outcome.kinds) or "данные пока не найдены"
-            await self.ui.say(f"{prefix} Подключено: {what}. Дальше всё обновляется само.")
+            if connected:
+                await self.ui.say(await self._closing_or_plain(outcome, info))
+            else:
+                what = kinds_text(outcome.kinds) or "данные пока не найдены"
+                await self.ui.say(
+                    f"Вход проверен. Данные на месте: {what}. Дальше всё обновляется само."
+                )
         elif outcome.status == "repairing":
             await self.ui.say(
-                f"{prefix} Сайт ответил иначе, чем описано. Описание уточняется, "
+                ("Готово. " if connected else "Вход проверен. ")
+                + "Сайт ответил иначе, чем описано. Описание уточняется, "
                 "а прежние данные остаются на месте."
             )
         elif outcome.status == "needs_reauth":
             await self.ui.say("Нужно войти заново — вход не подтвердился.")
         else:
             await self.ui.say("Данные пока загрузить не удалось, попробую снова позже.")
+
+    async def _closing_or_plain(self, outcome: SyncOutcome, info: ConnInfo) -> str:
+        """The closing message. The source is already active and read when it is written, so a failure
+        of the wording (a read of the database) never fails the job: a plain sentence replaces it."""
+        try:
+            return await self._closing(outcome, info)
+        except (JobCancelled, JobClaimLost, asyncio.CancelledError):
+            raise
+        except Exception:
+            log.exception("the closing message of a connection could not be written")
+            what = kinds_text(outcome.kinds) or "данные пока не найдены"
+            return f"Готово! Источник подключён: {what}. Дальше всё обновляется само."
+
+    async def _closing(self, outcome: SyncOutcome, info: ConnInfo) -> str:
+        """The friendly last message of a connection: what is connected, how far ahead, how often
+        it is refreshed and what to ask. The numbers are those the first read stored; the classes are
+        counted from now on, so "N занятий на M недель вперёд" holds for the same N classes."""
+        now = self.services.clock.now()
+        counts: dict[Kind, int] = {}
+        for kind in KIND_LABELS:
+            stats = outcome.kinds.get(kind)
+            if stats:
+                counts[kind] = stats["inserted"] + stats["updated"] + stats["unchanged"]
+        weeks: int | None = None
+        async with self.services.db() as db:
+            space = await db.get(m.Space, info.space_id)
+            university = (
+                await db.get(m.University, space.university_id)
+                if space and space.university_id
+                else None
+            )
+            conn = await db.get(m.Connection, info.connection_id)
+            row = await db.get(m.AdapterSpecRow, conn.spec_id) if conn and conn.spec_id else None
+            if counts.get("scheduleEvents"):
+                ahead, last = (
+                    await db.execute(
+                        select(func.count(), func.max(m.ScheduleEvent.starts_at)).where(
+                            m.ScheduleEvent.user_id == info.user_id,
+                            m.ScheduleEvent.connection_id == info.connection_id,
+                            m.ScheduleEvent.ends_at >= now,
+                        )
+                    )
+                ).one()
+                if ahead:
+                    counts["scheduleEvents"] = ahead
+                    weeks = weeks_ahead(last, now, info.tz)
+        every = (
+            schedule.freshness_of(row.spec).every_minutes
+            if row
+            else schedule.DEFAULT_EVERY["recipe"]
+        )
+        name = university.short_title if university else space.title if space else None
+        return finished_text(counts, university=name, every_minutes=every, weeks=weeks)
 
     # --- the exploration ---------------------------------------------------------------------
 
@@ -902,11 +977,16 @@ class Explorer:
         if self._research is not None:
             self._research.state.phase = "confirm"
             await self._research.save()
-        await self._show_summary(info, chosen, report)
         confirmed = await ui.confirm(
             "Всё верно? После подтверждения данные будут обновляться автоматически.",
             "Да, всё верно",
             "Нет, не то",
+            details=confirm_details(
+                {kind: report.valid.get(kind, []) for kind in chosen},
+                svc.clock.now(),
+                info.tz,
+                heading=f"Нашла в «{plain(info.title, 80)}»:",
+            ),
         )
         diagnostic_event("learn.confirmation", confirmed=confirmed, chosen_count=len(chosen))
         if not confirmed:
@@ -1274,7 +1354,7 @@ class Explorer:
             )
             return None
         picked = await self._pick(kind, verified, sctx.tz)
-        note = f"Найдено записей: {picked.report.count(kind)}"
+        note = found_text(kind, picked.report.count(kind))
         if picked.comparison is not None and picked.comparison.baseline:
             c = picked.comparison
             note += f"; совпало с прежними данными: {c.matched} из {c.baseline}"
@@ -1430,7 +1510,7 @@ class Explorer:
                 # and it keeps reading as the schedule fills up.
                 found = Chosen(kind, checked[0], checked[1], found.comparison)
                 count = found.report.count(kind)
-                await stage.finish("ok", f"Найдено записей: {count}")
+                await stage.finish("ok", found_text(kind, count))
             else:
                 await stage.finish("skipped", "Соседние недели не подтвердились")
         if count > horizon.SPARSE or kind != "scheduleEvents":
@@ -1452,9 +1532,7 @@ class Explorer:
         window = endpoint.get("pagination") or {}
         question = horizon.thin_question(
             count,
-            kind_forms=("занятие", "занятия", "занятий")
-            if kind == "scheduleEvents"
-            else ("запись", "записи", "записей"),
+            kind_forms=UNITS[kind],
             span=span,
             per_window=per_window,
             unit="неделям" if window.get("stepDays") == 7 else "периодам",
@@ -1493,7 +1571,11 @@ class Explorer:
                 for r in sample_of(cand.report.valid[kind], kind, now)[:2]
             ]
             options.append(
-                (str(i), f"Вариант {i + 1}: {cand.report.count(kind)} записей", "; ".join(samples))
+                (
+                    str(i),
+                    f"Вариант {i + 1}: {counted(cand.report.count(kind), UNITS[kind])}",
+                    "; ".join(samples),
+                )
             )
         answer = await self.ui.choose(
             f"Нашлось несколько источников для раздела «{KIND_LABELS[kind].lower()}». "
@@ -1665,28 +1747,6 @@ class Explorer:
         )
         return None
 
-    async def _show_summary(
-        self,
-        info: ConnInfo,
-        chosen: dict[Kind, Chosen],
-        report: CanaryReport,
-        *,
-        title: str = "Вот что удалось собрать",
-    ) -> None:
-        now = self.services.clock.now()
-        groups: list[SummaryGroup] = []
-        for kind in chosen:
-            records = report.valid.get(kind, [])
-            items = [item("Найдено записей", str(len(records)))]
-            for rec in sample_of(records, kind, now):
-                label, value = describe(rec, info.tz)
-                items.append(item(label, value or "—", _safe_url(rec.open_url or "")))
-            groups.append(SummaryGroup(title=KIND_LABELS[kind], items=items))
-        groups.append(
-            SummaryGroup(title="Источник", items=[item("Сайт", info.origin, info.origin)])
-        )
-        await self.ui.summary(title, groups)
-
     async def _resume_activation(self, info: ConnInfo) -> dict[str, Any] | None:
         async with self.services.db() as db, db.begin():
             conn = await guard_source_write(db, self.ctx, info.user_id, info.connection_id)
@@ -1803,7 +1863,7 @@ class Explorer:
             queue_repair=not self._manual_connect,
             expected_spec=expected_spec,
         )
-        await self._report_sync(outcome, prefix="Готово.")
+        await self._report_sync(outcome, info)
         diagnostic_event(
             "learn.outcome",
             connection_id=info.connection_id,
@@ -1842,8 +1902,3 @@ class Explorer:
             await self.ui.say(f"Не получилось подключить: {detail}.")
         await self._set(info.connection_id, status="error", error=(code.value, detail))
         return {"status": "error", "detail": code.value}
-
-
-def _safe_url(url: str) -> str | None:
-    parts = urlsplit(url)
-    return url if parts.scheme in {"http", "https"} and parts.hostname else None

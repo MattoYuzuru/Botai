@@ -111,6 +111,7 @@ type ThreadOut = {
 - `attachment` `{id, attachmentId, name, mime, size, kind: "image"|"document"|"audio"|"other"}`.
 - `task` `{id, jobId, kind, title, state, threadId, connectionId?}` — карточка задачи; если
   задача живёт в другом треде, карточка ведёт туда.
+- `text.quote` `{text ≤200, blockId?}` у сообщения студента — цитата вопроса, на который оно отвечает (кнопка быстрого ответа, ответ на вопрос задачи); `confirm.details` (markdown, ≤2000) — то, что подтверждается, в одном сообщении с вопросом и кнопками. Подробно — [контракт треда](../../contracts/conversation.md) («Цитата вопроса», «Итог подключения»); добавлено после живого прохода владельца 2026-10-30.
 - Markdown в `text.markdown`: GFM-таблицы, `**жирный**`, `*курсив*`, ссылки, списки, код и
   fenced-блок ` ```chart ` с JSON `{type:"bar"|"line", title?, labels: string[], series: [{name, values: number[]}]}`.
 

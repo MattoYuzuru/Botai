@@ -1,4 +1,4 @@
-import { Badge, Card, ChatMessage } from "@botai/design";
+import { Badge, Card, ChatMessage, SafeMarkdown } from "@botai/design";
 import type { ReactNode } from "react";
 import type { AnswerState } from "@/features/jobs/job-state";
 
@@ -10,12 +10,15 @@ import type { AnswerState } from "@/features/jobs/job-state";
  */
 export function QuestionFrame({
   question,
+  details,
   required,
   answer,
   editorOnly = false,
   children,
 }: {
   question: string;
+  /** Что подтверждается (markdown): стоит над вопросом, в том же сообщении, что вопрос и кнопки. */
+  details?: string;
   required: boolean;
   answer: AnswerState | undefined;
   editorOnly?: boolean;
@@ -30,7 +33,7 @@ export function QuestionFrame({
       );
     return (
       <div className="flex flex-col gap-3" data-question="answered">
-        <ChatMessage role="agent" markdown={question} />
+        <ChatMessage role="agent" markdown={details ? `${details}\n\n${question}` : question} />
         <ChatMessage role="user" markdown={answer.shown ?? "Введено"} />
       </div>
     );
@@ -42,7 +45,8 @@ export function QuestionFrame({
           <Badge tone="info" icon="waiting" className="self-start">
             Жду ответа
           </Badge>
-          <p className="type-body text-fg">{question}</p>
+          {details && <SafeMarkdown source={details} />}
+          <p className={details ? "type-body font-medium text-fg" : "type-body text-fg"}>{question}</p>
           {required && <p className="type-caption text-fg-muted">Без ответа работа не продолжится.</p>}
         </div>
       )}

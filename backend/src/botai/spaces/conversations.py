@@ -30,7 +30,7 @@ from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.intent import prepare_turn
 from botai.learn.redact import JWT, LONG_TOKEN, secret_query_key
 from botai.sources.vocab import KIND_LABELS
-from botai.spaces.views import display_title
+from botai.spaces.views import display_title, source_title
 
 _BLOCK = TypeAdapter(AgentUiBlock)
 
@@ -395,7 +395,9 @@ async def continue_source(
             raise BotaiError(
                 ErrorCode.VALIDATION, "Продолжение на том же сайте не требует нового подключения"
             )
-        child = await _child_connection(session, ctx.user_id, space, url, origin)
+        child = await _child_connection(
+            session, ctx.user_id, space, url, origin, requested=context["requested_kinds"]
+        )
         job = await session.scalar(
             select(Job)
             .where(Job.user_id == ctx.user_id, Job.id == ctx.job_id)
@@ -437,8 +439,25 @@ async def continue_source(
         return {"connectionId": child.id, "jobId": child_job.id}
 
 
+_STUDY_KINDS = frozenset({"courses", "assignments", "deadlines", "grades"})
+
+
+def _guess_kind(requested: list[str]) -> str:
+    """The kind of a site by what the student asked it for: courses and deadlines are a learning
+    system, a timetable alone is a schedule, anything else is just a source."""
+    if _STUDY_KINDS & set(requested):
+        return "lms"
+    return "schedule" if requested == ["scheduleEvents"] else "other"
+
+
 async def _child_connection(
-    session: AsyncSession, user_id: str, space: Space, url: str, origin: str
+    session: AsyncSession,
+    user_id: str,
+    space: Space,
+    url: str,
+    origin: str,
+    *,
+    requested: list[str],
 ) -> Connection:
     query = (
         select(Connection)
@@ -455,13 +474,24 @@ async def _child_connection(
         raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
     if conn is None:
         host = urlsplit(url).hostname or ""
+        kind = _guess_kind(requested)
+        title = source_title(kind=kind)  # a human name like every source, never the host alone
+        taken = set(
+            await session.scalars(
+                select(Connection.title).where(
+                    Connection.user_id == user_id, Connection.space_id == space.id
+                )
+            )
+        )
+        if title in taken:  # two sources of one kind are told apart by their site
+            title = f"{title} ({host})"[:120]
         conn = Connection(
             id=new_id(),
             user_id=user_id,
             space_id=space.id,
             origin=origin,
-            kind="other",
-            title=(host or "Источник")[:120],
+            kind=kind,
+            title=title,
             status="draft",
             allow_hosts=[host],
         )

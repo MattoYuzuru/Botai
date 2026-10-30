@@ -261,8 +261,12 @@ async def test_observed_cookie_bearer_nested_schedule_replays_for_new_runtime_an
             learned = await connect(env, worker, alice, http)
             attendances.append(learned)
             assert learned.result["status"] == "ok"
-            assert len(learned.blocks("summary")) == 1
+            # One message: what was found in words, the nearest classes, the question and the buttons.
+            assert learned.blocks("summary") == []
             assert len([q for q in learned.asked if q.type == "confirm"]) == 1
+            (confirmation,) = learned.blocks("confirm")
+            assert confirmation["details"].startswith("Нашла в «")
+            assert "4 занятия" in confirmation["details"]
             assert len(author.requests) == 1
             assert stack.gateway.active_for(alice.user_id) is None
             cookie_a, bearer_a = await stored_session(env, alice)

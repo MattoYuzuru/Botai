@@ -3,7 +3,8 @@
  * новости, документы), управление подключениями. Форма ответов — по OpenAPI бэкенда; эндпоинтов, которых
  * там нет, здесь нет. Данные — `data-seed.ts`.
  *
- * Для проверки состояний данных адрес принимает `?data=`: `quiet` (вузы подключены, данных нет),
+ * Для проверки состояний данных адрес принимает `?data=`: `quiet` (вузы подключены, данных нет), `freeday` (сегодня
+ * пар нет, на следующие дни они есть),
  * `repairing`, `waiting`, `error` — состояние одного из подключений. Значение запоминается на вкладку.
  */
 import { delay, HttpResponse, http } from "msw";
@@ -36,8 +37,8 @@ export interface DataHandlerOptions {
   variant?: DataVariant | null;
 }
 
-export type DataVariant = "quiet" | "repairing" | "waiting" | "error";
-const VARIANTS: readonly DataVariant[] = ["quiet", "repairing", "waiting", "error"];
+export type DataVariant = "quiet" | "freeday" | "repairing" | "waiting" | "error";
+const VARIANTS: readonly DataVariant[] = ["quiet", "freeday", "repairing", "waiting", "error"];
 const STORAGE_KEY = "botai.mock.data";
 
 function readVariant(): DataVariant | null {
@@ -102,6 +103,10 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
   const variant = options.variant === undefined ? readVariant() : options.variant;
   applyVariant(db, variant);
   const quiet = variant === "quiet";
+  /** `freeday`: у сегодняшнего дня пар нет ни в «Сегодня», ни в расписании; остальные дни как обычно. */
+  const free = (event: { startsAt: string }) =>
+    variant !== "freeday" ||
+    startOfDay(Date.parse(event.startsAt), MOCK_ZONE) !== startOfDay(db.now(), MOCK_ZONE);
 
   const jobs = new Map<string, MockJob>();
   let documents: S["DocumentOut"][] | null = null;
@@ -151,6 +156,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         ? []
         : seedEvents(db).filter(
             (e) =>
+              free(e) &&
               live.has(e.provenance.connectionId) &&
               Date.parse(e.startsAt) < to &&
               Date.parse(e.endsAt) > from,
@@ -196,6 +202,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const live = new Set(db.connections.filter((c) => c.status !== "disabled").map((c) => c.id));
       const rows = seedEvents(db).filter(
         (e) =>
+          free(e) &&
           live.has(e.provenance.connectionId) &&
           Date.parse(e.startsAt) < end &&
           Date.parse(e.endsAt) > start &&

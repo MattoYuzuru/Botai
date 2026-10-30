@@ -14,6 +14,7 @@ import {
   type ThreadCreateIn,
   type ThreadRuntime,
 } from "@/api/v3";
+import type { KnownBlock } from "@/features/jobs/blocks";
 import { type AgentCtx, observe, runReply } from "./chat-agent";
 import {
   asStored,
@@ -405,10 +406,23 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
         return problem(409, "secret_in_chat", "Пароль и код вводятся только в защищённое поле, не в чат");
       const turn = state().busy[id];
       const now = iso();
+      // Цитата: присланная клиентом (кнопка быстрого ответа) или, для ответа задаче, её открытый вопрос.
+      const task = dialogue ? db.sims.get(dialogue.jobId) : undefined;
+      const askedBlock = dialogue
+        ? (task?.events.find(
+            (event) => event.event === "block" && (event.data as { id?: string }).id === dialogue.blockId,
+          )?.data as { type?: string; inputKind?: string; question?: string } | undefined)
+        : undefined;
+      const quoted = (body.quote?.text ?? askedBlock?.question ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 200);
+      const quoteId = body.quote ? body.quote.blockId : dialogue?.blockId;
+      const quote = text && quoted ? { text: quoted, ...(quoteId ? { blockId: quoteId } : {}) } : null;
       const attached = files.filter((file): file is MockAttachment => Boolean(file));
       // Порядок сервера: текст, затем вложения.
       const blocks: Message["blocks"] = [
-        ...(text ? [asStored(textBlock(text, now))] : []),
+        ...(text ? [asStored({ ...textBlock(text, now), ...(quote ? { quote } : {}) } as KnownBlock)] : []),
         ...attached.map((file) => ({
           type: "attachment",
           id: ulid(),
@@ -422,7 +436,6 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       ];
 
       // Несекретный вопрос задачи, ждущий ответа в диалоге, получает сообщение; иначе отвечает агент.
-      const task = dialogue ? db.sims.get(dialogue.jobId) : undefined;
       if (!task && turn) return problem(409, "agent_busy", "Ассистент ещё отвечает на прошлое сообщение");
       const message: Message = {
         id: ulid(),
@@ -442,12 +455,9 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       if (task && dialogue) {
         const accepted = { message, jobId: task.jobId } satisfies MessageAccepted;
         if (acceptedKey) state().accepted[acceptedKey] = accepted;
-        const asked = task.events.find(
-          (event) => event.event === "block" && (event.data as { id?: string }).id === dialogue.blockId,
-        )?.data as { type?: string; inputKind?: string } | undefined;
-        if (asked?.type === "input" && asked.inputKind === "url" && !/^https?:\/\//.test(text))
+        if (askedBlock?.type === "input" && askedBlock.inputKind === "url" && !/^https?:\/\//.test(text))
           task.block(textBlock("Уточнение получено. Пришлите ссылку, когда будете готовы.", now));
-        else task.answer(dialogue.blockId, text, false);
+        else task.answer(dialogue.blockId, text, false, false);
         save();
         return HttpResponse.json(accepted, { status: 202 });
       }

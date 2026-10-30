@@ -172,6 +172,34 @@ export function ChatSection() {
             />
           </div>
         </Demo>
+        <Demo
+          label="ChatMessage — ответ с цитатой вопроса: кнопка, выбранный вариант, переданный пароль"
+          wide
+        >
+          <div className="flex flex-col gap-4">
+            <ChatMessage
+              role="user"
+              markdown="Да, НИУ ВШЭ"
+              quote="Вышка — это НИУ ВШЭ?"
+              at={NOW - 120_000}
+              timeZone={MSK}
+            />
+            <ChatMessage
+              role="user"
+              markdown="Да, всё верно"
+              quote="Всё верно? После подтверждения данные будут обновляться автоматически."
+              at={NOW - 90_000}
+              timeZone={MSK}
+            />
+            <ChatMessage
+              role="user"
+              markdown="Пароль передан"
+              quote="Вход в ЛК. Пароль"
+              at={NOW - 60_000}
+              timeZone={MSK}
+            />
+          </div>
+        </Demo>
         <Demo label="ChatMessage — не уверен, ответ приходит, ждёт сети" wide>
           <div className="flex flex-col gap-4">
             <ChatMessage

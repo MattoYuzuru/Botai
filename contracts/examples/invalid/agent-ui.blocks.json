@@ -7,5 +7,7 @@
   {"type": "plan", "id": "01JAAAAAAAAAAAAAAAAAAAAAA9", "at": "2026-10-27T10:00:08Z", "title": "Пустой план", "steps": []},
   {"type": "plan", "id": "01JAAAAAAAAAAAAAAAAAAAAAA9", "at": "2026-10-27T10:00:08Z", "title": "Неверное состояние", "steps": [{"id": "s1", "title": "Шаг", "state": "running"}]},
   {"type": "task", "id": "01JAAAAAAAAAAAAAAAAAAAAAAA", "at": "2026-10-27T10:00:09Z", "jobId": "01JAAAAAAAAAAAAAAAAAAAAAAB", "kind": "chat", "title": "Задача", "state": "running", "threadId": "01JAAAAAAAAAAAAAAAAAAAAAAC"},
-  {"type": "attachment", "id": "01JAAAAAAAAAAAAAAAAAAAAAAE", "at": "2026-10-27T10:00:10Z", "attachmentId": "01JAAAAAAAAAAAAAAAAAAAAAAF", "name": "x", "mime": "text/plain", "size": -1, "kind": "document"}
+  {"type": "attachment", "id": "01JAAAAAAAAAAAAAAAAAAAAAAE", "at": "2026-10-27T10:00:10Z", "attachmentId": "01JAAAAAAAAAAAAAAAAAAAAAAF", "name": "x", "mime": "text/plain", "size": -1, "kind": "document"},
+  {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAAG", "at": "2026-10-27T10:00:11Z", "markdown": "Ответ", "quote": {"text": ""}},
+  {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAAG", "at": "2026-10-27T10:00:11Z", "markdown": "Ответ", "quote": {"text": "x", "extra": 1}}
 ]

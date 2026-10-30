@@ -1081,6 +1081,7 @@ class LoginFlow:
             input_kind=kind,
             required=True,
             max_length=max_length,
+            login=True,
             secret=secret,
             autocomplete=autocomplete,
         )

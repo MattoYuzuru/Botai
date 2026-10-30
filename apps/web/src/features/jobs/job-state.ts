@@ -175,16 +175,17 @@ export function applyEvent(job: JobSnapshot, event: RawEvent): JobSnapshot {
   }
 }
 
-/** Семантика поля от сервера; текст вопроса и адрес сайта не определяют способ входа. */
+/** Семантика поля от сервера (`login` — поле входа, помеченное автором, остальное — по виду поля); текст вопроса и адрес сайта не определяют способ входа. */
 export function isAuthInput(block: ParsedBlock): boolean {
   return (
     block.type === "input" &&
-    block.inputKind !== "url" &&
-    (block.inputKind === "password" ||
-      block.inputKind === "code" ||
-      block.autocomplete === "username" ||
-      block.autocomplete === "current-password" ||
-      block.autocomplete === "one-time-code")
+    (block.login === true ||
+      (block.inputKind !== "url" &&
+        (block.inputKind === "password" ||
+          block.inputKind === "code" ||
+          block.autocomplete === "username" ||
+          block.autocomplete === "current-password" ||
+          block.autocomplete === "one-time-code")))
   );
 }
 

@@ -43,8 +43,11 @@ test("шапка, предупреждение и пустые данные на
     expect(Math.abs(a.y + a.height / 2 - t.y - t.height / 2)).toBeLessThan(2);
     const brand = await page.getByRole("img", { name: "BotAI", exact: true }).boundingBox();
     expect(Math.abs(((await title.boundingBox())?.y ?? 0) - (brand?.y ?? 0))).toBeLessThan(8);
+    // Пустое состояние — строка сразу под заголовком раздела, а не блок по центру огромной пустой области.
     const empty = await page.getByText("Пар в этих данных нет", { exact: true }).boundingBox();
-    expect(empty?.y ?? 0).toBeGreaterThan(400);
+    const heading = await page.getByRole("heading", { name: "Пары", exact: true }).boundingBox();
+    expect(empty && heading).toBeTruthy();
+    expect((empty?.y ?? 0) - ((heading?.y ?? 0) + (heading?.height ?? 0))).toBeLessThan(40);
   }
   await expectFitsWidth(page, width);
   await page.screenshot({ path: info.outputPath(`today-${width}.png`), fullPage: true });

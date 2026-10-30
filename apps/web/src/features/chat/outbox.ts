@@ -10,6 +10,7 @@
 import { type ApiError, isApiError, isNetworkError } from "@/api/errors";
 import type { Message, Thread } from "@/api/types";
 import type { AttachmentKind, MessageAccepted } from "@/api/v3";
+import type { MessageQuote } from "./quote";
 
 /** Загруженное вложение, которое уйдёт с сообщением: имя и тип нужны, чтобы показать его в ленте до ответа сервера. */
 export interface OutboxAttachment {
@@ -26,6 +27,7 @@ export interface OutboxPost {
   attachmentIds: string[];
   clientMessageId: string;
   targetJobId?: string;
+  quote?: MessageQuote;
 }
 
 export interface OutboxItem {
@@ -40,6 +42,8 @@ export interface OutboxItem {
   attachments: OutboxAttachment[];
   /** Ответ на вопрос задачи, которую человек видел: сервер вернёт 409, если вопрос уже закрыт. */
   targetJobId?: string;
+  /** Вопрос, на который отвечает сообщение (кнопка быстрого ответа): уходит вместе с текстом. */
+  quote?: MessageQuote;
   createdAt: number;
   /** `queued` — нет сети, ждёт её; `sending` — идёт отправка или короткая пауза перед следующей попыткой. */
   status: "queued" | "sending";
@@ -193,6 +197,7 @@ export class Outbox {
       spaceId: string | null;
       attachments?: readonly OutboxAttachment[];
       targetJobId?: string;
+      quote?: MessageQuote;
     },
   ): OutboxItem {
     const item: OutboxItem = {
@@ -203,6 +208,7 @@ export class Outbox {
       text,
       attachments: [...(target.attachments ?? [])],
       targetJobId: target.targetJobId,
+      quote: target.quote,
       createdAt: this.deps.now(),
       status: this.deps.online() ? "sending" : "queued",
       attempts: 0,
@@ -333,6 +339,7 @@ export class Outbox {
         attachmentIds: item.attachments.map((attachment) => attachment.id),
         clientMessageId: item.id,
         targetJobId: item.targetJobId,
+        quote: item.quote,
       });
       if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
       this.remove(item.id);

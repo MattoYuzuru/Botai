@@ -9,6 +9,7 @@ import type { ParsedBlock } from "@/features/jobs/blocks";
 import { jobManager } from "@/features/jobs/job-manager";
 import { isTerminal } from "@/features/jobs/job-state";
 import { useManualLogin } from "@/widgets/progress-wall/use-manual-login";
+import { answerMark } from "./answer-mark";
 import type { ChatLinks } from "./chat-links";
 import { resultConfidence, textConfidence } from "./confidence";
 import type { ThreadJob, Timeline, Turn } from "./timeline";
@@ -124,6 +125,17 @@ export function TimelineView({
     [nowMs, timeZone, threadId, links, taskStates, onChanged],
   );
 
+  // Ответ на вопрос задачи — сообщение с цитатой этого вопроса, его пишет сервер. Пока оно не пришло, в ленте стоит
+  // отметка ответа (чтобы не было провала); пришло — отметка уходит, и ответ не показан дважды.
+  const acknowledged = useMemo(
+    () =>
+      new Set(
+        timeline.turns.flatMap((turn) =>
+          turn.kind === "user" && turn.quote?.blockId ? [turn.quote.blockId] : [],
+        ),
+      ),
+    [timeline.turns],
+  );
   const receipts = runtime?.receipts ?? [];
   const visible = timeline.turns.filter((turn) => !(turn.kind === "block" && open.has(turn.key)));
   return (
@@ -142,6 +154,7 @@ export function TimelineView({
               }
               nowMs={nowMs}
               timeZone={timeZone}
+              acknowledged={acknowledged}
               onRestart={onRestart}
               restarting={restarting}
               failedJob={turn.kind === "failure" ? byId.get(turn.jobId) : undefined}
@@ -189,6 +202,7 @@ function TurnView({
   receipt,
   nowMs,
   timeZone,
+  acknowledged,
   onRestart,
   restarting,
 }: {
@@ -199,6 +213,7 @@ function TurnView({
   receipt: ThreadRuntime["receipts"][number] | undefined;
   nowMs: number;
   timeZone: string;
+  acknowledged: ReadonlySet<string>;
   onRestart: (connectionId: string) => void;
   restarting: boolean;
 }) {
@@ -208,6 +223,7 @@ function TurnView({
         <ChatMessage
           role="user"
           markdown={turn.text || undefined}
+          quote={turn.quote?.text}
           attachments={turn.attachments.map((item) =>
             "attachmentId" in item ? viewerFromBlock(item) : viewerFromAttachment(item),
           )}
@@ -261,7 +277,14 @@ function TurnView({
         onReject: noop,
         confidence: (markdown) => (unsure ? "unsure" : textConfidence(markdown)),
       };
-      return <HistoryBlock block={turn.block} ctx={ctx} receipt={receipt} />;
+      return (
+        <HistoryBlock
+          block={turn.block}
+          ctx={ctx}
+          receipt={receipt}
+          acknowledged={acknowledged.has(turn.block.id)}
+        />
+      );
     }
   }
 }
@@ -270,28 +293,37 @@ function HistoryBlock({
   block,
   ctx,
   receipt,
+  acknowledged,
 }: {
   block: ParsedBlock;
   ctx: BlockContext;
   receipt: ThreadRuntime["receipts"][number] | undefined;
+  /** Сервер уже прислал сообщение с ответом на этот вопрос. */
+  acknowledged: boolean;
 }) {
   if (block.type === "input" || block.type === "choice" || block.type === "confirm") {
+    // Ответ человека — следующее сообщение ленты: сервер пишет его словами под цитатой вопроса. Пока оно не пришло,
+    // стоит отметка того же вида.
     const answer = ctx.answers[block.id];
+    const closed = receipt?.status === "superseded" || receipt?.status === "rejected";
     return (
       <div className="flex flex-col gap-3" data-conversation-block={block.id}>
-        <ChatMessage role="agent" markdown={block.question} />
-        {answer?.status === "answered" ? (
-          <ChatMessage role="user" markdown={answer.shown ?? "Введено"} />
-        ) : (
-          receipt && (
-            <p className="type-caption text-fg-muted">
-              {receipt.status === "superseded"
-                ? "Вопрос закрыт"
-                : receipt.status === "rejected"
-                  ? "Ответ не принят"
-                  : "Ответ отправлен"}
-            </p>
-          )
+        <ChatMessage
+          role="agent"
+          markdown={
+            block.type === "confirm" && block.details
+              ? `${block.details}\n\n${block.question}`
+              : block.question
+          }
+          resolveLink={ctx.resolveLink}
+        />
+        {answer?.status === "answered" && !acknowledged && (
+          <ChatMessage role="user" markdown={answerMark(block, answer.shown)} quote={block.question} />
+        )}
+        {closed && (
+          <p className="type-caption text-fg-muted">
+            {receipt.status === "superseded" ? "Вопрос закрыт" : "Ответ не принят"}
+          </p>
         )}
       </div>
     );

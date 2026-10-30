@@ -53,13 +53,72 @@ test.describe("«Сегодня»", () => {
     await expect(page.getByText(/сдано/i)).toHaveCount(0);
   });
 
-  test("вузы подключены, данных нет: «Пар нет» и «Ближайших сроков нет», состояние empty", async ({
+  test("вузы подключены, данных нет: «Сегодня пар нет» и «Ближайших сроков нет», состояние empty", async ({
     page,
   }) => {
     await open(page, "/?data=quiet", "connected");
-    await expect(page.getByText("Пар нет")).toBeVisible();
+    await expect(page.getByText("Сегодня пар нет")).toBeVisible();
     await expect(page.getByText("Ближайших сроков нет")).toBeVisible();
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "empty");
+  });
+
+  test("пустые состояния — компактные строки, прижатые к верху колонок: огромных пустых зон нет", async ({
+    page,
+  }) => {
+    await open(page, "/?data=quiet", "connected");
+    const classes = page.getByRole("region", { name: "Пары", exact: true });
+    const deadlines = page.getByRole("region", { name: "Ближайшие сроки" });
+    await expect(classes.getByText("Сегодня пар нет")).toBeVisible();
+    await expect(deadlines.getByText("Ближайших сроков нет")).toBeVisible();
+    const a = await classes.boundingBox();
+    const b = await deadlines.boundingBox();
+    expect(a && b).toBeTruthy();
+    if (!a || !b) return;
+    // Каждый раздел — заголовок и одна строка, а не блок на всю высоту экрана.
+    expect(a.height).toBeLessThan(160);
+    expect(b.height).toBeLessThan(200);
+    const width = page.viewportSize()?.width ?? 0;
+    if (width >= 1024) {
+      // Две колонки начинаются на одной высоте: пустая колонка не уезжает вниз по центру.
+      expect(Math.abs(b.y - a.y)).toBeLessThan(2);
+      expect(b.x).toBeGreaterThan(a.x + a.width - 1);
+    } else {
+      // На телефоне одна колонка: сроки сразу под парами.
+      expect(b.y).toBeGreaterThan(a.y + a.height - 1);
+      expect(b.y - (a.y + a.height)).toBeLessThan(64);
+    }
+  });
+
+  test("сегодня пар нет: «Сегодня пар нет» и ниже «Ближайшие пары» — день недели, дата, компактные карточки", async ({
+    page,
+  }) => {
+    await open(page, "/?data=freeday", "connected");
+    const today = page.getByRole("region", { name: "Пары", exact: true });
+    await expect(today.getByText("Сегодня пар нет")).toBeVisible();
+    await expect(today.getByRole("listitem")).toHaveCount(0);
+    const upcoming = page.getByRole("region", { name: "Ближайшие пары" });
+    await expect(upcoming.getByRole("heading", { level: 3, name: "среда, 28 октября" })).toBeVisible();
+    await expect(upcoming.getByRole("listitem")).toHaveCount(3);
+    // Карточки того же вида, что в ленте дня: тип занятия, аудитория, преподаватель.
+    const first = upcoming.getByRole("listitem").first();
+    await expect(first).toContainText("Дискретная математика");
+    await expect(first).toContainText("Лекция");
+    await expect(first).toContainText("ауд. 218");
+    const a = await today.boundingBox();
+    const b = await upcoming.boundingBox();
+    expect(a && b).toBeTruthy();
+    if (a && b) {
+      // «Ближайшие пары» идут сразу под строкой «Сегодня пар нет»: между ними нет пустой зоны.
+      expect(b.y).toBeGreaterThan(a.y + a.height - 1);
+      expect(b.y - (a.y + a.height)).toBeLessThan(48);
+    }
+    expect(await findSmallTapTargets(page)).toEqual([]);
+    expect(await findTinyText(page)).toEqual([]);
+    await first.getByRole("button").click();
+    await expect(
+      page.getByRole("dialog", { name: "Дискретная математика" }).getByText("ауд. 218"),
+    ).toBeVisible();
+    await expectFitsWidth(page, page.viewportSize()?.width ?? 0, "«Сегодня» без пар");
   });
 
   test("нужен повторный вход: полоса с «Войти снова», данные на месте и помечены устаревшими", async ({

@@ -47,6 +47,9 @@ test.describe("подключение в общем чате", () => {
     await expect(composer(page)).toHaveAttribute("placeholder", "Ответьте в поле выше или напишите агенту");
     await expect(page.getByText("Вход через поля BotAI")).toBeVisible();
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
+    // Живой блок мышления — последний в ленте, под всем, что появилось за время работы задачи.
+    const turns = page.locator("[data-timeline] > li");
+    await expect(turns.last()).toHaveAttribute("data-turn", "thinking");
 
     await answer(page, "anna");
     await expect(page.getByText(PASSWORD)).toBeVisible();
@@ -65,7 +68,21 @@ test.describe("подключение в общем чате", () => {
     expect(leaked).toBe(false);
     await page.getByRole("checkbox", { name: /Алгоритмы/ }).check();
     await page.getByRole("button", { name: "Ответить", exact: true }).click();
-    await expect(page.getByRole("heading", { level: 3, name: "Что подключено" })).toBeVisible();
+    // Одно сообщение-подтверждение: что собрано словами, ближайшие пары и вопрос с кнопками — вместе.
+    await expect(pending(page)).toContainText("42 занятия с 26 октября по 20 декабря — 8 недель");
+    await expect(pending(page)).toContainText("Ближайшие пары:");
+    await expect(pending(page)).toContainText("Всё верно?");
+    await expectNoHorizontalOverflow(page, "подтверждение в чате");
+    await pending(page).getByRole("button", { name: "Да, всё верно" }).click();
+    await expect(page.getByText(/^Готово! Расписание Фейкуни подключено/)).toBeVisible();
+    // Работа закончилась: свёрнутый «Думал» стоит прямо над итоговым ответом, а не высоко над ним.
+    const closing = turns.filter({ hasText: "Готово! Расписание Фейкуни подключено" });
+    await expect(closing.locator("xpath=preceding-sibling::li[1]")).toHaveAttribute("data-turn", "thinking");
+    await expect(closing.locator("xpath=preceding-sibling::li[1]")).toContainText("Думал");
+    await expect(turns.last()).toHaveAttribute("data-turn", "block");
+    // Ответ человека в ленте — словами, под цитатой вопроса.
+    const reply = page.locator("[data-role='user']", { hasText: "Да, всё верно" });
+    await expect(reply.locator("[data-message-quote]")).toContainText("Всё верно?");
     await expect(page).toHaveURL(thread);
     await expect(composer(page)).toBeEnabled();
     await expect(pending(page)).toHaveCount(0);
@@ -171,7 +188,8 @@ test.describe("подключение в общем чате", () => {
     await page.getByRole("button", { name: "Ответить", exact: true }).click();
     await expect(pending(page).getByText("Записаться на консультацию по базам данных")).toBeVisible();
     await pending(page).getByRole("button", { name: "Подтвердить" }).click();
-    await expect(page.getByRole("heading", { level: 3, name: "Что подключено" })).toBeVisible();
+    await pending(page).getByRole("button", { name: "Да, всё верно" }).click();
+    await expect(page.getByText(/^Готово! Расписание Фейкуни подключено/)).toBeVisible();
   });
 
   test("сбой источника: понятная причина и «Войти заново», кодов в тексте нет", async ({ page }) => {

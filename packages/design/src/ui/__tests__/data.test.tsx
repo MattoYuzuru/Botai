@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NBSP } from "../../lib/format";
 import { HOUR_MS, urgencyOf } from "../../lib/urgency";
 import { DeadlineItem } from "../deadline-item/deadline-item";
+import { EmptyState } from "../empty-state/empty-state";
 import { ScheduleDay, type ScheduleItem } from "../schedule/schedule-day";
 import { ScheduleWeek, type WeekDay } from "../schedule/schedule-week";
 import { SourceCitation } from "../source-citation/source-citation";
@@ -578,4 +579,35 @@ describe("SourceCitation", () => {
       expect(screen.getByText("Источник недоступен")).toBeInTheDocument();
     },
   );
+});
+
+describe("EmptyState: компактная строка", () => {
+  it("по умолчанию — по центру, значок над текстом", () => {
+    const { container } = render(<EmptyState icon="schedule" title="Пар нет" />);
+    expect(container.firstElementChild).toHaveAttribute("data-layout", "stacked");
+    expect(container.firstElementChild).toHaveClass("items-center", "text-center");
+  });
+
+  it("inline — строка у левого края: значок слева, заголовок и пояснение справа, без пустых полей", () => {
+    const { container } = render(
+      <EmptyState
+        icon="deadline"
+        layout="inline"
+        size="sm"
+        as="h3"
+        title="Ближайших сроков нет"
+        description="Когда появятся задания, они будут здесь."
+        action={<button type="button">Подключить</button>}
+      />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root).toHaveAttribute("data-layout", "inline");
+    expect(root).toHaveClass("flex", "items-start");
+    expect(root).not.toHaveClass("text-center");
+    expect(root).not.toHaveClass("py-10");
+    expect(screen.getByRole("heading", { level: 3, name: "Ближайших сроков нет" })).toBeInTheDocument();
+    expect(screen.getByText("Когда появятся задания, они будут здесь.")).toBeInTheDocument();
+    // действие стоит рядом с текстом, а не отдельным блоком под значком
+    expect(within(root).getByRole("button", { name: "Подключить" }).closest("div")).not.toBe(root);
+  });
 });

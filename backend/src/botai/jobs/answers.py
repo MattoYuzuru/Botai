@@ -43,6 +43,48 @@ _BLOCK = TypeAdapter(AgentUiBlock)
 _BAD_ANSWER = "Ответ не подходит к вопросу"
 
 
+def acknowledgement_text(block: AgentUiBlock, values: list[str] | str | bool | None) -> str:
+    """What the thread shows for an answer: the picked option in words ("Да, всё верно"). The value of
+    any field of a login (a password, a code, a login, whatever else the form asks) is never repeated,
+    and neither is free text that looks like a secret."""
+    if isinstance(block, ConfirmBlock):
+        return block.confirm_label if values is True else block.cancel_label
+    if isinstance(block, ChoiceBlock):
+        labels = {option.value: option.label for option in block.options}
+        picked = (
+            [values]
+            if isinstance(values, str)
+            else list(values)
+            if isinstance(values, list)
+            else []
+        )
+        words = [
+            labels[value] if value in labels else _free_text(value) for value in picked if value
+        ]
+        # Nothing picked: a skipped single question is "don't know", an empty multiple one is nothing.
+        return ", ".join(words)[:500] or (
+            "Ничего не выбрано" if block.mode == "multi" else "Не знаю"
+        )
+    if isinstance(block, InputBlock):
+        if block.input_kind == "password":
+            return "Пароль передан"
+        if block.input_kind == "code":
+            return "Код передан"
+        if block.secret or dialogue.is_auth_input(block):
+            login = block.autocomplete in {"username", "email"} or block.input_kind == "email"
+            return "Логин передан" if login else "Ответ передан"
+        return _free_text(values if isinstance(values, str) else "")
+    return "Ответ передан"
+
+
+def _free_text(value: str) -> str:
+    """Text the student typed into an answer: shown unless it looks like a secret."""
+    from botai.agent.conversations import looks_like_secret
+
+    text = " ".join(value.split())
+    return "Ответ передан" if not text or looks_like_secret(text) else text[:300]
+
+
 async def get_job(session: AsyncSession, user_id: str, job_id: str) -> Job:
     """The user's job; someone else's is reported as missing (404)."""
     job = await session.scalar(select(Job).where(Job.id == job_id, Job.user_id == user_id))
@@ -139,11 +181,7 @@ async def record_answer(
     if (
         isinstance(block, InputBlock)
         and job.connection_id is not None
-        and block.input_kind != "url"
-        and (
-            block.autocomplete in {"username", "current-password", "one-time-code"}
-            or block.input_kind in {"password", "code"}
-        )
+        and dialogue.is_auth_input(block)
     ):
         handoff = await session.scalar(
             select(JobEvent.id)
@@ -203,7 +241,9 @@ async def record_answer(
         ):
             at = await dialogue.message_time(session, user_id, job.thread_id, accepted_at)
             message_id = new_id()
-            text = TextBlock(id=new_id(), at=at, markdown=values)
+            text = TextBlock(
+                id=new_id(), at=at, markdown=values, quote=dialogue.quote_of_block(block)
+            )
             session.add(
                 ChatMessage(
                     id=message_id,
@@ -225,13 +265,16 @@ async def record_answer(
             dialogue.receipt(job, now=accepted_at, status="accepted", message_id=message_id)
         elif job.thread_id is not None:
             # A durable acknowledgement is not the native answer and never joins the LLM inbox.
-            label = "Ответ передан"
-            if isinstance(block, InputBlock) and block.input_kind == "password":
-                label = "Пароль передан"
-            elif isinstance(block, InputBlock) and block.input_kind == "code":
-                label = "Код передан"
+            # It says what was picked, in words, under a quote of the question; a secret only
+            # that it was passed.
             at = await dialogue.message_time(session, user_id, job.thread_id, accepted_at)
-            acknowledgement = TextBlock(id=new_id(), at=at, markdown=label)
+            acknowledgement = TextBlock(
+                id=new_id(),
+                at=at,
+                markdown=acknowledgement_text(block, body.values),
+                quote=dialogue.quote_of_block(block),
+                picked=True,  # its words come from the question, not from the student
+            )
             session.add(
                 ChatMessage(
                     id=new_id(),

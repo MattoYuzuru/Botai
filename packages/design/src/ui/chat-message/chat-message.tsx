@@ -28,6 +28,11 @@ export interface ChatMessageProps {
   confidence?: "ok" | "unsure";
   /** Источники ответа, сгруппированные по источнику (одна запись на источник). */
   citationGroups?: readonly CitationGroup[];
+  /**
+   * Цитата того, на что отвечает сообщение (вопрос агента или задачи): короткая строка над текстом, не больше двух
+   * строк. Без неё ответ «Да» или нажатая кнопка не говорят, на что отвечено.
+   */
+  quote?: string;
   /** Вложения сообщения: изображения — сеткой миниатюр, остальное — строками. Нажатие открывает вьюер. */
   attachments?: readonly ViewerAttachment[];
   onOpenAttachment?: (id: string) => void;
@@ -108,7 +113,7 @@ function AttachmentList({
 /**
  * Сообщение чата, 16 px. Агент — плоский текст на фоне страницы на всю ширину колонки (без карточки и рамки), как в
  * ChatGPT и Claude; если внутри форма вопроса (`children`, `actions`), она остаётся карточкой. Человек — плашка
- * справа. Вложения стоят над текстом. Ответ без источника не имитирует источник; неуверенный ответ помечен.
+ * справа. Цитата вопроса и вложения стоят над текстом. Ответ без источника не имитирует источник; неуверенный ответ помечен.
  * Появление — прозрачность и сдвиг 4 px.
  */
 export function ChatMessage({
@@ -121,6 +126,7 @@ export function ChatMessage({
   status = "sent",
   confidence = "ok",
   citationGroups,
+  quote,
   attachments,
   onOpenAttachment,
   resolveLink,
@@ -132,6 +138,7 @@ export function ChatMessage({
   const card = !isUser && Boolean(children || actions);
   const hasBody =
     hasText ||
+    Boolean(quote) ||
     Boolean(children) ||
     confidence === "unsure" ||
     Boolean(citationGroups?.length) ||
@@ -172,6 +179,18 @@ export function ChatMessage({
                 Не уверен
               </Badge>
             </div>
+          )}
+          {quote && (
+            <blockquote
+              data-message-quote=""
+              className={cn(
+                "m-0 min-w-0 border-l-2 pl-3 type-caption text-fg-muted",
+                isUser ? "border-accent-fg" : "border-border-strong",
+              )}
+            >
+              <span className="sr-only">В ответ на: </span>
+              <span className="line-clamp-2">{quote}</span>
+            </blockquote>
           )}
           {hasText && (
             <SafeMarkdown source={markdown} caret={status === "streaming"} resolveLink={resolveLink} />

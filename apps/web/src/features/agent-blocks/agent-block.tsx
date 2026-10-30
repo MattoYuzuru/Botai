@@ -18,8 +18,14 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
     switch (block.type) {
       case "input":
       case "choice":
-      case "confirm":
         return <ChatMessage role="agent" markdown={block.question} />;
+      case "confirm":
+        return (
+          <ChatMessage
+            role="agent"
+            markdown={block.details ? `${block.details}\n\n${block.question}` : block.question}
+          />
+        );
       case "approval":
         return <ChatMessage role="agent" markdown={block.proposal.intent} />;
       case "login":

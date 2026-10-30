@@ -5,13 +5,44 @@ import { JobCancelledError, type JobSim } from "./job-sim";
 
 /**
  * Сценарии подключения вуза для мок-режима. Повторяют поведение настоящего LoginFlow: логин и пароль
- * приходят блоками `input` (пароль — `secret`), вход по push — блоком `wait`, итог — `summary`.
+ * приходят блоками `input` (пароль — `secret`), вход по push — блоком `wait`, затем одно сообщение-подтверждение
+ * (`confirm` со сводкой и ближайшими парами) и дружелюбный итог.
  */
 export type JobVariant = "basic" | "wrong-password" | "push" | "failure" | "approval";
 
 export const JOB_VARIANTS: readonly JobVariant[] = ["basic", "wrong-password", "push", "failure", "approval"];
 
 const HOST = "lk.fakeuni.test";
+
+const dayTitle = (ms: number) => {
+  const text = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(ms);
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+/** Текст подтверждения, как у сервера: что найдено словами и пары двух ближайших дней. */
+function confirmDetails(now: number): string {
+  const day = 86_400_000;
+  return [
+    "Нашла в «Личный кабинет»:",
+    "",
+    "- **Расписание:** 42 занятия с 26 октября по 20 декабря — 8 недель",
+    "- **Дедлайны:** 7 заданий со сроками",
+    "",
+    "Ближайшие пары:",
+    "",
+    `**${dayTitle(now + day)}**`,
+    "- 09:30–10:50 · Алгоритмы и структуры данных · А-101",
+    "- 11:10–12:30 · Базы данных · В-310",
+    "",
+    `**${dayTitle(now + 3 * day)}**`,
+    "- 15:10–16:30 · Английский язык · online",
+  ].join("\n");
+}
 
 export async function runConnect(
   sim: JobSim,
@@ -43,6 +74,7 @@ export async function runConnect(
         inputKind: "text",
         required: true,
         secret: false,
+        login: true,
         autocomplete: "username",
         maxLength: 200,
       },
@@ -57,6 +89,7 @@ export async function runConnect(
       inputKind: "password",
       required: true,
       secret: true,
+      login: true,
       autocomplete: "current-password",
       maxLength: 200,
     });
@@ -154,6 +187,25 @@ export async function runConnect(
       );
     }
 
+    const confirmed = await sim.ask(
+      {
+        type: "confirm",
+        id: ulid(),
+        at: at(),
+        question: "Всё верно? После подтверждения данные будут обновляться автоматически.",
+        confirmLabel: "Да, всё верно",
+        cancelLabel: "Нет, не то",
+        details: confirmDetails(db.now()),
+      },
+      "Жду подтверждения",
+    );
+    if (confirmed !== true) {
+      sim.block({ type: "text", id: ulid(), at: at(), markdown: "Хорошо, ничего не сохраняю." });
+      sim.status("Готово");
+      sim.emit("done", { result: { connectionId, status: "error" } });
+      return;
+    }
+
     await step("Сохраняю найденное", 500);
 
     const now = at();
@@ -166,26 +218,12 @@ export async function runConnect(
     }
 
     sim.block({
-      type: "summary",
+      type: "text",
       id: ulid(),
       at: now,
-      title: "Что подключено",
-      groups: [
-        {
-          title: "Подключено",
-          items: [
-            { label: "Личный кабинет", value: HOST, confidence: "confirmed" },
-            {
-              label: "Расписание",
-              value: "42 занятия до конца семестра",
-              confidence: "confirmed",
-              sourceUrl: `https://${HOST}/timetable`,
-            },
-            { label: "Сроки заданий", value: "7 заданий, у 2 срок не указан", confidence: "guess" },
-          ],
-        },
-        { title: "Не подключено", items: [{ label: "Оценки", value: "Раздел требует отдельного входа" }] },
-      ],
+      markdown:
+        "Готово! Расписание Фейкуни подключено: 42 занятия на 17 недель вперёд. " +
+        "Обновляю само каждые 3 часа — спросите, например, «что у меня завтра?»",
     });
     sim.status("Готово");
     sim.emit("done", { result: { connectionId } });

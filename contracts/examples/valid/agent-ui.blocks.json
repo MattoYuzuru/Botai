@@ -15,5 +15,7 @@
    "steps": [{"id": "s1", "title": "Прочитать расписание", "state": "done"}, {"id": "s2", "title": "Найти свободные пары", "state": "active"}, {"id": "s3", "title": "Составить таблицу", "state": "pending"}]},
   {"type": "task", "id": "01JAAAAAAAAAAAAAAAAAAAAAAA", "at": "2026-10-27T10:00:09Z", "jobId": "01JAAAAAAAAAAAAAAAAAAAAAAB", "kind": "connect", "title": "Подключение: Единый личный кабинет",
    "state": "waiting_user", "threadId": "01JAAAAAAAAAAAAAAAAAAAAAAC", "connectionId": "01JAAAAAAAAAAAAAAAAAAAAAAD"},
-  {"type": "attachment", "id": "01JAAAAAAAAAAAAAAAAAAAAAAE", "at": "2026-10-27T10:00:10Z", "attachmentId": "01JAAAAAAAAAAAAAAAAAAAAAAF", "name": "Расписание.pdf", "mime": "application/pdf", "size": 120400, "kind": "document"}
+  {"type": "attachment", "id": "01JAAAAAAAAAAAAAAAAAAAAAAE", "at": "2026-10-27T10:00:10Z", "attachmentId": "01JAAAAAAAAAAAAAAAAAAAAAAF", "name": "Расписание.pdf", "mime": "application/pdf", "size": 120400, "kind": "document"},
+  {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAAG", "at": "2026-10-27T10:00:11Z", "markdown": "Да, всё верно", "quote": {"text": "Всё верно? После подтверждения данные будут обновляться автоматически.", "blockId": "01JAAAAAAAAAAAAAAAAAAAAAA8"}},
+  {"type": "confirm", "id": "01JAAAAAAAAAAAAAAAAAAAAAAH", "at": "2026-10-27T10:00:12Z", "question": "Всё верно?", "confirmLabel": "Да, всё верно", "cancelLabel": "Нет, не то", "details": "Нашла **35 занятий** с 26 октября по 6 декабря."}
 ]
