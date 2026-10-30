@@ -269,3 +269,22 @@ flowchart LR
 3. Первый `docker compose up -d`, миграции, проверка `curl 127.0.0.1:18090/api/health`.
 4. Блок Caddy по п. 3 принципов, проверка `https://botai.mnema.app`.
 5. Включить deploy-job в CI.
+
+## Выход к Groq (реле)
+
+Groq отвечает `403 Forbidden` на запросы с российского адреса сервера. Диктовке нужен только
+`api.groq.com:443`, поэтому в compose есть сервис `relay`: SSH-проброс этого одного хоста через
+сервер владельца за рубежом (`keykomi`, 2.27.23.184). EgressProxy направляет туда только
+`api.groq.com` (`BOTAI_EGRESS_RELAY=api.groq.com=relay:18443`) и только при выданном гранте;
+остальные хосты идут прежним путём с проверкой адресов. Реле доступно лишь внутри сети стека,
+файрвол хоста не меняется.
+
+| Где | Что |
+|---|---|
+| mnema `/srv/botai/relay/` (0700, uid 10001) | `id_ed25519` реле, `known_hosts` с закреплённым ключом keykomi (копия из `/etc/mnema/egress/known_hosts`) |
+| keykomi | системный пользователь `botai-egress` (nologin), ключ с `restrict,port-forwarding,permitopen="api.groq.com:443"`; `/etc/ssh/sshd_config.d/62-botai-egress.conf` — Match User с `PermitOpen api.groq.com:443`, `ForceCommand /usr/bin/false`. Другие пользователи SSH не затронуты |
+
+Проверка: из контейнера proxy `curl --resolve api.groq.com:18443:relay https://api.groq.com:18443/openai/v1/models`
+даёт `401` без ключа; диктовка — `python -m botai.speech --file …` в контейнере api. Отключить
+выход: убрать сервис или `BOTAI_EGRESS_RELAY=` в `compose.vars`; отозвать доступ — удалить
+строку ключа у `botai-egress` на keykomi.

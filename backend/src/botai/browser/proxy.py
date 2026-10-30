@@ -335,6 +335,7 @@ class EgressProxy:
         resolver: Resolver = system_resolver,
         connector: Connector = tcp_connector,
         test_hosts: Mapping[str, tuple[str, int]] | None = None,
+        relays: Mapping[str, tuple[str, int]] | None = None,
         connect_timeout_s: float = 10.0,
         dns_timeout_s: float = 5.0,
         head_timeout_s: float = 10.0,
@@ -352,6 +353,15 @@ class EgressProxy:
             if normalized is None or not ipaddress.ip_address(ip).is_loopback:
                 raise ValueError("test hosts may only map names to loopback addresses")
             self._test_hosts[normalized] = (ip, target_port)
+        # An operator's route for a host the server's own country cannot reach: the granted host
+        # is reached through a relay inside the stack (an SSH forward to that host only). The relay
+        # name resolves to a private address on purpose; it is configuration, never a request.
+        self._relays: dict[str, tuple[str, int]] = {}
+        for name, (relay, relay_port) in (relays or {}).items():
+            normalized = normalize_host(name)
+            if normalized is None or not relay or not 0 < relay_port < 65536:
+                raise ValueError("a relay maps a host name to RELAY:PORT")
+            self._relays[normalized] = (relay, relay_port)
         self._connect_timeout = connect_timeout_s
         self._dns_timeout = dns_timeout_s
         self._head_timeout = head_timeout_s
@@ -485,6 +495,17 @@ class EgressProxy:
         mapped = self._test_hosts.get(host)
         if mapped is not None:
             return mapped, None
+        relay = self._relays.get(host)
+        if relay is not None:
+            relay_host, relay_port = relay
+            try:
+                async with asyncio.timeout(self._dns_timeout):
+                    found = await self._resolver(relay_host, relay_port)
+            except (OSError, TimeoutError):
+                return None, Denial(502, "relay_unavailable")
+            if not found:
+                return None, Denial(502, "relay_unavailable")
+            return (found[0], relay_port), None
         try:
             async with asyncio.timeout(self._dns_timeout):
                 addresses = await self._resolver(host, ALLOWED_PORT)
@@ -737,6 +758,14 @@ def _parse_test_host(value: str) -> tuple[str, tuple[str, int]]:
     return name, (ip, int(port))
 
 
+def _parse_relay(value: str) -> tuple[str, tuple[str, int]]:
+    name, _, target = value.partition("=")
+    relay, _, port = target.rpartition(":")
+    if not name or not relay or not port.isdigit():
+        raise argparse.ArgumentTypeError("expected HOST=RELAY:PORT")
+    return name, (relay, int(port))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m botai.browser.proxy", description=__doc__)
     parser.add_argument(
@@ -750,8 +779,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="NAME=IP:PORT",
         help="map NAME:443 to a loopback address (tests and local fixtures only)",
     )
+    parser.add_argument(
+        "--relay",
+        action="append",
+        default=[],
+        type=_parse_relay,
+        metavar="HOST=RELAY:PORT",
+        help="reach a granted HOST:443 through an operator's relay (also BOTAI_EGRESS_RELAY)",
+    )
     args = parser.parse_args(argv)
     configure_logging()
+    relays = dict(args.relay)
+    for item in filter(None, os.environ.get("BOTAI_EGRESS_RELAY", "").split(",")):
+        name, target = _parse_relay(item.strip())
+        relays[name] = target
     master = os.environ.get("BOTAI_PROXY_SECRET", "")
     if len(master) < 32:
         print("BOTAI_PROXY_SECRET must be set to at least 32 characters", file=sys.stderr)
@@ -765,6 +806,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         host=host or "127.0.0.1",
         port=int(port),
         test_hosts=dict(args.test_host),
+        relays=relays,
     )
 
     async def run() -> None:

@@ -110,11 +110,36 @@ services:
 
   proxy:
     <<: *app
+    command: ["python", "-m", "botai.browser.proxy", "--listen", "0.0.0.0:3128"]
     environment:
       <<: *app-env
       BOTAI_DIAGNOSTICS_SERVICE: proxy
-    command: ["python", "-m", "botai.browser.proxy", "--listen", "0.0.0.0:3128"]
+      # Groq refuses the server's country: the proxy reaches api.groq.com only through `relay`.
+      BOTAI_EGRESS_RELAY: "${BOTAI_EGRESS_RELAY:-api.groq.com=relay:18443}"
     mem_limit: 256m
+
+  # An SSH forward to api.groq.com:443 through the owner's server abroad (docs/plan/deployment.md,
+  # «Выход к Groq»). The remote account may open that one host and nothing else; the key and the
+  # pinned host key live in /srv/botai/relay. Reachable only inside the stack's network.
+  relay:
+    <<: *app
+    env_file: []
+    environment:
+      RELAY_TARGET: "${RELAY_TARGET:-botai-egress@2.27.23.184}"
+    command:
+      - sh
+      - -c
+      - >-
+        exec ssh -NT -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+        -o UserKnownHostsFile=/run/relay/known_hosts -o GlobalKnownHostsFile=/dev/null
+        -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15
+        -o ServerAliveCountMax=2 -i /run/relay/id_ed25519
+        -L 0.0.0.0:18443:api.groq.com:443 "$$RELAY_TARGET"
+    volumes:
+      - /srv/botai/relay:/run/relay:ro
+    depends_on: {}
+    restart: unless-stopped
+    mem_limit: 64m
 
 volumes:
   pgdata: {}
