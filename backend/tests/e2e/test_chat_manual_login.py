@@ -97,7 +97,7 @@ async def test_chat_manual_login_opens_real_screen_then_replays_saved_recipe_wit
     )
     llm = ScriptedLlm(
         queue=[
-            step(call("request_login", connection_id=connection_id)),
+            step(call("request_login", connection_id=connection_id, on_screen=True)),
             final("Запросил защищённый вход в разговоре подключения. Не присылайте пароль в чат."),
         ]
     )

@@ -547,3 +547,25 @@ async def test_a_source_without_an_address_is_made_and_finds_its_entry_itself(en
     )
     assert again.startswith("Результат: уже подключено, ничего не запущено")
     assert len(await jobs_of(env, user, "connect")) == 1
+
+
+async def test_an_unfinished_source_is_continued_not_offered_as_a_choice(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    ask = {"url": PORTAL, "title": "Расписание", "university_query": "Вышка"}
+    await connect_source(tools(env, user, first), ask)
+    (job,) = await jobs_of(env, user, "connect")
+    async with env.sm() as session:  # the student cancelled the login half-way
+        stored = await session.get(Job, job.id)
+        assert stored is not None
+        stored.state = "cancelled"
+        await session.commit()
+    asking = tools(env, user, again)
+    result = await connect_source(asking, ask)
+    assert result.startswith("Результат: продолжено")
+    jobs = await jobs_of(env, user, "connect")
+    assert len(jobs) == 2
+    assert {j.thread_id for j in jobs if j.state != "cancelled"} == {again}
+    assert await count(env, Connection, Connection.user_id == user) == 1
+    (card,) = asking.blocks
+    assert isinstance(card, TaskBlock)

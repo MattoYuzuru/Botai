@@ -349,8 +349,12 @@ async def run(
     services: Services,
     user_id: str,
     job_id: str | None = None,
+    review: Callable[[str], str | None] | None = None,
 ) -> HarnessResult:
+    """`review` looks at a final answer once: a note sends the model back for one more step with
+    everything it already read (a reply that is only a question under its buttons, say)."""
     budget = BUDGETS.get(purpose) or BUDGETS["bench"]
+    reviewed = False
     prefix = build_prefix(skill, tools)
     state = _Run(
         purpose, budget, prefix, {t.spec.name: t for t in tools}, ctx, services, user_id, job_id
@@ -413,6 +417,19 @@ async def run(
             # Even debug mode must not retain model reasoning, which may quote private input.
 
             if not response.tool_calls:
+                note = None if reviewed or review is None else review(response.content)
+                reviewed = True
+                if note is not None and step < budget.max_steps - 1:
+                    convo.append(
+                        LlmMessage(
+                            role="assistant",
+                            content=response.content,
+                            reasoning_content=response.reasoning_content,
+                        )
+                    )
+                    convo.append(LlmMessage(role="user", content=note))
+                    result.content = response.content  # kept if the budget ends the loop here
+                    continue
                 result.content = response.content
                 result.stopped = "answer"
                 break
