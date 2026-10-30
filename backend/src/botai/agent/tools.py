@@ -158,11 +158,17 @@ async def get_schedule(env: ChatEnv, args: dict[str, Any]) -> str:
         s, f = e.starts_at.astimezone(zone), e.ends_at.astimezone(zone)
         parts = [
             f"{fmt_day(e.starts_at, zone)}, {s:%H:%M}–{f:%H:%M}",
+            f"пара {e.lesson_number}" if e.lesson_number else "",
             e.title,
-            KIND_RU.get(e.kind, e.kind),
+            e.kind_text or KIND_RU.get(e.kind, e.kind),
             f"ауд./место: {e.location}" if e.location else "",
+            f"адрес: {e.address}" if e.address else "",
             e.teacher or "",
+            f"группа/поток: {e.group}" if e.group else "",
             FORMAT_RU.get(e.format, ""),
+            *(f"{a.label}: {a.value}" for a in e.attributes),
+            *(f"ссылка «{link.label}»: {link.url}" for link in e.links),
+            f"ссылка: {e.url}" if e.url and all(link.url != e.url for link in e.links) else "",
             "ИЗМЕНЕНО" if e.changed else "",
             "пересекается с занятием другого вуза" if e.conflicts_with else "",
             "данные устарели" if e.provenance.stale else "",

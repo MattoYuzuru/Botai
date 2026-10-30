@@ -165,6 +165,7 @@ def provenance(connection_id: str, space_id: str, *, stale: bool = False) -> Pro
         source_url="https://fakeuni.test/api/timetable",
         fetched_at=NOW,
         stale=stale,
+        open_url="https://fakeuni.test/timetable?week=2026-10-26",
     )
 
 

@@ -365,9 +365,8 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             if message["jobId"] == chat.job_id and message["role"] == "agent"
         )
         assert "Математический анализ" in reply["blocks"][0]["markdown"]
-        assert reply["blocks"][0]["sources"][0]["url"].startswith(
-            "https://fakeuni.test/api/v2/timetable"
-        )
+        cited = reply["blocks"][0]["sources"][0]["url"]
+        assert "/api/" not in cited  # the page the student opens, never the API (FR-042)
     await check_nothing_leaked(env, wiretap, secrets, learning_llm, chat_llm)
     assert stack.gateway.active_for(account.id) is None
 
@@ -729,7 +728,7 @@ async def check_chat_answer(
     )
     (source,) = reply["sources"]  # a citation the model could not invent: the tool recorded it
     assert source["title"] == "Личный кабинет"  # a name, not the host
-    assert source["url"].startswith("https://fakeuni.test/api/v2/timetable")
+    assert source["url"] == "https://fakeuni.test/app"  # the page, never the API (FR-042)
     assert when(source["fetchedAt"]) == env.clock.now()
     assert chat.result["sources"][0]["title"] == "Личный кабинет"
     assert chat.result["tools"] == ["get_schedule"]
