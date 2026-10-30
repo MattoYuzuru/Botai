@@ -237,7 +237,7 @@ PR и отчёте выпуска. [Текущие запуски CI](https://gi
 `thread_id` этого треда (`tests/jobs/test_connect_source.py`). Проверки `tests/jobs/test_conversations.py` покрывают durable inbox,
 идемпотентность, восстановление истории, защищённые ответы и переход к отдельному источнику другого
 origin. Повторная просьба к незавершённому источнику («расписание и задания»), `kinds` и слияние со
-словами прошлой попытки — `tests/jobs/test_connect_source.py`, `tests/learn/test_intent.py`.
+словами прошлой попытки, дополнение работающего источника и источник по `connection_id` — `tests/jobs/test_connect_source.py`, `tests/learn/test_intent.py`; сквозное дополнение (расписание цело всё время, ревизия 2 с двумя видами) — `tests/learn/test_lms_story.py`; живая модель (`kinds`, продолжение, дополнение; L2) — `tests/agent/test_live_connect.py`.
 Инцидент «вопрос про аудитории, ссылка на веб-календарь, потерянное расписание» — на стенде L1:
 вопрос только по запрошенному, принятое сохраняется до ссылки на другой сайт, страница сервиса
 календаря не становится источником (`tests/learn/test_lms_story.py`, `tests/jobs/test_calendar_chat.py`,
