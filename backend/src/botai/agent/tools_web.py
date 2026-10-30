@@ -39,7 +39,7 @@ from botai.attachments import service as attachments
 from botai.core.browser import BrowserBusy, ObservedRequest, PageSnapshot, SessionState, auth_origin
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
-from botai.core.vault import SecretKind
+from botai.core.vault import SecretKind, VaultError
 from botai.db.models import AdapterSpecRow, Attachment, Chunk, Connection, Document
 from botai.learn.addresses import url_origin
 from botai.learn.redact import Redactor
@@ -386,6 +386,8 @@ async def _html_page(
         redactor = await _redactor(env, info, state)
     except BotaiError as exc:
         return f"Результат: ошибка. {exc.detail}."
+    except VaultError:
+        return "Результат: ошибка. Сессию студента не удалось прочитать из защищённого хранилища."
 
     def hide(text: str) -> str:
         """Session values that the page echoes (a token in a field, a cookie in a script)."""
@@ -402,9 +404,12 @@ async def _html_page(
     env.seen.remember("source", addresses)
     await _learn_routes(env, info, state, snapshot, links, drawn.requests, redactor)
     # A short page that the scripts did not change is simply a short page ("Занятий нет"): it is the
-    # answer. A page that stays blank, or thin after the scripts ran, is not the answer.
+    # answer. A page that was blank and stays blank or at "Загрузка…" after the scripts ran is not.
     plain = bool(
-        not drawn.drawn and shown.text.strip() and len(shown.text) <= len(extracted.text) + 20
+        not drawn.drawn
+        and extracted.text.strip()
+        and shown.text.strip()
+        and len(shown.text) <= len(extracted.text) + 20
     )
     lead = ""
     if not plain:
@@ -549,7 +554,7 @@ async def _learn_routes(
             observed = build_sitemap(info.origin, redactor, [page], sections, calls)
             await save_site_map(session, info.origin, observed, env.services.clock.now())
             await session.commit()
-    except (SQLAlchemyError, BotaiError):
+    except (SQLAlchemyError, BotaiError, VaultError):
         log.warning("the site map of connection %s was not saved", info.connection_id)
 
 

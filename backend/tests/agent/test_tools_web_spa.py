@@ -312,6 +312,17 @@ async def test_a_short_page_that_scripts_did_not_change_is_just_a_short_page(
     assert len(browser.opened) == 1  # the browser had to look to know
 
 
+async def test_an_application_stuck_on_its_spinner_is_not_a_short_page(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI
+) -> None:
+    spinner = SHELL.replace('<div id="root"></div>', '<div id="root">Загрузка…</div>')
+    r, _ = await rig(sm, user_id, fakeuni_app, {FAQ: faq_page(html=spinner)})
+    # the plain GET got text-less markup; after the scripts there is still only the spinner
+    text = await browse(r)
+    assert "Загрузка…" in text
+    assert "не делайте вывода, что данных нет" in text
+
+
 async def test_an_application_that_draws_nothing_says_so_instead_of_an_empty_source(
     sm: Sm, user_id: str, fakeuni_app: FastAPI
 ) -> None:

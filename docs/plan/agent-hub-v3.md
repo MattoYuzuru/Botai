@@ -129,7 +129,7 @@ type ThreadOut = {
 | `task_status()` | Активные и последние задачи треда и пользователя: что делается, на каком этапе, чего ждёт |
 | `sync_source(connection_id)` | Обновить данные источника сейчас |
 | `read_document(document_id, offset?, max_chars?)` | Читать текст документа/вложения кусками |
-| `browse_source(connection_id, url)` | Живое чтение страницы/JSON подключённого источника сессией студента: только GET, только origin/allowlist подключения, через EgressProxy, результат — `<source_data>` |
+| `browse_source(connection_id, url)` | Живое чтение страницы/JSON подключённого источника сессией студента: только GET, только origin/allowlist подключения, через EgressProxy, результат — `<source_data>`. Оболочку SPA (текст рисуют скрипты) читает тем же правилам серверный Chromium на чтение: текст страницы и JSON, который она загрузила ([агент](../architecture/agent-harness.md), [security 0.3](../architecture/security.md)) |
 | `site_map(connection_id)` | Сохранённая карта разделов источника (навигация, маршруты SPA, FAQ, поиск) |
 | `fetch_public_page(url)` | Чтение публичной HTTPS-страницы без cookies (ссылка из поиска или от пользователя), через EgressProxy с разовым грантом на host |
 | `remember(note)` / `forget(note_id)` | Долгая память о студенте (группа, программа, предпочтения, полезные шаги) |

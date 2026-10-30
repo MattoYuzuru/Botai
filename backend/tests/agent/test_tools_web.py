@@ -184,6 +184,7 @@ async def test_a_page_of_another_host_is_not_opened(
         text = await r.call("browse_source", connection_id=r.conn_id, url=url)
         assert text.startswith("Результат: не выполнено"), url
     assert r.spy.requests == []
+    assert r.browser.handles == []  # neither the browser nor a plain GET went to a foreign host
 
 
 async def test_actions_that_look_like_a_logout_or_a_delete_are_not_opened(
