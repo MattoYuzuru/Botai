@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Иконки BotAI: редактируемый пиксельный портрет `public/icons/varya-face-v2.svg` →
+ * Иконки BotAI: векторный портрет из renderer Вари →
  * favicon SVG/PNG/ICO, PNG 192/512, maskable 512 и Apple touch 180.
  *
  *   node scripts/make-icons.mjs
  *
- * Палитра, происхождение Вари и отдельный рисунок 16 px описаны в исходном SVG.
- * Анимированный renderer в packages/design не меняется. Версия в адресах нужна,
+ * Палитра и анатомия едины с packages/design/src/mascot/vendor/varya.js.
+ * На 16 px используется тот же крупный портрет без микродеталей. Версия в адресах нужна,
  * чтобы установленные PWA и браузеры не брали старую маленькую Варю из кэша.
  * Растеризует только закреплённый Playwright Chromium; новых зависимостей нет.
  * Фон непрозрачный, maskable — без нарисованных скруглений, весь портрет внутри
@@ -17,35 +17,33 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { chromium } from "@playwright/test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(root, "public");
 const dir = join(publicDir, "icons");
 mkdirSync(dir, { recursive: true });
-const svg = readFileSync(join(dir, "varya-face-v2.svg"), "utf8");
-const faviconSvg = "favicon-varya-v2.svg";
-// Detached SVG images (canvas, favicon consumers) may evaluate media queries at
-// their intrinsic size. Default to the hand-tuned 16 px face even without layout;
-// the canonical PWA portrait keeps its 32 px intrinsic viewport.
-const faviconSource = svg.replace('width="32" height="32"', 'width="16" height="16"');
-writeFileSync(join(publicDir, faviconSvg), faviconSource);
-
-// The complete portrait, including the outermost feather, stays inside the
-// platform's central 80 %-diameter safe circle after scaling about the centre.
-const maskableSvg = svg.replace(
-  '<g class="portrait">',
-  '<g class="portrait" transform="translate(5.12 5.12) scale(0.68)">',
+// Портрет генерируется из той же анатомии, что и живая Варя в чате.
+const sandbox = {};
+vm.runInNewContext(
+  readFileSync(join(root, "../../packages/design/src/mascot/vendor/varya.js"), "utf8"),
+  sandbox,
 );
+const svg = sandbox.Varya.portrait();
+const faviconSvg = sandbox.Varya.portrait({ transparent: true });
+const maskableSvg = sandbox.Varya.portrait({ maskable: true });
+writeFileSync(join(dir, "varya-face-v3.svg"), `${svg}\n`);
+writeFileSync(join(publicDir, "favicon-varya-v3.svg"), `${faviconSvg}\n`);
 
 const targets = [
-  { file: "favicon-varya-v2-16.png", size: 16, favicon: true },
-  { file: "favicon-varya-v2-32.png", size: 32, favicon: true },
-  { file: "favicon-varya-v2-48.png", size: 48, favicon: true },
-  { file: "varya-v2-192.png", size: 192 },
-  { file: "varya-v2-512.png", size: 512 },
-  { file: "varya-v2-maskable-512.png", size: 512, maskable: true },
-  { file: "varya-v2-apple-touch-180.png", size: 180 },
+  { file: "favicon-varya-v3-16.png", size: 16, favicon: true },
+  { file: "favicon-varya-v3-32.png", size: 32, favicon: true },
+  { file: "favicon-varya-v3-48.png", size: 48, favicon: true },
+  { file: "varya-v3-192.png", size: 192 },
+  { file: "varya-v3-512.png", size: 512 },
+  { file: "varya-v3-maskable-512.png", size: 512, maskable: true },
+  { file: "varya-v3-apple-touch-180.png", size: 180 },
 ];
 
 /** Windows ICO DIB: bottom-up BGRA plus DWORD-aligned 1-bit transparency mask. */
@@ -99,8 +97,8 @@ try {
   for (const target of targets) {
     const { file, size, maskable, favicon } = target;
     const page = await browser.newPage({ viewport: { width: size, height: size }, deviceScaleFactor: 1 });
-    const source = maskable ? maskableSvg : svg;
-    // An image viewport lets the SVG media query select the hand-tuned 16 px face.
+    const source = favicon ? faviconSvg : maskable ? maskableSvg : svg;
+    // Один и тот же SVG растрируется в целевой размер без сторонних библиотек.
     await page.setContent(
       `<!doctype html><style>html,body{margin:0}img{display:block;width:${size}px;height:${size}px}</style>` +
         `<img alt="" src="data:image/svg+xml;base64,${Buffer.from(source).toString("base64")}">`,
@@ -115,7 +113,7 @@ try {
       context.drawImage(img, 0, 0, innerWidth, innerHeight);
       return Array.from(context.getImageData(0, 0, innerWidth, innerHeight).data);
     });
-    const png = await page.screenshot({ type: "png", omitBackground: false });
+    const png = await page.screenshot({ type: "png", omitBackground: Boolean(favicon) });
     writeFileSync(join(favicon ? publicDir : dir, file), png);
     if (favicon) icoImages.push({ size, data: dib(size, rgba) });
     await page.close();

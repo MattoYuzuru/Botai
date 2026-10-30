@@ -250,16 +250,19 @@ describe("Варя в чате: сцена, насест, реплики", () =>
     await waitFor(() => expect(bubble()).not.toBeNull());
   });
 
-  it("пока человек печатает, она молчит, а пузырь не мешает полю ввода", async () => {
+  it("пока человек печатает, она молчит и замирает, а пузырь не мешает полю ввода", async () => {
     const user = userEvent.setup();
     renderApp("/chat?thread=new");
     await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
     await waitFor(() => expect(bubble()).not.toBeNull(), wait);
     await user.type(screen.getByRole("textbox", { name: "Сообщение агенту" }), "Ка");
     await waitFor(() => expect(bubble()).toBeNull());
+    expect(sprite()).toHaveClass("still");
     // И не появляется снова, пока в поле есть текст.
     await new Promise((resolve) => setTimeout(resolve, 900));
     expect(bubble()).toBeNull();
+    await user.clear(screen.getByRole("textbox", { name: "Сообщение агенту" }));
+    await waitFor(() => expect(sprite()).not.toHaveClass("still"));
   });
 
   it("три быстрых нажатия — взмах крылом, один раз за сессию", async () => {

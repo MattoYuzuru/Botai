@@ -42,7 +42,8 @@ const SECTIONS = [
   ["mascot", "Варя"],
 ] as const;
 
-function Gallery() {
+function Gallery({ mascotOnly = false }: { mascotOnly?: boolean }) {
+  if (mascotOnly) return <MascotSection />;
   return (
     <div className="flex flex-col gap-12">
       <PaletteSection />
@@ -80,6 +81,7 @@ function ThemePanel({ theme, children }: { theme: "light" | "dark"; children: Re
  * ширины 320/390/430, зум текста до 200 % и спокойное движение. Данные синтетические, вход в вуз не нужен.
  */
 export function StyleguidePage() {
+  const mascotOnly = new URLSearchParams(window.location.search).get("focus") === "mascot";
   const theme = themePreference.use() as ThemeChoice;
   const motion = motionPreference.use();
   const [accent, setAccent] = useState<string>(UNIVERSITY_ACCENTS[0].id);
@@ -109,14 +111,14 @@ export function StyleguidePage() {
             <Wordmark size="lg" />
             <p className="type-caption text-fg-muted">дизайн-система</p>
           </div>
-          <h1 className="type-title text-fg">Витрина компонентов</h1>
+          <h1 className="type-title text-fg">{mascotOnly ? "Варя — часть BotAI" : "Витрина компонентов"}</h1>
           <p className="max-w-reading type-ui text-fg-muted">
             Все компоненты каталога в обеих темах. Данные синтетические: это не доказательство живого входа в
             вуз и не измерение производительности.
           </p>
           <nav aria-label="Разделы витрины">
             <ul className="flex flex-wrap gap-x-4 gap-y-1">
-              {SECTIONS.map(([id, title]) => (
+              {SECTIONS.filter(([id]) => !mascotOnly || id === "mascot").map(([id, title]) => (
                 <li key={id}>
                   <a
                     href={`#${id}`}
@@ -206,14 +208,14 @@ export function StyleguidePage() {
           {sideBySide ? (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               <ThemePanel theme="light">
-                <Gallery />
+                <Gallery mascotOnly={mascotOnly} />
               </ThemePanel>
               <ThemePanel theme="dark">
-                <Gallery />
+                <Gallery mascotOnly={mascotOnly} />
               </ThemePanel>
             </div>
           ) : (
-            <Gallery />
+            <Gallery mascotOnly={mascotOnly} />
           )}
         </div>
       </div>
