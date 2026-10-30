@@ -334,14 +334,36 @@ describe("состояние треда из runtime", () => {
       disabled: true,
     });
 
+    // Задача ждёт защищённого ответа: агенту всё равно можно написать, сообщение уходит обычным ходом.
+    const task = job("c1", "connect");
     const secret = runtime({ pending: [{ jobId: "c1", blockId: "b", channel: "native", secret: true }] });
-    expect(composerState({ ...base, runtime: secret })).toMatchObject({
+    const waiting = composerState({ ...base, runtime: secret, jobs: [task] });
+    expect(waiting).toMatchObject({
+      disabled: false,
+      waitingForHuman: true,
+      placeholder: "Пароль вводите в защищённое поле выше",
+    });
+    // …и без адресата: пароль не должен уходить в «диалог» задачи.
+    expect(waiting.targetJobId).toBeUndefined();
+    const manual = runtime({ pending: [{ jobId: "c1", blockId: "b", channel: "manual", secret: false }] });
+    expect(composerState({ ...base, runtime: manual, jobs: [task] })).toMatchObject({
+      disabled: false,
+      placeholder: "Вход завершите в браузере выше или напишите агенту",
+    });
+    // Вопрос самого хода агента держит ход: писать, пока он идёт, нельзя.
+    const approval = runtime({
+      pending: [{ jobId: "chat-1", blockId: "b", channel: "approval", secret: false }],
+    });
+    expect(composerState({ ...base, runtime: approval, jobs: [job("chat-1", "chat")] })).toMatchObject({
       disabled: true,
       waitingForHuman: true,
       placeholder: "Ответьте на вопрос выше",
     });
-    const manual = runtime({ pending: [{ jobId: "c1", blockId: "b", channel: "manual", secret: false }] });
-    expect(composerState({ ...base, runtime: manual }).placeholder).toBe("Завершите вход в браузере выше");
+    // Идёт ход агента, а у задачи защищённый вопрос: пока агент отвечает, поле занято.
+    expect(composerState({ ...base, runtime: secret, jobs: [task, job("chat-2", "chat")] })).toMatchObject({
+      disabled: true,
+      replying: true,
+    });
 
     const chat = job("chat-1", "chat");
     expect(composerState({ ...base, runtime: runtime(), jobs: [chat] })).toMatchObject({
@@ -351,7 +373,6 @@ describe("состояние треда из runtime", () => {
     expect(composerState({ ...base, runtime: runtime(), awaiting: true })).toMatchObject({ replying: true });
 
     // Задача идёт в фоне: поле свободно, сообщение уходит без 409.
-    const task = job("c1", "connect");
     expect(composerState({ ...base, runtime: runtime(), jobs: [task] })).toMatchObject({
       disabled: false,
       replying: false,

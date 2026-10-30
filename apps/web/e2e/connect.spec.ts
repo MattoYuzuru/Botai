@@ -42,8 +42,9 @@ test.describe("подключение в общем чате", () => {
     await expect(card).toContainText("Подключение ЦУ");
     await expect(card).toContainText("Ждёт вас");
     await expect(page.locator("[data-timeline]")).toHaveCount(1);
-    await expect(composer(page)).toBeDisabled();
-    await expect(composer(page)).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
+    // Поле не выключено: агенту можно написать, пока задача ждёт вход.
+    await expect(composer(page)).toBeEnabled();
+    await expect(composer(page)).toHaveAttribute("placeholder", "Ответьте в поле выше или напишите агенту");
     await expect(page.getByText("Вход через поля BotAI")).toBeVisible();
     await expect(page.getByRole("button", { name: "Открыть браузер" })).toBeVisible();
 
@@ -69,6 +70,19 @@ test.describe("подключение в общем чате", () => {
     await expect(composer(page)).toBeEnabled();
     await expect(pending(page)).toHaveCount(0);
     await expectNoHorizontalOverflow(page, "итог в чате");
+  });
+
+  test("пока задача ждёт пароль, агенту можно написать: он отвечает, защищённый вопрос остаётся", async ({
+    page,
+  }) => {
+    await native(page);
+    await answer(page, "anna");
+    await expect(page.getByText(PASSWORD)).toBeVisible();
+    await expect(composer(page)).toBeEnabled();
+    await expect(composer(page)).toHaveAttribute("placeholder", "Пароль вводите в защищённое поле выше");
+    await send(page, "Что ты делаешь?");
+    await expect(page.getByText(/^Не знаю:/)).toBeVisible();
+    await expect(pending(page).getByLabel("Ответ", { exact: true })).toHaveAttribute("type", "password");
   });
 
   test("ответ на вопрос задачи текстом из поля ввода: ссылка в диалоге уходит задаче, а не новому ходу агента", async ({

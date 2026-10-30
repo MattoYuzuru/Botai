@@ -164,6 +164,28 @@ describe("прочтение и уведомления", () => {
     expect(queryClient.getQueryData<ThreadOut[]>(chatKeys.threads)?.[0]?.unread).toBe(false);
   });
 
+  it("прочитанным тред не отмечается, пока самое новое его сообщение не показано на экране", async () => {
+    const reads: string[] = [];
+    const real = await fetch(new URL("/api/v1/chat/threads", window.location.origin)).then(
+      (response) => response.json() as Promise<ThreadOut[]>,
+    );
+    const seed = real[0] as ThreadOut;
+    // Список знает о более новом сообщении, чем загружено в ленту: прочитать его ещё нельзя.
+    harness.server.use(
+      http.get("*/api/v1/chat/threads", () =>
+        HttpResponse.json([{ ...seed, unread: true, lastMessageAt: "2099-01-01T00:00:00.000Z" }]),
+      ),
+      http.post("*/api/v1/chat/threads/:threadId/read", ({ params }) => {
+        reads.push(String(params.threadId));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderApp(`/chat?thread=${seed.id}`);
+    await screen.findByText(/Сегодня три пары/, undefined, wait);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(reads).toEqual([]);
+  });
+
   it("тред ушёл в «ждёт вас» вне открытого: тост «Ботай просит войти: …» ведёт прямо в этот тред", async () => {
     let rows = [thread({ id: "T1", title: "Старый" }), thread({ id: "T2", title: "Подключение ЦУ" })];
     harness.server.use(http.get("*/api/v1/chat/threads", () => HttpResponse.json(rows)));

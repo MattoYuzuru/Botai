@@ -1,6 +1,6 @@
 import { Fragment, type MouseEvent, type ReactNode } from "react";
 import { cn } from "../../lib/cn";
-import { displayHost, safeHttpUrl } from "../../lib/safe-url";
+import { displayHost, safeAppHref, safeHttpUrl } from "../../lib/safe-url";
 import { linkClass } from "../styles";
 import { ChartBlock } from "./chart-block";
 import { type Block, type Inline, parseMarkdown, type TableAlign } from "./parse";
@@ -16,13 +16,6 @@ export interface ResolvedLink {
 }
 
 export type LinkResolver = (url: string) => ResolvedLink | null;
-
-/** Адрес, который резолвер вправе вернуть: путь приложения или http(s). Схемы `javascript:`, `data:` и «//host» — нет. */
-function safeResolvedHref(href: string): string | null {
-  if (href.startsWith("/") && !href.startsWith("//") && !href.includes("\\")) return href;
-  if (href.startsWith("#")) return href;
-  return safeHttpUrl(href)?.href ?? null;
-}
 
 const openInApp = (onOpen: (() => void) | undefined) => (event: MouseEvent<HTMLAnchorElement>) => {
   if (!onOpen || event.defaultPrevented || event.button !== 0) return;
@@ -87,7 +80,7 @@ function renderInline(nodes: Inline[], resolveLink?: LinkResolver): ReactNode {
           );
         }
         const target = resolveLink?.(node.href) ?? null;
-        const href = target ? safeResolvedHref(target.href) : null;
+        const href = target ? safeAppHref(target.href) : null;
         if (!target || !href)
           return <Fragment key={key}>{renderInline(node.children, resolveLink)}</Fragment>;
         // Голый адрес: подпись берём у резолвера, а не показываем `botai://…`.

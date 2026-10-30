@@ -13,7 +13,8 @@ export interface QuickRepliesProps {
 
 /** Быстрые ответы под последним ответом агента: до четырёх кнопок-пилюль, длинный текст переносится. */
 export function QuickReplies({ options, onPick, disabled = false, className }: QuickRepliesProps) {
-  const shown = options.slice(0, MAX_QUICK_REPLIES);
+  // Одинаковые подписи схлопываются: ключ кнопки — её текст, и две одинаковые кнопки ничего не добавляют.
+  const shown = [...new Set(options)].slice(0, MAX_QUICK_REPLIES);
   if (shown.length === 0) return null;
   return (
     <fieldset

@@ -25,33 +25,50 @@ export function kindOfFile(file: Pick<File, "type" | "name">): AttachmentKind {
 }
 
 interface Draft extends ComposerAttachment {
-  file: File;
+  /** Выбранный файл; у вложения, вернувшегося после отказа сервера, его нет — оно уже загружено. */
+  file: File | null;
   out?: AttachmentOut;
   controller: AbortController;
 }
 
 type Buckets = Record<string, readonly Draft[]>;
 
+const deleteUnsent = (draft: Draft) => {
+  // Не отправленное вложение удаляется и на сервере; сбой удаления не важен: оно не привязано ни к одному сообщению.
+  if (draft.out)
+    void v3<void>("DELETE", `/api/v1/attachments/${encodeURIComponent(draft.out.id)}`).catch(() => {});
+};
+
 /**
  * Вложения поля ввода: файл уходит на сервер сразу, как только выбран (`POST /attachments`), чип показывает долю
- * загрузки, ошибку и «Убрать». Сообщение уходит только с загруженными (`ready`). У каждого чата свой набор:
- * переключение чата не теряет выбранное и не путает загрузки.
+ * загрузки, ошибку и «Убрать». Сообщение уходит только с загруженными (`ready`); чипы с ошибкой остаются в поле,
+ * пока человек их не уберёт. У каждого чата свой набор: переключение чата не теряет выбранное и не путает загрузки.
+ * Источник правды — ref, обновляемый сразу: быстрые подряд выбранные файлы не обходят предел в десять штук.
  */
 export function useAttachments(bucket: string) {
+  const store = useRef<Buckets>({});
   const [buckets, setBuckets] = useState<Buckets>({});
-  const latest = useRef<Buckets>({});
-  latest.current = buckets;
 
-  const patch = useCallback((key: string, id: string, change: Partial<Draft>) => {
-    setBuckets((current) => ({
-      ...current,
-      [key]: (current[key] ?? []).map((item) => (item.id === id ? { ...item, ...change } : item)),
-    }));
+  const commit = useCallback((next: Buckets) => {
+    store.current = next;
+    setBuckets(next);
   }, []);
+
+  const patch = useCallback(
+    (key: string, id: string, change: Partial<Draft>) => {
+      const list = store.current[key];
+      if (!list?.some((item) => item.id === id)) return;
+      commit({
+        ...store.current,
+        [key]: list.map((item) => (item.id === id ? { ...item, ...change } : item)),
+      });
+    },
+    [commit],
+  );
 
   const add = useCallback(
     (files: File[], _source: FileSource, threadId: string | null) => {
-      const have = latest.current[bucket]?.length ?? 0;
+      const have = store.current[bucket]?.length ?? 0;
       const room = Math.max(0, MAX_MESSAGE_ATTACHMENTS - have);
       if (files.length > room) {
         toast("Не больше десяти вложений в сообщении", {
@@ -61,11 +78,10 @@ export function useAttachments(bucket: string) {
       }
       const drafts: Draft[] = [];
       for (const file of files.slice(0, room)) {
-        const id = clientId();
         const kind = kindOfFile(file);
         const tooBig = file.size > MAX_ATTACHMENT_BYTES;
         drafts.push({
-          id,
+          id: clientId(),
           name: file.name,
           mime: file.type || "application/octet-stream",
           size: file.size,
@@ -78,9 +94,9 @@ export function useAttachments(bucket: string) {
         });
       }
       if (drafts.length === 0) return;
-      setBuckets((current) => ({ ...current, [bucket]: [...(current[bucket] ?? []), ...drafts] }));
+      commit({ ...store.current, [bucket]: [...(store.current[bucket] ?? []), ...drafts] });
       for (const draft of drafts) {
-        if (draft.status === "failed") continue;
+        if (draft.status === "failed" || !draft.file) continue;
         uploadAttachment(draft.file, {
           threadId,
           signal: draft.controller.signal,
@@ -94,51 +110,83 @@ export function useAttachments(bucket: string) {
         );
       }
     },
-    [bucket, patch],
+    [bucket, patch, commit],
   );
 
   const remove = useCallback(
     (id: string) => {
-      const draft = latest.current[bucket]?.find((item) => item.id === id);
+      const draft = store.current[bucket]?.find((item) => item.id === id);
       if (!draft) return;
       draft.controller.abort();
       if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
-      setBuckets((current) => ({
-        ...current,
-        [bucket]: (current[bucket] ?? []).filter((item) => item.id !== id),
-      }));
-      // Не отправленное вложение удаляется и на сервере; сбой удаления не важен: оно не привязано ни к одному сообщению.
-      if (draft.out)
-        void v3<void>("DELETE", `/api/v1/attachments/${encodeURIComponent(draft.out.id)}`).catch(() => {});
+      commit({ ...store.current, [bucket]: (store.current[bucket] ?? []).filter((item) => item.id !== id) });
+      deleteUnsent(draft);
     },
-    [bucket],
+    [bucket, commit],
   );
 
-  /** Загруженные вложения уходят с сообщением; остальное (ошибки) убирается из поля вместе с ними. */
+  /** Загруженные вложения уходят с сообщением; чипы с ошибкой остаются в поле до «Убрать». */
   const take = useCallback((): OutboxAttachment[] => {
-    const drafts = latest.current[bucket] ?? [];
-    const ready = drafts
-      .filter((item): item is Draft & { out: AttachmentOut } => item.status === "ready" && Boolean(item.out))
-      .map((item) => ({
-        id: item.out.id,
-        name: item.out.name,
-        mime: item.out.mime,
-        size: item.out.size,
-        kind: item.out.kind,
-      }));
-    for (const draft of drafts) if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
-    setBuckets((current) => ({ ...current, [bucket]: [] }));
-    return ready;
-  }, [bucket]);
+    const drafts = store.current[bucket] ?? [];
+    const taken = drafts.filter(
+      (item): item is Draft & { out: AttachmentOut } => item.status === "ready" && Boolean(item.out),
+    );
+    for (const draft of taken) if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+    const left = drafts.filter((item) => !taken.includes(item as Draft & { out: AttachmentOut }));
+    commit({ ...store.current, [bucket]: left });
+    return taken.map((item) => ({
+      id: item.out.id,
+      name: item.out.name,
+      mime: item.out.mime,
+      size: item.out.size,
+      kind: item.out.kind,
+    }));
+  }, [bucket, commit]);
 
+  /** Сервер не принял сообщение с вложениями: они уже загружены и возвращаются в поле того чата, откуда уходили. */
+  const restore = useCallback(
+    (items: readonly OutboxAttachment[], key: string) => {
+      const list = store.current[key] ?? [];
+      const known = new Set(list.map((item) => item.out?.id));
+      const back: Draft[] = items
+        .filter((item) => !known.has(item.id))
+        .slice(0, Math.max(0, MAX_MESSAGE_ATTACHMENTS - list.length))
+        .map((item) => ({
+          ...item,
+          id: clientId(),
+          status: "ready" as const,
+          progress: 1,
+          file: null,
+          controller: new AbortController(),
+          out: { ...item, createdAt: "", documentId: null, ingest: "none" as const },
+        }));
+      if (back.length > 0) commit({ ...store.current, [key]: [...list, ...back] });
+    },
+    [commit],
+  );
+
+  /** Новый чат получил имя: чипы, оставшиеся в поле (с ошибкой), переезжают в поле этого чата вместе с ним. */
+  const move = useCallback(
+    (from: string, to: string) => {
+      const left = store.current[from];
+      if (!left?.length || from === to) return;
+      const { [from]: _gone, ...rest } = store.current;
+      commit({ ...rest, [to]: [...(rest[to] ?? []), ...left] });
+    },
+    [commit],
+  );
+
+  // Человек ушёл из чата: выбранные, но не отправленные вложения не остаются на сервере.
   useEffect(
     () => () => {
-      for (const drafts of Object.values(latest.current)) {
+      for (const drafts of Object.values(store.current)) {
         for (const draft of drafts) {
           draft.controller.abort();
           if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+          deleteUnsent(draft);
         }
       }
+      store.current = {};
     },
     [],
   );
@@ -164,5 +212,5 @@ export function useAttachments(bucket: string) {
     [drafts],
   );
 
-  return { items: composer, viewer, add, remove, take };
+  return { items: composer, viewer, add, remove, take, restore, move };
 }

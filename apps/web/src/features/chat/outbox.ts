@@ -7,7 +7,7 @@
  * перезагрузку страницы. Каждое сообщение помечено владельцем: после выхода и входа другим человеком чужие
  * сообщения не отправляются, а стираются.
  */
-import { isApiError, isNetworkError } from "@/api/errors";
+import { type ApiError, isApiError, isNetworkError } from "@/api/errors";
 import type { Message, Thread } from "@/api/types";
 import type { AttachmentKind, MessageAccepted } from "@/api/v3";
 
@@ -72,18 +72,30 @@ export interface OutboxDeps {
 export const OUTBOX_KEY = "botai.chat.outbox";
 /** Пауза между попытками: 2, 4, 8 … 30 секунд. */
 export const retryDelay = (attempts: number) => Math.min(2_000 * 2 ** Math.max(0, attempts - 1), 30_000);
-/** Ассистент ещё отвечает на прошлое сообщение: следующая попытка скоро, без шума. */
+/** Ход агента ещё идёт: следующая попытка через 3, 6, 12, 24 с, и не больше пяти попыток. */
 const BUSY_DELAY_MS = 3_000;
-/** Допуск расхождения часов клиента и сервера при проверке «дошло ли сообщение». */
-const SKEW_MS = 2_000;
+export const BUSY_MAX_ATTEMPTS = 5;
 
+export type ConflictKind = "agent_busy" | "secret_in_chat" | "other";
+
+/**
+ * Чем кончился 409. Бэкенд различает коды: `agent_busy` — ход агента ещё идёт, `secret_in_chat` — человек написал
+ * пароль или код в обычное поле. Пока код не пришёл, узнаём по тексту отказа; всё, что похоже на «защищённое поле»,
+ * считается секретом: такой текст нельзя ни повторять, ни возвращать в поле.
+ */
+export function conflictKind(error: ApiError): ConflictKind {
+  if (error.status !== 409) return "other";
+  if (error.code === "secret_in_chat") return "secret_in_chat";
+  if (error.code === "agent_busy") return "agent_busy";
+  if (/защищённ|парол|секрет/i.test(error.detail)) return "secret_in_chat";
+  if (/ещё отвечает|уже идёт/i.test(error.detail)) return "agent_busy";
+  return "other";
+}
+
+/** Сообщение с секретом сервер не принял: оно удалено из очереди и из хранилища, в поле не возвращается. */
+export const isSecretInChat = (error: unknown): boolean =>
+  isApiError(error) && conflictKind(error) === "secret_in_chat";
 type Listener = () => void;
-
-const textOf = (message: Message): string =>
-  message.blocks
-    .map((block) => (block.type === "text" && typeof block.markdown === "string" ? block.markdown : ""))
-    .join("\n")
-    .trim();
 
 export class Outbox {
   private items: OutboxItem[] = [];
@@ -334,11 +346,11 @@ export class Outbox {
       }
       if (isApiError(error)) {
         this.patch(item.id, { maybeSent: false });
-        if (error.status === 409) {
-          // Вопрос задачи уже закрыт или агент ещё отвечает на прошлое сообщение: сообщение уйдёт обычным,
-          // сервер сам выберет, кому его отдать. Подождать и отправить, без шума.
-          if (item.targetJobId) this.patch(item.id, { targetJobId: undefined });
-          this.retry(this.current(item), "sending", BUSY_DELAY_MS);
+        // Ход агента ещё идёт: подождать и отправить, без шума, но не бесконечно. Всё остальное (в том числе пароль
+        // в обычном поле) сервер отверг по существу: повторять нельзя, текст не должен дожидаться в хранилище.
+        const current = this.current(item);
+        if (conflictKind(error) === "agent_busy" && current.attempts + 1 < BUSY_MAX_ATTEMPTS) {
+          this.retry(current, "sending", Math.min(BUSY_DELAY_MS * 2 ** current.attempts, 30_000));
           return "retry";
         }
         if (error.status === 401) {
@@ -362,15 +374,9 @@ export class Outbox {
     return this.items.find((candidate) => candidate.id === item.id) ?? item;
   }
 
+  /** Сервер хранит `clientMessageId` сообщения: дошло ли оборванное сообщение, видно по нему, а не по тексту. */
   private async findSent(threadId: string, item: OutboxItem): Promise<Message | null> {
     const messages = await this.deps.listMessages(threadId);
-    return (
-      messages.find(
-        (message) =>
-          message.role === "user" &&
-          textOf(message) === item.text.trim() &&
-          Date.parse(message.createdAt) >= item.createdAt - SKEW_MS,
-      ) ?? null
-    );
+    return messages.find((message) => message.role === "user" && message.clientMessageId === item.id) ?? null;
   }
 }

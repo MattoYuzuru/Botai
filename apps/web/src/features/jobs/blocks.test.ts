@@ -164,6 +164,16 @@ describe("блоки v3: plan, attachment, task и быстрые ответы",
     expect(parseBlock(text)).not.toHaveProperty("quickReplies");
   });
 
+  it("быстрые ответы без повторов: одинаковые подписи схлопываются, порядок сохраняется", () => {
+    const block = parseBlock({
+      ...base,
+      type: "text",
+      markdown: "Готово.",
+      quickReplies: ["Да", "Нет", "Да", " Нет ", "Позже"],
+    });
+    expect(block).toMatchObject({ quickReplies: ["Да", "Нет", "Позже"] });
+  });
+
   it("план обновляется патчем: новое состояние шага, тот же id", () => {
     const block = parseBlock(plan);
     if (!block) throw new Error("нет блока");

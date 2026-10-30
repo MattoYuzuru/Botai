@@ -13,7 +13,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { humanMessage } from "@/api/errors";
+import { humanMessage, isApiError } from "@/api/errors";
 import { meQuery } from "@/api/queries";
 import type { Message } from "@/api/types";
 import { useComposerKeyboard } from "@/app/keyboard";
@@ -29,6 +29,7 @@ import { composerState } from "./composer-state";
 import { ContextButton } from "./context-meter-view";
 import { EmptyChat } from "./empty-chat";
 import { useOpenThread } from "./open-thread";
+import { isSecretInChat } from "./outbox";
 import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
 import { outbox, useOutbox } from "./runtime";
 import { SourcesPanel } from "./sources-panel";
@@ -53,7 +54,7 @@ const DEFAULT_TITLE = "Новый чат";
  * сети — остаётся в ленте с подписью и уходит само. Вложения грузятся сразу, как выбраны, и уходят с сообщением.
  */
 export function ChatScreen() {
-  const { thread: param, draft: draftParam } = useSearch({ from: "/_app/chat" });
+  const { thread: param, draft: draftParam, threads: listParam } = useSearch({ from: "/_app/chat" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const me = useQuery(meQuery);
@@ -67,7 +68,8 @@ export function ChatScreen() {
   const [sourcesOpen, setSourcesOpen] = useState(false);
 
   // Какой чат открыт: явный `?thread=`, иначе последний; `?draft=` без чата — новый.
-  const newRequested = param === NEW_THREAD || (param === undefined && draftParam !== undefined);
+  const newRequested =
+    param === NEW_THREAD || (param === undefined && (draftParam !== undefined || listParam !== undefined));
   const latestId = threads.data?.[0]?.id ?? null;
   const activeId = newRequested ? null : (param ?? latestId);
   const resolving = !newRequested && param === undefined && threads.isPending;
@@ -82,6 +84,9 @@ export function ChatScreen() {
     [draftKey],
   );
 
+  // Вложения поля: у каждого чата свой набор, файл грузится сразу.
+  const attachments = useAttachments(draftKey);
+
   // `/chat?draft=…`: заготовка ложится в поле и сразу уходит из адреса; сообщение не отправляется.
   useEffect(() => {
     if (draftParam === undefined) return;
@@ -90,6 +95,13 @@ export function ChatScreen() {
     void navigate({ to: "/chat", search: { thread: key }, replace: true });
     queueMicrotask(() => document.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus());
   }, [draftParam, param, navigate]);
+
+  // `/chat?threads=1`: список чатов открывается поверх нового чата, а не «последнего» наугад.
+  useEffect(() => {
+    if (listParam === undefined) return;
+    setHistoryOpen(true);
+    void navigate({ to: "/chat", search: { thread: param ?? NEW_THREAD }, replace: true });
+  }, [listParam, param, navigate]);
 
   // Сообщения нового чата живут в очереди, пока сервер не назвал чат; их принадлежность запоминаем.
   const [draftMessages, setDraftMessages] = useState<
@@ -119,9 +131,10 @@ export function ChatScreen() {
   )?.threadId;
   useEffect(() => {
     if (activeId === null && assignedThreadId) {
+      attachments.move(NEW_THREAD, assignedThreadId);
       void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true });
     }
-  }, [activeId, assignedThreadId, navigate]);
+  }, [activeId, assignedThreadId, navigate, attachments.move]);
 
   const jobsRef = useRef(0);
   const runtimeResult = useQuery({
@@ -175,8 +188,6 @@ export function ChatScreen() {
   const showEmpty = !resolving && !startingThread && loaded && timeline.turns.length === 0;
   const suggestions = useSuggestions(showEmpty, nowMs);
 
-  // Вложения поля: у каждого чата свой набор, файл грузится сразу.
-  const attachments = useAttachments(draftKey);
   const openAttachment = useAttachmentViewer((state) => state.open);
   const known = useMemo(() => {
     const items = [...attachments.viewer];
@@ -196,7 +207,7 @@ export function ChatScreen() {
   }, [attachments.viewer, timeline.turns]);
 
   // Очередь отправки: новый чат появляется в списке, отправленное сообщение — в ленте, отказ возвращает текст в поле.
-  const latest = useLatest({ activeId, draftMessages, ownerId });
+  const latest = useLatest({ activeId, draftMessages, ownerId, restore: attachments.restore });
   useEffect(
     () =>
       outbox.on((event) => {
@@ -220,17 +231,35 @@ export function ChatScreen() {
           void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
         } else {
           setDraftMessages((items) => items.filter((item) => item.id !== event.item.id));
-          toast("Сообщение не отправлено", { tone: "warning", description: humanMessage(event.error) });
+          const { item, error } = event;
+          // Пароль в обычном поле: сообщение уже стёрто из очереди и хранилища и в поле не возвращается.
+          if (isSecretInChat(error)) {
+            toast("Пароль и коды вводите только в защищённое поле", {
+              tone: "warning",
+              description: "Сообщение не отправлено и удалено.",
+            });
+            return;
+          }
+          // Сервер не принял вложения: они уже загружены и возвращаются чипами для повторной отправки.
+          const refused =
+            item.attachments.length > 0 &&
+            isApiError(error) &&
+            (error.status === 400 || error.status === 422);
+          toast(refused ? "Не удалось отправить вложения" : "Сообщение не отправлено", {
+            tone: "warning",
+            description: humanMessage(error),
+          });
+          if (refused) latest.current.restore(item.attachments, item.threadId ?? NEW_THREAD);
           const current = latest.current;
           if (
-            event.item.ownerId === current.ownerId &&
+            item.ownerId === current.ownerId &&
             (current.activeId === null
-              ? current.draftMessages.some((message) => message.id === event.item.id)
-              : event.item.threadId === current.activeId)
+              ? current.draftMessages.some((message) => message.id === item.id)
+              : item.threadId === current.activeId)
           ) {
             setDrafts((all) => {
               const key = current.activeId ?? NEW_THREAD;
-              return all[key] ? all : { ...all, [key]: event.item.text };
+              return all[key] ? all : { ...all, [key]: item.text };
             });
           }
         }
@@ -280,11 +309,17 @@ export function ChatScreen() {
 
   const changeKey = `${timeline.turns.length}|${jobs.map((job) => `${job.snapshot.blocks.length}${job.snapshot.state}`).join(",")}`;
   const stick = useStickToBottom(changeKey, activeId);
+  // Прочитанным тред отмечается, когда история дозагружена и самое новое сообщение треда уже показано на экране.
+  const lastShownAt = messages.reduce(
+    (latest, message) => Math.max(latest, Date.parse(message.createdAt) || 0),
+    0,
+  );
+  const newestAt = activeThread ? Date.parse(activeThread.lastMessageAt) || 0 : 0;
   useMarkRead(
     activeId,
     activeThread?.unread ?? false,
     stick.atBottom,
-    activeId !== null && !messagesResult.isPending,
+    activeId !== null && !messagesResult.isPending && !messagesResult.isFetching && lastShownAt >= newestAt,
   );
 
   // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.
@@ -348,6 +383,7 @@ export function ChatScreen() {
               onAddFiles={(files, source) => attachments.add(files, source, activeId)}
               onRemoveAttachment={attachments.remove}
               onOpenAttachment={openAttachment}
+              resetKey={draftKey}
             />
             <MascotDock {...mascot} />
           </div>

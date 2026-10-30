@@ -117,7 +117,10 @@ export function observe(ctx: AgentCtx, sim: JobSim, threadId: string): void {
     } else return;
     ctx.state().messages[threadId] = messages;
     const thread = ctx.find(threadId);
-    if (thread) thread.lastMessageAt = ctx.iso();
+    if (thread) {
+      const at = event.event === "block" ? (event.data as KnownBlock).at : ctx.iso();
+      if (at > thread.lastMessageAt) thread.lastMessageAt = at;
+    }
     ctx.save();
   };
   for (const event of sim.events) project(event);

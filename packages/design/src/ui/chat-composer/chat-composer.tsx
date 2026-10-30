@@ -5,6 +5,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -47,6 +48,8 @@ export interface ChatComposerProps {
   notice?: ReactNode;
   /** Запись голоса. Кнопка скрыта, если браузер не умеет записывать звук. */
   voice?: boolean;
+  /** Смена значения (другой чат) бросает идущую запись: голос одного чата не прикрепляется к другому. */
+  resetKey?: string;
   className?: string;
 }
 
@@ -88,6 +91,7 @@ export function ChatComposer({
   maxAttachments = DEFAULT_MAX_ATTACHMENTS,
   notice,
   voice: voiceEnabled = true,
+  resetKey,
   className,
 }: ChatComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -99,6 +103,13 @@ export function ChatComposer({
   const sendOnEnter = enterToSend ?? finePointer;
   const resize = useAutoGrow(ref, value || placeholder, 6);
   const recorder = useVoiceRecorder();
+  const cancelVoice = recorder.cancel;
+  const lastReset = useRef(resetKey);
+  useEffect(() => {
+    if (lastReset.current === resetKey) return;
+    lastReset.current = resetKey;
+    cancelVoice();
+  }, [resetKey, cancelVoice]);
   const [announcement, setAnnouncement] = useState("");
 
   const text = value.trim();

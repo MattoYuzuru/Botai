@@ -653,10 +653,13 @@ describe("прокрутка (styleguide §7)", () => {
     }
   });
 
-  it("base.css: один стиль — стандартные свойства, WebKit только запасным вариантом, без дорожки и стрелок", () => {
+  it("base.css: один стиль — стандартные свойства и те же токены в WebKit всегда, без дорожки и стрелок", () => {
     expect(baseCss).toContain("scrollbar-width: thin");
     expect(baseCss).toContain("scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)");
-    expect(baseCss).toContain("@supports not (scrollbar-width: thin)");
+    // WebKit-псевдоэлементы не под @supports: Safari и iOS получают цвета токенов, а Chromium их при заданных
+    // стандартных свойствах игнорирует.
+    expect(baseCss).not.toContain("@supports not (scrollbar-width: thin)");
+    expect(baseCss).toContain("::-webkit-scrollbar-thumb");
     expect(baseCss).toContain("::-webkit-scrollbar-button");
     expect(baseCss).toContain("(hover: none)");
     // В покое бегунок вложенной области прозрачен, страница (:root) и наведение показывают его.

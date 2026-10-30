@@ -1,13 +1,15 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 
-chatHarness();
+const harness = chatHarness();
 
 const file = (name: string, type: string, body = "data") => new File([body], name, { type });
 const fileInput = () => document.querySelector<HTMLInputElement>("[data-composer-file]") as HTMLInputElement;
 const chips = () => screen.queryByRole("list", { name: "Вложения" });
+const timeline = () => document.querySelector("[data-timeline]");
 const sendButton = () => screen.getByRole("button", { name: "Отправить" });
 
 const original = {
@@ -104,6 +106,49 @@ describe("вложения: «+», чипы, отправка", () => {
     await user.upload(fileInput(), big);
     expect(await screen.findByText("Файл больше 20 МБ", undefined, wait)).toBeInTheDocument();
     expect(sendButton()).toBeDisabled();
+  });
+
+  it("сервер не принял сообщение с вложениями (422): тост, чипы остаются для повторной отправки, в ленте их нет", async () => {
+    harness.server.use(
+      http.post("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json(
+          { code: "validation", title: "validation", status: 422, detail: "Вложения не приняты" },
+          { status: 422, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    const { user } = await openNewChat();
+    await user.upload(fileInput(), file("доска.png", "image/png"));
+    const list = await screen.findByRole("list", { name: "Вложения" }, wait);
+    await waitFor(
+      () => expect(within(list).getByRole("button", { name: "Открыть доска.png" })).toBeEnabled(),
+      wait,
+    );
+    await user.click(sendButton());
+    expect(await screen.findByText("Не удалось отправить вложения", undefined, wait)).toBeInTheDocument();
+    // Чип вернулся: отправить можно снова; оптимистичного вложения в ленте нет.
+    const back = await screen.findByRole("list", { name: "Вложения" }, wait);
+    expect(within(back).getByRole("button", { name: "Открыть доска.png" })).toBeEnabled();
+    expect(sendButton()).toBeEnabled();
+    expect(timeline()).toBeNull();
+  });
+
+  it("чип с ошибкой не пропадает при отправке: остаётся в поле, пока человек его не уберёт", async () => {
+    const { user } = await openNewChat();
+    await user.upload(fileInput(), file("хорошее.pdf", "application/pdf"));
+    await user.upload(fileInput(), file("установщик.exe", "application/x-msdownload"));
+    const list = await screen.findByRole("list", { name: "Вложения" }, wait);
+    await within(list).findByText(/Такой тип файла не поддерживается/, undefined, wait);
+    await waitFor(
+      () => expect(within(list).getByRole("button", { name: "Открыть хорошее.pdf" })).toBeEnabled(),
+      wait,
+    );
+    await user.type(composer(), "Вот документ");
+    await user.click(sendButton());
+    expect(await screen.findByText(/Документ «хорошее\.pdf» получен/, undefined, wait)).toBeInTheDocument();
+    const left = screen.getByRole("list", { name: "Вложения" });
+    expect(within(left).queryByText("хорошее.pdf")).toBeNull();
+    expect(within(left).getByText("установщик.exe")).toBeInTheDocument();
   });
 
   it("перетаскивание на область чата и вставка изображения из буфера добавляют вложения", async () => {

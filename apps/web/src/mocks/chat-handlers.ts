@@ -392,8 +392,15 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
 
       // Несекретный вопрос задачи, ждущий ответа в диалоге, получает сообщение; иначе отвечает агент.
       const task = dialogue ? db.sims.get(dialogue.jobId) : undefined;
-      if (!task && turn) return problem(409, "conflict", "Ассистент ещё отвечает на прошлое сообщение");
-      const message: Message = { id: ulid(), role: "user", blocks, jobId: null, createdAt: now };
+      if (!task && turn) return problem(409, "agent_busy", "Ассистент ещё отвечает на прошлое сообщение");
+      const message: Message = {
+        id: ulid(),
+        role: "user",
+        blocks,
+        jobId: null,
+        createdAt: now,
+        clientMessageId: body.clientMessageId ?? null,
+      };
       state().messages[id] = [...(state().messages[id] ?? []), message];
       thread.lastMessageAt = now;
       for (const file of attached) {

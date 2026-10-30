@@ -44,7 +44,7 @@ export function ChatLayout({
       className={cn(
         "flex min-h-0 flex-1 flex-col transition-[padding-bottom] duration-slow ease-soft",
         // Место под нижнюю панель: без него поле ввода, прилипшее над ней, налезало бы на последнее сообщение.
-        !keyboardOpen && "pb-[calc(4.0625rem+env(safe-area-inset-bottom,0px))] lg:pb-0",
+        !keyboardOpen && "pb-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom,0px))] lg:pb-0",
         className,
       )}
     >
@@ -69,7 +69,7 @@ export function ChatLayout({
           // На ноутбуке панели снизу нет, поле отступает от низа на 20 px.
           keyboardOpen
             ? "bottom-0 pb-safe-2"
-            : "bottom-[calc(4.0625rem+env(safe-area-inset-bottom,0px))] pb-2 lg:bottom-0 lg:pb-safe-5",
+            : "bottom-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom,0px))] pb-2 lg:bottom-0 lg:pb-safe-5",
         )}
       >
         <div className="relative mx-auto w-full max-w-chat px-safe-4 pt-2 xs:px-safe-5">

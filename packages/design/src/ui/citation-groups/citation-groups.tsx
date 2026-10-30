@@ -1,7 +1,7 @@
 import { type MouseEvent, type ReactNode, useId, useState } from "react";
 import { cn } from "../../lib/cn";
 import { countRu, DEFAULT_TIME_ZONE, formatAgo } from "../../lib/format";
-import { safeHttpUrl } from "../../lib/safe-url";
+import { safeAppHref, safeHttpUrl } from "../../lib/safe-url";
 import { Badge } from "../badge/badge";
 import { Icon, type IconName } from "../icon";
 
@@ -55,9 +55,12 @@ function ItemLink({
   children: ReactNode;
 }) {
   if (item.internal) {
+    // Адрес внутренней ссылки проходит ту же проверку, что в тексте ответа: `javascript:` и «//host» ссылкой не станут.
+    const href = safeAppHref(item.internal.href);
+    if (!href) return <div className={className}>{children}</div>;
     return (
       <a
-        href={item.internal.href}
+        href={href}
         data-internal=""
         onClick={(event) => openInternal(event, item.internal?.onOpen)}
         className={className}
@@ -75,7 +78,8 @@ function ItemLink({
   );
 }
 
-const available = (item: CitationItem) => Boolean(item.internal) || safeHttpUrl(item.url) !== null;
+const available = (item: CitationItem) =>
+  item.internal ? safeAppHref(item.internal.href) !== null : safeHttpUrl(item.url) !== null;
 
 function Meta({ group, nowMs, timeZone }: { group: CitationGroup; nowMs: number; timeZone: string }) {
   return (
@@ -106,7 +110,7 @@ function SingleGroup({ group, nowMs, timeZone }: { group: CitationGroup; nowMs: 
           <span className="truncate type-caption text-fg-muted">{item.title}</span>
         )}
         <Meta group={group} nowMs={nowMs} timeZone={timeZone} />
-        {item.internal ? (
+        {item.internal && open ? (
           <span className="truncate type-caption text-fg-muted">{item.internal.label}</span>
         ) : (
           !open && <span className="type-caption text-fg-muted">Источник недоступен</span>
@@ -114,7 +118,7 @@ function SingleGroup({ group, nowMs, timeZone }: { group: CitationGroup; nowMs: 
         {item.snippet && <span className="line-clamp-2 type-caption text-fg-subtle">{item.snippet}</span>}
       </span>
       {open && !item.internal && <Icon name="external" size={16} className="mt-0.5 text-fg-subtle" />}
-      {item.internal && <Icon name="chevron-right" size={16} className="mt-0.5 text-fg-subtle" />}
+      {item.internal && open && <Icon name="chevron-right" size={16} className="mt-0.5 text-fg-subtle" />}
     </ItemLink>
   );
 }
@@ -148,7 +152,7 @@ function MultiGroup({ group, nowMs, timeZone }: { group: CitationGroup; nowMs: n
                   <Icon name={item.internal?.icon ?? "source"} size={16} className="mt-0.5 text-info" />
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="type-ui text-fg [overflow-wrap:anywhere]">{item.title}</span>
-                    {item.internal && (
+                    {item.internal && open && (
                       <span className="type-caption text-fg-muted">{item.internal.label}</span>
                     )}
                     {!open && <span className="type-caption text-fg-muted">Источник недоступен</span>}
@@ -159,7 +163,9 @@ function MultiGroup({ group, nowMs, timeZone }: { group: CitationGroup; nowMs: n
                   {open && !item.internal && (
                     <Icon name="external" size={16} className="mt-0.5 text-fg-subtle" />
                   )}
-                  {item.internal && <Icon name="chevron-right" size={16} className="mt-0.5 text-fg-subtle" />}
+                  {item.internal && open && (
+                    <Icon name="chevron-right" size={16} className="mt-0.5 text-fg-subtle" />
+                  )}
                 </ItemLink>
               </li>
             );

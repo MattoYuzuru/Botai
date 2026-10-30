@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, NetworkError } from "@/api/errors";
 import type { Message, Thread } from "@/api/types";
 import type { MessageAccepted } from "@/api/v3";
-import { Outbox, type OutboxDeps, type OutboxEvent, type OutboxPost, retryDelay } from "./outbox";
+import {
+  isSecretInChat,
+  Outbox,
+  type OutboxDeps,
+  type OutboxEvent,
+  type OutboxPost,
+  retryDelay,
+} from "./outbox";
 
 const NOW = Date.UTC(2026, 9, 27, 11, 5);
 
@@ -184,9 +191,11 @@ describe("очередь исходящих сообщений", () => {
     expect(retryDelay(20)).toBe(30_000);
   });
 
-  it("ответ потерян по дороге, а сообщение дошло: повторная отправка его не дублирует", async () => {
+  it("ответ потерян по дороге, а сообщение дошло: по clientMessageId его находят и не дублируют", async () => {
     const post = vi.fn().mockRejectedValueOnce(new NetworkError());
-    const list = vi.fn(async () => [userMessage("Что сдавать?", NOW + 500)]);
+    const list = vi.fn(async () => [
+      { ...userMessage("Что сдавать?", NOW + 500), clientMessageId: "local-1" },
+    ]);
     const { outbox, advance, events } = setup({ postMessage: post, listMessages: list });
     outbox.send("Что сдавать?", target);
     await vi.advanceTimersByTimeAsync(0);
@@ -198,32 +207,104 @@ describe("очередь исходящих сообщений", () => {
     expect(events.at(-1)).toMatchObject({ type: "sent", jobId: null });
   });
 
-  it("то же сообщение, отправленное раньше, дубликатом не считается", async () => {
+  it("такой же текст от другого сообщения дубликатом не считается: сопоставление — по clientMessageId, не по тексту", async () => {
     const post = vi
       .fn()
       .mockRejectedValueOnce(new NetworkError())
-      .mockImplementation(async (_threadId: string, post: OutboxPost) => accepted(post.text));
-    // В чате уже есть такое же сообщение, но от прошлого часа.
-    const list = vi.fn(async () => [userMessage("Что сдавать?", NOW - 3_600_000)]);
+      .mockImplementation(async (_threadId: string, body: OutboxPost) => accepted(body.text));
+    // В чате уже есть сообщение с тем же текстом, но другое: свежее и без нашего идентификатора.
+    const list = vi.fn(async () => [
+      { ...userMessage("Что сдавать?", NOW + 100), clientMessageId: "someone-else" },
+      userMessage("Что сдавать?", NOW + 200),
+    ]);
     const { outbox, advance } = setup({ postMessage: post, listMessages: list });
     outbox.send("Что сдавать?", target);
     await vi.advanceTimersByTimeAsync(0);
     await advance(retryDelay(1) + 1);
     expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith("t1", expect.objectContaining({ clientMessageId: "local-1" }));
     expect(outbox.snapshot).toEqual([]);
   });
 
-  it("ассистент ещё отвечает (409): без шума ждём и отправляем, подписи «нет сети» нет", async () => {
+  it("ход агента ещё идёт (409 agent_busy): ждём с нарастающей паузой и отправляем, подписи «нет сети» нет", async () => {
     const post = vi
       .fn()
-      .mockRejectedValueOnce(new ApiError(409, "conflict", "Ассистент ещё отвечает на прошлое сообщение"))
-      .mockImplementation(async (_threadId: string, post: OutboxPost) => accepted(post.text));
+      .mockRejectedValueOnce(new ApiError(409, "agent_busy", "Ассистент ещё отвечает на прошлое сообщение"))
+      .mockImplementation(async (_threadId: string, body: OutboxPost) => accepted(body.text));
     const { outbox, advance } = setup({ postMessage: post });
     outbox.send("И ещё вопрос", target);
     await vi.advanceTimersByTimeAsync(0);
     expect(outbox.snapshot[0]?.status).toBe("sending");
     await advance(3_100);
     expect(post).toHaveBeenCalledTimes(2);
+    expect(outbox.snapshot).toEqual([]);
+  });
+
+  it("агент не освобождается: после пяти попыток сообщение снимается и возвращается человеку, а не лежит вечно", async () => {
+    const post = vi.fn().mockRejectedValue(new ApiError(409, "agent_busy", ""));
+    const { outbox, advance, events, storage } = setup({ postMessage: post });
+    outbox.send("Терпеливое сообщение", target);
+    await vi.advanceTimersByTimeAsync(0);
+    // Паузы 3, 6, 12, 24 с: пять попыток в сумме.
+    for (const pause of [3_000, 6_000, 12_000, 24_000]) await advance(pause + 100);
+    expect(post).toHaveBeenCalledTimes(5);
+    expect(events.at(-1)).toMatchObject({ type: "rejected" });
+    expect(outbox.snapshot).toEqual([]);
+    expect(storage.data.has("botai.chat.outbox")).toBe(false);
+  });
+
+  it("запасное распознавание busy по тексту, пока бэкенд не отдаёт код", async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, "conflict", "Ассистент ещё отвечает на прошлое сообщение"))
+      .mockImplementation(async (_threadId: string, body: OutboxPost) => accepted(body.text));
+    const { outbox, advance } = setup({ postMessage: post });
+    outbox.send("И ещё", target);
+    await vi.advanceTimersByTimeAsync(0);
+    await advance(3_100);
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it("пароль в обычном поле (409 secret_in_chat): сообщение сразу стирается из очереди и хранилища, повтора нет", async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(409, "secret_in_chat", "Пароль и коды вводите только в защищённое поле"),
+      );
+    const { outbox, advance, events, storage } = setup({ postMessage: post });
+    outbox.send("correct-horse-battery", { ...target, targetJobId: "job-9" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({ type: "rejected" });
+    expect(outbox.snapshot).toEqual([]);
+    // Ни очереди, ни пароля в localStorage: ни сейчас, ни после «перезагрузки» и долгого ожидания.
+    expect(storage.data.has("botai.chat.outbox")).toBe(false);
+    expect([...storage.data.values()].join("")).not.toContain("correct-horse-battery");
+    await advance(60_000);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(setup({ storage }).outbox.snapshot).toEqual([]);
+  });
+
+  it("секрет узнаётся и по тексту отказа, пока код не пришёл; isSecretInChat различает его", async () => {
+    const post = vi.fn().mockRejectedValue(new ApiError(409, "conflict", "Ответьте в защищённом блоке"));
+    const { outbox, events, storage } = setup({ postMessage: post });
+    outbox.send("123456", target);
+    await vi.advanceTimersByTimeAsync(0);
+    const rejected = events.at(-1);
+    expect(rejected?.type === "rejected" && isSecretInChat(rejected.error)).toBe(true);
+    expect(storage.data.has("botai.chat.outbox")).toBe(false);
+    expect(isSecretInChat(new ApiError(409, "agent_busy", ""))).toBe(false);
+    expect(isSecretInChat(new ApiError(422, "validation", ""))).toBe(false);
+    expect(isSecretInChat(new NetworkError())).toBe(false);
+  });
+
+  it("любой другой 409 — отказ по существу: сообщение снимается, текст возвращается человеку", async () => {
+    const post = vi.fn().mockRejectedValue(new ApiError(409, "conflict", "Этот вопрос уже закрыт"));
+    const { outbox, events } = setup({ postMessage: post });
+    outbox.send("Ответ на закрытый вопрос", { ...target, targetJobId: "job-9" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({ type: "rejected", item: { text: "Ответ на закрытый вопрос" } });
     expect(outbox.snapshot).toEqual([]);
   });
 
@@ -313,18 +394,11 @@ describe("очередь исходящих сообщений", () => {
     expect(second.outbox.snapshot[0]?.attachments).toEqual([voice]);
   });
 
-  it("ответ на вопрос задачи уходит с targetJobId; закрытый вопрос (409) — сообщение уходит обычным", async () => {
-    const post = vi
-      .fn()
-      .mockRejectedValueOnce(new ApiError(409, "conflict", "Этот вопрос уже закрыт"))
-      .mockImplementation(async (_threadId: string, body: OutboxPost) => accepted(body.text));
-    const { outbox, advance } = setup({ postMessage: post });
+  it("ответ на вопрос задачи уходит с targetJobId", async () => {
+    const { outbox, deps } = setup();
     outbox.send("https://lk.fakeuni.test", { ...target, targetJobId: "job-9" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(post).toHaveBeenNthCalledWith(1, "t1", expect.objectContaining({ targetJobId: "job-9" }));
-    await advance(3_100);
-    expect(post).toHaveBeenNthCalledWith(2, "t1", expect.objectContaining({ targetJobId: undefined }));
-    expect(outbox.snapshot).toEqual([]);
+    expect(deps.postMessage).toHaveBeenCalledWith("t1", expect.objectContaining({ targetJobId: "job-9" }));
   });
 
   it("clear() стирает очередь и хранилище", async () => {

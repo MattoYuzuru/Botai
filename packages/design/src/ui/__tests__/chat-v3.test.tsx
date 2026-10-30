@@ -301,6 +301,17 @@ describe("ChatComposer: микрофон", () => {
     expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeVisible();
   });
 
+  it("смена resetKey (другой чат) бросает идущую запись: голос не прикрепляется к чужому чату", async () => {
+    const onAddFiles = vi.fn();
+    const { rerender } = render(<Harness onAddFiles={onAddFiles} resetKey="t1" />);
+    await userEvent.click(mic());
+    expect(await screen.findByText(/Идёт запись/)).toBeInTheDocument();
+    rerender(<Harness onAddFiles={onAddFiles} resetKey="t2" />);
+    await waitFor(() => expect(screen.queryByText(/Идёт запись/)).toBeNull());
+    expect(onAddFiles).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled();
+  });
+
   it("отмена записи бросает звук: файла нет, микрофон отпущен", async () => {
     const onAddFiles = vi.fn();
     render(<Harness onAddFiles={onAddFiles} />);
@@ -598,6 +609,34 @@ describe("ChatMessage v3", () => {
   });
 });
 
+describe("CitationGroups: адрес внутренней ссылки", () => {
+  const unsafe = (href: string) => ({
+    id: "g",
+    label: "Источник",
+    fetchedAt: NOW,
+    items: [
+      { id: "1", title: "Страница", url: null, internal: { href, label: "Открыть", onOpen: () => {} } },
+    ],
+  });
+
+  it("javascript:, data: и //host ссылкой не становятся, как и в тексте ответа", () => {
+    for (const href of ["javascript:alert(1)", "data:text/html,x", "//evil.test/x"]) {
+      const { container, unmount } = render(<CitationGroups groups={[unsafe(href)]} nowMs={NOW} />);
+      expect(container.querySelector("a")).toBeNull();
+      expect(screen.getByText("Источник недоступен")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("путь приложения и http(s) проходят", () => {
+    for (const href of ["/chat?thread=T1", "https://lk.fakeuni.test/x"]) {
+      const { container, unmount } = render(<CitationGroups groups={[unsafe(href)]} nowMs={NOW} />);
+      expect(container.querySelector("a")).toHaveAttribute("href", href);
+      unmount();
+    }
+  });
+});
+
 describe("CitationGroups", () => {
   const url = (n: number) => `https://lk.fakeuni.test/p${n}`;
   const group = {
@@ -758,6 +797,11 @@ describe("QuickReplies", () => {
     expect(screen.queryByText("Лишнее")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Покажи расписание" }));
     expect(onPick).toHaveBeenCalledWith("Покажи расписание");
+  });
+
+  it("одинаковые подписи схлопываются в одну кнопку", () => {
+    render(<QuickReplies options={["Да", "Нет", "Да", "Нет", "Позже"]} onPick={() => {}} />);
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Да", "Нет", "Позже"]);
   });
 
   it("disabled блокирует кнопки; пустой список — ничего", () => {

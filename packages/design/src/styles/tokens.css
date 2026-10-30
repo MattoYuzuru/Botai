@@ -166,6 +166,8 @@
   --spacing: 0.25rem;
   /* Высота верхней полосы чата и строки со знаком в рейле: их середины лежат на одной линии (§7). */
   --spacing-topbar: 4rem;
+  /* Высота нижней панели телефона без safe area (56 px пункты + 8 px отступ + 1 px граница): липкое поле чата стоит над ней. */
+  --spacing-tabbar: 4.0625rem;
 
   /* Шрифты грузятся локально из @fontsource-variable, внешних шрифтов нет (PWA работает офлайн). */
   --font-sans: "Geist Variable", -apple-system, system-ui, Roboto, "Segoe UI", sans-serif;

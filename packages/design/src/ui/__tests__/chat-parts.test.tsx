@@ -147,9 +147,9 @@ describe("ChatLayout и ScreenHeader narrow", () => {
     expect(container.querySelector("[data-chat-header]")?.className).toContain("sticky");
     expect(dock.className).toContain("sticky");
     // Над нижней панелью телефона: поле встаёт выше её, ноутбук — отступ от низа.
-    expect(dock.className).toContain("bottom-[calc(4.0625rem");
+    expect(dock.className).toContain("bottom-[calc(var(--spacing-tabbar)");
     expect(dock.className).toContain("lg:pb-safe-5");
-    expect(root.className).toContain("pb-[calc(4.0625rem");
+    expect(root.className).toContain("pb-[calc(var(--spacing-tabbar)");
     expect(screen.getByText("Вниз")).toBeInTheDocument();
     rerender(
       <ChatLayout keyboardOpen header={<header>Шапка</header>} composer={<div>Поле</div>}>
@@ -158,9 +158,9 @@ describe("ChatLayout и ScreenHeader narrow", () => {
     );
     const open = container.querySelector("[data-chat-dock]") as HTMLElement;
     expect(open.className).toContain("bottom-0");
-    expect(open.className).not.toContain("4.0625rem");
+    expect(open.className).not.toContain("--spacing-tabbar");
     expect((container.querySelector("[data-chat-layout]") as HTMLElement).className).not.toContain(
-      "4.0625rem",
+      "--spacing-tabbar",
     );
   });
 

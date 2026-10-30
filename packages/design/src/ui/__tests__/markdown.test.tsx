@@ -254,8 +254,22 @@ describe("parseChartSpec", () => {
     ["длина ряда не равна числу подписей", JSON.stringify({ ...SPEC, series: [{ name: "a", values: [1] }] })],
     ["нечисловое значение", JSON.stringify({ ...SPEC, series: [{ name: "a", values: [1, "2", 3] }] })],
     ["нет values", JSON.stringify({ ...SPEC, series: [{ name: "a" }] })],
+    [
+      "значение больше 1e15 по модулю",
+      JSON.stringify({ ...SPEC, series: [{ name: "a", values: [1, 2e15, 3] }] }),
+    ],
+    [
+      "отрицательное значение за пределом",
+      JSON.stringify({ ...SPEC, series: [{ name: "a", values: [1, -1.5e15, 3] }] }),
+    ],
   ])("отвергает: %s", (_name, raw) => {
     expect(parseChartSpec(raw)).toBeNull();
+  });
+
+  it("значения до 1e15 по модулю принимаются", () => {
+    expect(
+      parseChartSpec(JSON.stringify({ ...SPEC, series: [{ name: "a", values: [1e15, -1e15, 0] }] })),
+    ).not.toBeNull();
   });
 
   it("niceScale: круглые границы и шаг, ноль на засечке", () => {

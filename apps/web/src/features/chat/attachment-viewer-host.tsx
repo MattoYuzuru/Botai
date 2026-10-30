@@ -1,6 +1,6 @@
 import { AttachmentViewer, type ViewerAttachment } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { type AttachmentOut, v3 } from "@/api/v3";
 import { viewerFromOut } from "@/features/agent-blocks/attachments";
@@ -23,6 +23,8 @@ export const useAttachmentViewer = create<{
 export function AttachmentViewerHost({ known }: { known: readonly ViewerAttachment[] }) {
   const openId = useAttachmentViewer((state) => state.openId);
   const close = useAttachmentViewer((state) => state.close);
+  // Чат закрыли или ушли с экрана: открытый вьюер не должен всплыть при возвращении.
+  useEffect(() => close, [close]);
   const isKnown = openId !== null && known.some((item) => item.id === openId);
   const fetched = useQuery({
     queryKey: ["attachments", openId],

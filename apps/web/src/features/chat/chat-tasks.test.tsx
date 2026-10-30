@@ -4,6 +4,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
+import { outbox } from "./runtime";
 
 const harness = chatHarness();
 
@@ -26,8 +27,9 @@ describe("один тред: подключение, вход, вопросы а
     // Актуальный вопрос задачи стоит у поля ввода; писать в поле нельзя, и это сказано словами.
     const login = await screen.findByText("Вход в lk.fakeuni.test. Логин", undefined, wait);
     expect(pendingQuestion()?.contains(login)).toBe(true);
-    expect(composer()).toBeDisabled();
-    expect(composer()).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
+    // Поле остаётся свободным: агенту можно написать, пока задача ждёт вход.
+    expect(composer()).toBeEnabled();
+    expect(composer()).toHaveAttribute("placeholder", "Ответьте в поле выше или напишите агенту");
 
     await user.type(within(pendingQuestion() as HTMLElement).getByLabelText("Ответ"), "student");
     await user.click(within(pendingQuestion() as HTMLElement).getByRole("button", { name: "Ответить" }));
@@ -56,12 +58,52 @@ describe("один тред: подключение, вход, вопросы а
     expect(router.state.location.pathname).toBe("/chat");
   });
 
-  it("пока задача ждёт вход, можно спросить агента: ответ приходит, вопрос задачи остаётся", async () => {
+  it("пока задача ждёт пароль, агенту можно написать: ответ приходит обычным ходом, защищённый вопрос остаётся", async () => {
     const { user } = await openNewChat();
     await ask(user, "Подключи ЦУ https://new.fakeuni.test");
     await screen.findByText("Вход в lk.fakeuni.test. Логин", undefined, wait);
-    // Пока задача ждёт защищённого ответа, поле занято — вопрос задачи важнее.
-    expect(composer()).toBeDisabled();
+    await user.type(within(pendingQuestion() as HTMLElement).getByLabelText("Ответ"), "student");
+    await user.click(within(pendingQuestion() as HTMLElement).getByRole("button", { name: "Ответить" }));
+    await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, wait);
+    // Пароль вводится только в защищённое поле: поле чата подсказывает это и не выключено.
+    expect(composer()).toBeEnabled();
+    expect(composer()).toHaveAttribute("placeholder", "Пароль вводите в защищённое поле выше");
+
+    await ask(user, "Что ты делаешь?");
+    expect(await screen.findByText(/^Не знаю:/, undefined, wait)).toBeInTheDocument();
+    // Вопрос задачи по-прежнему ждёт ответа в защищённом поле.
+    expect(pendingQuestion()?.textContent).toContain("Пароль");
+    expect(within(pendingQuestion() as HTMLElement).getByLabelText("Ответ")).toHaveAttribute(
+      "type",
+      "password",
+    );
+  });
+
+  it("пароль, написанный в обычное поле (409 secret_in_chat): стёрт из очереди и хранилища, в поле не вернулся", async () => {
+    harness.server.use(
+      http.post("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json(
+          {
+            type: "https://botai.mnema.app/errors/secret_in_chat",
+            title: "secret_in_chat",
+            status: 409,
+            code: "secret_in_chat",
+            detail: "Пароль и коды вводите только в защищённое поле",
+          },
+          { status: 409, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    const { user } = await openNewChat();
+    await ask(user, "correct-horse-battery");
+    expect(
+      await screen.findByText("Пароль и коды вводите только в защищённое поле", undefined, wait),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
+    // Ни в очереди, ни в localStorage, ни в поле ввода, ни в ленте.
+    expect(window.localStorage.getItem("botai.chat.outbox")).toBeNull();
+    expect(document.body.textContent).not.toContain("correct-horse-battery");
+    expect(composer()).toHaveValue("");
   });
 
   it("повторная просьба подключить уже подключённое: «уже подключено» с быстрыми ответами, задача не запускается", async () => {

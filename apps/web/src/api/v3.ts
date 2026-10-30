@@ -8,7 +8,8 @@ import type { components } from "./schema.gen";
 
 type S = components["schemas"];
 
-export type MessageOut = S["MessageOut"];
+/** Сообщение треда; `clientMessageId` — идентификатор из очереди клиента (по нему сервер не дублирует отправку). */
+export type MessageOut = S["MessageOut"] & { clientMessageId?: string | null };
 export type JobOut = S["JobOut"];
 export type PendingRef = S["PendingRef"];
 export type DialogueReceipt = S["DialogueReceipt"];

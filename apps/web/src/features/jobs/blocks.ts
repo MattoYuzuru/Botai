@@ -230,9 +230,10 @@ export function sanitizeQuickReplies(value: unknown): string[] | undefined {
   const options = value
     .filter((item): item is string => isStr(item))
     .map((item) => item.trim())
-    .filter((item) => item.length > 0 && item.length <= MAX_QUICK_REPLY_CHARS)
-    .slice(0, MAX_QUICK_REPLIES);
-  return options.length > 0 ? options : undefined;
+    .filter((item) => item.length > 0 && item.length <= MAX_QUICK_REPLY_CHARS);
+  // Одинаковые подписи схлопываются: кнопка с тем же текстом ничего не добавляет.
+  const unique = [...new Set(options)].slice(0, MAX_QUICK_REPLIES);
+  return unique.length > 0 ? unique : undefined;
 }
 
 function withQuickReplies(raw: Rec): Rec {

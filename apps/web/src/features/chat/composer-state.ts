@@ -36,19 +36,29 @@ export function composerState(input: ComposerStateInput): ComposerState {
   if (input.runtimeLoading || input.runtimeFailed || !runtime) {
     return { disabled: true, placeholder: base, waitingForHuman: false, replying: false };
   }
+  const kindOf = (jobId: string) => jobs.find((job) => job.id === jobId)?.kind;
   const protectedRequest = runtime.pending.find(isProtected);
-  if (protectedRequest) {
-    return {
-      disabled: true,
-      placeholder:
-        protectedRequest.channel === "manual" ? "Завершите вход в браузере выше" : "Ответьте на вопрос выше",
-      waitingForHuman: true,
-      replying: false,
-    };
+  // Вопрос самого хода агента (согласие, выбор) держит ход: писать, пока он идёт, нельзя.
+  if (protectedRequest && kindOf(protectedRequest.jobId) === "chat") {
+    return { disabled: true, placeholder: "Ответьте на вопрос выше", waitingForHuman: true, replying: false };
   }
   const replying = awaiting || jobs.some((job) => job.kind === "chat" && !isTerminal(job.snapshot.state));
   if (replying) {
     return { disabled: true, placeholder: "Агент отвечает…", waitingForHuman: false, replying: true };
+  }
+  // Задача ждёт защищённого ответа: агенту всё равно можно написать («отмена», «что ты делаешь?»). Такое
+  // сообщение уходит обычным ходом, без адресата-задачи: пароль и коды вводятся только в защищённое поле.
+  if (protectedRequest) {
+    return {
+      disabled: false,
+      placeholder: protectedRequest.secret
+        ? "Пароль вводите в защищённое поле выше"
+        : protectedRequest.channel === "manual"
+          ? "Вход завершите в браузере выше или напишите агенту"
+          : "Ответьте в поле выше или напишите агенту",
+      waitingForHuman: true,
+      replying: false,
+    };
   }
   const dialogue = runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
   if (dialogue) {

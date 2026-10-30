@@ -23,6 +23,8 @@ export const CHART_LIMITS = {
   title: 120,
   label: 40,
   seriesName: 40,
+  /** Больше по модулю значение не рисуется: шкала и подписи разваливаются, а такие числа в учёбе не встречаются. */
+  maxAbs: 1e15,
 } as const;
 
 const clip = (value: string, max: number): string => {
@@ -62,7 +64,13 @@ export function parseChartSpec(raw: string): ChartSpec | null {
   for (const [index, item] of data.series.entries()) {
     if (!isRecord(item) || !Array.isArray(item.values)) return null;
     if (item.values.length !== labels.length) return null;
-    if (!item.values.every((value) => typeof value === "number" && Number.isFinite(value))) return null;
+    if (
+      !item.values.every(
+        (value) =>
+          typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= CHART_LIMITS.maxAbs,
+      )
+    )
+      return null;
     const name = typeof item.name === "string" ? clip(item.name, CHART_LIMITS.seriesName) : "";
     series.push({ name: name || `Серия ${index + 1}`, values: item.values as number[] });
   }

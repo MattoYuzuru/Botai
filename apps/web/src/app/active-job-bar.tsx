@@ -2,6 +2,7 @@ import { Badge, Banner, Button } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { threadOfJob } from "@/features/chat/job-thread";
 import { useOpenThread } from "@/features/chat/open-thread";
 import { chatKeys, runtimeQuery } from "@/features/chat/queries";
 import { mergeJob } from "@/features/chat/timeline";
@@ -20,9 +21,17 @@ export function ActiveJobBar() {
   const job = useJob(active?.jobId);
   const queryClient = useQueryClient();
   const openThread = useOpenThread((state) => state.id);
+  // Тред задачи: из самой записи, иначе из списка чатов и задания. Не нашли — плашка ведёт к списку чатов.
+  const lookup = useQuery({
+    queryKey: ["job-thread", active?.jobId],
+    queryFn: () => threadOfJob(queryClient, active?.jobId ?? ""),
+    enabled: Boolean(active) && !active?.threadId,
+    staleTime: 15_000,
+  });
+  const threadId = active?.threadId ?? lookup.data ?? null;
   const runtime = useQuery({
-    ...runtimeQuery(active?.threadId ?? ""),
-    enabled: Boolean(active?.threadId),
+    ...runtimeQuery(threadId ?? ""),
+    enabled: threadId !== null,
   });
   const saved = runtime.data
     ? [runtime.data.activeJob, ...runtime.data.tasks].find((item) => item?.id === active?.jobId)
@@ -34,15 +43,14 @@ export function ActiveJobBar() {
     if (active) jobManager.start(active.jobId);
   }, [active]);
   useEffect(() => {
-    if (active?.threadId && job?.lastEventId)
-      void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(active.threadId) });
-  }, [active?.threadId, job?.lastEventId, queryClient]);
+    if (threadId && job?.lastEventId)
+      void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
+  }, [threadId, job?.lastEventId, queryClient]);
 
-  if (!active?.threadId || openThread === active.threadId) return null;
+  if (!active || (threadId !== null && openThread === threadId)) return null;
   const terminal = current ? isTerminal(current.state) : false;
   const attention = (runtime.data?.pending ?? []).some((item) => item.jobId === active.jobId);
   const failed = current ? jobFailed(current) : false;
-  const threadId = active.threadId;
 
   return (
     <Banner
@@ -53,9 +61,15 @@ export function ActiveJobBar() {
       action={
         <div className="flex items-center gap-1">
           <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
-            <Link to="/chat" search={{ thread: threadId }}>
-              Открыть
-            </Link>
+            {threadId ? (
+              <Link to="/chat" search={{ thread: threadId }}>
+                Открыть
+              </Link>
+            ) : (
+              <Link to="/chat" search={{ threads: 1 }}>
+                К чатам
+              </Link>
+            )}
           </Button>
           {terminal && (
             <Button variant="ghost" size="sm" data-touch-expanded="" onClick={() => clear()}>

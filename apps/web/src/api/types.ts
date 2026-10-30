@@ -1,5 +1,5 @@
 import type { components } from "./schema.gen";
-import type { ThreadOut } from "./v3";
+import type { MessageOut, ThreadOut } from "./v3";
 
 type Schemas = components["schemas"];
 
@@ -16,6 +16,6 @@ export type Deadline = Schemas["DeadlineOut"];
 export type Provenance = Schemas["Provenance"];
 /** Тред агент-хаба v3 (`unread`, `attention`, `activeTask`) — см. `v3.ts`. */
 export type Thread = ThreadOut;
-export type Message = Schemas["MessageOut"];
+export type Message = MessageOut;
 export type ContextOut = Schemas["ContextOut"];
 export type Job = Schemas["JobOut"];
