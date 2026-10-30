@@ -30,7 +30,7 @@ _IDS = {"job_id", "connection_id", "thread_id", "message_id", "block_id", "reque
 _ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}\Z")
 _HEX = re.compile(r"[0-9a-f]{16}\Z")
 _EVENT = re.compile(
-    r"(?:diagnostics|http|job|dialogue|chat|llm|browser|auth|learn|observe|canary|egress|search)\.[a-z_.]{1,64}\Z"
+    r"(?:diagnostics|http|job|dialogue|chat|llm|browser|auth|learn|observe|canary|egress|search|speech)\.[a-z_.]{1,64}\Z"
 )
 _NUMBERS = set(
     [
@@ -350,7 +350,7 @@ _CODES: dict[str, set[str]] = {
         "warning",
     },
     "purpose": {"classify", "agent", "learn", "repair", "extract"},
-    "provider": {"exa", "deepseek"},
+    "provider": {"exa", "deepseek", "groq"},
     "error_code": {code.value for code in ErrorCode},
     "lint_code": set(
         [

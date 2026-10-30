@@ -20,7 +20,9 @@ from botai.sources.documents import MAX_UPLOAD
 
 # The file plus the multipart framing and the other fields.
 BODY_LIMIT = MAX_UPLOAD + 1024 * 1024
-UPLOAD_ROUTES = re.compile(r"^/api/v1/(?:attachments|spaces/[^/]+/documents/upload)$")
+UPLOAD_ROUTES = re.compile(
+    r"^/api/v1/(?:attachments|speech/transcribe|spaces/[^/]+/documents/upload)$"
+)
 _MESSAGE = "Файл больше 20 МБ"
 
 
