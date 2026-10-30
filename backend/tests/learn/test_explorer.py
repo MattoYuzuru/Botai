@@ -455,7 +455,11 @@ async def test_canary_rejection_is_not_reported_as_missing_data(make_env: EnvFac
     assert result["detail"] == "recipe_rejected"
     assert await env.specs() == []
     text = "\n".join(b.markdown for b in ls.blocks_of(env.ctx, "text"))
-    assert "Пока не удалось проверить" in text
+    assert "Ничего не подключила." in text
+    # what was tried, why it did not work out in words and what can be done, not a code
+    assert "Не вышло: расписание — адрес запроса в описании не совпал" in text
+    assert "evidence_" not in text
+    assert "Можно прислать ссылку на страницу, где это видно" in text
     assert "Не нашла в кабинете" not in text
 
 
@@ -486,8 +490,7 @@ async def test_the_registry_gets_the_origin_and_the_third_party_warning(
     incomplete = [
         index
         for index, block in enumerate(env.ctx.blocks)
-        if isinstance(block, TextBlock)
-        and "Пока не удалось полностью проверить источник" in block.markdown
+        if isinstance(block, TextBlock) and "Просмотрела кабинет не до конца" in block.markdown
     ]
     confirmations = [
         index for index, block in enumerate(env.ctx.blocks) if isinstance(block, ConfirmBlock)

@@ -173,7 +173,8 @@ def test_a_placeholder_never_replaces_a_word_for_the_current_student(word: str) 
             path="/api/lms/students/{accountId}/timetables",
         )
     assert error.value.code == "evidence_path_literal_replaced"
-    assert error.value.detail is not None and "№4" in error.value.detail
+    assert error.value.detail is not None
+    assert "№4" in error.value.detail
 
 
 def test_a_placeholder_still_generalises_an_identifier() -> None:

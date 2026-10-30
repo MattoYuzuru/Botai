@@ -101,6 +101,7 @@ class Authored:
     reasoning: str = ""
     doubts: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)  # lint findings of dropped candidates
+    rejected_codes: list[str] = field(default_factory=list)  # their static codes, for the student
     tokens: int = 0
     calls: int = 0
 
@@ -312,6 +313,7 @@ async def author_kind(
                 )
             except FactoryCompileError as exc:
                 findings.append(f"вариант {i + 1}: {exc.feedback()}")
+                out.rejected_codes.append(exc.code)
                 continue
             cand = Candidate(kind, compiled.endpoint, compiled.bootstrap, compiled.auth)
             spec = candidate_spec(
@@ -334,6 +336,7 @@ async def author_kind(
                 good.append(cand)
             else:
                 findings.extend(f"вариант {i + 1}: {reason}" for reason in result.reasons())
+                out.rejected_codes.extend(sorted(result.codes()))
         out.candidates = good
         out.rejected = findings
         if good or attempt == 1:

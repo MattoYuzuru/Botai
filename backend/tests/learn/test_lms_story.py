@@ -128,8 +128,10 @@ def planner() -> list[LlmResponse]:
 class Researcher(ls.EvidenceLlm):
     """The scripted author, whose endpoint (or step) may name its evidence by the path it read."""
 
-    def __init__(self, queue: list[LlmResponse]) -> None:
-        super().__init__(queue=queue, discovery_queue=planner())
+    def __init__(
+        self, queue: list[LlmResponse], discovery: list[LlmResponse] | None = None
+    ) -> None:
+        super().__init__(queue=queue, discovery_queue=discovery or planner())
 
     async def complete(self, request: LlmRequest) -> LlmResponse:
         response = await super().complete(request)
@@ -154,12 +156,13 @@ async def connect(
     app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
     queue: list[LlmResponse],
+    discovery: list[LlmResponse] | None = None,
 ) -> Any:
     monkeypatch.setattr(login, "ROOT_TARGET", "/learn")  # the cabinet is the whole site
     env = await make_env([])
     await env.login()
     env.services.browser = await scripted_lms_site(app)
-    env.services.llm = Researcher(queue)
+    env.services.llm = Researcher(queue, discovery)
     return env
 
 
@@ -423,3 +426,90 @@ async def test_a_dropped_rule_takes_its_future_classes_off_and_a_new_one_adds_it
     again = await study.sync()
     assert again["kinds"]["scheduleEvents"]["inserted"] == 0
     assert {(r.title, *moscow(r)) for r in await events(study)} == after
+
+
+# --- what the student is told when something is left ----------------------------------------
+
+
+def said(study: Any) -> str:
+    return "\n".join(block.markdown for block in ls.blocks_of(study.ctx, "text"))
+
+
+async def test_a_kind_that_cannot_be_connected_is_explained_not_coded(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),  # the author is told, and repeats himself
+            author(deadlines_endpoint("backlog")),
+            author(courses_endpoint()),
+        ],
+    )
+    result = await study.run(payload={"url": ENTRY}, choices=["skip"])
+    assert result["status"] == "ok", result
+    assert sorted(result["kinds"]) == ["courses", "scheduleEvents"]
+
+    text = said(study)
+    # what is left, why (in words, from the check that refused it) and what can be done
+    assert "Подключаю не всё. Не вышло: дедлайны — описание запроса не совпало с тем, что" in text
+    assert "отправляла сама страница (параметры адреса)" in text
+    assert "Можно прислать ссылку на страницу, где это видно." in text
+    asked = [b for b in study.asked if hasattr(b, "question")]
+    assert asked[0].question.startswith("Не вышло: дедлайны — описание запроса не совпало")
+    for code in ("evidence_", "lint", "canary", "requestEvidenceId", "bootstrap"):
+        assert code not in text
+    assert "backlog" not in text  # no value of the source is repeated to the student
+
+
+async def test_nothing_connected_says_what_was_seen_tried_and_can_be_done(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(deadlines_endpoint("backlog"))] * 8,
+    )
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["deadlines"]},
+        links=[ENTRY.replace("timetable", "tasks")] * 2,
+    )
+    assert result["status"] == "error"
+    text = said(study)
+    assert "Ничего не подключила." in text
+    assert "Что нашла: открывала «" in text
+    assert "«Мои пары»" in text
+    assert "«Задания»" in text
+    assert "Не вышло: дедлайны — описание запроса не совпало с тем, что отправляла сама" in text
+    assert (
+        "Можно прислать ссылку на страницу, где это видно, или написать «подключи ещё раз»." in text
+    )
+    assert "Пока не удалось проверить" not in text
+    assert "план просмотра не сработал" not in text
+    question = next(b.question for b in study.asked if hasattr(b, "question"))
+    assert question.startswith("Не вышло: дедлайны — ")
+    assert "Пришлите ссылку на страницу, где это видно" in question
+
+
+async def test_an_incomplete_look_says_why_it_stopped_and_what_it_saw(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(schedule_endpoint())],
+        discovery=[LlmResponse(content="the planner lost the thread")],
+    )
+    result = await study.run(payload={"url": ENTRY, "kinds": ["scheduleEvents"]})
+    assert result["status"] == "ok", result
+    text = said(study)
+    assert "Просмотрела кабинет не до конца: помощник выбрал следующий шаг неразборчиво" in text
+    assert "Что нашла: открывала «Мои пары»" in text
+    assert text.count("Это не значит, что данных нет.") == 1
+    assert "план просмотра не сработал" not in text
+    assert "исследование достигло ограничения" not in text
