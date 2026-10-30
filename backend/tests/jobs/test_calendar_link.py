@@ -515,10 +515,15 @@ async def test_the_student_hands_the_link_over_and_the_calendar_is_read(
     assert "не вставляйте в чат" in guide
     thread_text = said(await history(who))
     assert "Ссылка передана" in thread_text
-    assert "Календарь прочитан: 7 занятий с 28 октября по 30 ноября, 2 срока сдачи." in thread_text
-    assert "Ближайшие занятия" in thread_text
-    assert "Источник подключён." in thread_text
-    assert "весь день" in thread_text  # the holiday of the feed
+    # what the calendar holds, in the words of every connection (learn/summary.py), then the closing
+    assert "Нашла в календаре:" in thread_text
+    assert "7 занятий с 28 октября по 30 ноября — 6 недель" in thread_text
+    assert "2 задания со сроками" in thread_text
+    assert "Ближайшие пары:" in thread_text
+    assert "13:10–14:30 · Базы данных · В-310" in thread_text
+    assert "Среда, 28 октября" in thread_text
+    assert "Готово! Данные из «Фейкуни» подключены" in thread_text
+    assert "Дальше обновляется само каждые 3 часа" in thread_text
     assert "Открыл защищённое поле" in thread_text  # the agent's own answer is there too
 
     # what became of the source
@@ -590,6 +595,19 @@ async def test_the_student_hands_the_link_over_and_the_calendar_is_read(
     assert all(r.url.params["private_token"] == fakeuni.SERVICE_TOKEN for r in asked)
     await no_leak(env, wiretap, traces, llm)
     assert fakeuni.SERVICE_URL not in said(await history(who))
+
+
+async def test_an_empty_calendar_is_connected_and_says_so(env: Env, fakeuni_app: object) -> None:
+    who = await student(env)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    start_worker(env, fakeuni_app)
+    task = await hand_over(who, fakeuni.EMPTY_URL, set())
+    done = await env.wait_for(task, {"done"})
+    assert done.result == {"status": "ok", "events": 0, "deadlines": 0}
+    text = said(await history(who))
+    assert "данных в нём пока не нашлось" in text
+    assert "Нашла в календаре" not in text
+    assert (await calendar_of(env, who.user_id)).status == "active"
 
 
 async def test_a_wrong_link_is_asked_again_with_the_reason_and_nothing_is_kept(

@@ -20,6 +20,7 @@ SERVICE_URL = f"https://calendar.fakeuni.test/export/ics.xml?private_token={SERV
 SERVICE_WEBCAL = f"webcal://calendar.fakeuni.test/export/ics.xml?private_token={SERVICE_TOKEN}"
 PATH_TOKEN = "CALENDAR-PATH-TOKEN-b41f"  # marker grepped by security check C1
 PATH_URL = f"https://calendar.fakeuni.test/ical/{PATH_TOKEN}/basic.ics"
+EMPTY_URL = "https://calendar.fakeuni.test/ical/CALENDAR-EMPTY-TOKEN-0c7a/basic.ics"  # no events
 PAGE_URL = "https://calendar.fakeuni.test/week"  # the calendar in the browser: HTML, not iCal
 
 _state = {"revoked": False}
@@ -125,6 +126,9 @@ async def export_service(request: Request) -> Response:
 async def export_by_path(key: str) -> Response:
     if _state["revoked"]:
         return Response(status_code=404)
+    if key == EMPTY_URL.split("/")[4]:
+        empty = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//fakeuni//EN\nEND:VCALENDAR\n"
+        return Response(empty.replace("\n", "\r\n"), media_type="text/calendar; charset=utf-8")
     return _feed() if key == PATH_TOKEN else Response(status_code=404)
 
 

@@ -30,8 +30,8 @@ from icalendar import Calendar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.contracts.agent_ui import InputBlock, SummaryGroup, SummaryItem
-from botai.contracts.specs import IcalSpec
+from botai.contracts.agent_ui import InputBlock
+from botai.contracts.specs import IcalSpec, Kind
 from botai.core.calendar_link import normalize_calendar_link, origin_of_link
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
@@ -41,11 +41,12 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobClaimLost, JobContext, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
-from botai.db.models import Connection, Job, Space
+from botai.db.models import Connection, Job, Space, University
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import enqueue_in_session
 from botai.learn import revisions
-from botai.learn.ui import Ui, describe, item
+from botai.learn.summary import confirm_details, finished_text, weeks_ahead
+from botai.learn.ui import Ui
 from botai.sources.adapter import Record
 from botai.sources.adapters.ical import IcalAdapter, read_link
 from botai.sources.runner import (
@@ -221,82 +222,6 @@ _READING_TEXT = {
     ),
 }
 
-_MONTHS = [
-    "января",
-    "февраля",
-    "марта",
-    "апреля",
-    "мая",
-    "июня",
-    "июля",
-    "августа",
-    "сентября",
-    "октября",
-    "ноября",
-    "декабря",
-]
-
-
-def _date(moment: datetime, tz: ZoneInfo) -> str:
-    local = moment.astimezone(tz)
-    return f"{local.day} {_MONTHS[local.month - 1]}"
-
-
-def _plural(n: int, one: str, few: str, many: str) -> str:
-    if 11 <= n % 100 <= 14:
-        return many
-    return one if n % 10 == 1 else few if 2 <= n % 10 <= 4 else many
-
-
-def _when(record: Record) -> datetime | None:
-    value = record.fields.get("startsAt") or record.fields.get("dueAt")
-    try:
-        return datetime.fromisoformat(value) if isinstance(value, str) else None
-    except ValueError:
-        return None
-
-
-def _dated(records: list[Record], kind: str) -> list[tuple[datetime, Record]]:
-    found = [(at, r) for r in records if r.kind == kind and (at := _when(r)) is not None]
-    return sorted(found, key=lambda pair: pair[0])
-
-
-def _row(record: Record, tz: ZoneInfo) -> SummaryItem:
-    label, value = describe(record, tz)
-    return item(label, value.replace(", 00:00–00:00", ", весь день"))  # a holiday, a day off
-
-
-def read_summary(
-    records: list[Record], tz: ZoneInfo, now: datetime
-) -> tuple[str, list[SummaryGroup]]:
-    """What the calendar holds, for the student: «124 занятия с 26 октября по 29 января», the
-    nearest classes and deadlines. Numbers and dates are ours; titles go to structured items,
-    never into Markdown."""
-    classes = _dated(records, "scheduleEvents")
-    deadlines = _dated(records, "deadlines")
-    if not classes and not deadlines:
-        return (
-            "Календарь открылся, но занятий и сроков в нём на ближайшие три месяца нет. "
-            "Они появятся здесь сами, как только их добавят.",
-            [],
-        )
-    parts: list[str] = []
-    if classes:
-        count = len(classes)
-        parts.append(
-            f"{count} {_plural(count, 'занятие', 'занятия', 'занятий')} "
-            f"с {_date(classes[0][0], tz)} по {_date(classes[-1][0], tz)}"
-        )
-    if deadlines:
-        count = len(deadlines)
-        parts.append(f"{count} {_plural(count, 'срок сдачи', 'срока сдачи', 'сроков сдачи')}")
-    groups: list[SummaryGroup] = []
-    for title, rows in (("Ближайшие занятия", classes), ("Ближайшие сроки", deadlines)):
-        ahead = [r for at, r in rows if at >= now][:UPCOMING]
-        if ahead:
-            groups.append(SummaryGroup(title=title, items=[_row(r, tz) for r in ahead]))
-    return "Календарь прочитан: " + ", ".join(parts) + ".", groups
-
 
 class LinkProblem(Exception):
     """The link cannot be used; `text` says why, in words for the student (never the link)."""
@@ -430,13 +355,59 @@ class CalendarConnector:
         )
         if outcome.status != "ok":
             return {"status": "error", "detail": outcome.status}
-        text, groups = read_summary(result.records, snap.tz, svc.clock.now())
-        await self.ui.say(text)
-        if groups:
-            await self.ui.summary("Что дальше в расписании", groups)
+        await self._tell(snap.space_id, snap.tz, snap.freshness.every_minutes, result.records)
         diagnostic_event("learn.calendar", outcome="done", record_count=len(result.records))
         return {
             "status": "ok",
             "events": sum(1 for r in result.records if r.kind == "scheduleEvents"),
             "deadlines": sum(1 for r in result.records if r.kind == "deadlines"),
         }
+
+    async def _tell(
+        self, space_id: str, tz: ZoneInfo, every_minutes: int, records: list[Record]
+    ) -> None:
+        """What the calendar holds, in the words of every connection (`learn/summary.py`): the
+        counts and the nearest days of classes, then how far ahead it reaches and how it is kept."""
+        now = self.services.clock.now()
+        found: dict[Kind, list[Record]] = {
+            kind: rows
+            for kind in ("scheduleEvents", "deadlines")
+            if (rows := [r for r in records if r.kind == kind])
+        }
+        ahead = [r for r in found.get("scheduleEvents", []) if (_end(r) or now) >= now]
+        starts = [at for r in ahead if (at := _moment(r, "startsAt")) is not None]
+        counts: dict[Kind, int] = {kind: len(rows) for kind, rows in found.items()}
+        if ahead:
+            counts["scheduleEvents"] = len(ahead)
+        async with self.services.db() as db:
+            space = await db.get(Space, space_id)
+            university = (
+                await db.get(University, space.university_id)
+                if space and space.university_id
+                else None
+            )
+        name = university.short_title if university else space.title if space else None
+        if found:
+            await self.ui.say(
+                confirm_details(found, now, tz, heading="Нашла в календаре:"),
+            )
+        await self.ui.say(
+            finished_text(
+                counts,
+                university=name,
+                every_minutes=every_minutes,
+                weeks=weeks_ahead(max(starts) if starts else None, now, tz),
+            )
+        )
+
+
+def _moment(record: Record, name: str) -> datetime | None:
+    value = record.fields.get(name)
+    try:
+        return datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _end(record: Record) -> datetime | None:
+    return _moment(record, "endsAt") or _moment(record, "startsAt")
