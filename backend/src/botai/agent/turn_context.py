@@ -9,6 +9,7 @@ identifiers and states only, never credentials, cookies or private page content.
 from __future__ import annotations
 
 from datetime import datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -107,8 +108,10 @@ async def turn_context(
                 conn = source.connection
                 state = STATUS_RU.get(conn.status, conn.status)
                 error = f", код ошибки {conn.error_code}" if conn.error_code else ""
+                site = urlsplit(conn.entry_url or conn.origin or "").hostname or ""
+                where = f", сайт {site}" if site else ""
                 lines.append(
-                    f"  - «{data_text(source.title)}» ({conn.kind}) — {state}{error}; обновлено "
+                    f"  - «{data_text(source.title)}» ({conn.kind}{where}) — {state}{error}; обновлено "
                     f"{fmt_updated(conn.last_sync_at, zone)}; connection_id={conn.id}; "
                     f"{connection_link(conn.id)}"
                 )

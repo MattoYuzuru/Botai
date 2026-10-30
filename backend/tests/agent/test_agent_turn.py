@@ -108,7 +108,7 @@ async def test_quick_replies_and_a_title_come_with_the_answer(sm: Sm, user_id: s
     assert block.markdown.startswith("По запросу «Вышка»")
     assert "просто вопрос" not in block.markdown
     assert len(llm.requests) == 3
-    assert "слишком короткий" in (llm.requests[-1].messages[-1].content or "")
+    assert "Служебная проверка" in (llm.requests[-1].messages[-1].content or "")
     assert block.quick_replies is not None
     assert block.quick_replies[:2] == ["Да, это он", "Нет, другой вуз"]
     assert all(len(q) <= 60 for q in block.quick_replies)
@@ -469,7 +469,8 @@ async def test_the_turn_context_lists_universities_sources_tasks_and_no_secrets(
         context = (await turn_context(session, user_id, row, NOW)).content
     assert "Сегодня: среда, 28 октября 2026 года" in context
     assert "Чат относится к вузу «Высшая школа экономики»" in context
-    assert "«Единый личный кабинет» (schedule) — нужен повторный вход" in context
+    assert "«Единый личный кабинет» (schedule, сайт " in context
+    assert "— нужен повторный вход" in context
     assert f"connection_id={conn}" in context
     assert f"botai://connections/{conn}" in context
     assert "Починка: Единый личный кабинет — ждёт ответа студента" in context
@@ -551,3 +552,23 @@ async def test_tool_results_carry_no_vault_secrets(sm: Sm, user_id: str, tool: s
     text = await tools[tool].run(args)
     for secret in (*SECRETS, "student@fakeuni.test"):
         assert secret not in text
+
+
+async def test_an_answer_written_with_its_buttons_ends_the_turn(sm: Sm, user_id: str) -> None:
+    """Seen live: the model writes the whole answer in the step that calls offer_choices, then a
+    bare question. The answer of that step is the reply; no further round may replace it."""
+    full = (
+        "В личном кабинете есть раздел «Заявки»: справка об обучении заказывается там, готовая "
+        "приходит на почту. Открыть раздел сейчас?"
+    )
+    llm = ScriptedLlm(
+        queue=[
+            step(call("offer_choices", options=["Да", "Нет"])).model_copy(update={"content": full}),
+        ]
+    )
+    r = await make_rig(sm, user_id, llm)
+    ctx, _ = await r.ask("как заказать справку об обучении?")
+    block = text_block(ctx)
+    assert block.markdown.startswith("В личном кабинете есть раздел")
+    assert block.quick_replies == ["Да", "Нет"]
+    assert len(llm.requests) == 1
