@@ -605,7 +605,6 @@ def test_a_class_and_its_exam_are_two_classes() -> None:
         ("Матанализ", "Коллоквиум Матанализ"),
         ("Linear algebra", "Linear algebra exam"),
         ("Linear algebra", "Linear algebra quiz"),
-        ("Экзамен: Матанализ", "Зачёт: Матанализ"),
     ],
 )
 def test_an_assessment_word_in_only_one_title_keeps_the_classes_apart(
@@ -613,6 +612,13 @@ def test_an_assessment_word_in_only_one_title_keeps_the_classes_apart(
 ) -> None:
     merged = run([ev("p", mine, at(9)), ev("s", theirs, at(9), conn=CALENDAR)])
     assert {e.id for e in merged} == {"p", "s"}
+
+
+def test_two_assessments_of_one_course_are_one_class_whatever_they_are_called() -> None:
+    (one,) = run(
+        [ev("p", "Экзамен: Матанализ", at(9)), ev("s", "Зачёт: Матанализ", at(9), conn=CALENDAR)]
+    )
+    assert one.id == "p"
 
 
 def test_the_same_assessment_word_in_both_titles_is_the_same_exam() -> None:
@@ -869,3 +875,141 @@ def test_random_days_lose_nothing_repeat_no_id_and_ignore_the_order_of_rows() ->
         )
         again = run(list(reversed(rows)), CABINET, CALENDAR, NOTES)
         assert [e.model_dump() for e in out] == [e.model_dump() for e in again]
+
+
+# --- the pairs of the second review: kinds and their abbreviations ------------------------------
+
+
+def merged_pair(
+    mine: str,
+    theirs: str,
+    *,
+    mine_kind: str = "other",
+    theirs_kind: str = "other",
+    **theirs_fields: str,
+) -> list[ScheduleEventOut]:
+    return run(
+        [
+            ev("p", mine, at(9), kind=mine_kind),
+            ev("s", theirs, at(9), conn=CALENDAR, kind=theirs_kind, **theirs_fields),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "mine_kind", "theirs_kind"),
+    [
+        # a copy of an exam or a consultation in a source that only has it in the title
+        ("Матанализ", "Экзамен: Матанализ", "exam", "other"),
+        ("Матанализ", "Консультация по матанализу", "consultation", "other"),
+        ("Матанализ", "Матанализ (зачётное занятие)", "exam", "other"),
+        # the kind in the title, in words and in abbreviations, is not a different class
+        ("Матанализ", "Лекция: Матанализ", "lecture", "other"),
+        ("Матанализ", "Матанализ (лекция)", "lecture", "other"),
+        ("Матанализ", "Матанализ (лек.)", "lecture", "other"),
+        ("Матанализ", "Матанализ, пр.", "seminar", "other"),
+        ("Матанализ", "Матанализ (сем.)", "seminar", "other"),
+        ("Физика", "Физика (лаб.)", "lab", "other"),
+        ("Физика", "Лабораторная работа: Физика", "lab", "other"),
+        ("Матанализ", "Матанализ (КР)", "exam", "other"),
+        ("Матанализ", "Матанализ, контрольная работа", "exam", "other"),
+        ("Calculus", "Calculus lecture", "lecture", "other"),
+        ("Calculus", "Calculus final exam", "exam", "other"),
+        # courses whose names only look like a kind of class
+        ("Тестирование ПО", "Тестирование программного обеспечения", "other", "other"),
+        ("Тестирование ПО", "Тестирование ПО (лекция)", "lecture", "other"),
+        ("Контроллинг", "Контроллинг, ауд. 5", "other", "other"),
+        ("Software Testing", "Software testing, room 5", "other", "other"),
+        ("Практикум по Python", "Практикум по Python", "other", "other"),
+    ],
+)
+def test_one_class_whatever_it_is_called_in_the_other_source(
+    mine: str, theirs: str, mine_kind: str, theirs_kind: str
+) -> None:
+    assert len(merged_pair(mine, theirs, mine_kind=mine_kind, theirs_kind=theirs_kind)) == 1
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "mine_kind"),
+    [
+        ("Матанализ", "Матанализ (лек.)", "seminar"),
+        ("Матанализ", "Матанализ, пр.", "lecture"),
+        ("Матанализ", "Матанализ, контрольная работа", "seminar"),
+        ("Матанализ", "Матанализ (КР)", "seminar"),
+        ("Матанализ", "Матанализ: зачетное занятие", "seminar"),
+        ("Матанализ", "Матанализ: зачётное занятие", "other"),
+        ("Физика", "Физика (лабораторная работа)", "lecture"),
+        ("Физика", "Физика (лаб.)", "seminar"),
+        ("Calculus", "Calculus final exam", "seminar"),
+        ("Матанализ", "Матанализ экзамен", "other"),
+        ("Матанализ", "Seminar: Матанализ", "lecture"),
+        ("Матанализ", "Матанализ (консультация)", "lecture"),
+    ],
+)
+def test_different_classes_stay_two_whatever_they_are_called(
+    mine: str, theirs: str, mine_kind: str
+) -> None:
+    assert len(merged_pair(mine, theirs, mine_kind=mine_kind)) == 2
+
+
+def test_a_plain_title_against_an_explicit_exam_stays_two_classes() -> None:
+    """The primary does not say it is an exam; the calendar does: the class at that hour may be the
+    ordinary one, so nothing is glued."""
+    assert len(merged_pair("Матанализ", "Экзамен: Матанализ", theirs_kind="exam")) == 2
+
+
+def test_an_exam_in_one_source_and_in_the_other_is_one_exam_without_a_note() -> None:
+    (one,) = merged_pair("Матанализ", "Экзамен: Матанализ", mine_kind="exam", location="305")
+    assert one.kind == "exam"
+    assert one.location == "305"
+    assert one.disagreement is None  # «экзамен» is the kind, not a word of the title of its own
+
+
+def test_a_class_abbreviation_is_not_a_word_of_its_own() -> None:
+    (one,) = merged_pair("Матанализ", "Матанализ (лек.)", mine_kind="lecture")
+    assert one.disagreement is None
+
+
+# --- the title note is for words of the title, not for the room and the teacher -----------------
+
+
+def test_a_calendar_that_writes_the_room_and_the_teacher_into_the_title_has_no_title_note() -> None:
+    (one,) = merged_pair(
+        "Матанализ",
+        "Матанализ, ауд. 305, Иванов И. И.",
+        mine_kind="lecture",
+        location="305",
+        teacher="Иванов И. И.",
+    )
+    assert one.disagreement is None
+    assert (one.location, one.teacher) == ("305", "Иванов И. И.")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Матанализ, ауд. 305",
+        "Матанализ (305)",
+        "Матанализ 12:00",
+        "Матанализ, доц. Иванов",
+        "Матанализ — ауд. 305, проф. Иванов А. П.",
+    ],
+)
+def test_numbers_rooms_degrees_and_the_name_of_the_teacher_are_not_title_words(title: str) -> None:
+    (one,) = merged_pair("Матанализ", title, mine_kind="lecture", teacher="Иванов А. П.")
+    assert one.disagreement is None
+
+
+def test_the_room_of_the_cabinet_in_the_title_of_the_calendar_is_not_a_title_word_either() -> None:
+    cabinet = ev("p", "Матанализ", at(9), kind="lecture", location="Главный корпус")
+    calendar = ev("s", "Матанализ, главный корпус", at(9), conn=CALENDAR)
+    (one,) = run([cabinet, calendar])
+    assert one.disagreement is None
+
+
+def test_a_real_extra_word_of_the_title_is_still_noted_next_to_a_room() -> None:
+    (one,) = merged_pair(
+        "Матанализ", "Матанализ (подгруппа Б), ауд. 305", mine_kind="lecture", location="305"
+    )
+    assert one.disagreement is not None
+    assert one.disagreement.kind == "title"

@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.clock import SystemClock
@@ -75,9 +75,8 @@ _SECTION_TABLES = (
 
 # A document of a source the student switched off is not shown or searched anywhere (FR-054): like
 # every other record of that source. A document of no source (a file of a chat) always is.
-LIVE_DOCUMENT = or_(
-    Document.connection_id.is_(None),
-    Document.connection_id.not_in(select(Connection.id).where(Connection.status == "disabled")),
+LIVE_DOCUMENT = ~exists().where(
+    Connection.id == Document.connection_id, Connection.status == "disabled"
 )
 
 NEEDS_ATTENTION = frozenset({"stale", "needs_reauth", "repairing"})

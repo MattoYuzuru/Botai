@@ -82,13 +82,9 @@ _STOP = frozenset(
     {"и", "в", "во", "на", "по", "для", "с", "со", "к", "о", "об", "от", "из", "за", "а", "не"}
     | {"или", "the", "of", "a", "an", "in", "on", "to", "for", "and"}
 )
-_KIND_WORDS = {"лекция", "семинар", "практика", "практическое", "занятие", "пара", "урок"} | {
-    "lecture",
-    "seminar",
-    "practice",
-    "class",
-    "lesson",
-}
+# Words of a title that say what kind of class it is, or that only fill it («занятие», «работа»):
+# they are not what identifies the class.
+_FILLER = frozenset({"занятие", "пара", "урок", "работа", "class", "lesson", "work"})
 _ENDINGS = "аеёиоуыэюяйь"
 _WORD = re.compile(r"[^\W_]+")
 _ROOM_NOISE = frozenset({"ауд", "аудитория", "каб", "кабинет", "комн", "комната", "room"})
@@ -96,6 +92,52 @@ _HONORIFICS = frozenset(
     {"проф", "профессор", "доц", "доцент", "преп", "преподаватель", "ст", "старший"}
     | {"асс", "ассистент", "dr", "prof"}
 )
+
+# What a word says about the type of the class, for sources that do not give a kind of their own.
+# Russian words by prefix (endings and «зачётное/зачётная» vary), abbreviations («лек.», «пр.», «КР»)
+# and English words whole. Words are matched as written, not as stems: «контрольная» is a test,
+# «контроллинг» is a course.
+_KIND_PREFIX = (
+    ("экзамен", "exam"),
+    ("зачет", "exam"),
+    ("коллоквиум", "exam"),
+    ("контрольн", "exam"),
+    ("пересдач", "exam"),
+    ("консульт", "consultation"),
+    ("лекци", "lecture"),
+    ("семинар", "seminar"),
+    ("практик", "seminar"),
+    ("практическ", "seminar"),
+    ("лаборатор", "lab"),
+)
+_KIND_WORD = {
+    "контроль": "exam",
+    "кр": "exam",
+    "тест": "exam",
+    "тесты": "exam",
+    "лек": "lecture",
+    "сем": "seminar",
+    "пр": "seminar",
+    "практ": "seminar",
+    "лаб": "lab",
+    "exam": "exam",
+    "exams": "exam",
+    "examination": "exam",
+    "test": "exam",
+    "tests": "exam",
+    "quiz": "exam",
+    "midterm": "exam",
+    "consultation": "consultation",
+    "lecture": "lecture",
+    "lectures": "lecture",
+    "seminar": "seminar",
+    "seminars": "seminar",
+    "practice": "seminar",
+    "lab": "lab",
+    "laboratory": "lab",
+}
+# An assessment is never "the same class" as one that is not: a class and its exam share a course.
+IRREGULAR_KINDS = frozenset({"exam", "consultation"})
 
 
 def _norm(text: str) -> str:
@@ -114,63 +156,37 @@ def _stem(word: str) -> str:
     return word[:6]
 
 
-_KIND_STEMS = frozenset(_stem(_norm(w)) for w in _KIND_WORDS)
-
-# What a title says about the type of the class, for sources that do not give a kind of their own.
-_TITLE_KIND = {
-    _stem(_norm(word)): kind
-    for kind, words in (
-        ("lecture", ("лекция", "lecture")),
-        ("seminar", ("семинар", "практика", "практическое", "seminar", "practice")),
-    )
-    for word in words
-}
-# Words that make a class an assessment, never "the same class" as one without the word.
-_ASSESSMENT = frozenset(
-    _stem(_norm(word))
-    for word in (
-        "экзамен",
-        "контрольная",
-        "контроль",
-        "зачёт",
-        "консультация",
-        "коллоквиум",
-        "пересдача",
-        "тест",
-        "тестирование",
-        "exam",
-        "test",
-        "quiz",
-        "midterm",
-    )
-)
-IRREGULAR_KINDS = frozenset({"exam", "consultation"})
-
-
 def _title_words(title: str) -> list[str]:
-    return [_stem(w) for w in _WORD.findall(_norm(title)) if w not in _STOP]
+    return [w for w in _WORD.findall(_norm(title)) if w not in _STOP]
 
 
-def assessment_words(title: str) -> frozenset[str]:
-    """The assessment words of a title (экзамен, контрольная, зачёт, консультация…), as roots."""
-    return frozenset(w for w in _title_words(title) if w in _ASSESSMENT)
+def _kind_of_word(word: str) -> str | None:
+    if word in _KIND_WORD:
+        return _KIND_WORD[word]
+    if word.isascii():
+        return None
+    return next((kind for prefix, kind in _KIND_PREFIX if word.startswith(prefix)), None)
 
 
 def class_kind(kind: str, title: str) -> str | None:
-    """The type of a class: the source's own kind, else what the words of the title say, else
-    `None` (unknown)."""
+    """The type of a class: the source's own kind, else what the words of the title say (an
+    assessment word wins over the rest), else `None` (unknown)."""
     if kind != "other":
         return kind
-    found = {_TITLE_KIND[w] for w in _title_words(title) if w in _TITLE_KIND}
+    found = {k for w in _title_words(title) if (k := _kind_of_word(w))}
+    for assessment in ("exam", "consultation"):
+        if assessment in found:
+            return assessment
     return next(iter(found)) if len(found) == 1 else None
 
 
 def title_tokens(title: str) -> frozenset[str]:
     """The words that identify a class: casefolded, ё as е, punctuation and function words off,
-    stemmed, the kind of the class (lecture, seminar) off. A title of nothing else keeps its words."""
+    stemmed, the words that only name the kind of the class off (лекция, «пр.», экзамен). A title of
+    nothing else keeps its words."""
     words = _title_words(title)
-    content = [w for w in words if w not in _KIND_STEMS]
-    return frozenset(content or words)
+    content = [_stem(w) for w in words if _kind_of_word(w) is None and w not in _FILLER]
+    return frozenset(content or [_stem(w) for w in words])
 
 
 def title_similarity(a: frozenset[str], b: frozenset[str]) -> float:
@@ -262,6 +278,28 @@ def _clock(moment: datetime, zone: ZoneInfo) -> str:
     return f"{moment.astimezone(zone):%H:%M}"
 
 
+_NOT_A_TITLE = frozenset(_stem(w) for w in _ROOM_NOISE | _HONORIFICS)
+
+
+def _own_title_words(base: ScheduleEventOut, other: ScheduleEventOut) -> frozenset[str]:
+    """The words of the title of `other` that say something the title of `base` does not. Not a
+    number, an initial, «ауд.», «доц.», or a word that is the room or the teacher of either source:
+    a calendar writes «Матанализ, ауд. 305, Иванов И. И.» where the cabinet has «Матанализ»."""
+    mine = {
+        _stem(w)
+        for value in (base.location, other.location, base.teacher, other.teacher)
+        for w in _words(value or "")
+    }
+    return frozenset(
+        w
+        for w in title_tokens(other.title) - title_tokens(base.title)
+        if len(w) > 1
+        and not any(c.isdigit() for c in w)
+        and w not in _NOT_A_TITLE
+        and w not in mine
+    )
+
+
 def _short_title(title: str) -> str:
     text = " ".join(title.split())
     return text if len(text) <= 80 else text[:79].rstrip() + "…"
@@ -278,7 +316,7 @@ def differences(
         abs(base.ends_at - other.ends_at) > END_NOISE
     ):
         out.append(("time", f"время {_clock(other.starts_at, zone)}–{_clock(other.ends_at, zone)}"))
-    if title_tokens(other.title) - title_tokens(base.title):
+    if _own_title_words(base, other):
         out.append(("title", f"название «{_short_title(other.title)}»"))
     checks: tuple[
         tuple[Kind, str | None, str | None, Callable[[str, str], bool | None], str], ...
@@ -328,13 +366,9 @@ class Coverage:
 
 
 def is_regular(kind: str, title: str, start: datetime, end: datetime) -> bool:
-    """A class that says something about how far a source's timetable goes: not an exam, a
-    consultation or anything with an assessment word, and not longer than a class can be."""
-    return (
-        kind not in IRREGULAR_KINDS
-        and not assessment_words(title)
-        and end - start <= MAX_MATCH_DURATION
-    )
+    """A class that says something about how far a source's timetable goes: not an exam, a test or a
+    consultation (by its kind or its words), and not longer than a class can be."""
+    return class_kind(kind, title) not in IRREGULAR_KINDS and end - start <= MAX_MATCH_DURATION
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +391,6 @@ class _Entry:
     rank: int  # the position of the source the class came from; 0 is the primary
     matchable: bool
     kind: str | None  # what the class is, if the source or its title says
-    assessment: frozenset[str]
     notes: list[tuple[str, Kind, str]] = field(default_factory=list)  # (source title, kind, text)
     missing: bool = False
 
@@ -372,16 +405,16 @@ class _Entry:
             rank=rank,
             matchable=end - event.starts_at <= MAX_MATCH_DURATION,
             kind=class_kind(event.kind, event.title),
-            assessment=assessment_words(event.title),
         )
 
 
 def _same_class(a: _Entry, b: _Entry) -> bool:
-    """False for two events that cannot be one class whatever their time and words: both kinds are
-    known and differ, or an assessment word is in one title only."""
-    if a.kind is not None and b.kind is not None and a.kind != b.kind:
+    """False for two events that cannot be one class whatever their time and words: one is an
+    assessment (an exam, a test, a consultation) and the other is not, or both kinds are known and
+    differ. A kind comes from the source or from the words of the title."""
+    if (a.kind in IRREGULAR_KINDS) != (b.kind in IRREGULAR_KINDS):
         return False
-    return a.assessment == b.assessment
+    return a.kind is None or b.kind is None or a.kind == b.kind
 
 
 def _sorted(entries: list[_Entry]) -> list[_Entry]:

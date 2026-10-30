@@ -583,25 +583,26 @@ class ChatThread(Base):
     )
 
 
-class AgentConfirmation(Base):
-    """A question the application itself asked the student, in the thread, before it does something
-    the agent proposed (switching a source off). The application writes the buttons; the action runs
-    only when the student's next message is exactly the label of the button written for this very
-    connection, once and within a few minutes. One pending question per thread and action: a new
-    question replaces the old one, so one press never switches two sources off."""
+class AgentChoice(Base):
+    """The buttons the application itself put under an answer of the agent before it changes a setting
+    that the agent proposed (the primary source of a university, switching a source off): each button
+    is bound to exact actions on exact connections. The action runs only when the student's next
+    message is exactly the label of a button, within a few minutes, once: the first call that sees the
+    press arms the choice for that message (`armed`), and every action it binds is spent at most once.
+    One pending choice per thread: a new question replaces the old one, so a press never reaches a
+    question the student did not see last."""
 
-    __tablename__ = "agent_confirmations"
-    __table_args__ = (UniqueConstraint("thread_id", "action"),)
+    __tablename__ = "agent_choices"
+    __table_args__ = (UniqueConstraint("thread_id"),)
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     thread_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True, nullable=False
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False
     )
-    action: Mapped[str] = mapped_column(String(20), nullable=False)
-    connection_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
-    )
-    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    # [{"label": str, "actions": [{"type": "primary" | "disable", "connectionId": str}]}]
+    buttons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    # After a press: {"messageId", "label", "remaining": [actions not yet spent]}; None before.
+    armed: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = ts_now()
 
