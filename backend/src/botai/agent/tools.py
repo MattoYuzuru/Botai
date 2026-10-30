@@ -36,7 +36,8 @@ from botai.agent.env import (
 )
 from botai.agent.harness import HarnessTool
 from botai.core.llm import LlmTool
-from botai.db.models import Chunk, Document, Fact
+from botai.db.models import Chunk, Connection, Document, Fact
+from botai.domain.repo import LIVE_DOCUMENT
 from botai.domain.schemas import ScheduleEventOut
 
 MAX_RANGE_DAYS = 31
@@ -369,6 +370,7 @@ async def search_documents(env: ChatEnv, args: dict[str, Any]) -> str:
                 .where(
                     Chunk.user_id == env.user_id,
                     Document.user_id == env.user_id,
+                    LIVE_DOCUMENT,
                     Chunk.tsv.op("@@")(tsquery),
                 )
                 .order_by(rank.desc(), Chunk.ord)
@@ -403,6 +405,18 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
         return "Ошибка аргументов: нужен непустой query."
     now = env.services.clock.now()
     async with env.services.db() as session:
+        # A saved answer that cites a document of a source the student switched off goes with it.
+        hidden = set(
+            await session.scalars(
+                select(Document.url)
+                .join(Connection, Connection.id == Document.connection_id)
+                .where(
+                    Document.user_id == env.user_id,
+                    Connection.status == "disabled",
+                    Document.url.is_not(None),
+                )
+            )
+        )
         rows: list[Fact] = []
         for tsquery in _tsqueries(query):
             doc = func.to_tsvector("russian", Fact.question + " " + Fact.answer)
@@ -410,11 +424,15 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
                 select(Fact)
                 .where(Fact.user_id == env.user_id, doc.op("@@")(tsquery))
                 .order_by(func.ts_rank_cd(doc, tsquery).desc())
-                .limit(3)
+                .limit(12)
             )
             if env.space_id:
                 stmt = stmt.where((Fact.space_id == env.space_id) | Fact.space_id.is_(None))
-            rows = list((await session.execute(stmt)).scalars())
+            rows = [
+                fact
+                for fact in (await session.execute(stmt)).scalars()
+                if not any(str(s.get("url", "")) in hidden for s in fact.sources)
+            ][:3]
             if rows:
                 break
     if not rows:

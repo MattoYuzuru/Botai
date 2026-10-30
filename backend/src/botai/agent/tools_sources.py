@@ -710,6 +710,18 @@ async def add_document_url(env: ChatEnv, args: dict[str, Any]) -> str:
             select(Document).where(Document.user_id == env.user_id, Document.url == url)
         )
         if known is not None:
+            switched_off = known.connection_id is not None and (
+                await session.scalar(
+                    select(Connection.status).where(Connection.id == known.connection_id)
+                )
+                == "disabled"
+            )
+            if switched_off:
+                return (
+                    f"Результат: уже добавлено, но источник «{data_text(known.title)}» отключён "
+                    "студентом: ничего не запущено, текст не читается. Студент включает его "
+                    "в разделе «Источники»."
+                )
             return (
                 f"Результат: уже добавлено, ничего не запущено. «{data_text(known.title)}» "
                 f"{document_link(known.id)}. Текст читается через read_document и search_documents."

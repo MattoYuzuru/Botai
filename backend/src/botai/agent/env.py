@@ -133,6 +133,9 @@ class ChatEnv:
     ctx: JobContext | None = None  # to publish the plan while the turn is still running
     blocks: list[AgentUiBlock] = field(default_factory=list)  # task cards appended to the reply
     quick_replies: list[str] = field(default_factory=list)
+    # The application wrote the buttons itself (the question before switching a source off): the
+    # model cannot replace them with its own.
+    pinned_replies: bool = False
     plan_id: str | None = None
     # Pages the agent may open besides its source's own: the links it has met in this thread (the
     # last ones are kept with the thread) and the ones the student wrote in this question.
