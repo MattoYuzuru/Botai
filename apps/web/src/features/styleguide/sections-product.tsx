@@ -160,13 +160,13 @@ export function ChatSection() {
               at={NOW}
               timeZone={MSK}
               nowMs={NOW}
-              citations={[
+              citationGroups={[
                 {
-                  id: "1",
-                  title: "Расписание — ЛК вуза",
-                  url: "https://lk.fakeuni.test/timetable",
-                  fetchedAt: NOW - 3600_000,
+                  id: "lk",
+                  label: "Личный кабинет ВШЭ",
                   spaceTitle: "ВШЭ",
+                  fetchedAt: NOW - 3600_000,
+                  items: [{ id: "1", title: "Расписание", url: "https://lk.fakeuni.test/timetable" }],
                 },
               ]}
             />

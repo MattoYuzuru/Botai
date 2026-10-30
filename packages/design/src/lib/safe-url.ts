@@ -18,3 +18,13 @@ export function safeHttpUrl(value: string | null | undefined): URL | null {
 export function displayHost(url: URL): string {
   return url.hostname.replace(/^www\./, "");
 }
+
+/**
+ * Адрес, который вправе вернуть резолвер внутренних ссылок: путь приложения (`/chat?thread=…`), якорь или http(s).
+ * Схемы `javascript:`, `data:` и «//host» — нет.
+ */
+export function safeAppHref(href: string): string | null {
+  if (href.startsWith("/") && !href.startsWith("//") && !href.includes("\\")) return href;
+  if (href.startsWith("#")) return href;
+  return safeHttpUrl(href)?.href ?? null;
+}

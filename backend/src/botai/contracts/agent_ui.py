@@ -25,10 +25,14 @@ class Source(BaseModel):
     stale: bool = False
 
 
+QuickReply = Annotated[str, Field(min_length=1, max_length=60)]
+
+
 class TextBlock(_Block):
     type: Literal["text"] = "text"
     markdown: str = Field(max_length=8000)
     sources: list[Source] | None = Field(default=None, max_length=10)
+    quick_replies: list[QuickReply] | None = Field(default=None, max_length=4)
 
 
 class ThinkingBlock(_Block):
@@ -148,6 +152,46 @@ class HandoffBlock(_Block):
     text: str = Field(max_length=8000)
 
 
+class PlanStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, alias_generator=to_camel)
+    id: str = Field(min_length=1, max_length=40)
+    title: str = Field(max_length=200)
+    state: Literal["pending", "active", "done", "skipped"]
+
+
+class PlanBlock(_Block):
+    """Answer plan; a block with the same `id` replaces the earlier one in the history."""
+
+    type: Literal["plan"] = "plan"
+    title: str = Field(max_length=200)
+    steps: list[PlanStep] = Field(min_length=1, max_length=12)
+
+
+TaskKind = Literal["connect", "repair", "sync", "ingest"]
+TaskState = Literal["queued", "running", "waiting_user", "done", "failed", "cancelled"]
+
+
+class TaskBlock(_Block):
+    """Card of a background task; `thread_id` is the thread the task lives in."""
+
+    type: Literal["task"] = "task"
+    job_id: Ulid = Field()
+    kind: TaskKind
+    title: str = Field(max_length=200)
+    state: TaskState
+    thread_id: Ulid = Field()
+    connection_id: Ulid | None = Field(default=None)
+
+
+class AttachmentBlock(_Block):
+    type: Literal["attachment"] = "attachment"
+    attachment_id: Ulid = Field()
+    name: str = Field(max_length=255)
+    mime: str = Field(max_length=120)
+    size: int = Field(ge=0)
+    kind: Literal["image", "document", "audio", "other"]
+
+
 AgentUiBlock = Annotated[
     TextBlock
     | ThinkingBlock
@@ -158,7 +202,10 @@ AgentUiBlock = Annotated[
     | ApprovalBlock
     | LoginBlock
     | WaitBlock
-    | HandoffBlock,
+    | HandoffBlock
+    | PlanBlock
+    | TaskBlock
+    | AttachmentBlock,
     Field(discriminator="type"),
 ]
 

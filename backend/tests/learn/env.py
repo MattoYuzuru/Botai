@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.jobs import InMemoryJobContext, JobKind
-from botai.core.llm import LlmResponse, ScriptedLlm
+from botai.core.llm import LlmResponse
 from botai.core.queue import InMemoryJobQueue
 from botai.core.vault import InMemoryVault, SecretKind
 from botai.db import models as m
@@ -38,7 +38,7 @@ class Env:
         sessions: FakeSessions | None = None,
     ) -> None:
         self.db, self.seeded, self.app = db, seeded, app
-        self.llm = ScriptedLlm(queue=responses)
+        self.llm = ls.EvidenceLlm(queue=responses)
         self.vault = InMemoryVault()
         self.sessions = sessions or FakeSessions()
         self.queue = InMemoryJobQueue()

@@ -14,10 +14,11 @@ test.describe("«Сегодня»", () => {
     await expect(classes.getByText("Изменено")).toHaveCount(1);
     await expect(classes.getByText("ВШЭ").first()).toBeVisible();
     await expect(classes.getByText("ЦУ")).toBeVisible();
-    // Свежесть: у каждого вуза своя подпись.
-    await expect(page.getByRole("list", { name: "Свежесть данных" }).getByRole("listitem")).toHaveCount(2);
+    // Статусы вузов — чипами в шапке: у каждого вуза свой, пояснение раскрывается касанием.
+    const bar = page.locator("header").getByRole("list", { name: "Статусы вузов" });
+    await expect(bar.getByRole("listitem")).toHaveCount(2);
     await page.getByRole("button", { name: /^ВШЭ: Обновлено/ }).click();
-    await expect(page.getByText(/Обновлено\s+\d+\s+мин/).first()).toBeVisible();
+    await expect(bar.getByText(/Обновлено\s+\d+\s+мин/).first()).toBeVisible();
   });
 
   test("три ближайших срока, «Просрочено» без укоров; «Все задания» ведут на вкладку", async ({ page }) => {
@@ -67,7 +68,10 @@ test.describe("«Сегодня»", () => {
     await open(page, "/", "reauth");
     const notices = page.getByRole("list", { name: "Состояние источников" });
     await expect(notices.getByText(/Нужно снова войти в личный кабинет ЦУ/)).toBeVisible();
-    await expect(notices.getByRole("button", { name: "Войти снова" })).toBeVisible();
+    const action = notices.getByRole("link", { name: "Войти снова" });
+    await expect(action).toBeVisible();
+    // Источнику ЦУ нужно войти снова: плашка ведёт в чат с готовой просьбой, а не на старую страницу подключения.
+    await expect(action).toHaveAttribute("href", /^\/chat\?draft=/);
     await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "reauth");
     await expect(page.getByRole("region", { name: "Пары", exact: true }).getByRole("listitem")).toHaveCount(
       4,

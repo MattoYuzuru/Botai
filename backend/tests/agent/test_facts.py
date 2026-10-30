@@ -77,7 +77,7 @@ async def test_unknown_and_non_document_answers_are_not_saved(sm: Sm, user_id: s
 
 async def test_answers_from_structured_data_are_not_facts(sm: Sm, user_id: str) -> None:
     r = await rig_with_rules(
-        sm, user_id, step(call("list_connections")), final("Подключено одно расписание [S1].")
+        sm, user_id, step(call("list_universities")), final("Подключено одно расписание [S1].")
     )
     await r.ask("Что подключено?")
     assert await facts_of(sm, user_id) == []

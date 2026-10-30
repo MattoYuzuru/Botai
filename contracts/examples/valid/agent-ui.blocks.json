@@ -9,5 +9,11 @@
    "groups": [{"title": "Профиль", "items": [{"label": "Программа", "value": "Прикладная математика", "confidence": "confirmed"}]}]},
   {"type": "handoff", "id": "01JAAAAAAAAAAAAAAAAAAAAAA6", "at": "2026-10-27T10:00:05Z", "title": "Заявка на справку", "url": "https://fakeuni.test/requests/new", "text": "Прошу выдать справку об обучении"},
   {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAA7", "at": "2026-10-27T10:00:06Z", "markdown": "Следующая пара — **Алгоритмы** в 11:10.",
-   "sources": [{"title": "Расписание", "url": "https://fakeuni.test/api/v2/timetable", "fetchedAt": "2026-10-27T09:00:00Z"}]}
+   "sources": [{"title": "Расписание", "url": "https://fakeuni.test/api/v2/timetable", "fetchedAt": "2026-10-27T09:00:00Z"}]},
+  {"type": "text", "id": "01JAAAAAAAAAAAAAAAAAAAAAA8", "at": "2026-10-27T10:00:07Z", "markdown": "Вышка — это НИУ ВШЭ?", "quickReplies": ["Да, НИУ ВШЭ", "Нет, другой вуз"]},
+  {"type": "plan", "id": "01JAAAAAAAAAAAAAAAAAAAAAA9", "at": "2026-10-27T10:00:08Z", "title": "Найти окна в расписании",
+   "steps": [{"id": "s1", "title": "Прочитать расписание", "state": "done"}, {"id": "s2", "title": "Найти свободные пары", "state": "active"}, {"id": "s3", "title": "Составить таблицу", "state": "pending"}]},
+  {"type": "task", "id": "01JAAAAAAAAAAAAAAAAAAAAAAA", "at": "2026-10-27T10:00:09Z", "jobId": "01JAAAAAAAAAAAAAAAAAAAAAAB", "kind": "connect", "title": "Подключение: Единый личный кабинет",
+   "state": "waiting_user", "threadId": "01JAAAAAAAAAAAAAAAAAAAAAAC", "connectionId": "01JAAAAAAAAAAAAAAAAAAAAAAD"},
+  {"type": "attachment", "id": "01JAAAAAAAAAAAAAAAAAAAAAAE", "at": "2026-10-27T10:00:10Z", "attachmentId": "01JAAAAAAAAAAAAAAAAAAAAAAF", "name": "Расписание.pdf", "mime": "application/pdf", "size": 120400, "kind": "document"}
 ]

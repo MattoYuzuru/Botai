@@ -6,6 +6,19 @@ export {
   type ApprovalState,
   type ProposalField,
 } from "./approval-card/approval-card";
+export { AttachmentChip, type AttachmentChipProps } from "./attachment-chip/attachment-chip";
+export {
+  AttachmentViewer,
+  type AttachmentViewerProps,
+} from "./attachment-viewer/attachment-viewer";
+export {
+  type AttachmentKind,
+  attachmentIcon,
+  attachmentKindLabel,
+  type ComposerAttachment,
+  type FileSource,
+  type ViewerAttachment,
+} from "./attachments";
 export { Badge, type BadgeProps } from "./badge/badge";
 export { Banner, type BannerProps } from "./banner/banner";
 export {
@@ -16,15 +29,25 @@ export {
   buttonVariants,
 } from "./button/button";
 export { Card, type CardProps } from "./card/card";
-export { ChatComposer, type ChatComposerProps } from "./chat-composer/chat-composer";
+export {
+  ChatComposer,
+  type ChatComposerProps,
+  DEFAULT_MAX_ATTACHMENTS,
+} from "./chat-composer/chat-composer";
+export { ChatDropZone, type ChatDropZoneProps } from "./chat-drop-zone/chat-drop-zone";
 export { ChatLayout, type ChatLayoutProps } from "./chat-layout/chat-layout";
 export {
-  type ChatCitation,
   ChatMessage,
   type ChatMessageProps,
   type MessageStatus,
 } from "./chat-message/chat-message";
 export { Checkbox, type CheckboxProps } from "./checkbox/checkbox";
+export {
+  type CitationGroup,
+  CitationGroups,
+  type CitationGroupsProps,
+  type CitationItem,
+} from "./citation-groups/citation-groups";
 export {
   ContextMeter,
   ContextMeterBar,
@@ -51,8 +74,24 @@ export {
   type ListRowProps,
   listRowClass,
 } from "./list-row/list-row";
-export { type Block, type Inline, parseMarkdown } from "./markdown/parse";
-export { SafeMarkdown, type SafeMarkdownProps } from "./markdown/safe-markdown";
+export { ChartBlock, type ChartBlockProps } from "./markdown/chart-block";
+export {
+  CHART_LIMITS,
+  type ChartKind,
+  type ChartSeries,
+  type ChartSpec,
+  chartExtent,
+  type NiceScale,
+  niceScale,
+  parseChartSpec,
+} from "./markdown/chart-spec";
+export { type Block, type Inline, parseMarkdown, type TableAlign } from "./markdown/parse";
+export {
+  type LinkResolver,
+  type ResolvedLink,
+  SafeMarkdown,
+  type SafeMarkdownProps,
+} from "./markdown/safe-markdown";
 export { Mascot, MascotAnimationPolicy, type MascotHandle, type MascotProps } from "./mascot/mascot";
 export {
   BUBBLE_MAX_CHARS,
@@ -63,7 +102,18 @@ export {
 export { HOP_MS, MascotDock, type MascotDockProps } from "./mascot-dock/mascot-dock";
 export { MascotStage, type MascotStageProps, REACTION_MS } from "./mascot-stage/mascot-stage";
 export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";
+export {
+  PlanCard,
+  type PlanCardProps,
+  type PlanStep,
+  type PlanStepState,
+} from "./plan-card/plan-card";
 export { ProgressRail, type ProgressRailProps } from "./progress-rail/progress-rail";
+export {
+  MAX_QUICK_REPLIES,
+  QuickReplies,
+  type QuickRepliesProps,
+} from "./quick-replies/quick-replies";
 export {
   RadioGroup,
   RadioGroupItem,
@@ -75,6 +125,7 @@ export {
   ScheduleDay,
   type ScheduleDayProps,
   type ScheduleDayState,
+  type ScheduleFact,
   type ScheduleItem,
 } from "./schedule/schedule-day";
 export {
@@ -101,11 +152,22 @@ export {
   SourceStatus,
   type SourceStatusProps,
 } from "./source-status/source-status";
+export {
+  SourceStatusBar,
+  type SourceStatusBarItem,
+  type SourceStatusBarProps,
+} from "./source-status/source-status-bar";
 export { Spinner } from "./spinner/spinner";
 export { Swatch, type SwatchProps } from "./swatch/swatch";
 export { Switch, type SwitchProps } from "./switch/switch";
 export { SyncIndicator, type SyncIndicatorProps, type SyncState } from "./sync-indicator/sync-indicator";
 export { TAB_COUNT, TabBar, type TabBarProps, type TabItem, type TabLinkProps } from "./tab-bar/tab-bar";
+export {
+  TaskCard,
+  type TaskCardProps,
+  type TaskKind,
+  type TaskState,
+} from "./task-card/task-card";
 export { Textarea, type TextareaProps } from "./textarea/textarea";
 export {
   type StepState,
@@ -120,5 +182,6 @@ export {
   UniversitySpaceSwitcher,
   type UniversitySpaceSwitcherProps,
 } from "./university-space-switcher/university-space-switcher";
+export { UnreadDot, type UnreadDotProps } from "./unread-dot/unread-dot";
 export { WaitCard, type WaitCardProps } from "./wait-card/wait-card";
 export { Wordmark, type WordmarkProps } from "./wordmark/wordmark";

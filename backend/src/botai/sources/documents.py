@@ -26,6 +26,8 @@ MAX_TEXT_CHARS = 2_000_000
 MAX_UNZIPPED = 120 * 1024 * 1024  # DOCX/XLSX are zip files: a small file may unpack to gigabytes
 MAX_ZIP_ENTRIES = 5000
 CHUNK_CHARS = 1200
+MAX_UPLOAD = 20 * 1024 * 1024  # one uploaded file: a chat attachment or a document
+UPLOAD_ORIGIN = "https://upload.botai.local"  # uploads have no host; the allowlist stays empty
 
 
 @dataclass(slots=True)
@@ -61,6 +63,7 @@ def detect_format(
         if any(n.startswith("xl/") for n in names):
             return "xlsx"
         raise BotaiError(ErrorCode.VALIDATION, "Не удалось определить тип документа")
+    utf16 = data.startswith((b"\xff\xfe", b"\xfe\xff"))  # byte order mark: text full of NULs
     low = head[:200].lower()
     if (
         low.startswith((b"<!doctype html", b"<html"))
@@ -72,12 +75,17 @@ def detect_format(
         return "csv"
     if lower_name.endswith(".pdf") or "pdf" in ctype:
         raise BotaiError(ErrorCode.VALIDATION, "Файл не похож на PDF")
-    if b"\x00" in data[:4096]:
+    if b"\x00" in data[:4096] and not utf16:
         raise BotaiError(ErrorCode.VALIDATION, "Этот тип файла не поддерживается")
     return "text"
 
 
 def _decode(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16")  # the byte order mark picks the byte order
+        except UnicodeDecodeError:
+            pass
     for encoding in ("utf-8-sig", "cp1251"):
         try:
             return data.decode(encoding)
@@ -273,7 +281,8 @@ def chunk_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     return pieces
 
 
-def to_chunks(extracted: Extracted) -> list[str]:
+def plain_text(extracted: Extracted) -> str:
+    """The whole readable content: the text, then every table as `header: value` lines."""
     parts: list[str] = []
     if extracted.text:
         parts.append(extracted.text)
@@ -282,4 +291,8 @@ def to_chunks(extracted: Extracted) -> list[str]:
         if lines:
             header = f"Таблица {table.name}" if len(extracted.tables) > 1 else ""
             parts.append("\n".join(([header] if header else []) + lines))
-    return chunk_text("\n".join(parts))
+    return "\n".join(parts)
+
+
+def to_chunks(extracted: Extracted) -> list[str]:
+    return chunk_text(plain_text(extracted))

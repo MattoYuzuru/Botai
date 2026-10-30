@@ -18,7 +18,7 @@ Role = Literal["system", "user", "assistant", "tool"]
 Tier = Literal["fast", "pro"]
 Thinking = Literal["enabled", "disabled"]
 Effort = Literal["low", "high", "max"]
-Purpose = Literal["chat", "classify", "learn", "repair", "extract", "summarize", "bench"]
+Purpose = Literal["agent", "classify", "learn", "repair", "extract", "summarize", "bench"]
 
 
 class LlmToolCall(BaseModel):
@@ -36,6 +36,10 @@ class LlmMessage(BaseModel):
     # DeepSeek thinking mode: with tools, reasoning_content of every previous assistant turn
     # must be sent back, otherwise the API returns 400 (docs/architecture/agent-harness.md §1).
     reasoning_content: str | None = None
+    # Put together by us from stored data (the turn context, a summary, the text of a file):
+    # third-party words inside, and nothing the student typed. The harness hides credential
+    # shapes in it but does not read «пароль можно сменить в профиле» as a pasted password.
+    data: bool = False
 
 
 class LlmTool(BaseModel):
@@ -54,7 +58,7 @@ class LlmRequest(BaseModel):
     json_schema: dict[str, Any] | None = None  # ask for a JSON object matching this schema
     max_tokens: int = 2000
     temperature: float = 0.2
-    purpose: Purpose = "chat"  # for usage accounting and profiles
+    purpose: Purpose = "agent"  # for usage accounting and profiles
 
     def fingerprint(self) -> str:
         """Stable hash of what the model sees (purpose excluded)."""

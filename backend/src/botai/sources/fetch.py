@@ -7,7 +7,7 @@ connection was not granted.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urlsplit
@@ -60,8 +60,12 @@ class SourceClient:
         header_name: str | None = None,
         use_session: bool = True,
         headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = True,
+        request_guard: Callable[[httpx.Request], Awaitable[None]] | None = None,
     ) -> None:
         self._ctx = ctx
+        self._request_guard = request_guard
+        self._follow_redirects = follow_redirects
         self._requests = 0
         self._auth_type = auth_type
         self._use_session = use_session
@@ -106,7 +110,11 @@ class SourceClient:
             headers=self._headers,
             transport=self._ctx.transport,
         )
+        self._client.follow_redirects = self._follow_redirects
         self._client.event_hooks["request"].append(self._scope_credentials)
+        if self._request_guard is not None:
+            # Runs for the first request and for every redirect hop, before it leaves.
+            self._client.event_hooks["request"].append(self._request_guard)
         await self._client.__aenter__()
         return self
 
@@ -129,6 +137,7 @@ class SourceClient:
         json: Any = None,
         check_session: bool = True,
         auth_binding: Mapping[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> httpx.Response:
         if not host_allowed(url, self._ctx.allow_hosts):
             raise BotaiError(
@@ -143,7 +152,9 @@ class SourceClient:
             )
         if self._ctx.before_request is not None:
             await self._ctx.before_request()
-        kwargs: dict[str, Any] = {"policy": self._ctx.retry}
+        # An API answer or a page is capped at MAX_BODY; a document passes the cap of an upload.
+        limit = max_bytes or MAX_BODY
+        kwargs: dict[str, Any] = {"policy": self._ctx.retry, "max_bytes": limit}
         if params:
             kwargs["params"] = dict(params)
         if data is not None:
@@ -199,7 +210,7 @@ class SourceClient:
                 outcome="rejected" if auth_required else "ok",
                 **url_facts(str(response.request.url)),
             )
-        if len(response.content) > MAX_BODY:
+        if len(response.content) > limit:
             raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Ответ источника слишком большой")
         return response
 

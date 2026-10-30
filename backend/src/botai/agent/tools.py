@@ -1,10 +1,11 @@
 """Chat tools (docs/architecture/agent-harness.md §4, security.md T5).
 
-Read-only by construction: schedule, deadlines, courses, grades, people, news (through
-`DomainReader`), connection state, full-text search over documents and saved facts, and
-`request_repair` and `request_login`, which enqueue owned connection jobs. Public
-search has a separate deterministic gate: only short public words from the current question
-can reach the fixed search APIs. No tool accepts an arbitrary outbound address or writes there.
+The agent's reading tools: schedule, deadlines, courses, grades, people and news (through
+`DomainReader`), and full-text search over documents and saved facts. The tools of the other
+areas live next to them and are assembled here into one registry: universities and tasks
+(`tools_sources`), live pages and documents (`tools_web`), the conversation itself
+(`tools_thread`). Nothing here writes to a university: the only writes are tasks that the
+student's own thread asks for, and notes about the student.
 
 Every result is plain text with source keys (`[S1]`). Dates are shown in the space's time zone.
 The harness wraps the text in `<source_data>`; what these functions return is untrusted data.
@@ -14,30 +15,31 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
+from botai.agent import tools_sources, tools_thread, tools_web
+from botai.agent.env import (
+    DEFAULT_TZ,
+    STATUS_RU,
+    ChatEnv,
+    clean,
+    fmt_day,
+    fmt_dt,
+    fmt_updated,
+    parse_date,
+    spec,
+)
 from botai.agent.harness import HarnessTool
-from botai.agent.reader import DomainReader, RepoReader
-from botai.agent.sources import SourceBook
-from botai.core.jobs import JobKind
 from botai.core.llm import LlmTool
-from botai.core.services import Services
-from botai.db.models import Chunk, Connection, Document, Fact, Job, Space
-from botai.domain.schemas import Provenance
-from botai.jobs import dialogue
-from botai.search import SearchBudget
-from botai.search.safety import chat_public_query
+from botai.db.models import Chunk, Document, Fact
 
-DEFAULT_TZ = "Europe/Moscow"
 MAX_RANGE_DAYS = 31
 MAX_ROWS = 60
 CHUNK_CHARS = 1200
-WEEKDAYS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 KIND_RU = {
     "lecture": "лекция",
     "seminar": "семинар",
@@ -54,18 +56,6 @@ STATE_RU = {
     "missed": "пропущено",
     "unknown": "статус неизвестен",
 }
-STATUS_RU = {
-    "draft": "не завершено",
-    "learning": "изучается",
-    "active": "работает",
-    "syncing": "обновляется",
-    "stale": "данные устарели",
-    "needs_reauth": "нужен повторный вход",
-    "error": "ошибка",
-    "disabled": "отключено",
-}
-NO_REPAIR_STATUSES = {"needs_reauth": "нужен повторный вход человеком", "disabled": "отключено"}
-ACTIVE_JOB_STATES = ("queued", "running", "waiting_user")
 
 DATA_TOOLS = frozenset(
     {
@@ -75,127 +65,41 @@ DATA_TOOLS = frozenset(
         "get_grades",
         "get_people",
         "get_news",
-        "list_connections",
+        "list_universities",
+        "task_status",
+        "browse_source",
+        "site_map",
     }
 )
-DOCUMENT_TOOLS = frozenset({"search_documents", "search_facts", "search_public_web"})
+DOCUMENT_TOOLS = frozenset(
+    {
+        "search_documents",
+        "search_facts",
+        "search_public_web",
+        "fetch_public_page",
+        "read_document",
+    }
+)
 
 
-@dataclass(slots=True)
-class ConnectionMeta:
-    id: str
-    title: str
-    kind: str
-    status: str
-    space_id: str
-    space_title: str
-    last_sync_at: datetime | None
-    created_at: datetime
-    error_code: str | None
-
-
-@dataclass(slots=True)
-class ChatEnv:
-    """Everything the tools of one chat turn need. Created per CHAT job."""
-
-    services: Services
-    user_id: str
-    thread_id: str
-    job_id: str | None
-    space_id: str | None
-    sources: SourceBook = field(default_factory=SourceBook)
-    reader: DomainReader = field(default_factory=RepoReader)
-    used: set[str] = field(default_factory=set)
-    repairs: list[str] = field(default_factory=list)  # titles of connections sent to repair
-    public_question: str = ""  # only the current typed question; never history or private tool data
-    search_budget: SearchBudget | None = None
-    _meta: tuple[list[ConnectionMeta], dict[str, str]] | None = None
-
-    async def meta(self) -> tuple[list[ConnectionMeta], dict[str, str]]:
-        """(connections of the student in scope, time zone by space id)."""
-        if self._meta is None:
-            async with self.services.db() as session:
-                rows = (
-                    await session.execute(
-                        select(Connection, Space)
-                        .join(Space, Space.id == Connection.space_id)
-                        .where(Connection.user_id == self.user_id, Space.user_id == self.user_id)
-                        .order_by(Connection.created_at)
-                    )
-                ).all()
-                spaces = (
-                    await session.execute(select(Space).where(Space.user_id == self.user_id))
-                ).scalars()
-                tz = {s.id: s.time_zone for s in spaces}
-            conns = [
-                ConnectionMeta(
-                    c.id,
-                    c.title,
-                    c.kind,
-                    c.status,
-                    c.space_id,
-                    s.title,
-                    c.last_sync_at,
-                    c.created_at,
-                    c.error_code,
-                )
-                for c, s in rows
-                if self.space_id is None or c.space_id == self.space_id
-            ]
-            self._meta = (conns, tz)
-        return self._meta
-
-    async def tz_for(self, space_id: str | None) -> ZoneInfo:
-        _, tz = await self.meta()
-        name = tz.get(space_id or self.space_id or "", "") or next(iter(tz.values()), DEFAULT_TZ)
-        try:
-            return ZoneInfo(name)
-        except ZoneInfoNotFoundError:
-            return ZoneInfo(DEFAULT_TZ)
-
-    async def titles(self) -> dict[str, ConnectionMeta]:
-        conns, _ = await self.meta()
-        return {c.id: c for c in conns}
-
-    async def cite(self, prov: Provenance) -> str:
-        conn = (await self.titles()).get(prov.connection_id)
-        return self.sources.add(
-            title=conn.title if conn else "Источник данных",
-            url=prov.source_url,
-            kind="data",
-            fetched_at=prov.fetched_at,
-            stale=prov.stale,
-        )
-
-
-# --- formatting ---------------------------------------------------------------------------------
-
-
-def fmt_day(d: datetime, tz: ZoneInfo) -> str:
-    local = d.astimezone(tz)
-    return f"{WEEKDAYS[local.weekday()]} {local:%d.%m}"
-
-
-def fmt_dt(d: datetime | None, tz: ZoneInfo) -> str:
-    if d is None:
-        return "—"
-    local = d.astimezone(tz)
-    return f"{WEEKDAYS[local.weekday()]} {local:%d.%m.%Y %H:%M}"
-
-
-def fmt_updated(d: datetime | None, tz: ZoneInfo) -> str:
-    return f"{d.astimezone(tz):%Y-%m-%d %H:%M}" if d else "ни разу"
-
-
-def _parse_date(value: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(value))
-    except ValueError:
-        return None
-
-
-def _clean(text: str | None, limit: int = 200) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()[:limit]
+# Whatever these return was written by someone else (a teacher in a timetable or a news item, a
+# document, a page, a search hit): after any of them `remember` takes only what the student said.
+OUTSIDE_TEXT = frozenset(
+    {
+        "get_schedule",
+        "get_deadlines",
+        "get_courses",
+        "get_grades",
+        "get_people",
+        "get_news",
+        "search_documents",
+        "search_facts",
+        "search_public_web",
+        "fetch_public_page",
+        "read_document",
+        "browse_source",
+    }
+)
 
 
 async def _empty_note(env: ChatEnv, what: str) -> str:
@@ -225,8 +129,8 @@ async def _empty_note(env: ChatEnv, what: str) -> str:
 async def get_schedule(env: ChatEnv, args: dict[str, Any]) -> str:
     tz = await env.tz_for(None)
     today = env.services.clock.now().astimezone(tz).date()
-    start_d = _parse_date(args["from_date"]) if args.get("from_date") else today
-    end_d = _parse_date(args["to_date"]) if args.get("to_date") else start_d
+    start_d = parse_date(args["from_date"]) if args.get("from_date") else today
+    end_d = parse_date(args["to_date"]) if args.get("to_date") else start_d
     if start_d is None or end_d is None:
         return "Ошибка аргументов: даты нужны в формате YYYY-MM-DD."
     end_d = max(end_d, start_d)
@@ -317,7 +221,7 @@ async def get_courses(env: ChatEnv, args: dict[str, Any]) -> str:
 
 
 async def get_grades(env: ChatEnv, args: dict[str, Any]) -> str:
-    needle = _clean(str(args.get("course", "")), 100).lower()
+    needle = clean(str(args.get("course", "")), 100).lower()
     async with env.services.db() as session:
         rows = await env.reader.grades(
             session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
@@ -342,7 +246,7 @@ async def get_grades(env: ChatEnv, args: dict[str, Any]) -> str:
 
 
 async def get_people(env: ChatEnv, args: dict[str, Any]) -> str:
-    needle = _clean(str(args.get("query", "")), 100).lower()
+    needle = clean(str(args.get("query", "")), 100).lower()
     async with env.services.db() as session:
         rows = await env.reader.people(
             session, env.user_id, space_id=env.space_id, now=env.services.clock.now()
@@ -371,38 +275,12 @@ async def get_news(env: ChatEnv, args: dict[str, Any]) -> str:
     lines = [f"Новости (показано {min(limit, len(rows))} из {len(rows)})."]
     for n in sorted(rows, key=lambda x: x.published_at, reverse=True)[:limit]:
         key = await env.cite(n.provenance)
-        body = _clean(n.body, 300)
+        body = clean(n.body, 300)
         lines.append(
             f"- {n.published_at.astimezone(tz):%d.%m.%Y} | {n.title}"
             + (f" | {body}" if body else "")
             + f" [{key}]"
         )
-    return "\n".join(lines)
-
-
-async def list_connections(env: ChatEnv, args: dict[str, Any]) -> str:
-    conns, tz = await env.meta()
-    if not conns:
-        return "Подключённых источников нет."
-    lines = [f"Подключения ({len(conns)}). id нужен для request_repair."]
-    for c in conns:
-        zone = ZoneInfo(tz.get(c.space_id) or DEFAULT_TZ)
-        key = env.sources.add(
-            title=c.title,
-            url=f"botai://connections/{c.id}",
-            kind="connection",
-            fetched_at=c.last_sync_at or c.created_at,
-        )
-        parts = [
-            f"id={c.id}",
-            f"«{c.title}»",
-            f"пространство: {c.space_title}",
-            f"вид: {c.kind}",
-            f"статус: {c.status} ({STATUS_RU.get(c.status, '')})",
-            f"обновлено: {fmt_updated(c.last_sync_at, zone)}",
-            f"код ошибки: {c.error_code}" if c.error_code else "",
-        ]
-        lines.append("- " + " | ".join(p for p in parts if p) + f" [{key}]")
     return "\n".join(lines)
 
 
@@ -423,7 +301,7 @@ def _tsqueries(query: str) -> list[Any]:
 
 
 async def search_documents(env: ChatEnv, args: dict[str, Any]) -> str:
-    query = _clean(str(args.get("query", "")), 300)
+    query = clean(str(args.get("query", "")), 300)
     if not query:
         return "Ошибка аргументов: нужен непустой query."
     limit = max(1, min(int(args.get("limit", 5) or 5), 8))
@@ -475,7 +353,7 @@ async def search_documents(env: ChatEnv, args: dict[str, Any]) -> str:
 
 
 async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
-    query = _clean(str(args.get("query", "")), 300)
+    query = clean(str(args.get("query", "")), 300)
     if not query:
         return "Ошибка аргументов: нужен непустой query."
     now = env.services.clock.now()
@@ -518,7 +396,7 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
             else "актуален"
         )
         lines.append(
-            f"- Вопрос: {_clean(f.question, 300)}\n  Ответ: {_clean(f.answer, 1500)}\n"
+            f"- Вопрос: {clean(f.question, 300)}\n  Ответ: {clean(f.answer, 1500)}\n"
             f"  Подтверждён {fmt_updated(f.confirmed_at, tz)} ({verdict}). Источники: "
             + ", ".join(f"[{k}]" for k in keys)
         )
@@ -532,228 +410,40 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
-# --- repair -------------------------------------------------------------------------------------
-
-
-async def request_repair(env: ChatEnv, args: dict[str, Any]) -> str:
-    connection_id = str(args.get("connection_id", "")).strip()
-    reason = _clean(str(args.get("reason", "")), 300)
-    conn = (await env.titles()).get(connection_id)
-    if conn is None:
-        return "Такого подключения у студента нет. Возьмите id из list_connections."
-    if conn.status in NO_REPAIR_STATUSES:
-        return (
-            f"Починка «{conn.title}» не запущена: {NO_REPAIR_STATUSES[conn.status]}. "
-            "Это действие студента, а не автоматическая починка."
-        )
-    from botai.spaces import repo, service
-
-    async with env.services.db() as session:
-        row = await repo.get_connection(session, env.user_id, connection_id)
-        setup = (
-            row.adapter is None
-            and row.spec_id is None
-            and row.status in {"draft", "learning", "error"}
-        )
-        expected = JobKind.CONNECT if setup else JobKind.REPAIR
-        running = await session.scalar(
-            select(Job.id)
-            .where(
-                Job.user_id == env.user_id,
-                Job.connection_id == connection_id,
-                Job.kind == expected.value,
-                Job.state.in_(ACTIVE_JOB_STATES),
-            )
-            .limit(1)
-        )
-        if running is not None:
-            from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
-
-            target = await canonical_thread(session, env.user_id, connection_id)
-            if target is None:
-                target = await owned_thread(session, env.user_id, env.thread_id)
-                bind_thread(target, connection_id)
-            existing = await session.scalar(
-                select(Job).where(Job.id == running, Job.user_id == env.user_id).with_for_update()
-            )
-            if existing is not None and existing.thread_id is None:
-                existing.thread_id = target.id
-            await session.commit()
-            env.repairs.append(conn.title)
-            action = "Подключение" if setup else "Починка"
-            return f"{action} «{conn.title}» уже идёт; вторую запускать не нужно."
-        job_id = await service.enqueue_for_connection(
-            session,
-            env.services.queue,
-            env.user_id,
-            connection_id,
-            JobKind.REPAIR,
-            thread_id=env.thread_id,
-            payload={"reason": reason, "source": "chat"},
-        )
-    env.repairs.append(conn.title)
-    action = "Подключение" if setup else "Починка"
-    if running is not None:
-        return f"{action} «{conn.title}» уже идёт; вторую запускать не нужно."
-    queued = "поставлено" if setup else "поставлена"
-    return f"{action} «{conn.title}» {queued} в очередь (задание {job_id}). Ход работы и результат сохранятся в разговоре подключения."
-
-
-async def request_login(env: ChatEnv, args: dict[str, Any]) -> str:
-    """Request the protected LoginFlow, without exposing a screen ticket or credentials."""
-    connection_id = str(args.get("connection_id", "")).strip()
-    conn = (await env.titles()).get(connection_id)
-    if conn is None:
-        return "Такого подключения у студента нет. Возьмите id из list_connections."
-    if conn.status == "disabled":
-        return "Подключение отключено. Защищённый вход не запущен."
-    from botai.spaces import service
-
-    async with env.services.db() as session:
-        job_id = await service.enqueue_for_connection(
-            session,
-            env.services.queue,
-            env.user_id,
-            connection_id,
-            JobKind.CONNECT,
-            thread_id=env.thread_id,
-            payload={"manual_login": True, "source": "chat"},
-            now=env.services.clock.now(),
-        )
-        queued = await session.scalar(
-            select(Job).where(Job.id == job_id, Job.user_id == env.user_id)
-        )
-        if queued is not None and not (
-            queued.kind == JobKind.CONNECT.value and queued.payload.get("manual_login") is True
-        ):
-            conversation = f"Разговор подключения: {queued.thread_id}. " if queued.thread_id else ""
-            pending = dialogue.state_of(queued).get("pending")
-            controls = ""
-            if (
-                isinstance(pending, dict)
-                and pending.get("channel") == "native"
-                and pending.get("secret") is True
-            ):
-                controls = (
-                    "В текущем шаге есть защищённые поля; рядом с ними можно открыть браузер. "
-                )
-            elif isinstance(pending, dict) and pending.get("channel") == "manual":
-                controls = "В текущем шаге уже доступен защищённый экран. "
-            return (
-                f"Для «{conn.title}» уже идёт задание {job_id}, состояние {queued.state}. "
-                + conversation
-                + controls
-                + "Новый вход не запущен: сначала дождитесь текущего задания или остановите его "
-                "в приложении, затем попросите войти снова."
-            )
-    conversation = (
-        f"Разговор подключения: {queued.thread_id}. " if queued and queued.thread_id else ""
-    )
-    return (
-        f"Запрос защищённого входа «{conn.title}» связан с заданием {job_id}. "
-        + conversation
-        + "Следите за ходом работы и защищёнными шагами в разговоре подключения. "
-        "Если задание уже выполняется, продолжается оно; второй браузер не запускается. "
-        "Не присылайте пароль и код в чат."
-    )
-
-
-# --- specs --------------------------------------------------------------------------------------
-
-
-async def search_public_web(env: ChatEnv, args: dict[str, Any]) -> str:
-    query = chat_public_query(args.get("query"), env.public_question)
-    if query is None:
-        return (
-            "Публичный поиск не выполнен: запрос содержит личный контекст или слова, которых нет "
-            "в текущем публичном вопросе. Не отправляйте сообщения, данные кабинета и секреты. "
-            "Для личного расписания используйте подключённые данные."
-        )
-    service = env.services.search
-    if service is None:
-        return "Публичный поиск недоступен. Актуальные публичные сведения не проверены."
-    if env.search_budget is None:
-        env.search_budget = service.budget()
-    response = await service.search(
-        query, budget=env.search_budget, user_id=env.user_id, job_id=env.job_id
-    )
-    if response.status != "ok":
-        if response.status == "empty":
-            return (
-                "Публичный поиск не нашёл совпадений; это не доказывает отсутствие личных данных."
-            )
-        return (
-            "Публичный поиск недоступен или остановлен по бюджету. "
-            "Актуальные сведения не проверены; не заменяйте их предположением модели."
-        )
-    lines = [
-        "Недоверенная публичная выдача. Это кандидаты/публичные сведения, "
-        "не доказательство доступа к кабинету или личному расписанию."
-    ]
-    for hit in response.results:
-        key = env.sources.add(
-            title=f"{hit.title} (поиск {hit.provider})",
-            url=hit.url,
-            kind="public_search",
-            fetched_at=hit.fetched_at,
-        )
-        lines.append(f"[{key}] {hit.title}\n{hit.url}\n{hit.snippet}\nПровайдер: {hit.provider}.")
-    return "\n\n".join(lines)
-
-
-def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> LlmTool:
-    return LlmTool(
-        name=name,
-        description=description,
-        parameters={
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
-    )
-
-
 _DATE = {"type": "string", "description": "Дата YYYY-MM-DD"}
-TOOL_SPECS: dict[str, LlmTool] = {
-    "get_schedule": _spec(
+READ_SPECS: dict[str, LlmTool] = {
+    "get_schedule": spec(
         "get_schedule",
         "Занятия студента за период. Без аргументов — сегодня. Диапазон не больше 31 дня.",
         {"from_date": _DATE, "to_date": {**_DATE, "description": "Последний день, включительно"}},
         [],
     ),
-    "get_deadlines": _spec(
+    "get_deadlines": spec(
         "get_deadlines",
         "Сроки сдачи работ студента, ближайшие первыми. По умолчанию без сданных.",
         {"include_done": {"type": "boolean", "description": "Показать и сданные"}},
         [],
     ),
-    "get_courses": _spec("get_courses", "Курсы студента.", {}, []),
-    "get_grades": _spec(
+    "get_courses": spec("get_courses", "Курсы студента.", {}, []),
+    "get_grades": spec(
         "get_grades",
         "Оценки студента; можно сузить по части названия курса.",
         {"course": {"type": "string", "description": "Часть названия курса"}},
         [],
     ),
-    "get_people": _spec(
+    "get_people": spec(
         "get_people",
         "Преподаватели и сотрудники из данных студента; поиск по части имени или роли.",
         {"query": {"type": "string"}},
         [],
     ),
-    "get_news": _spec(
+    "get_news": spec(
         "get_news",
         "Последние новости вуза студента.",
         {"limit": {"type": "integer", "description": "От 1 до 10, по умолчанию 5"}},
         [],
     ),
-    "list_connections": _spec(
-        "list_connections",
-        "Подключённые источники студента: id, название, состояние, время обновления, код ошибки.",
-        {},
-        [],
-    ),
-    "search_documents": _spec(
+    "search_documents": spec(
         "search_documents",
         "Полнотекстовый поиск по подключённым документам и страницам студента. "
         "Запрос — ключевые слова, как они встречаются в документах.",
@@ -763,76 +453,70 @@ TOOL_SPECS: dict[str, LlmTool] = {
         },
         ["query"],
     ),
-    "search_facts": _spec(
+    "search_facts": spec(
         "search_facts",
         "Поиск среди ранее подтверждённых ответов на вопросы о правилах и процедурах.",
         {"query": {"type": "string"}},
         ["query"],
     ),
-    "search_public_web": _spec(
-        "search_public_web",
-        "Настоящий публичный Web Search для актуальных публичных учебных сведений, официальных "
-        "сайтов и документации. Только короткие публичные ключевые слова из текущего вопроса. "
-        "Нельзя отправлять личные данные, переписку, закрытые страницы, пароли, URL кабинета "
-        "с path/query и токены. Выдача не доказывает наличие личного расписания.",
-        {"query": {"type": "string", "minLength": 2, "maxLength": 128}},
-        ["query"],
-    ),
-    "request_repair": _spec(
-        "request_repair",
-        "Запустить починку подключения, когда данные не обновляются или пропали. "
-        "Только для подключений из list_connections.",
-        {
-            "connection_id": {"type": "string"},
-            "reason": {"type": "string", "description": "Коротко своими словами, что не так"},
-        },
-        ["connection_id", "reason"],
-    ),
-    "request_login": _spec(
-        "request_login",
-        "Открыть защищённый ручной вход BotAI по явной просьбе студента войти заново, "
-        "войти самому или открыть браузер для входа. Только известный id своего подключения "
-        "из контекста разговора или list_connections. При неоднозначности сначала уточните "
-        "подключение. Возобновляет CONNECT в его разговоре; существующее активное задание "
-        "продолжается без второго браузера. Пароли, коды, URL и cookie сюда не передаются.",
-        {"connection_id": {"type": "string"}},
-        ["connection_id"],
-    ),
 }
-
-STAGES: dict[str, str] = {
+READ_STAGES: dict[str, str] = {
     "get_schedule": "Ищу в расписании",
     "get_deadlines": "Смотрю дедлайны",
     "get_courses": "Смотрю курсы",
     "get_grades": "Смотрю оценки",
     "get_people": "Ищу преподавателей",
     "get_news": "Читаю новости",
-    "list_connections": "Проверяю подключения",
     "search_documents": "Ищу в документах",
     "search_facts": "Ищу в сохранённых ответах",
-    "search_public_web": "Ищу публичные источники",
-    "request_repair": "Запускаю починку",
-    "request_login": "Запрашиваю защищённый вход",
 }
-
-_IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
+READ_IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
     "get_schedule": get_schedule,
     "get_deadlines": get_deadlines,
     "get_courses": get_courses,
     "get_grades": get_grades,
     "get_people": get_people,
     "get_news": get_news,
-    "list_connections": list_connections,
     "search_documents": search_documents,
     "search_facts": search_facts,
-    "search_public_web": search_public_web,
-    "request_repair": request_repair,
-    "request_login": request_login,
+}
+
+TOOL_SPECS: dict[str, LlmTool] = {
+    **READ_SPECS,
+    **tools_sources.SPECS,
+    **tools_web.SPECS,
+    **tools_thread.SPECS,
+}
+STAGES: dict[str, str] = {
+    **READ_STAGES,
+    **tools_sources.STAGES,
+    **tools_web.STAGES,
+    **tools_thread.STAGES,
+}
+_IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
+    **READ_IMPLS,
+    **tools_sources.IMPLS,
+    **tools_web.IMPLS,
+    **tools_thread.IMPLS,
 }
 
 
+# Tools that change something: a read repeated after them is not a repeat.
+MUTATING = frozenset(
+    {
+        "connect_source",
+        "add_document_url",
+        "sync_source",
+        "request_repair",
+        "request_login",
+        "remember",
+        "forget",
+    }
+)
+
+
 def build_chat_tools(env: ChatEnv) -> list[HarnessTool]:
-    """The chat agent's read-only tools bound to one turn, with a separate public search gate."""
+    """The agent's tools bound to one turn."""
 
     def bind(name: str) -> HarnessTool:
         impl = _IMPLS[name]
@@ -843,8 +527,12 @@ def build_chat_tools(env: ChatEnv) -> list[HarnessTool]:
             except (ValueError, TypeError, KeyError) as exc:
                 return f"Ошибка аргументов вызова {name}: {type(exc).__name__}."
             env.used.add(name)
+            if name in OUTSIDE_TEXT:
+                env.outside_read = True
             return text
 
-        return HarnessTool(spec=TOOL_SPECS[name], run=run, stage=STAGES[name])
+        return HarnessTool(
+            spec=TOOL_SPECS[name], run=run, stage=STAGES[name], mutates=name in MUTATING
+        )
 
     return [bind(name) for name in TOOL_SPECS]

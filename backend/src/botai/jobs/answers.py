@@ -255,16 +255,18 @@ async def record_answer(
         raise
 
 
-async def cancel_job(
-    session: AsyncSession, vault: Vault, clock: Clock, user_id: str, job_id: str
-) -> None:
-    """Stops a job of the user. A job that already ended is left alone (idempotent)."""
+async def stop_job(
+    session: AsyncSession, clock: Clock, user_id: str, job_id: str
+) -> tuple[bool, list[str]]:
+    """Stops a job of the user in the caller's transaction (nothing is committed here).
+
+    Returns whether it was stopped (a job that already ended is left alone) and the ids of the
+    transient secret answers that the caller must delete from the Vault after its commit."""
     job, connection = await lock_job_and_connection(session, user_id, job_id)
     if job is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
     if job.state in TERMINAL:
-        await session.rollback()
-        return
+        return False, []
     now = clock.now()
     job.state = "cancelled"
     job.stage = "Остановлено"
@@ -282,6 +284,17 @@ async def cancel_job(
             )
         )
     ).all()
+    return True, list(secrets)
+
+
+async def cancel_job(
+    session: AsyncSession, vault: Vault, clock: Clock, user_id: str, job_id: str
+) -> None:
+    """Stops a job of the user. A job that already ended is left alone (idempotent)."""
+    stopped, secrets = await stop_job(session, clock, user_id, job_id)
+    if not stopped:
+        await session.rollback()
+        return
     await session.commit()
     for block_id in secrets:  # an unconsumed secret answer must not outlive the job
         await vault.delete(user_id, block_id, SecretKind.TRANSIENT)

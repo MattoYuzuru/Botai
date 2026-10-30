@@ -1,9 +1,12 @@
 import { Button, EmptyState } from "@botai/design";
 import { Link } from "@tanstack/react-router";
+import { CONNECT_DRAFT } from "./drafts";
 
 /**
  * Пустой чат: что здесь можно спросить и до трёх вопросов из настоящих данных. Подсказка отправляется сразу,
- * как обычное сообщение. Вуз не подключён — приглашение подключить, а не выдуманные вопросы.
+ * как обычное сообщение. Вуз не подключён — приглашение подключить в этом же чате, а не выдуманные вопросы.
+ * Блок стоит по центру свободной области; место под сцену Вари входит в него, поэтому над полем ввода
+ * нет пустой полосы (mascot.md §4.2).
  */
 export function EmptyChat({
   suggestions,
@@ -15,7 +18,7 @@ export function EmptyChat({
   onPick: (text: string) => void;
 }) {
   return (
-    <div className="mx-auto flex w-full max-w-col flex-col gap-4 py-6" data-empty-chat="">
+    <div className="my-auto flex w-full flex-col gap-4 py-6" data-empty-chat="">
       <EmptyState
         icon="chat"
         title="Спросите про пары и сроки"
@@ -27,14 +30,16 @@ export function EmptyChat({
         action={
           noSpaces ? (
             <Button variant="primary" asChild>
-              <Link to="/connect">Подключить вуз</Link>
+              <Link to="/chat" search={{ draft: CONNECT_DRAFT }}>
+                Подключить вуз
+              </Link>
             </Button>
           ) : undefined
         }
         size="sm"
       />
       {suggestions.length > 0 && (
-        <ul className="flex flex-col gap-2" aria-label="Подсказки">
+        <ul className="mx-auto flex w-full max-w-reading flex-col gap-2" aria-label="Подсказки">
           {suggestions.map((text) => (
             <li key={text}>
               <Button
@@ -49,7 +54,7 @@ export function EmptyChat({
           ))}
         </ul>
       )}
-      {/* Пол сцены Вари: полоса над полем ввода зарезервирована, раскладка не прыгает (mascot.md §4.2). */}
+      {/* Сцена Вари входит в блок: пол над полем ввода занят ею, а не пустотой (mascot.md §4.2). */}
       <div aria-hidden="true" data-stage-floor="" className="h-24 shrink-0 min-[390px]:h-30" />
     </div>
   );

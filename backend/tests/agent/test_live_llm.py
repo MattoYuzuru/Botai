@@ -63,7 +63,7 @@ async def test_thinking_with_tool_round_trip(live: MeteredLlm) -> None:
         LlmMessage(role="user", content="Сколько сейчас времени?"),
     ]
     first = await live.complete(
-        LlmRequest(purpose="chat", messages=messages, tools=[tool], max_tokens=200)
+        LlmRequest(purpose="agent", messages=messages, tools=[tool], max_tokens=200)
     )
     _report("tool call", live)
     assert first.tool_calls, "the model should call the tool"
@@ -81,7 +81,7 @@ async def test_thinking_with_tool_round_trip(live: MeteredLlm) -> None:
         LlmMessage(role="tool", tool_call_id=call.id, content="<source_data>13:37</source_data>"),
     ]
     second = await live.complete(
-        LlmRequest(purpose="chat", messages=messages, tools=[tool], max_tokens=200)
+        LlmRequest(purpose="agent", messages=messages, tools=[tool], max_tokens=200)
     )
     _report("tool result", live)
     assert "13:37" in second.content

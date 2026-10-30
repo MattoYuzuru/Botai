@@ -25,10 +25,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    func,
     text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.engine import Connection as SqlConnection
+from sqlalchemy.orm import Mapped, Mapper, mapped_column
 
 from botai.db.base import Base, pk_ulid, ts_now
 
@@ -99,7 +103,25 @@ class University(Base):
 
 
 class Space(Base):
+    """One university of one user (`university_id` set), or the single "My materials" space of a
+    user for documents outside any university (`university_id` NULL)."""
+
     __tablename__ = "spaces"
+    __table_args__ = (
+        Index(
+            "uq_spaces_user_id_university_id",
+            "user_id",
+            "university_id",
+            unique=True,
+            postgresql_where=text("university_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_spaces_user_id_materials",
+            "user_id",
+            unique=True,
+            postgresql_where=text("university_id IS NULL"),
+        ),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     university_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("universities.id"))
@@ -110,6 +132,15 @@ class Space(Base):
         JSONB, default=dict, nullable=False
     )  # name, programme, year
     created_at: Mapped[datetime] = ts_now()
+
+
+class SourceSitemap(Base):
+    """Non-secret map of one origin (navigation, routes, FAQ/search endpoints), shared like a recipe."""
+
+    __tablename__ = "source_sitemaps"
+    origin: Mapped[str] = mapped_column(String(255), primary_key=True)
+    map: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = ts_now()
 
 
 class AdapterSpecRow(Base):
@@ -149,11 +180,14 @@ class Connection(Base):
         String(26), ForeignKey("spaces.id", ondelete="CASCADE"), index=True, nullable=False
     )
     origin: Mapped[str] = mapped_column(String(255), nullable=False)
-    kind: Mapped[str] = mapped_column(
-        String(20), nullable=False
-    )  # lms | schedule | portal | sheet | document | mail | other
+    # portal | lms | schedule | site | sheet | doc | document | calendar | other
+    # (`spaces.sources.CONNECTION_KINDS`): sheet = a table, doc = a document or page behind a
+    # link, document = an uploaded file
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
     adapter: Mapped[str | None] = mapped_column(String(20))
-    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)  # human, never a bare host
+    # The UI page of the source that holds the data (no secret query), for "open in the portal".
+    entry_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     spec_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("adapter_specs.id", ondelete="SET NULL")
@@ -206,7 +240,8 @@ class _Domain:
         String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
     )
     external_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)  # where it was read (may be API)
+    open_url: Mapped[str | None] = mapped_column(Text)  # the page that shows it to the student
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     spec_revision: Mapped[int | None] = mapped_column(Integer)
     seen_at: Mapped[datetime] = mapped_column(
@@ -244,6 +279,16 @@ class ScheduleEvent(_Domain, Base):
     location_text: Mapped[str | None] = mapped_column(String(200))
     teacher_text: Mapped[str | None] = mapped_column(String(300))
     url: Mapped[str | None] = mapped_column(Text)
+    kind_text: Mapped[str | None] = mapped_column(String(120))  # the source's own class type
+    address: Mapped[str | None] = mapped_column(String(300))
+    group_text: Mapped[str | None] = mapped_column(String(200))
+    lesson_number: Mapped[int | None] = mapped_column(Integer)
+    links: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )  # [{url, label}], online rooms and materials
+    attributes: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )  # [{label, value}], extra values under general labels
     changed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
@@ -344,6 +389,39 @@ class Chunk(Base):
     )
 
 
+class Attachment(Base):
+    """A file of a chat (or of the "add a document" form): the bytes live here, owned by one user.
+
+    Created unbound by `POST /attachments`; sending a message binds it (`message_id`). A document
+    attachment is indexed by an INGEST job that reads these bytes (`document_id` appears once the
+    text is searchable, `ingest_state` says how far it got).
+    """
+
+    __tablename__ = "attachments"
+    __table_args__ = (Index("ix_attachments_user_id_thread_id", "user_id", "thread_id"),)
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    thread_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("chat_messages.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    mime: Mapped[str] = mapped_column(String(120), nullable=False)  # detected from the bytes
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)  # image|document|audio|other
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("documents.id", ondelete="SET NULL")
+    )
+    ingest_state: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="none", server_default="none"
+    )  # none | queued | indexed | failed
+    created_at: Mapped[datetime] = ts_now()
+
+
 class Fact(Base):
     __tablename__ = "facts"
     id: Mapped[str] = pk_ulid()
@@ -364,7 +442,10 @@ class Fact(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_pick", "state", "run_after"),)
+    __table_args__ = (
+        Index("ix_jobs_pick", "state", "run_after"),
+        Index("ix_jobs_thread", "thread_id"),
+    )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
     kind: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -373,7 +454,9 @@ class Job(Base):
     connection_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True
     )
-    thread_id: Mapped[str | None] = mapped_column(String(26))
+    thread_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="SET NULL")
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -451,6 +534,9 @@ class JobAnswer(Base):
 
 
 class ChatThread(Base):
+    """One conversation. It has no purpose: every thread talks to the same agent, and long tasks
+    (connect, repair, sync, ingest) show their blocks in the thread they were asked in."""
+
     __tablename__ = "chat_threads"
     __table_args__ = (
         UniqueConstraint(
@@ -463,18 +549,20 @@ class ChatThread(Base):
         String(26), ForeignKey("spaces.id", ondelete="SET NULL")
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="Новый чат")
-    purpose: Mapped[str] = mapped_column(
-        String(10), nullable=False, default="chat", server_default="chat"
-    )
-    connect_context: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
-    )
     client_request_id: Mapped[str | None] = mapped_column(String(26))
     summary: Mapped[str | None] = mapped_column(
         Text
     )  # rolling summary of old turns (agent-harness §3)
     created_at: Mapped[datetime] = ts_now()
-    updated_at: Mapped[datetime] = ts_now()
+    # Bumped by an insert of any ChatMessage (see `_bump_thread` below); orders the thread list.
+    last_message_at: Mapped[datetime] = ts_now()
+    # When the student last opened the thread; an agent message newer than this is unread.
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Links the agent met while reading ({"public": [...], "source": [...]}, the last ones): the
+    # only addresses besides a source's own that a live read may open.
+    seen_links: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
 
 class ChatMessage(Base):
@@ -496,6 +584,39 @@ class ChatMessage(Base):
     )  # AgentUiBlock[] (by_alias)
     job_id: Mapped[str | None] = mapped_column(String(26))
     client_message_id: Mapped[str | None] = mapped_column(String(26))
+    created_at: Mapped[datetime] = ts_now()
+
+
+@event.listens_for(ChatMessage, "after_insert")
+def _bump_thread(
+    _mapper: Mapper[ChatMessage], connection: SqlConnection, message: ChatMessage
+) -> None:
+    """A message in a thread moves `last_message_at` forward, whoever inserted it. A progress line
+    of a task ("thinking") is not a message: it must not reorder the thread list."""
+    if message.blocks and message.blocks[0].get("type") == "thinking":
+        return
+    at = message.__dict__.get("created_at")
+    connection.execute(
+        update(ChatThread)
+        .where(ChatThread.id == message.thread_id)
+        .values(last_message_at=func.greatest(ChatThread.last_message_at, at or func.now()))
+    )
+
+
+class UserMemory(Base):
+    """What the agent remembers about a student (group, programme, preferences, useful steps)."""
+
+    __tablename__ = "user_memory"
+    __table_args__ = (
+        Index("ix_user_memory_user_created", "user_id", "created_at"),
+        # the same note is kept once, whatever its case
+        Index("uq_user_memory_user_id_note", "user_id", func.lower(text("note")), unique=True),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey(FK_USER, ondelete="CASCADE"), nullable=False
+    )
+    note: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = ts_now()
 
 

@@ -32,14 +32,15 @@ from botai.sources import runner as sources_runner
 from botai.worker import handler_table
 from tests.agent.rig import call, final, step
 from tests.e2e.support import (
+    SOURCE_TITLE,
     WRONG_PASSWORD,
-    Asked,
     Attendance,
     Campus,
     Learner,
     Stack,
     Student,
     WireTap,
+    connect_in_thread,
     dump_database,
     leaks,
     sent_to_models,
@@ -132,7 +133,7 @@ async def test_a_student_connects_a_university_and_asks_about_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env, gateway = stack.env, stack.gateway
-    learning_llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    learning_llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, learning_llm)
 
     # === 1. the API: the owner invites a friend, the friend registers and adds a university =====
@@ -221,15 +222,12 @@ async def test_a_student_connects_a_university_and_asks_about_it(
     await check_isolation(env, connection_id, anna.connect_job, thread["id"])
 
 
-@pytest.mark.parametrize("research_enabled", [False, True])
 async def test_chat_source_url_native_login_clarification_sync_and_reply_share_one_thread(
     stack: Stack,
     wiretap: WireTap,
-    research_enabled: bool,
 ) -> None:
     """Real TCP API/worker/Chromium/proxy; only fakeuni and the model are synthetic."""
     env = stack.env
-    env.settings.botai_research_enabled = research_enabled
     entry = "https://fakeuni.test/app?begin_date=2026-10-26"
     clarification = "Ссылка уже правильная. Дедлайнов тут нет."
     classifier = LlmResponse(
@@ -243,42 +241,19 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             ensure_ascii=False,
         )
     )
-    learning_llm = ScriptedLlm(queue=[classifier, ls.timetable_answer()])
+    learning_llm = ls.EvidenceLlm(queue=[classifier, ls.timetable_answer()])
     start_worker(env, learning_llm)
     friend = env.new_client()
     account = await env.account(friend)
-    response = await friend.post("/api/v1/chat/threads", json={"purpose": "connect"})
+    response = await friend.post("/api/v1/chat/threads", json={})
     assert response.status_code == 201, response.text
     thread = response.json()["id"]
+    # The student sends the link in an ordinary thread; its agent connects it right here.
+    connect_job, connection_id = await connect_in_thread(env, account.id, thread, entry)
     initial = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
-    connect_job = initial["activeJob"]["id"]
+    assert initial["activeJob"]["id"] == connect_job
+    assert [task["id"] for task in initial["tasks"]] == [connect_job]
     accepted_ids: list[str] = []
-
-    class ConversationStudent(Student):
-        bootstrap_count = 0
-
-        async def _answer(self, job_id: str, block: dict[str, Any], attendance: Attendance) -> None:
-            if (
-                block["type"] == "input"
-                and block.get("autocomplete") == "off"
-                and not block.get("secret")
-            ):
-                self.bootstrap_count += 1
-                assert self.bootstrap_count == 1, "a valid source URL must not be asked twice"
-                attendance.asked.append(
-                    Asked("input", block.get("inputKind"), False, block["question"])
-                )
-                posted = await self._http.post(
-                    f"/api/v1/chat/threads/{thread}/messages",
-                    headers=self._headers,
-                    json={"text": entry, "targetJobId": job_id, "clientMessageId": new_id()},
-                )
-                assert posted.status_code == 202, posted.text
-                assert posted.json()["jobId"] == job_id
-                accepted_ids.append(posted.json()["message"]["id"])
-                return
-            await super()._answer(job_id, block, attendance)
-
     clarified = False
 
     async def on_question(block: dict[str, Any]) -> None:
@@ -301,24 +276,25 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             clarified = True
 
     async with live_http(env.app) as http:
-        student = ConversationStudent(http, session_header(friend))
+        # The source URL is never asked again: the first question is the university's login.
+        student = Student(http, session_header(friend))
         connect = await student.attend(connect_job, on_question=on_question)
         assert clarified
-        assert student.bootstrap_count == 1
+        # The URL came with the task, so only the clarification needs the classifier.
         assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
         assert json.loads(learning_llm.requests[0].messages[-1].content)["message"] == clarification
-        assert [asked.label for asked in connect.asked] == [
-            "input:text",
-            *CONNECT_QUESTIONS,
-            "confirm",
-        ]
+        assert [asked.label for asked in connect.asked] == [*CONNECT_QUESTIONS, "confirm"]
         assert connect.result["status"] == "ok"
         assert connect.result["kinds"] == ["scheduleEvents"]
         assert [request.purpose for request in learning_llm.requests] == ["classify", "learn"]
         runtime = (await friend.get(f"/api/v1/chat/threads/{thread}/runtime")).json()
         assert runtime["pending"] == []
-        assert runtime["connection"]["status"] == "active"
-        connection_id, space_id = runtime["connection"]["id"], runtime["connection"]["spaceId"]
+        assert runtime["activeJob"] is None  # a finished task is not active; it stays in tasks
+        assert [(task["id"], task["state"]) for task in runtime["tasks"]] == [(connect_job, "done")]
+        connection = (await friend.get(f"/api/v1/connections/{connection_id}")).json()
+        assert connection["status"] == "active"
+        assert connection["title"] == SOURCE_TITLE
+        space_id = connection["spaceId"]
         learner = Learner(friend, account.id, space_id, connection_id, connect_job)
         secrets = Secrets(env, learner)
         await secrets.session("chat source")
@@ -328,10 +304,13 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
             if receipt["status"] == "applied"
         } >= set(accepted_ids)
         async with env.sm() as session:
-            row = await session.get(m.ChatThread, thread)
-            assert row is not None
-            assert row.connect_context["entry_urls"] == [entry]
-            assert row.connect_context["absent_kinds"] == ["deadlines"]
+            job = await session.get(m.Job, connect_job)
+            assert job is not None
+            assert job.thread_id == thread
+            # The clarification narrowed what the task learns; the task keeps it, not the thread.
+            assert job.payload["learning_intent"]["entry_urls"] == [entry]
+            assert job.payload["learning_intent"]["absent_kinds"] == ["deadlines"]
+            assert job.payload["learning_intent"]["user_note"] == clarification
             assert (
                 await session.scalar(
                     select(func.count())
@@ -401,7 +380,7 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
 async def test_a_changed_university_is_repaired_and_the_data_come_back(stack: Stack) -> None:
     env, gateway = stack.env, stack.gateway
     moved = recipes.timetable_endpoint(path="/api/v3/schedule")
-    llm = ScriptedLlm(
+    llm = ls.EvidenceLlm(
         queue=[ls.timetable_answer(), ls.deadlines_answer(), ls.answer([moved])]  # ..., repair
     )
     start_worker(env, llm)
@@ -480,7 +459,7 @@ async def test_a_second_student_of_the_university_reuses_what_the_first_one_taug
     stack: Stack,
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     campus = Campus(env)
     anna = await campus.enrol("anna@example.com")
@@ -529,7 +508,7 @@ async def test_a_mistyped_password_is_asked_again_and_only_the_right_one_is_kept
     stack: Stack, wiretap: WireTap
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     anna = await Campus(env).enrol("anna@example.com")
     secrets = Secrets(env, anna)
@@ -562,7 +541,7 @@ async def test_an_outage_is_retried_by_the_runner_while_the_old_data_stay(
     stack: Stack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = stack.env
-    llm = ScriptedLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
+    llm = ls.EvidenceLlm(queue=[ls.timetable_answer(), ls.deadlines_answer()])
     start_worker(env, llm)
     monkeypatch.setattr(sources_runner, "RetryPolicy", lambda: FAST)  # not 0.5 + 2 + 8 s of sleep
     anna = await Campus(env).enrol("anna@example.com")
@@ -749,10 +728,10 @@ async def check_chat_answer(
         "Первая пара в понедельник — «Математический анализ» в 09:30, ауд. А-101 [1]."
     )
     (source,) = reply["sources"]  # a citation the model could not invent: the tool recorded it
-    assert source["title"] == "fakeuni.test"
+    assert source["title"] == "Личный кабинет"  # a name, not the host
     assert source["url"].startswith("https://fakeuni.test/api/v2/timetable")
     assert when(source["fetchedAt"]) == env.clock.now()
-    assert chat.result["sources"][0]["title"] == "fakeuni.test"
+    assert chat.result["sources"][0]["title"] == "Личный кабинет"
     assert chat.result["tools"] == ["get_schedule"]
 
     # the model was given the synced timetable of Monday from the database, and nothing else

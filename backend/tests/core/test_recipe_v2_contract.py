@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -141,3 +142,20 @@ def test_weekly_expansion_is_bounded_and_schedule_only() -> None:
     assert errors("adapter-spec.schema.json", spec) == []
     expand["endTime"] = {"path": "/end"}
     assert errors("adapter-spec.schema.json", spec)
+
+
+def test_date_window_examples_pass_and_fail_both_validators() -> None:
+    from pathlib import Path
+
+    from pydantic import ValidationError
+
+    from botai.contracts.specs import RecipeSpec
+
+    examples = Path(__file__).resolve().parents[3] / "contracts" / "examples"
+    for spec in json.loads((examples / "valid" / "date-window-recipe.json").read_text("utf-8")):
+        assert errors("adapter-spec.schema.json", spec) == []
+        RecipeSpec.model_validate(spec)
+    for spec in json.loads((examples / "invalid" / "date-window-recipe.json").read_text("utf-8")):
+        assert errors("adapter-spec.schema.json", spec), spec
+        with pytest.raises(ValidationError):
+            RecipeSpec.model_validate(spec)

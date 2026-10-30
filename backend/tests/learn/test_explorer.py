@@ -108,14 +108,14 @@ async def test_a_rejected_candidate_gets_one_more_attempt_with_findings(
     make_env: EnvFactory,
 ) -> None:
     leaky = recipes.timetable_endpoint()
-    leaky["request"]["query"]["owner"] = "anna@fakeuni.test"
+    leaky["response"]["fields"]["location"] = {"path": "/place/anna@fakeuni.test"}
     env = await make_env([ls.answer([leaky]), ls.timetable_answer(), ls.deadlines_answer()])
     result = await env.run()
     assert result["status"] == "ok"
     assert len(env.llm.requests) == 3
     retry_prompt = env.llm.requests[1].messages[1].content
     assert "Замечания к предыдущему варианту" in retry_prompt
-    assert "personal.email at /recipe/endpoints/0/request/query/owner" in retry_prompt
+    assert "personal.email at /recipe/endpoints/0/response/fields/location" in retry_prompt
     assert "anna@fakeuni.test" not in retry_prompt  # findings carry places, never values
     spec = (await env.db.execute(select(m.AdapterSpecRow.spec))).scalars().one()
     assert "anna@" not in json.dumps(spec)
@@ -126,14 +126,15 @@ async def test_an_observed_identifier_copied_into_a_path_is_caught(make_env: Env
     env = await make_env([ls.answer([copied]), ls.timetable_answer(), ls.deadlines_answer()])
     result = await env.run()
     assert result["status"] == "ok"
-    assert (
-        "observed.value at /recipe/endpoints/0/request/path"
-        in env.llm.requests[1].messages[1].content
-    )
+    # The compiler refuses an address no observed request had, before the lint sees the value.
+    feedback = env.llm.requests[1].messages[1].content
+    assert "evidence_path_mismatch" in feedback
+    assert "u-1001" not in feedback.split("</observation>")[-1]
 
 
 async def test_candidates_that_fail_on_the_live_session_are_dropped(make_env: EnvFactory) -> None:
-    wrong = recipes.timetable_endpoint(path="/api/v9/timetable")  # 404 on the university
+    wrong = recipes.timetable_endpoint()
+    wrong["response"]["itemsPath"] = "/missing"  # the university answers, but not like this
     env = await make_env(
         [ls.answer([wrong]), ls.answer([wrong]), ls.deadlines_answer()],
     )
@@ -496,57 +497,3 @@ async def test_a_connection_without_an_address_asks_for_it(make_env: EnvFactory)
     assert result["status"] == "ok"
     assert isinstance(env.asked[0], InputBlock)
     assert (await env.conn()).origin == data.ORIGIN
-
-
-# --- teaching an existing connection more ---------------------------------------------------
-
-
-async def test_learn_adds_a_kind_as_a_new_revision_and_keeps_the_rest(
-    make_env: EnvFactory,
-) -> None:
-    env = await make_env([ls.answer([recipes.news_endpoint()])], with_spec=True)
-    result = await env.run(JobKind.LEARN, {"kinds": ["news"]})
-    assert result["status"] == "ok"
-    assert await env.specs() == [(1, "deprecated"), (2, "active")]
-    spec = (
-        (await env.db.execute(select(m.AdapterSpecRow.spec).where(m.AdapterSpecRow.revision == 2)))
-        .scalars()
-        .one()
-    )
-    kinds = [e["kind"] for e in spec["recipe"]["endpoints"]]
-    assert kinds == ["scheduleEvents", "deadlines", "news"]
-    assert spec["recipe"]["validation"]["requireKinds"] == ["scheduleEvents", "deadlines", "news"]
-    assert (await env.conn()).spec_revision == 2
-    assert (await env.conn()).data_scope is None  # add-only LEARN preserves auto/all
-    assert await env.count(m.NewsItem) == 2
-    assert await env.count(m.ScheduleEvent) == 4
-
-
-async def test_explicit_only_clarification_can_narrow_an_automatic_connection_during_learn(
-    make_env: EnvFactory,
-) -> None:
-    classifier = LlmResponse(
-        content=json.dumps({"kinds": ["news"], "replaceKinds": True, "linkIndices": []})
-    )
-    env = await make_env([classifier, ls.answer([recipes.news_endpoint()])], with_spec=True)
-    result = await env.run(
-        JobKind.LEARN,
-        {
-            "learning_intent": {
-                "requested_kinds": ["news"],
-                "user_note": "Оставь только новости",
-            }
-        },
-    )
-    assert result["status"] == "ok"
-    assert (await env.conn()).data_scope == ["news"]
-    assert await env.count(m.NewsItem) == 2
-    assert await env.count(m.ScheduleEvent) == 0
-    assert await env.count(m.Deadline) == 0
-
-
-def test_copy_of_recipes_is_independent() -> None:
-    a = recipes.timetable_endpoint()
-    b = copy.deepcopy(a)
-    b["request"]["path"] = "/x"
-    assert a["request"]["path"] == "/api/v2/timetable"

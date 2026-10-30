@@ -94,12 +94,13 @@ export function TabBar({
         !inline && "fixed inset-x-0 bottom-0",
         "transition-[transform,opacity,visibility] duration-slow ease-soft max-lg:data-[hidden]:pointer-events-none max-lg:data-[hidden]:invisible max-lg:data-[hidden]:translate-y-full max-lg:data-[hidden]:opacity-0",
         wide(
-          "lg:inset-y-0 lg:right-auto lg:flex lg:w-rail lg:flex-col lg:gap-6 lg:border-t-0 lg:border-r lg:px-3 lg:pt-safe-5 lg:pb-safe-4",
+          "lg:inset-y-0 lg:right-auto lg:flex lg:w-rail lg:flex-col lg:gap-2 lg:border-t-0 lg:border-r lg:px-3 lg:pt-safe lg:pb-safe-4",
         ),
         className,
       )}
     >
-      {brand && <div className={cn("hidden px-3", wide("lg:block"))}>{brand}</div>}
+      {/* Строка знака той же высоты, что верхняя полоса чата: знак и кнопки полосы лежат на одной линии. */}
+      {brand && <div className={cn("hidden px-3", wide("lg:flex lg:h-topbar lg:items-center"))}>{brand}</div>}
       <span
         ref={indicatorRef}
         aria-hidden="true"

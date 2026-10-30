@@ -28,8 +28,8 @@ TOKEN = "tok-FIXTURE-9f3a"
 PASSWORD = "P@ssw0rd-FIXTURE"
 
 
-async def _space(c: httpx.AsyncClient) -> str:
-    return (await c.post("/api/v1/spaces", json={"title": "Вуз"})).json()["id"]
+async def _space(c: httpx.AsyncClient, title: str = "Вуз") -> str:
+    return (await c.post("/api/v1/spaces", json={"title": title})).json()["id"]
 
 
 async def test_create_connection_starts_a_connect_job(
@@ -72,6 +72,22 @@ async def test_create_connection_starts_a_connect_job(
     ]  # the agent widens it; the egress proxy enforces it
 
 
+async def test_a_new_source_is_never_titled_by_its_host(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    space = await _space(client)
+    r = await client.post(
+        f"/api/v1/spaces/{space}/connections",
+        json={"kind": "lms", "url": "https://Lms.Example.org/courses?term=3"},
+    )
+    conn = r.json()["connection"]
+    assert conn["title"] == "Система обучения"  # no name was given: the kind's name
+    assert conn["entryUrl"] == "https://lms.example.org/courses?term=3"  # the page that was given
+    assert conn["threadId"] is None
+    assert conn["activeTask"] is None
+
+
 async def test_create_connection_without_a_url_lets_the_agent_discover(
     client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock, queue: InMemoryJobQueue
 ) -> None:
@@ -80,6 +96,7 @@ async def test_create_connection_without_a_url_lets_the_agent_discover(
     r = await client.post(f"/api/v1/spaces/{space}/connections", json={})
     assert r.status_code == 201
     assert r.json()["connection"]["kind"] == "other"
+    assert r.json()["connection"]["title"] == "Источник"
     assert r.json()["connection"]["origin"] == ""
     assert queue.jobs[0]["kind"] == JobKind.CONNECT
     assert queue.jobs[0]["payload"] == {"kinds": ["scheduleEvents", "deadlines"]}
@@ -168,7 +185,7 @@ async def test_list_and_get_connection(
 ) -> None:
     acc = await signup(client, tx_sessionmaker, clock)
     space = await _space(client)
-    other = await _space(client)
+    other = await _space(client, "Другой вуз")
     a = await make_connection(tx_sessionmaker, acc.id, space, origin="https://a.example.org")
     await make_connection(tx_sessionmaker, acc.id, other, origin="https://b.example.org")
     await services.vault.put(acc.id, a, SecretKind.PASSWORD, PASSWORD)

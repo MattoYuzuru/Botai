@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_model_pro: str = "deepseek-v4-pro"
     # Profiles per purpose: "model:thinking:effort" (agent-harness.md §2). Benchmark tunes these.
     llm_profile_classify: str = "deepseek-flash:disabled:-"
-    llm_profile_chat: str = "deepseek-flash:enabled:low"
+    llm_profile_agent: str = "deepseek-flash:enabled:low"
     llm_profile_learn: str = "deepseek-flash:enabled:high"
     llm_profile_repair: str = "deepseek-flash:enabled:low"
     llm_profile_extract: str = "deepseek-flash:enabled:low"
@@ -55,11 +55,7 @@ class Settings(BaseSettings):
     botai_diagnostics_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=104857600)
     botai_diagnostics_backup_count: int = Field(default=2, ge=0, le=10)
 
-    # Staged rollout of the private, versioned research engine (ADR-0011).
-    botai_research_enabled: bool = False
-    botai_factory_v2_enabled: bool = (
-        False  # producer gate only; persisted v2 recipes remain readable
-    )
+    # Private, versioned research engine (ADR-0011) and its limits.
     botai_research_slice_seconds: float = Field(default=90, gt=0, le=300)
     botai_research_slice_steps: int = Field(default=10, ge=1, le=50)
     botai_research_max_seconds: float = Field(default=1800, gt=0, le=21600)
@@ -74,14 +70,22 @@ class Settings(BaseSettings):
     session_cookie_name: str = "botai_session"
     session_ttl_days: int = 30
 
-    quota_tokens_per_day: int = 2_000_000
-    quota_requests_per_minute: int = 30
+    # One agent turn may use up to 1.2M tokens (30 model steps with tools), so a day allows many.
+    # The loop guard stays: the per-turn budget, the per-minute rate and the pool cap below.
+    quota_tokens_per_day: int = 20_000_000
+    quota_requests_per_minute: int = 90
     # Whole-pool daily spend cap on the shared key (security.md T7). 0 disables the cap.
-    quota_pool_usd_per_day: float = 3.0
+    quota_pool_usd_per_day: float = 20.0
     # Failed BotAI logins allowed per (client, e-mail) in a 15-minute window.
     login_failures_per_window: int = 10
 
 
+_RENAMED = {"LLM_PROFILE_CHAT": "LLM_PROFILE_AGENT"}  # a removed name must not be lost silently
+
+
 @lru_cache
 def get_settings() -> Settings:
+    for old, new in _RENAMED.items():
+        if os.environ.get(old):
+            raise RuntimeError(f"{old} больше не читается: переименуйте его в {new}")
     return Settings()

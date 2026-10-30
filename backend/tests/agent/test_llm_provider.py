@@ -44,7 +44,7 @@ def test_parse_profile() -> None:
 
 async def test_profile_by_purpose_is_applied() -> None:
     wire = Wire()
-    await provider(wire).complete(req(purpose="chat"))
+    await provider(wire).complete(req(purpose="agent"))
     body = wire.body()
     assert body["model"] == "deepseek-flash"
     assert body["thinking"] == {"type": "enabled"}
@@ -75,7 +75,7 @@ async def test_classify_profile_disables_thinking() -> None:
 async def test_request_fields_override_the_profile() -> None:
     wire = Wire()
     await provider(wire).complete(
-        req(purpose="chat", model="deepseek-v4-pro", thinking="enabled", effort="max")
+        req(purpose="agent", model="deepseek-v4-pro", thinking="enabled", effort="max")
     )
     body = wire.body()
     assert (body["model"], body["reasoning_effort"]) == ("deepseek-v4-pro", "max")
@@ -87,7 +87,7 @@ async def test_profiles_come_from_settings_and_tier_pro_wins_over_profile_model(
     await p.complete(req(purpose="learn"))
     assert wire.body()["model"] == "deepseek-v4-pro"
     assert wire.body()["reasoning_effort"] == "max"
-    await p.complete(req(purpose="chat", tier="pro"))
+    await p.complete(req(purpose="agent", tier="pro"))
     assert wire.body()["model"] == "deepseek-v4-pro"
 
 
@@ -168,8 +168,8 @@ async def test_json_schema_becomes_json_object_plus_instruction_after_system() -
 async def test_body_is_byte_identical_for_the_same_request() -> None:
     wire = Wire()
     p = provider(wire)
-    await p.complete(req("один и тот же вопрос", purpose="chat"))
-    await p.complete(req("один и тот же вопрос", purpose="chat"))
+    await p.complete(req("один и тот же вопрос", purpose="agent"))
+    await p.complete(req("один и тот же вопрос", purpose="agent"))
     assert wire.requests[0].content == wire.requests[1].content
 
 
@@ -178,7 +178,7 @@ async def test_body_is_byte_identical_for_the_same_request() -> None:
 
 async def test_stream_is_assembled_with_usage_and_reasoning() -> None:
     wire = Wire(lambda _r: sse(*answer_chunks("Завтра две пары", reasoning="думаю")))
-    out = await provider(wire).complete(req(purpose="chat"))
+    out = await provider(wire).complete(req(purpose="agent"))
     assert out.content == "Завтра две пары"
     assert out.reasoning_content == "думаю"
     u = out.usage

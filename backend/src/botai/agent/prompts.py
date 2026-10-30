@@ -15,7 +15,7 @@ SEPARATOR = "\n\n---\n\n"
 
 # `skill` argument of `harness.run` -> files in this order. An unknown name is a file name.
 SKILL_SETS: dict[str, tuple[str, ...]] = {
-    "chat": ("answer", "procedures", "repair"),
+    "agent": ("agent", "answer", "procedures", "repair"),
     "answer": ("answer", "procedures"),
     "summarize": ("summarize",),
 }

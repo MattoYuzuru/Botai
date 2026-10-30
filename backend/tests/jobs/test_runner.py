@@ -79,10 +79,7 @@ async def test_two_workers_never_take_the_same_job(env: Env) -> None:
 
         return {JobKind.CHAT: handler}
 
-    ids = [
-        await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id=f"t{n}")
-        for n in range(40)
-    ]
+    ids = [await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id) for n in range(40)]
     env.start(env.worker(table("a"), concurrency=3, name="worker-a"))
     env.start(env.worker(table("b"), concurrency=3, name="worker-b"))
     for job_id in ids:
@@ -109,10 +106,7 @@ async def test_concurrency_is_bounded(env: Env) -> None:
         await asyncio.sleep(0.05)
         active -= 1
 
-    ids = [
-        await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id=f"t{n}")
-        for n in range(8)
-    ]
+    ids = [await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id) for n in range(8)]
     env.start(env.worker({JobKind.CHAT: handler}, concurrency=2))
     for job_id in ids:
         await env.wait_for(job_id, {"done"})
@@ -347,7 +341,7 @@ async def test_a_running_job_is_stopped_when_the_student_cancels(env: Env, notif
     client = env.new_client()
     acc = await env.account(client)
     _, conn = await env.connection(acc.id)
-    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t")
+    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id)
     w = env.worker({JobKind.CHAT: handler}, notify=notify)
     env.start(w)
     await env.wait_for(job_id, {"running"})
@@ -393,7 +387,7 @@ async def test_a_job_deleted_under_the_handler_ends_the_handler_not_the_worker(e
         await asyncio.sleep(0.02)
     assert outcome == ["cancelled"]
 
-    later = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t")
+    later = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id)
     assert (await env.wait_for(later, {"done"})).result == {"fine": True}
 
 

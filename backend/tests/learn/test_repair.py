@@ -273,7 +273,7 @@ async def test_the_repaired_spec_passes_the_same_lint_and_hides_nothing_personal
     make_env: EnvFactory,
 ) -> None:
     leaky = moved_timetable()
-    leaky["request"]["query"]["owner"] = "anna@fakeuni.test"
+    leaky["response"]["fields"]["location"] = {"path": "/place/anna@fakeuni.test"}
     env = await healthy(make_env, [ls.answer([leaky]), ls.answer([moved_timetable()])])
     fakeuni_api.STATE.timetable_version = "v3"
     payload = await break_and_detect(env)

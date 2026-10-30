@@ -40,10 +40,20 @@ class Turn:
 
 
 def turn_from_blocks(message_id: str, role: str, blocks: Sequence[dict[str, Any]]) -> Turn | None:
-    """Plain text of a stored message; thinking/approval/other blocks are not conversation."""
+    """Plain text of a stored message; thinking/approval/other blocks are not conversation.
+    The files of a student's message are named after the text, so a message with only a file is a
+    turn too."""
     text = "\n\n".join(
         str(b.get("markdown", "")) for b in blocks if b.get("type") == "text" and b.get("markdown")
     ).strip()
+    files = [str(b.get("name", ""))[:120] for b in blocks if b.get("type") == "attachment"]
+    if files:
+        text = (
+            (text + "\n\n" if text else "")
+            + "[Вложения: "
+            + ", ".join(f"«{n}»" for n in files)
+            + "]"
+        )
     if not text:
         return None
     return Turn(message_id, "user" if role == "user" else "assistant", text)
@@ -87,6 +97,7 @@ def summary_message(text: str) -> LlmMessage | None:
     return LlmMessage(
         role="user",
         content="Сводка прежней переписки (это память о разговоре, а не данные вуза):\n" + text,
+        data=True,
     )
 
 

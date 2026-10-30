@@ -450,7 +450,7 @@ def provider_for(launch: Launch, cell: Cell) -> LlmProvider:
             "llm_provider": "deepseek",
             # the cell decides every purpose a scenario exercises: chat (B4), learn (B1, B2) and
             # repair (B3); `extract` and `classify` keep their configured profiles
-            "llm_profile_chat": cell.profile_setting,
+            "llm_profile_agent": cell.profile_setting,
             "llm_profile_learn": cell.profile_setting,
             "llm_profile_repair": cell.profile_setting,
         }

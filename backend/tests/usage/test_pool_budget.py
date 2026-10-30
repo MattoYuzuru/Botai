@@ -22,7 +22,7 @@ async def test_pool_budget_blocks_everyone(db: AsyncSession) -> None:
     db.add(
         LlmUsageRow(
             user_id=spender.id,
-            purpose="chat",
+            purpose="agent",
             model="deepseek-flash",
             input_cache_miss=0,
             input_cache_hit=0,

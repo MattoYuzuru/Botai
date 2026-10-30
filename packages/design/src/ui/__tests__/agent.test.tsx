@@ -79,9 +79,9 @@ describe("SafeMarkdown: без HTML и без ссылок-действий", ()
     expect(container.querySelectorAll("ol li")).toHaveLength(2);
   });
 
-  it("курсива нет: *слово* остаётся обычным текстом", () => {
+  it("курсив: *слово* и _слово_ становятся <em>", () => {
     const { container } = render(<SafeMarkdown source="Это *важно* и _тоже_" />);
-    expect(container.querySelector("em, i")).toBeNull();
+    expect([...container.querySelectorAll("em")].map((node) => node.textContent)).toEqual(["важно", "тоже"]);
     expect(container).toHaveTextContent("Это важно и тоже");
   });
 
@@ -112,22 +112,27 @@ describe("ChatMessage", () => {
     expect(screen.queryByRole("list", { name: "Источники" })).toBeNull();
   });
 
-  it("источники показаны, недоступный — с подписью «Источник недоступен»", () => {
+  it("источники сгруппированы по источнику, недоступный — с подписью «Источник недоступен»", () => {
     render(
       <ChatMessage
         role="agent"
         markdown="Следующая пара — **Алгоритмы** в 11:10."
         nowMs={NOW}
         timeZone={MSK}
-        citations={[
+        citationGroups={[
           {
             id: "1",
-            title: "Расписание",
-            url: "https://fakeuni.test/api/v2/timetable",
-            fetchedAt: NOW - 3600_000,
+            label: "Расписание — личный кабинет",
             spaceTitle: "ВШЭ",
+            fetchedAt: NOW - 3600_000,
+            items: [{ id: "1a", title: "Расписание", url: "https://fakeuni.test/api/v2/timetable" }],
           },
-          { id: "2", title: "Старый портал", url: null, fetchedAt: NOW - 86_400_000 * 3 },
+          {
+            id: "2",
+            label: "Старый портал",
+            fetchedAt: NOW - 86_400_000 * 3,
+            items: [{ id: "2a", title: "Старый портал", url: null }],
+          },
         ]}
       />,
     );

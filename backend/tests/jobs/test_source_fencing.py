@@ -151,7 +151,6 @@ class Source:
 
 @pytest.fixture
 async def source(env: Env) -> AsyncIterator[Source]:
-    env.settings.botai_research_enabled = True
     client = env.new_client()
     user = (await env.account(client)).id
     origin = f"https://{new_id().lower()}.fakeuni.test"
@@ -176,15 +175,9 @@ async def source(env: Env) -> AsyncIterator[Source]:
         login = m.LoginPresetRow(origin=origin, revision=1, state="active", preset=preset)
         db.add_all([recipe, login])
         await db.flush()
+        # The thread has no purpose: the REPAIR job below ties it to the connection.
         db.add(
-            m.ChatThread(
-                id=thread_id,
-                user_id=user,
-                space_id=space,
-                purpose="connect",
-                title="Исследование фикстуры",
-                connect_context={"connection_id": connection, "connection_ids": [connection]},
-            )
+            m.ChatThread(id=thread_id, user_id=user, space_id=space, title="Исследование фикстуры")
         )
         row = await db.get(m.Connection, connection)
         assert row is not None

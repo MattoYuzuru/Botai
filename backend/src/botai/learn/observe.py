@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urljoin, urlsplit
@@ -29,6 +29,7 @@ from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.errors import BotaiError, ErrorCode
 from botai.learn.addresses import navigation_url
 from botai.learn.redact import Redactor, collect_values
+from botai.learn.sitemap import build_sitemap
 from botai.sources.extract import node_text
 
 log = logging.getLogger(__name__)
@@ -94,6 +95,8 @@ class Observations:
     browser_plans: dict[str, BrowserPlan] = field(default_factory=dict, repr=False)
     browser_plan_urls: dict[str, str] = field(default_factory=dict, repr=False)
     browser_plan_results: dict[str, str] = field(default_factory=dict, repr=False)
+    # Non-secret map of the origin (navigation, routes, FAQ/search endpoints), shared like a recipe.
+    sitemap: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def empty(self) -> bool:
@@ -417,6 +420,7 @@ def observations_of(
     started: float | None = None,
     page_refs: tuple[str, ...] = (),
     call_refs: Mapping[RequestKey, str] | None = None,
+    known_links: Iterable[tuple[str, str]] = (),
 ) -> Observations:
     """Build the same redacted bundle from legacy crawling or adaptive browser actions."""
     started = time.monotonic() if started is None else started
@@ -518,6 +522,16 @@ def observations_of(
         if document is not None:
             reference = page_refs[index] if index < len(page_refs) else f"p{index}"
             obs.request_facts[reference] = document.model_copy(deep=True)
+    obs.sitemap = build_sitemap(
+        origin,
+        redactor,
+        [snap for _, snap in snapshots],
+        [
+            *(link for _, snap in snapshots for link in menu_links(snap.html, snap.url, origin)),
+            *known_links,
+        ],
+        latest,
+    )
     obs.observed = set(redactor.observed)
     obs.injections = redactor.injections
     obs.plain_text = "\n".join(t for t in texts if t)

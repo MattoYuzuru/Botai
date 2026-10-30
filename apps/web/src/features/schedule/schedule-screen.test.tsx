@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http } from "msw";
+import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSpaceStore } from "@/app/active-space";
 import type { DataVariant } from "@/mocks/data-handlers";
 import type { Scenario } from "@/mocks/db";
+import { eventFixture, hrefOf, provenanceFixture } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -143,6 +144,146 @@ describe("«Расписание»: неделя и день", () => {
   });
 });
 
+describe("«Расписание»: карточка пары по пресету eventDetails", () => {
+  const openRichEvent = async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    await userEvent.click(within(list).getByRole("button", { name: /Алгоритмы и структуры данных/ }));
+    return screen.findByRole("dialog", { name: "Алгоритмы и структуры данных" });
+  };
+
+  it("в списке дня у пары бейдж типа словами источника и детали с иконками: аудитория, адрес, преподаватель, группа", async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    const card = within(list).getByRole("button", { name: /Алгоритмы и структуры данных/ });
+    expect(within(card).getByText("Текущий рубежный контроль")).toBeInTheDocument();
+    const facts = [...card.querySelectorAll("[data-fact]")].map((fact) => [
+      fact.getAttribute("data-fact"),
+      fact.querySelector("svg")?.getAttribute("data-icon"),
+      fact.textContent,
+    ]);
+    expect(facts).toEqual([
+      ["room", "room", "Аудитория: ауд. 412"],
+      ["address", "address", "Адрес: ул. Учебная, д. 11"],
+      ["attribute-0", "building", "Корпус: Главный корпус"],
+      ["teacher", "teacher", "Преподаватель: Сидорова Е. Н."],
+      ["group", "group", "Группа: ПМ-3 курс 26/27"],
+    ]);
+  });
+
+  it("у пары без деталей (онлайн-лекция ЦУ без аудитории) нет ни пустых строк, ни прочерков", async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    const card = within(list).getByRole("button", { name: /Английский язык/ });
+    expect(card.querySelector("[data-fact=address]")).toBeNull();
+    expect(card.querySelector("[data-fact=room]")).toBeNull();
+    expect(card).not.toHaveTextContent("—");
+  });
+
+  it("шит: тип занятия бейджем, время, номер пары, аудитория, адрес, здание, преподаватель, группа — каждое со своей иконкой", async () => {
+    const sheet = await openRichEvent();
+    expect(within(sheet).getByText("Текущий рубежный контроль")).toBeInTheDocument();
+    const rows = [...sheet.querySelectorAll("dl > div")].map((row) => [
+      row.querySelector("svg")?.getAttribute("data-icon"),
+      row.querySelector("dt")?.textContent,
+      row.querySelector("dd")?.textContent,
+    ]);
+    expect(rows).toEqual([
+      ["time", "Время", "11:10–12:30"],
+      ["number", "Номер пары", "3-я пара"],
+      ["room", "Аудитория", "ауд. 412"],
+      ["address", "Адрес", "ул. Учебная, д. 11"],
+      ["building", "Корпус", "Главный корпус"],
+      ["teacher", "Преподаватель", "Сидорова Е. Н."],
+      ["group", "Группа", "ПМ-3 курс 26/27"],
+      ["course", "Предмет", "Алгоритмы и структуры данных"],
+      ["info", "Форма контроля", "Контрольная работа"],
+    ]);
+  });
+
+  it("онлайн-ссылка занятия — кнопка с подписью источника, открывается в новой вкладке", async () => {
+    const sheet = await openRichEvent();
+    const link = within(sheet).getByRole("link", { name: "Материалы занятия" });
+    expect(link).toHaveAttribute("href", "https://lk.fakeuni.test/materials/algorithms");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("«Открыть в личном кабинете» и источник ведут на страницу интерфейса, а не на адрес API", async () => {
+    const sheet = await openRichEvent();
+    const open = within(sheet).getByRole("link", { name: /Открыть в личном кабинете/ });
+    const href = open.getAttribute("href") ?? "";
+    expect(href).toMatch(/^https:\/\/lk\.fakeuni\.test\/schedule\?begin_date=2026-10-26$/);
+    expect(href).not.toContain("/api/");
+    const citation = within(sheet)
+      .getByText(/Получено/)
+      .closest("a");
+    expect(citation?.getAttribute("href")).toBe(href);
+    // Ни одна ссылка карточки не ведёт на API.
+    for (const link of sheet.querySelectorAll("a[href]"))
+      expect(link.getAttribute("href")).not.toContain("/api/");
+  });
+
+  it("если у записи нет openUrl, ссылка откатывается к странице входа источника, но не к адресу API", async () => {
+    const space = current.db.spaces[0] as { id: string };
+    const portal = current.db.connections.find((row) => row.spaceId === space.id && row.kind === "portal");
+    const event = eventFixture({
+      id: "no-ui",
+      title: "Пара без страницы",
+      provenance: provenanceFixture({
+        connectionId: portal?.id,
+        spaceId: space.id,
+        openUrl: null,
+        sourceUrl: "https://lk.fakeuni.test/api/get-myschedule?begin_date=2026-10-26",
+      }),
+    });
+    current.server.use(http.get("*/api/v1/schedule", () => HttpResponse.json([event])));
+    renderApp("/schedule");
+    await userEvent.click(await screen.findByRole("button", { name: /Пара без страницы/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Пара без страницы" });
+    expect(within(sheet).getByRole("link", { name: /Открыть в личном кабинете/ })).toHaveAttribute(
+      "href",
+      "https://lk.fakeuni.test/",
+    );
+    for (const link of sheet.querySelectorAll("a[href]"))
+      expect(link.getAttribute("href")).not.toContain("/api/");
+  });
+
+  it("ссылка занятия от источника (поле url) показана онлайн-ссылкой, адрес API — никогда", async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    await userEvent.click(within(list).getByRole("button", { name: /Английский язык/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Английский язык" });
+    expect(within(sheet).getByRole("link", { name: "Ссылка на занятие" })).toHaveAttribute(
+      "href",
+      "https://lk.fakeuni.test/classroom/english",
+    );
+    for (const link of sheet.querySelectorAll("a[href]"))
+      expect(link.getAttribute("href")).not.toContain("/api/");
+  });
+
+  it("онлайн-пара ЦУ: ссылка «Подключиться к занятию» и атрибут платформы", async () => {
+    renderApp("/schedule");
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
+    await userEvent.click(within(list).getByRole("button", { name: /Основы продуктового менеджмента/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Основы продуктового менеджмента" });
+    expect(within(sheet).getByText("Онлайн")).toBeInTheDocument();
+    expect(within(sheet).getByRole("link", { name: "Подключиться к занятию" })).toHaveAttribute(
+      "href",
+      "https://my.fakeuni.test/meet/product-101",
+    );
+    expect(within(sheet).getByText("Видеосвязь")).toBeInTheDocument();
+    expect(hrefOf(within(sheet).getByRole("link", { name: /Открыть в личном кабинете/ })).pathname).toBe(
+      "/schedule",
+    );
+  });
+});
+
 describe("«Расписание»: ноутбук", () => {
   it("неделя сеткой в семь колонок вместо ленты дней, пересечения подписаны", async () => {
     useLaptop();
@@ -179,7 +320,7 @@ describe("«Расписание»: состояния данных", () => {
     useScenario("reauth");
     renderApp("/schedule");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
-    expect(within(notices).getByRole("button", { name: "Войти снова" })).toBeInTheDocument();
+    expect(within(notices).getByRole("link", { name: "Войти снова" })).toBeInTheDocument();
     await waitFor(() => expect(screenState()).toBe("reauth"));
     expect(await screen.findByText("Основы продуктового менеджмента")).toBeInTheDocument();
   });

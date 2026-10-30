@@ -256,7 +256,7 @@ async def test_me_reports_quota_usage_of_the_caller_only(
                 LlmUsageRow(
                     id=new_id(),
                     user_id=uid,
-                    purpose="chat",
+                    purpose="agent",
                     model="deepseek-flash",
                     input_cache_miss=miss,
                     input_cache_hit=hit,

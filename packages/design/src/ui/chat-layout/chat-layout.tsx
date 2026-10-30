@@ -1,67 +1,85 @@
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { cn } from "../../lib/cn";
 
 export interface ChatLayoutProps {
-  /** Шапка экрана (`ScreenHeader`). */
+  /** Верхняя полоса чата (`ChatTopBar`): на всю ширину области, высота `h-topbar`. */
   header: ReactNode;
-  /** Область сообщений: занимает всё свободное место и прокручивается внутри. */
+  /** Сообщения: страница прокручивается целиком, колонка `max-w-chat` по центру. */
   children: ReactNode;
   /** Поле ввода (`ChatComposer`) вместе со слоем Вари. */
   composer: ReactNode;
   /** Открыта экранная клавиатура: нижняя панель скрыта, поле прилипает к клавиатуре (styleguide §7). */
   keyboardOpen?: boolean;
+  /** Над полем ввода по центру: кнопка «Вниз». */
+  floating?: ReactNode;
   className?: string;
 }
 
 /**
- * Рамка экрана чата: шапка сверху, сообщения прокручиваются внутри, поле ввода стоит внизу в зоне большого
- * пальца над нижней панелью. Высота — `100dvh` минус то, что стоит над экраном в потоке (полоса «Нет сети»,
- * свёрнутая работа): так поле ввода всегда на виду и страница не прокручивается. С
- * `interactive-widget=resizes-content` поле поднимается вместе с клавиатурой. На ноутбуке (от 1024 px) нижней
- * панели нет, колонка 46rem по центру.
+ * Рамка экрана чата на весь экран (styleguide §7): верхняя полоса липнет к верху, поле ввода — к низу, а между
+ * ними прокручивается сама страница, поэтому скроллбар стоит у правого края окна, а не внутри колонки. Колонка
+ * сообщений и поля — `max-w-chat` (48rem) по центру. На ноутбуке поле ввода отступает от низа на 20 px; на
+ * телефоне оно стоит над нижней панелью и safe area, а при открытой клавиатуре — прямо над ней
+ * (`interactive-widget=resizes-content` сжимает окно, и липкий низ едет вместе с клавиатурой).
  */
-export function ChatLayout({ header, children, composer, keyboardOpen = false, className }: ChatLayoutProps) {
-  const root = useRef<HTMLDivElement>(null);
-  const [offset, setOffset] = useState(0);
-
-  useLayoutEffect(() => {
-    const element = root.current;
-    if (!element) return;
-    const measure = () => {
-      const top = element.getBoundingClientRect().top + window.scrollY;
-      setOffset(Math.max(0, Math.round(top)));
-    };
-    measure();
-    // Полоса над экраном появляется и исчезает: пересчитываем, когда меняется родитель.
-    const observer = new ResizeObserver(measure);
-    if (element.parentElement) observer.observe(element.parentElement);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
+export function ChatLayout({
+  header,
+  children,
+  composer,
+  keyboardOpen = false,
+  floating,
+  className,
+}: ChatLayoutProps) {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 4);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   return (
     <div
-      ref={root}
       data-chat-layout=""
-      style={{ height: `calc(100dvh - ${offset}px)` }}
-      className={cn("flex min-h-0 flex-col", className)}
+      className={cn(
+        "flex min-h-0 flex-1 flex-col transition-[padding-bottom] duration-slow ease-soft",
+        // Место под нижнюю панель: без него поле ввода, прилипшее над ней, налезало бы на последнее сообщение.
+        !keyboardOpen && "pb-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom,0px))] lg:pb-0",
+        className,
+      )}
     >
-      {header}
-      <div data-chat-transcript="" className="relative mx-auto min-h-0 w-full max-w-col flex-1">
+      <div
+        data-chat-header=""
+        data-scrolled={scrolled || undefined}
+        className="sticky top-0 z-sticky border-b border-transparent bg-bg pt-safe transition-[border-color] duration-base ease-soft data-[scrolled]:border-border"
+      >
+        {header}
+      </div>
+      <div
+        data-chat-transcript=""
+        className="mx-auto flex w-full max-w-chat flex-1 flex-col px-safe-4 xs:px-safe-5"
+      >
         {children}
       </div>
       <div
         data-chat-dock=""
         className={cn(
-          "mx-auto w-full max-w-col px-safe-4 pt-2 transition-[padding-bottom] duration-slow ease-soft xs:px-safe-5",
-          // Нижняя панель (≈ 65 px + safe area) закрывает низ экрана на телефоне; на ноутбуке её нет.
-          keyboardOpen ? "pb-safe-2" : "pb-[calc(4.25rem+env(safe-area-inset-bottom,0px))] lg:pb-safe-4",
+          "sticky z-dock bg-bg transition-[bottom,padding-bottom] duration-slow ease-soft",
+          // Нижняя панель (65 px + safe area) закрывает низ экрана на телефоне: поле встаёт над ней, а не под неё.
+          // На ноутбуке панели снизу нет, поле отступает от низа на 20 px.
+          keyboardOpen
+            ? "bottom-0 pb-safe-2"
+            : "bottom-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom,0px))] pb-2 lg:bottom-0 lg:pb-safe-5",
         )}
       >
-        {composer}
+        <div className="relative mx-auto w-full max-w-chat px-safe-4 pt-2 xs:px-safe-5">
+          {floating && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-full z-dock mb-2 flex justify-center">
+              <div className="pointer-events-auto">{floating}</div>
+            </div>
+          )}
+          {composer}
+        </div>
       </div>
     </div>
   );

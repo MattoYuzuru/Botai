@@ -1,6 +1,86 @@
 {
   "components": {
     "schemas": {
+      "ActiveTask": {
+        "properties": {
+          "connectionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          },
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "connect",
+              "repair",
+              "sync",
+              "ingest"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "kind",
+          "connectionId",
+          "state",
+          "title"
+        ],
+        "title": "ActiveTask",
+        "type": "object"
+      },
+      "ActiveTaskOut": {
+        "properties": {
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "connect",
+              "repair",
+              "sync",
+              "ingest"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_user"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "kind",
+          "state"
+        ],
+        "title": "ActiveTaskOut",
+        "type": "object"
+      },
       "AnswerIn": {
         "description": "Answer to an AgentUiBlock. For secret inputs the API seals `values` into the Vault\n(kind=transient) and stores nothing else.",
         "properties": {
@@ -57,6 +137,100 @@
         "title": "ApproveIn",
         "type": "object"
       },
+      "AttachmentOut": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "documentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documentid"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ingest": {
+            "enum": [
+              "none",
+              "queued",
+              "indexed",
+              "failed"
+            ],
+            "title": "Ingest",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "image",
+              "document",
+              "audio",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mime",
+          "size",
+          "kind",
+          "createdAt",
+          "documentId",
+          "ingest"
+        ],
+        "title": "AttachmentOut",
+        "type": "object"
+      },
+      "Body_upload_attachment_api_v1_attachments_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_api_v1_attachments_post",
+        "type": "object"
+      },
       "Body_upload_document_api_v1_spaces__space_id__documents_upload_post": {
         "properties": {
           "file": {
@@ -83,118 +257,20 @@
         "title": "Body_upload_document_api_v1_spaces__space_id__documents_upload_post",
         "type": "object"
       },
-      "ConnectContext": {
-        "properties": {
-          "absentKinds": {
-            "items": {
-              "enum": [
-                "courses",
-                "scheduleEvents",
-                "deadlines",
-                "assignments",
-                "grades",
-                "people",
-                "locations",
-                "news"
-              ],
-              "type": "string"
-            },
-            "title": "Absentkinds",
-            "type": "array"
-          },
-          "entryUrls": {
-            "items": {
-              "maxLength": 1000,
-              "type": "string"
-            },
-            "maxItems": 6,
-            "title": "Entryurls",
-            "type": "array"
-          },
-          "kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "lms",
-                  "schedule",
-                  "portal",
-                  "sheet",
-                  "document",
-                  "mail",
-                  "other"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Kind"
-          },
-          "requestedKinds": {
-            "items": {
-              "enum": [
-                "courses",
-                "scheduleEvents",
-                "deadlines",
-                "assignments",
-                "grades",
-                "people",
-                "locations",
-                "news"
-              ],
-              "type": "string"
-            },
-            "title": "Requestedkinds",
-            "type": "array"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "universityId": {
-            "anyOf": [
-              {
-                "maxLength": 50,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Universityid"
-          },
-          "userNote": {
-            "default": "",
-            "maxLength": 2000,
-            "title": "Usernote",
-            "type": "string"
-          }
-        },
-        "title": "ConnectContext",
-        "type": "object"
-      },
       "ConnectionCreate": {
         "properties": {
           "kind": {
             "anyOf": [
               {
                 "enum": [
+                  "portal",
                   "lms",
                   "schedule",
-                  "portal",
+                  "site",
                   "sheet",
+                  "doc",
                   "document",
-                  "mail",
+                  "calendar",
                   "other"
                 ],
                 "type": "string"
@@ -234,7 +310,18 @@
         "type": "object"
       },
       "ConnectionOut": {
+        "description": "A source of a university.",
         "properties": {
+          "activeTask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveTaskOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "adapter": {
             "anyOf": [
               {
@@ -245,6 +332,17 @@
               }
             ],
             "title": "Adapter"
+          },
+          "entryUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entryurl"
           },
           "errorCode": {
             "anyOf": [
@@ -278,12 +376,14 @@
           },
           "kind": {
             "enum": [
+              "portal",
               "lms",
               "schedule",
-              "portal",
+              "site",
               "sheet",
+              "doc",
               "document",
-              "mail",
+              "calendar",
               "other"
             ],
             "title": "Kind",
@@ -348,6 +448,17 @@
             },
             "title": "Storedsecrets",
             "type": "array"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
           },
           "title": {
             "title": "Title",
@@ -852,6 +963,42 @@
         "title": "DocumentStarted",
         "type": "object"
       },
+      "EventAttribute": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "EventAttribute",
+        "type": "object"
+      },
+      "EventLink": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "label"
+        ],
+        "title": "EventLink",
+        "type": "object"
+      },
       "GradeOut": {
         "properties": {
           "courseTitle": {
@@ -1158,6 +1305,30 @@
         "title": "MeOut",
         "type": "object"
       },
+      "MemoryNoteOut": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "note",
+          "createdAt"
+        ],
+        "title": "MemoryNoteOut",
+        "type": "object"
+      },
       "MessageAccepted": {
         "properties": {
           "jobId": {
@@ -1176,7 +1347,17 @@
         "type": "object"
       },
       "MessageIn": {
+        "description": "The text may be empty only when files are attached.",
         "properties": {
+          "attachmentIds": {
+            "items": {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Attachmentids",
+            "type": "array"
+          },
           "clientMessageId": {
             "anyOf": [
               {
@@ -1202,15 +1383,12 @@
             "title": "Targetjobid"
           },
           "text": {
+            "default": "",
             "maxLength": 8000,
-            "minLength": 1,
             "title": "Text",
             "type": "string"
           }
         },
-        "required": [
-          "text"
-        ],
         "title": "MessageIn",
         "type": "object"
       },
@@ -1470,6 +1648,17 @@
             "title": "Fetchedat",
             "type": "string"
           },
+          "openUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openurl"
+          },
           "sourceUrl": {
             "title": "Sourceurl",
             "type": "string"
@@ -1517,6 +1706,25 @@
         "title": "QuotaOut",
         "type": "object"
       },
+      "ReadIn": {
+        "description": "The last message the client showed; without it everything written so far is read.",
+        "properties": {
+          "upTo": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upto"
+          }
+        },
+        "title": "ReadIn",
+        "type": "object"
+      },
       "RegisterRequest": {
         "properties": {
           "displayName": {
@@ -1556,6 +1764,24 @@
       },
       "ScheduleEventOut": {
         "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "attributes": {
+            "items": {
+              "$ref": "#/components/schemas/EventAttribute"
+            },
+            "title": "Attributes",
+            "type": "array"
+          },
           "changed": {
             "title": "Changed",
             "type": "boolean"
@@ -1593,6 +1819,17 @@
             "title": "Format",
             "type": "string"
           },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1608,6 +1845,35 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "kindText": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kindtext"
+          },
+          "lessonNumber": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lessonnumber"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EventLink"
+            },
+            "title": "Links",
+            "type": "array"
           },
           "location": {
             "anyOf": [
@@ -1768,10 +2034,18 @@
         "type": "object"
       },
       "SpaceOut": {
+        "description": "A university of the student (or \"My materials\", `universityId` null).",
         "properties": {
           "accentHue": {
             "title": "Accenthue",
             "type": "number"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
           },
           "createdAt": {
             "format": "date-time",
@@ -1780,6 +2054,10 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "shortTitle": {
+            "title": "Shorttitle",
             "type": "string"
           },
           "timeZone": {
@@ -1805,6 +2083,8 @@
         "required": [
           "id",
           "title",
+          "shortTitle",
+          "aliases",
           "universityId",
           "accentHue",
           "timeZone",
@@ -1856,25 +2136,6 @@
             ],
             "title": "Clientrequestid"
           },
-          "connectContext": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ConnectContext"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "purpose": {
-            "default": "chat",
-            "enum": [
-              "chat",
-              "connect"
-            ],
-            "title": "Purpose",
-            "type": "string"
-          },
           "spaceId": {
             "anyOf": [
               {
@@ -1904,6 +2165,32 @@
       },
       "ThreadOut": {
         "properties": {
+          "activeTask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attention": {
+            "anyOf": [
+              {
+                "enum": [
+                  "waiting_user",
+                  "running",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attention"
+          },
           "createdAt": {
             "format": "date-time",
             "title": "Createdat",
@@ -1912,6 +2199,22 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "lastMessageAt": {
+            "format": "date-time",
+            "title": "Lastmessageat",
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview"
           },
           "spaceId": {
             "anyOf": [
@@ -1928,10 +2231,9 @@
             "title": "Title",
             "type": "string"
           },
-          "updatedAt": {
-            "format": "date-time",
-            "title": "Updatedat",
-            "type": "string"
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1939,27 +2241,37 @@
           "spaceId",
           "title",
           "createdAt",
-          "updatedAt"
+          "lastMessageAt",
+          "unread",
+          "attention",
+          "activeTask",
+          "preview"
         ],
         "title": "ThreadOut",
         "type": "object"
       },
+      "ThreadPatch": {
+        "properties": {
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "ThreadPatch",
+        "type": "object"
+      },
       "ThreadRuntime": {
+        "description": "The live state of a thread. `tasks` are its newest tasks; `active_job` is the one that\nneeds attention first (a task, else the running agent turn).",
         "properties": {
           "activeJob": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/JobOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "connection": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ConnectionOut"
               },
               {
                 "type": "null"
@@ -1973,26 +2285,24 @@
             "title": "Pending",
             "type": "array"
           },
-          "purpose": {
-            "enum": [
-              "chat",
-              "connect"
-            ],
-            "title": "Purpose",
-            "type": "string"
-          },
           "receipts": {
             "items": {
               "$ref": "#/components/schemas/DialogueReceipt"
             },
             "title": "Receipts",
             "type": "array"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/JobOut"
+            },
+            "title": "Tasks",
+            "type": "array"
           }
         },
         "required": [
-          "purpose",
           "activeJob",
-          "connection",
+          "tasks",
           "pending",
           "receipts"
         ],
@@ -2043,6 +2353,13 @@
             "title": "Accenthue",
             "type": "number"
           },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -2078,6 +2395,7 @@
           "id",
           "title",
           "shortTitle",
+          "aliases",
           "origins",
           "accentHue"
         ],
@@ -2325,6 +2643,160 @@
         ]
       }
     },
+    "/api/v1/attachments": {
+      "post": {
+        "description": "A file up to 20 MiB: image, PDF, DOCX, XLSX, CSV, text, HTML or audio. The type is read\nfrom the bytes. The file stays unsent until a message carries it.",
+        "operationId": "upload_attachment_api_v1_attachments_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_api_v1_attachments_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}": {
+      "delete": {
+        "description": "Only a file that no message carries yet.",
+        "operationId": "delete_attachment_api_v1_attachments__attachment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Attachment",
+        "tags": [
+          "attachments"
+        ]
+      },
+      "get": {
+        "operationId": "get_attachment_api_v1_attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/content": {
+      "get": {
+        "description": "The bytes, shown in place when a browser can show them safely (HTML never is), with\nbyte ranges so that audio can be played and sought on every browser. A range is cut by the\ndatabase; a refused range reads nothing.",
+        "operationId": "attachment_content_api_v1_attachments__attachment_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attachment Content",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
     "/api/v1/auth/invites": {
       "post": {
         "operationId": "create_invite_api_v1_auth_invites_post",
@@ -2507,6 +2979,92 @@
         ]
       }
     },
+    "/api/v1/chat/threads/{thread_id}": {
+      "delete": {
+        "description": "Stops the tasks and the running turn of the thread, then deletes it with its messages.",
+        "operationId": "delete_thread_api_v1_chat_threads__thread_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Thread",
+        "tags": [
+          "agent"
+        ]
+      },
+      "patch": {
+        "operationId": "rename_thread_api_v1_chat_threads__thread_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Thread",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/chat/threads/{thread_id}/context": {
       "get": {
         "operationId": "thread_context_api_v1_chat_threads__thread_id__context_get",
@@ -2640,6 +3198,58 @@
           }
         },
         "summary": "Post Message",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/chat/threads/{thread_id}/read": {
+      "post": {
+        "operationId": "read_thread_api_v1_chat_threads__thread_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReadIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Thread",
         "tags": [
           "agent"
         ]
@@ -3415,6 +4025,78 @@
         ]
       }
     },
+    "/api/v1/me/memory": {
+      "delete": {
+        "operationId": "clear_memory_api_v1_me_memory_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Clear Memory",
+        "tags": [
+          "agent"
+        ]
+      },
+      "get": {
+        "operationId": "list_memory_api_v1_me_memory_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryNoteOut"
+                  },
+                  "title": "Response List Memory Api V1 Me Memory Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Memory",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/me/memory/{note_id}": {
+      "delete": {
+        "operationId": "forget_memory_api_v1_me_memory__note_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Forget Memory",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/news": {
       "get": {
         "operationId": "news_api_v1_news_get",
@@ -3620,6 +4302,7 @@
         ]
       },
       "post": {
+        "description": "The university's space of this student: 201 when made, 200 when it was already there.",
         "operationId": "create_space_api_v1_spaces_post",
         "requestBody": {
           "content": {
@@ -3632,6 +4315,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceOut"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "201": {
             "content": {
               "application/json": {
@@ -3889,7 +4582,7 @@
     },
     "/api/v1/spaces/{space_id}/documents/upload": {
       "post": {
-        "description": "PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB.",
+        "description": "PDF, DOCX, XLSX, CSV, HTML or text, up to 20 MiB.",
         "operationId": "upload_document_api_v1_spaces__space_id__documents_upload_post",
         "parameters": [
           {

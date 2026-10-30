@@ -30,7 +30,7 @@ async def test_scripted_llm_replays_and_fails_loudly() -> None:
 
 
 def test_fingerprint_ignores_purpose_but_not_effort() -> None:
-    a = LlmRequest(messages=[LlmMessage(role="user", content="x")], purpose="chat")
+    a = LlmRequest(messages=[LlmMessage(role="user", content="x")], purpose="agent")
     b = LlmRequest(messages=[LlmMessage(role="user", content="x")], purpose="learn")
     c = LlmRequest(messages=[LlmMessage(role="user", content="x")], effort="max")
     assert a.fingerprint() == b.fingerprint() != c.fingerprint()

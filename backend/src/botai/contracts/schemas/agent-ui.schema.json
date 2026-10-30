@@ -33,6 +33,15 @@
     },
     {
       "$ref": "#/$defs/handoff"
+    },
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/task"
+    },
+    {
+      "$ref": "#/$defs/attachment"
     }
   ],
   "$defs": {
@@ -84,10 +93,20 @@
         "markdown": {
           "type": "string",
           "maxLength": 8000,
-          "description": "Рендерится без HTML и без ссылок-действий."
+          "description": "GFM без HTML: таблицы, **жирный**, *курсив*, списки, ссылки, код. Ссылки приложения: botai://threads|connections|documents|attachments/{id}. Блок кода ```chart с JSON {type: bar|line, title?, labels: string[], series: [{name, values: number[]}]} рисуется графиком."
         },
         "sources": {
           "$ref": "#/$defs/sources"
+        },
+        "quickReplies": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "description": "Кнопки быстрых ответов под последним ответом; нажатие отправляет текст как сообщение студента."
         }
       }
     },
@@ -655,6 +674,175 @@
           "description": "Готовый текст или значения полей для копирования. Write-действие, которое агент не может отправить сам (приоритет 3)."
         }
       }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "title",
+        "steps"
+      ],
+      "properties": {
+        "type": {
+          "const": "plan"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "title",
+              "state"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "state": {
+                "enum": [
+                  "pending",
+                  "active",
+                  "done",
+                  "skipped"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "description": "План ответа. Обновляется блоком с тем же id (upsert в истории)."
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "jobId",
+        "kind",
+        "title",
+        "state",
+        "threadId"
+      ],
+      "properties": {
+        "type": {
+          "const": "task"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "jobId": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "connect",
+            "repair",
+            "sync",
+            "ingest"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "waiting_user",
+            "done",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "threadId": {
+          "$ref": "#/$defs/id"
+        },
+        "connectionId": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "description": "Карточка фоновой задачи. Если threadId — другой тред, карточка ведёт туда."
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "at",
+        "attachmentId",
+        "name",
+        "mime",
+        "size",
+        "kind"
+      ],
+      "properties": {
+        "type": {
+          "const": "attachment"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "attachmentId": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "mime": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "image",
+            "document",
+            "audio",
+            "other"
+          ]
+        }
+      },
+      "description": "Вложение сообщения студента; содержимое отдаёт GET /api/v1/attachments/{id}/content."
     }
   }
 }

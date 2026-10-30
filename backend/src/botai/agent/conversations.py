@@ -1,15 +1,21 @@
-"""Durable chat-bound source setup. Plain dialogue never becomes a native credential answer."""
+"""Threads: creation, routing of a student's message, and the live runtime of a thread.
+
+A thread has one agent. A message goes to a task of the thread only when that task is waiting for
+a plain, non-secret answer in the dialogue; every other message starts an agent turn (`CHAT`),
+whatever background tasks are running. Nothing here knows what the thread was "for".
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
+import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent.safety import scrub_secrets
 from botai.agent.schemas import (
     DialogueReceipt,
     MessageAccepted,
@@ -19,24 +25,28 @@ from botai.agent.schemas import (
     ThreadCreate,
     ThreadRuntime,
 )
-from botai.contracts.agent_ui import AgentUiBlock, TextBlock
+from botai.agent.threads import primary_task
+from botai.attachments import service as attachments
+from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, TextBlock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
 from botai.core.services import Services
-from botai.db.models import ChatMessage, ChatThread, Connection, Job, JobAnswer, JobEvent
+from botai.db.models import ChatMessage, ChatThread, Job, JobAnswer, JobEvent
 from botai.jobs import dialogue
-from botai.jobs.events import IN_FLIGHT, TERMINAL
+from botai.jobs.events import IN_FLIGHT
 from botai.jobs.notify import CHANNEL_ANSWERS
-from botai.jobs.queue import PgJobQueue, enqueue_in_session
+from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.schemas import JobOut
-from botai.spaces import repo, universities
-from botai.spaces.conversations import intent_of, normalize_context, owned_thread, safe_text
-from botai.spaces.service import connection_out
+from botai.spaces import repo, service
+from botai.spaces.conversations import owned_thread, reject_secret_links, safe_text
 
-SOURCE_KINDS = ("connect", "repair", "learn", "sync")
 _BLOCK = TypeAdapter(AgentUiBlock)
+RUNTIME_TASKS = 20
+RUNTIME_RECEIPTS = 200
+_ASKING = {"input", "choice", "confirm", "approval", "login", "wait"}
+SECRET_IN_CHAT_TEXT = "Пароль и код вводятся только в защищённое поле, не в чат"  # noqa: S105
 
 
 def message_out(message: ChatMessage) -> MessageOut:
@@ -45,6 +55,7 @@ def message_out(message: ChatMessage) -> MessageOut:
         try:
             block = _BLOCK.validate_python(raw)
         except ValidationError:
+            # Preserve future or malformed blocks for the PWA's explicit unknown-block fallback.
             blocks.append(raw)
         else:
             blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
@@ -60,45 +71,9 @@ def message_out(message: ChatMessage) -> MessageOut:
 async def create_thread(
     session: AsyncSession, services: Services, user_id: str, body: ThreadCreate
 ) -> ChatThread:
-    space = (
-        await repo.get_space(session, user_id, body.space_id) if body.space_id is not None else None
-    )
-    if body.purpose != "connect" and body.connect_context is not None:
-        raise BotaiError(ErrorCode.VALIDATION, "Контекст подключения относится к чату подключения")
-    context = (
-        normalize_context(
-            body.connect_context.model_dump(mode="json", exclude_none=True, exclude_unset=True)
-            if body.connect_context
-            else {}
-        )
-        if body.purpose == "connect"
-        else {}
-    )
-    if (
-        body.purpose == "connect"
-        and space is not None
-        and space.university_id
-        and not context.get("university_id")
-    ):
-        context["university_id"] = space.university_id
-    if context.get("university_id"):
-        university = await universities.find_or_create(
-            session,
-            title=str(context.get("title") or context["university_id"]),
-            university_id=str(context["university_id"]),
-        )
-        context["university_id"] = university.id
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {
-                "space_id": body.space_id,
-                "title": body.title,
-                "purpose": body.purpose,
-                "context": context,
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+    if body.space_id is not None:
+        await repo.get_space(session, user_id, body.space_id)  # a foreign space is a 404
+    title = " ".join((body.title or "").split())[:200] or "Новый чат"
     if body.client_request_id:
         await session.execute(
             select(
@@ -114,26 +89,11 @@ async def create_thread(
             )
         )
         if existing is not None:
-            previous_context = {
-                key: value for key, value in context.items() if key != "discovery_mode"
-            }
-            legacy_fingerprint = hashlib.sha256(
-                json.dumps(
-                    {
-                        "space_id": body.space_id,
-                        "title": body.title,
-                        "purpose": body.purpose,
-                        "context": previous_context,
-                    },
-                    sort_keys=True,
-                ).encode()
-            ).hexdigest()
-            accepted_hashes = {fingerprint}
-            if context.get("discovery_mode") == "auto":
-                accepted_hashes.add(legacy_fingerprint)
-            if existing.connect_context.get("_start_hash") not in accepted_hashes:
+            if existing.space_id != body.space_id or (
+                body.title is not None and existing.title != title
+            ):
                 raise BotaiError(
-                    ErrorCode.CONFLICT, "Этот запрос уже использован для другого разговора"
+                    ErrorCode.REQUEST_REUSED, "Этот запрос уже использован для другого разговора"
                 )
             return existing
     now = services.clock.now()
@@ -141,70 +101,59 @@ async def create_thread(
         id=new_id(),
         user_id=user_id,
         space_id=body.space_id,
-        title=(
-            (safe_text(body.title) if body.title and body.purpose == "connect" else body.title)
-            or ("Подключение источника" if body.purpose == "connect" else "Новый чат")
-        ).strip()
-        or "Новый чат",
-        purpose=body.purpose,
-        connect_context={**context, "_start_hash": fingerprint},
+        title=title,
         client_request_id=body.client_request_id,
         created_at=now,
-        updated_at=now,
+        last_message_at=now,
     )
     session.add(thread)
-    await session.flush()
-    if body.purpose == "connect":
-        job = await enqueue_in_session(
-            session,
-            JobKind.CONNECT,
-            user_id=user_id,
-            thread_id=thread.id,
-            payload={"learning_intent": intent_of(context)},
-            now=now,
-            dedupe=False,
-        )
-        intro = "Подключить источник" + (f": {context['title']}" if context.get("title") else ".")
-        if context.get("entry_urls"):
-            intro += "\n" + "\n".join(context["entry_urls"])
-        if context.get("user_note"):
-            intro += "\n" + context["user_note"]
-        block = TextBlock(id=new_id(), at=now, markdown=intro[:8000])
-        session.add(
-            ChatMessage(
-                id=new_id(),
-                user_id=user_id,
-                thread_id=thread.id,
-                role="user",
-                blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
-                job_id=job.id,
-                created_at=now,
-            )
-        )
     await session.commit()
-    diagnostic_event("chat.created", thread_id=thread.id, source=body.purpose == "connect")
+    diagnostic_event("chat.created", thread_id=thread.id)
     return thread
 
 
-async def current_job(session: AsyncSession, user_id: str, thread: ChatThread) -> Job | None:
-    jobs = list(
-        await session.scalars(
-            select(Job)
-            .where(Job.user_id == user_id, Job.thread_id == thread.id)
-            .order_by(Job.created_at.desc(), Job.id.desc())
-            .execution_options(populate_existing=True)
-        )
+# --- runtime ------------------------------------------------------------------------------------
+
+
+async def thread_jobs(
+    session: AsyncSession, user_id: str, thread_id: str, *, limit: int | None = None
+) -> list[Job]:
+    """Tasks of the thread, newest first."""
+    query = (
+        select(Job)
+        .where(Job.user_id == user_id, Job.thread_id == thread_id, Job.kind.in_(TASK_KINDS))
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .execution_options(populate_existing=True)
     )
-    sources = [job for job in jobs if job.kind in SOURCE_KINDS and job.state in IN_FLIGHT]
-    active_ids = {job.id for job in sources}
-    sources = [job for job in sources if job.payload.get("continuation_job_id") not in active_ids]
-    if sources:
-        return sources[0]
-    active_chat = next((job for job in jobs if job.kind == "chat" and job.state in IN_FLIGHT), None)
-    if active_chat is not None:
-        return active_chat
-    if thread.purpose == "connect":
-        return next((job for job in jobs if job.kind in SOURCE_KINDS), None)
+    if limit is not None:
+        query = query.limit(limit)
+    return list(await session.scalars(query))
+
+
+async def _pending_of(session: AsyncSession, job: Job, answered: set[str]) -> PendingRef | None:
+    value = dialogue.state_of(job).get("pending")
+    if isinstance(value, dict):
+        return PendingRef.model_validate(value)
+    if job.state != "waiting_user":
+        return None
+    events = await session.scalars(
+        select(JobEvent)
+        .where(JobEvent.job_id == job.id, JobEvent.type == "block")
+        .order_by(JobEvent.seq.desc())
+    )
+    for event in events:
+        try:
+            block = _BLOCK.validate_python(event.data)
+        except ValidationError:
+            continue
+        if block.id in answered or block.type not in _ASKING:
+            continue
+        return PendingRef(
+            job_id=job.id,
+            block_id=block.id,
+            channel=dialogue.channel_of(block),  # type: ignore[arg-type]
+            secret=block.type == "input" and block.secret,
+        )
     return None
 
 
@@ -212,39 +161,31 @@ async def runtime(
     session: AsyncSession, services: Services, user_id: str, thread_id: str
 ) -> ThreadRuntime:
     thread = await owned_thread(session, user_id, thread_id)
-    job = await current_job(session, user_id, thread)
-    connection_id = (
-        job.connection_id
-        if job and job.connection_id
-        else thread.connect_context.get("connection_id")
-    )
-    connection = (
-        await session.scalar(
-            select(Connection).where(
-                Connection.user_id == user_id, Connection.id == str(connection_id)
-            )
-        )
-        if connection_id
-        else None
-    )
-    pending: list[PendingRef] = []
-    receipts: list[DialogueReceipt] = []
-    jobs = list(
-        await session.scalars(
+    tasks = await thread_jobs(session, user_id, thread.id)
+    in_flight = [job for job in tasks if job.state in IN_FLIGHT]
+    active = primary_task(in_flight)
+    if active is None:
+        active = await session.scalar(
             select(Job)
-            .where(Job.user_id == user_id, Job.thread_id == thread.id)
-            .order_by(Job.created_at, Job.id)
+            .where(
+                Job.user_id == user_id,
+                Job.thread_id == thread.id,
+                Job.kind == JobKind.CHAT.value,
+                Job.state.in_(sorted(IN_FLIGHT)),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
         )
-    )
+    receipts: list[DialogueReceipt] = []
     receipt_keys: set[tuple[str, str]] = set()
-    for item in jobs:
+    for item in tasks:
         for value in (dialogue.state_of(item).get("receipts") or {}).values():
             receipt = DialogueReceipt.model_validate(value)
             receipts.append(receipt)
             receipt_keys.add((item.id, str(receipt.block_id or receipt.message_id)))
-    if jobs:
+    if tasks:
         answers = await session.scalars(
-            select(JobAnswer).where(JobAnswer.job_id.in_([item.id for item in jobs]))
+            select(JobAnswer).where(JobAnswer.job_id.in_([item.id for item in tasks]))
         )
         for answer in answers:
             if (answer.job_id, answer.block_id) not in receipt_keys:
@@ -257,57 +198,115 @@ async def runtime(
                         at=answer.created_at,
                     )
                 )
-    if job is not None and job.state not in TERMINAL:
-        value = dialogue.state_of(job).get("pending")
-        if isinstance(value, dict):
-            pending.append(PendingRef.model_validate(value))
-        elif job.state == "waiting_user":
-            answered = {r.block_id for r in receipts if r.job_id == job.id and r.block_id}
-            events = await session.scalars(
-                select(JobEvent)
-                .where(JobEvent.job_id == job.id, JobEvent.type == "block")
-                .order_by(JobEvent.seq.desc())
-            )
-            for event in events:
-                try:
-                    block = _BLOCK.validate_python(event.data)
-                except ValidationError:
-                    continue
-                if block.id in answered or block.type not in {
-                    "input",
-                    "choice",
-                    "confirm",
-                    "approval",
-                    "login",
-                    "wait",
-                }:
-                    continue
-                channel = (
-                    "manual"
-                    if block.type == "login"
-                    else "approval"
-                    if block.type == "approval"
-                    else "dialogue"
-                    if block.type == "input"
-                    and not block.secret
-                    and not dialogue.is_auth_input(block)
-                    else "native"
-                )
-                pending.append(
-                    PendingRef(
-                        job_id=job.id,
-                        block_id=block.id,
-                        channel=channel,
-                        secret=block.type == "input" and block.secret,
-                    )
-                )
-                break
+    pending: list[PendingRef] = []
+    for job in reversed(in_flight):
+        answered = {r.block_id for r in receipts if r.job_id == job.id and r.block_id}
+        ref = await _pending_of(session, job, answered)
+        if ref is not None:
+            pending.append(ref)
     return ThreadRuntime(
-        purpose="connect" if thread.purpose == "connect" else "chat",
-        active_job=JobOut.model_validate(job) if job else None,
-        connection=await connection_out(services.vault, connection) if connection else None,
+        active_job=JobOut.model_validate(active) if active else None,
+        tasks=[JobOut.model_validate(job) for job in tasks[:RUNTIME_TASKS]],
         pending=pending,
-        receipts=sorted(receipts, key=lambda r: r.at)[-200:],
+        receipts=sorted(receipts, key=lambda r: r.at)[-RUNTIME_RECEIPTS:],
+    )
+
+
+# --- posting ------------------------------------------------------------------------------------
+
+
+# A word for a code, then (at most three filler words) digits: «код 123 456», «код из смс 424242»,
+# «код подтверждения 1234». «Код группы 2101» has a word that is no filler, so it is a fact.
+_CODE_WITH_DIGITS = re.compile(
+    r"(?i)\b(?:код\w*|code|otp|смс|sms|пин|pin)\b"
+    r"(?:\s+(?:из|от|для|в|на|с|смс|sms|почты|письма|подтвержден\w+|доступ\w*|вход\w*|"
+    r"безопасност\w+|авторизаци\w+|верификаци\w+|приложени\w+|телефон\w*|сообщени\w+|"
+    r"одноразов\w+|лк|кабинет\w*)){0,3}"
+    r"\s*[:=—-]?\s*(?P<digits>\d[\d \-]*\d|\d)"
+)
+_PASSWORD_WORD = re.compile(r"(?i)\b(?:парол\w*|password|passwd|pwd|пасс\w*|pass)\b")
+_PASSWORD_FILLER = re.compile(r"(?i)^(?:(?:от|для|к|from|for)\s+\S+(?:\s+|$)|(?:is|это|такой)\s+)")
+_GROUP_CODE = re.compile(r"^[A-ZА-ЯЁ]{2,6}[- ]?\d{1,3}$")  # ИВТ-21, БПМ231
+_WORD_AND_YEAR = re.compile(r"^[А-Яа-яЁё]+(?:19|20)\d\d$")  # Москва2024
+_EDGE_PUNCTUATION = ".,;:!?\"'()«»[]"
+
+
+def _digits(text: str) -> int:
+    return sum(ch.isdigit() for ch in text)
+
+
+def _password_like(word: str) -> bool:
+    """One word that has the look of a password: letters and digits together, a symbol or a capital
+    inside it. A group («ИВТ-21»), a word with a year («Москва2024») and a plain word are not."""
+    token = word.strip(_EDGE_PUNCTUATION)
+    if len(token) < 4 or len(token) > 64 or _GROUP_CODE.match(token) or _WORD_AND_YEAR.match(token):
+        return False
+    if any(ch.isalpha() for ch in token) and _digits(token) >= 1 and len(token) >= 5:
+        return True
+    if len(token) >= 16 and token.count("-") + token.count("_") >= 2:
+        return True  # a passphrase, a generated key
+    return bool(re.search(r"\w[^\w\s\-'’.,]\w", token) or re.search(r"[a-zа-яё][A-ZА-ЯЁ]", token))
+
+
+def _follows_password_word(value: str) -> bool:
+    """«пароль: x», «мой пасс Qwerty123», «пароль от ЛК qwerty12»: a word follows the word for a
+    password. «Где мой пароль?» has nothing after it, and a long question is a question."""
+    tokens = value.split()
+    for found in _PASSWORD_WORD.finditer(value):
+        rest = value[found.end() :]
+        separated = bool(re.match(r"\s*[:=—-]", rest))
+        rest = _PASSWORD_FILLER.sub("", re.sub(r"^[\s:=—-]+", "", rest))
+        following = rest.split(None, 1)[0] if rest.strip() else ""
+        if not re.search(r"\w", following):
+            continue
+        if separated or _password_like(following) or len(tokens) <= 3:
+            return True
+    return False
+
+
+def looks_like_secret(text: str) -> bool:
+    """Whether a message typed while a protected input is open is probably the password or the
+    code meant for it. The words of a conversation («да», «ок», «Привет!», «?», «2», «ИВТ-21»,
+    «Код группы 2101») are not."""
+    value = text.strip()
+    if not value:
+        return False
+    if scrub_secrets(value) != value:
+        return True  # a token, a cookie line, «token=…», a credential-named field
+    if any(_digits(m["digits"]) >= 4 for m in _CODE_WITH_DIGITS.finditer(value)):
+        return True  # «код 123 456», «код из смс 424242»
+    if _follows_password_word(value):
+        return True
+    if re.fullmatch(r"[\d \-]+", value) and _digits(value) >= 6:
+        return True  # a code typed in groups; a group number («2101») is not one
+    words = value.split()
+    return len(words) <= 4 and any(_password_like(w) for w in words)
+
+
+async def _locked(session: AsyncSession, user_id: str, job_id: str) -> Job | None:
+    return await session.scalar(
+        select(Job)
+        .where(Job.user_id == user_id, Job.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def _waiting_secret(job: Job) -> bool:
+    pending = dialogue.state_of(job).get("pending")
+    return (
+        isinstance(pending, dict)
+        and pending.get("channel") == "native"
+        and bool(pending.get("secret"))
+    )
+
+
+def _waiting_dialogue(job: Job) -> bool:
+    pending = dialogue.state_of(job).get("pending")
+    return (
+        job.state == "waiting_user"
+        and isinstance(pending, dict)
+        and pending.get("channel") == "dialogue"
     )
 
 
@@ -318,111 +317,83 @@ async def post_message(
     await session.execute(
         select(func.pg_advisory_xact_lock(func.hashtextextended(f"thread-post:{thread.id}", 0)))
     )
-    job = await current_job(session, user_id, thread)
-    target = None
-    if body.target_job_id is not None:
-        target = await session.scalar(
-            select(Job)
-            .where(Job.user_id == user_id, Job.thread_id == thread.id, Job.id == body.target_job_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if target is None:
-            raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
-    elif job is not None and job.kind in SOURCE_KINDS and job.state in IN_FLIGHT:
-        target = await session.scalar(
-            select(Job)
-            .where(Job.user_id == user_id, Job.id == job.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    source = target is not None and target.kind in SOURCE_KINDS
-    text = safe_text(body.text) if source else body.text
+    thread = await owned_thread(session, user_id, thread_id)  # deleted while we waited: not found
     if body.client_message_id:
-        existing = await session.scalar(
-            select(ChatMessage).where(
-                ChatMessage.user_id == user_id,
-                ChatMessage.thread_id == thread.id,
-                ChatMessage.client_message_id == body.client_message_id,
+        replay = await _replay(session, user_id, thread.id, body)
+        if replay is not None:
+            return replay
+    jobs = list(
+        await session.scalars(
+            select(Job)
+            .where(
+                Job.user_id == user_id, Job.thread_id == thread.id, Job.state.in_(sorted(IN_FLIGHT))
             )
+            .execution_options(populate_existing=True)
         )
-        if existing is not None:
-            stored = "\n\n".join(
-                str(b.get("markdown", "")) for b in existing.blocks if b.get("type") == "text"
-            )
-            existing_job = (
-                await session.scalar(
-                    select(Job).where(
-                        Job.id == existing.job_id,
-                        Job.user_id == user_id,
-                        Job.thread_id == thread.id,
-                    )
-                )
-                if existing.job_id
-                else None
-            )
-            submitted_text = (
-                safe_text(body.text)
-                if existing_job is not None and existing_job.kind in SOURCE_KINDS
-                else body.text
-            )
-            if stored != submitted_text or (
-                body.target_job_id is not None and body.target_job_id != existing.job_id
-            ):
-                raise BotaiError(
-                    ErrorCode.CONFLICT, "Этот запрос уже использован для другого сообщения"
-                )
-            if existing.job_id is None:
-                raise BotaiError(ErrorCode.CONFLICT, "Сообщение ещё не связано с заданием")
-            return MessageAccepted(message=message_out(existing), job_id=existing.job_id)
-    if target is not None:
-        # The target lock may have waited for a committed cross-origin continuation.
-        # Existing idempotent submissions returned above; a new turn must follow the current job.
-        selected = await current_job(session, user_id, thread)
-        if selected is None or selected.id != target.id:
+    )
+    target: Job | None = None
+    if body.target_job_id is not None:
+        target = await _locked(session, user_id, body.target_job_id)
+        if target is None or target.thread_id != thread.id or target.kind not in TASK_KINDS:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
+        if target.state not in IN_FLIGHT:
             raise BotaiError(
-                ErrorCode.CONFLICT, "Этот шаг уже заменён. Откройте текущее состояние разговора"
+                ErrorCode.STALE_TARGET,
+                "Этот шаг уже завершён. Откройте текущее состояние разговора",
             )
-    if target is not None and (not source or target.state not in IN_FLIGHT):
-        raise BotaiError(
-            ErrorCode.CONFLICT, "Этот шаг уже завершён. Откройте текущее состояние разговора"
+        if await _continued(session, target):
+            raise BotaiError(
+                ErrorCode.STALE_TARGET, "Этот шаг уже заменён. Откройте текущее состояние разговора"
+            )
+    else:
+        # Files are for the agent: a task's plain question takes only words.
+        waiting = next(
+            (
+                job
+                for job in sorted(jobs, key=lambda j: (j.created_at, j.id), reverse=True)
+                if job.kind in TASK_KINDS and _waiting_dialogue(job) and not body.attachment_ids
+            ),
+            None,
         )
-    if target is None and job is not None and job.state in IN_FLIGHT:
-        raise BotaiError(ErrorCode.CONFLICT, "Ассистент ещё отвечает на прошлое сообщение")
-    now = services.clock.now()
-    if source:
-        assert target is not None
+        if waiting is not None:
+            target = await _locked(session, user_id, waiting.id)
+            if target is not None and not _waiting_dialogue(target):
+                target = None  # answered while we were waiting for the lock
+    if target is not None and body.attachment_ids:
+        raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
+    text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
+    if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
             if conn.status == "disabled":
                 raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
-        state = dialogue.state_of(target)
-        waiting = state.get("pending")
-        if (
-            isinstance(waiting, dict)
-            and waiting.get("channel") == "native"
-            and waiting.get("secret")
-        ):
-            raise BotaiError(
-                ErrorCode.CONFLICT, "Пароль и код вводятся только в защищённое поле, не в чат"
-            )
-    if source:
-        assert target is not None
-        now = await dialogue.message_time(session, user_id, thread.id, now)
-    block = TextBlock(id=new_id(), at=now, markdown=text)
+        if _waiting_secret(target):
+            raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
+    else:
+        if any(job.kind == JobKind.CHAT.value for job in jobs):
+            raise BotaiError(ErrorCode.AGENT_BUSY, "Ассистент ещё отвечает на прошлое сообщение")
+        if any(_waiting_secret(job) for job in jobs) and looks_like_secret(text):
+            raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
+    # Appends to a thread are serialized: even two events in one clock tick keep their order.
+    now = services.clock.now()
+    at = await dialogue.message_time(session, user_id, thread.id, now)
+    blocks: list[dict[str, Any]] = []
+    if text.strip():
+        block = TextBlock(id=new_id(), at=at, markdown=text)
+        blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
     message = ChatMessage(
         id=new_id(),
         user_id=user_id,
         thread_id=thread.id,
         role="user",
-        blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
+        blocks=blocks,
         client_message_id=body.client_message_id,
-        created_at=now,
+        created_at=at,
     )
     session.add(message)
-    thread.updated_at = now
-    if source:
-        assert target is not None
+    if body.attachment_ids:
+        await _attach_files(session, services, user_id, thread, message, body.attachment_ids, at)
+    if target is not None:
         message.job_id = target.id
         state = dialogue.state_of(target)
         inbox = list(state.get("inbox") or [])
@@ -438,54 +409,122 @@ async def post_message(
         state["inbox"] = inbox
         dialogue.save_state(target, state)
         dialogue.advance_input(target)
-        dialogue.receipt(target, now=now, status="accepted", message_id=message.id)
+        dialogue.receipt(target, now=at, status="accepted", message_id=message.id)
         await session.execute(select(func.pg_notify(CHANNEL_ANSWERS, target.id)))
         job_id = target.id
     else:
-        if isinstance(services.queue, PgJobQueue):
-            queued = await enqueue_in_session(
-                session,
-                JobKind.CHAT,
-                user_id=user_id,
-                thread_id=thread.id,
-                payload={"thread_id": thread.id, "message_id": message.id},
-                now=now,
-                dedupe=False,
-            )
-            message.job_id = queued.id
-            await session.commit()
-            diagnostic_event(
-                "chat.message",
-                thread_id=thread.id,
-                job_id=queued.id,
-                message_id=message.id,
-                source=False,
-                input_chars=len(text),
-            )
-            return MessageAccepted(message=message_out(message), job_id=queued.id)
-        # Non-transactional queue implementations retain the legacy protocol and compensation.
-        await session.commit()
-        try:
-            job_id = await services.queue.enqueue(
-                JobKind.CHAT,
-                user_id=user_id,
-                thread_id=thread.id,
-                payload={"thread_id": thread.id, "message_id": message.id},
-                dedupe=False,
-            )
-        except Exception:
-            await session.delete(message)
-            await session.commit()
-            raise
-        message.job_id = job_id
+        queued = await enqueue_in_session(
+            session,
+            JobKind.CHAT,
+            user_id=user_id,
+            thread_id=thread.id,
+            payload={"thread_id": thread.id, "message_id": message.id},
+            now=now,
+            dedupe=False,
+        )
+        message.job_id = job_id = queued.id
     await session.commit()
     diagnostic_event(
         "chat.message",
         thread_id=thread.id,
         job_id=job_id,
         message_id=message.id,
-        source=source,
+        source=target is not None,  # the message went to a task's inbox, not to an agent turn
         input_chars=len(text),
         connection_id=target.connection_id if target else None,
     )
     return MessageAccepted(message=message_out(message), job_id=job_id)
+
+
+async def _attach_files(
+    session: AsyncSession,
+    services: Services,
+    user_id: str,
+    thread: ChatThread,
+    message: ChatMessage,
+    ids: list[str],
+    at: datetime,
+) -> None:
+    """The files go with the message: bound to it, shown as `attachment` blocks, and a document
+    starts indexing into the thread's university (or the student's own materials) right away."""
+    await session.flush()  # the message exists before files are bound to it
+    refs = await attachments.bind_to_message(session, user_id, thread.id, message.id, ids)
+    message.blocks = [
+        *message.blocks,
+        *(
+            AttachmentBlock(
+                id=new_id(),
+                at=at,
+                attachment_id=ref.id,
+                name=ref.name,
+                mime=ref.mime,
+                size=ref.size,
+                kind=ref.kind,
+            ).model_dump(by_alias=True, mode="json", exclude_none=True)
+            for ref in refs
+        ),
+    ]
+    documents = [ref for ref in refs if ref.kind == "document"]
+    if not documents:
+        return
+    space_id = thread.space_id or (await service.ensure_space(session, user_id, None)).id
+    for ref in documents:
+        att = await attachments.get(session, user_id, ref.id)
+        await attachments.start_ingest(session, att, space_id, thread.id, now=services.clock.now())
+
+
+async def _continued(session: AsyncSession, job: Job) -> bool:
+    """The task handed its work to a newer one (another site of the same chat)."""
+    child_id = job.payload.get("continuation_job_id")
+    if not isinstance(child_id, str):
+        return False
+    state = await session.scalar(
+        select(Job.state).where(Job.id == child_id, Job.user_id == job.user_id)
+    )
+    return state in IN_FLIGHT
+
+
+async def _replay(
+    session: AsyncSession, user_id: str, thread_id: str, body: MessageIn
+) -> MessageAccepted | None:
+    """The canonical answer of an earlier identical submission; a different body is a conflict."""
+    existing = await session.scalar(
+        select(ChatMessage).where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.client_message_id == body.client_message_id,
+        )
+    )
+    if existing is None:
+        return None
+    stored = "\n\n".join(
+        str(b.get("markdown", "")) for b in existing.blocks if b.get("type") == "text"
+    )
+    existing_job = (
+        await session.scalar(
+            select(Job).where(
+                Job.id == existing.job_id, Job.user_id == user_id, Job.thread_id == thread_id
+            )
+        )
+        if existing.job_id
+        else None
+    )
+    submitted = (
+        safe_text(body.text)
+        if existing_job is not None and existing_job.kind in TASK_KINDS
+        else body.text
+    )
+    sent_files = [
+        str(b.get("attachmentId")) for b in existing.blocks if b.get("type") == "attachment"
+    ]
+    if (
+        stored != submitted
+        or sorted(sent_files) != sorted(dict.fromkeys(body.attachment_ids))
+        or (body.target_job_id is not None and body.target_job_id != existing.job_id)
+    ):
+        raise BotaiError(
+            ErrorCode.REQUEST_REUSED, "Этот запрос уже использован для другого сообщения"
+        )
+    if existing.job_id is None:
+        raise BotaiError(ErrorCode.REQUEST_REUSED, "Сообщение ещё не связано с заданием")
+    return MessageAccepted(message=message_out(existing), job_id=existing.job_id)

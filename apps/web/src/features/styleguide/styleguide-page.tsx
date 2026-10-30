@@ -10,6 +10,7 @@ import {
 } from "@botai/design";
 import { type ReactNode, useEffect, useState } from "react";
 import { AgentBlocksSection, ProgressWallSection } from "./sections-agent";
+import { AttachmentsSection } from "./sections-attachments";
 import { ContextSection } from "./sections-chat-parts";
 import { ControlsSection, PaletteSection, StatusSection, TypographySection } from "./sections-foundation";
 import { MascotSection } from "./sections-mascot";
@@ -33,6 +34,7 @@ const SECTIONS = [
   ["status", "Состояния"],
   ["study", "Учебные данные"],
   ["chat", "Чат и агент"],
+  ["attachments", "Вложения"],
   ["context", "Контекст"],
   ["blocks", "Блоки агента"],
   ["progress-wall", "ProgressWall"],
@@ -49,6 +51,7 @@ function Gallery() {
       <StatusSection />
       <StudySection />
       <ChatSection />
+      <AttachmentsSection />
       <ContextSection />
       <AgentBlocksSection />
       <ProgressWallSection />

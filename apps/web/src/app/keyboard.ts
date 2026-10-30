@@ -16,8 +16,13 @@ export function useComposerKeyboard(): boolean {
       setOpen(false);
       return;
     }
+    // Экранную клавиатуру открывает только текстовое поле: кнопки «+», микрофон и «Отправить» её не вызывают.
+    const textField =
+      "textarea, input:not([type=checkbox], [type=radio], [type=file], [type=button], [type=submit]), [contenteditable=true]";
     const inComposer = (target: EventTarget | null) =>
-      target instanceof Element && target.closest("[data-composer], [data-chat-input]") !== null;
+      target instanceof Element &&
+      target.matches(textField) &&
+      target.closest("[data-composer], [data-chat-input]") !== null;
     const onFocusIn = (event: FocusEvent) => setOpen(inComposer(event.target));
     const onFocusOut = (event: FocusEvent) => {
       if (!inComposer(event.relatedTarget)) setOpen(false);

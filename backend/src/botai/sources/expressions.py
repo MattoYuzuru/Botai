@@ -17,16 +17,20 @@ from zoneinfo import ZoneInfo
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from botai.contracts.specs import (
+    HtmlAttribute,
     HtmlCollection,
     HtmlComposedField,
     HtmlDateTime,
     HtmlField,
+    HtmlLink,
     HtmlResponse,
     HtmlScalar,
     HtmlWeekly,
+    JsonAttribute,
     JsonComposedField,
     JsonDateTime,
     JsonField,
+    JsonLink,
     JsonResponse,
     JsonScalar,
     JsonWeekly,
@@ -182,6 +186,50 @@ def field_value(expression: FieldExpression, bindings: Mapping[str, Any], tz: Zo
     if value is None and expression.required:
         raise ExpressionError("fields")
     return value
+
+
+def _text_value(value: Any) -> str | None:
+    """A displayable scalar of a source answer; containers and empty text are not values."""
+    if value is MISSING or value is None or isinstance(value, (dict, list, bool)):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value).strip()
+    return text or None
+
+
+def structured_fields(
+    response: JsonResponse | HtmlResponse, bindings: Mapping[str, Any], tz: ZoneInfo
+) -> dict[str, list[dict[str, str]]]:
+    """`links` and `attributes` of one event. An item whose value is absent is skipped, so a
+    lesson without an online room simply has no link."""
+    out: dict[str, list[dict[str, str]]] = {}
+    links: list[dict[str, str]] = []
+    for link in response.links or []:
+        assert isinstance(link, (JsonLink, HtmlLink))
+        url = _text_value(scalar_value(link.url, bindings, tz))
+        if url is None:
+            continue
+        label = link.label
+        text = (
+            label
+            if isinstance(label, str)
+            else _text_value(scalar_value(label, bindings, tz))
+            if label is not None
+            else None
+        )
+        links.append({"url": url, "label": text or ""})
+    if links:
+        out["links"] = links
+    attributes: list[dict[str, str]] = []
+    for attribute in response.attributes or []:
+        assert isinstance(attribute, (JsonAttribute, HtmlAttribute))
+        value = _text_value(scalar_value(attribute, bindings, tz))
+        if value is not None:
+            attributes.append({"label": attribute.label, "value": value})
+    if attributes:
+        out["attributes"] = attributes
+    return out
 
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

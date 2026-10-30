@@ -24,6 +24,7 @@ from botai.core.vault import SecretKind
 from botai.learn.discovery import adaptive_observe
 from botai.learn.intent import LearningIntent
 from botai.learn.redact import Redactor
+from tests.fakeuni import data
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
 from tests.learn.test_discovery import plan
@@ -237,7 +238,21 @@ async def test_reauthentication_protects_the_new_session_before_recipe_authoring
                 ORIGIN + "/": FakePage(
                     "<main><h2>Вы не вошли в аккаунт</h2></main>"
                     if generation == "first"
-                    else "<main><article>" + " ".join(markers("reauth")) + "</article></main>"
+                    else "<main><article>" + " ".join(markers("reauth")) + "</article></main>",
+                    requests=[]
+                    if generation == "first"
+                    else [
+                        ObservedRequest(
+                            method="GET",
+                            url=ORIGIN + "/api/v2/timetable?from=2026-10-26&to=2026-11-01",
+                            status=200,
+                            resource_type="xhr",
+                            response_content_type="application/json",
+                            response_sample=json.dumps({"items": data.timetable()}),
+                            auth_proven=True,
+                            has_cookie=True,
+                        )
+                    ],
                 )
             }
             return await super().open(**kwargs)

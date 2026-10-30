@@ -169,33 +169,39 @@ test.describe("каркас", () => {
             });
         }
         await open(page, "/chat?thread=new&pace=0", "connected");
-        await expect(page.getByRole("heading", { level: 1, name: "Чат" })).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1, name: "Новый чат" })).toBeVisible();
         await expect(page.getByRole("list", { name: "Подсказки" })).toBeVisible();
-        const chat = await page.evaluate(() =>
-          ["header > div", "[data-chat-transcript]", "[data-chat-dock]"].map((selector) => {
+        // Чат на весь экран: шапка во всю область справа от рейла, колонка сообщений и поля — 48rem по центру.
+        const chat = await page.evaluate(() => {
+          const rect = (selector: string) => {
             const box = document.querySelector(selector)?.getBoundingClientRect();
             return { x: box?.x ?? 0, width: box?.width ?? 0 };
-          }),
-        );
-        for (const box of chat) {
-          expect(box.width).toBe(736);
-          expect(box.x).toBe(chat[0]?.x);
-        }
+          };
+          return {
+            bar: rect("[data-chat-topbar]"),
+            transcript: rect("[data-chat-transcript]"),
+            form: rect("form[data-composer]"),
+            nav: rect("nav[aria-label='Основная навигация']"),
+            clientWidth: document.documentElement.clientWidth,
+          };
+        });
+        expect(Math.abs(chat.bar.x - chat.nav.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(chat.bar.x + chat.bar.width - chat.clientWidth)).toBeLessThanOrEqual(1);
+        expect(chat.transcript.width).toBeLessThanOrEqual(768);
+        expect(chat.transcript.width).toBeGreaterThan(700);
+        expect(Math.abs(chat.form.x - chat.transcript.x - 20)).toBeLessThanOrEqual(2);
         if (width === 1512)
           await page.screenshot({ path: testInfo.outputPath(`chat-1512-${theme}.png`), fullPage: true });
-        await open(page, "/connect", "connected");
-        await expect(page.getByRole("heading", { level: 1, name: "Чат" })).toBeVisible();
-        await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
-        expect((await page.locator("[data-chat-transcript]").boundingBox())?.width).toBe(736);
-        await page.getByRole("button", { name: "Источник и подключения" }).click();
-        await expectSheetReady(page, "Источник и подключения");
-        await expect(page.getByRole("combobox", { name: "Вуз" })).toBeVisible();
+        await page.getByRole("button", { name: "Источники" }).click();
+        await expectSheetReady(page, "Источники");
         expect(
-          (await page.getByRole("dialog", { name: "Источник и подключения" }).boundingBox())?.width ?? 0,
+          (await page.getByRole("dialog", { name: "Источники" }).boundingBox())?.width ?? 0,
         ).toBeLessThanOrEqual(420);
-        await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
-        if (width === 1512)
-          await page.screenshot({ path: testInfo.outputPath(`connect-1512-${theme}.png`), fullPage: true });
+        await expect(
+          page
+            .getByRole("dialog", { name: "Источники" })
+            .getByRole("heading", { name: "Высшая школа экономики" }),
+        ).toBeVisible();
         await open(page, "/welcome", "empty");
         await expect(page.getByRole("heading", { level: 2, name: "Что такое BotAI" })).toBeVisible();
         expect((await page.getByRole("main").boundingBox())?.width).toBe(736);
@@ -246,7 +252,8 @@ test.describe("каркас", () => {
       await nav.getByRole("link", { name }).click();
       await expect(page).toHaveURL(new RegExp(`${path === "/" ? "/$" : `${path}$`}`));
       await expect(nav.getByRole("link", { name })).toHaveAttribute("aria-current", "page");
-      await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+      // У чата заголовок — название открытого треда, «Чат» стоит подписью под ним.
+      await expect(page.getByRole("heading", { level: 1, name: name === "Чат" ? /\S/ : name })).toBeVisible();
     }
   });
 

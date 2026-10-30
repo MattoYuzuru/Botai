@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
+from botai.agent import threads
 from botai.agent.schemas import ThreadOut
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
@@ -33,25 +34,45 @@ async def search_universities(
     user: AuthUser, session: DbSession, q: str = ""
 ) -> list[UniversityOut]:
     """Learned registry plus name-only suggestions; searching does not create integrations."""
-    rows = await universities.search(session, q)
-    return [UniversityOut.model_validate(u) for u in rows]
+    rows = await universities.search_rows(session, q)
+    return [
+        UniversityOut(
+            id=u.id,
+            title=u.title,
+            short_title=u.short_title,
+            aliases=list(universities.aliases_of(u)),
+            origins=u.origins,
+            accent_hue=u.accent_hue,
+            third_party_warning=u.third_party_warning,
+        )
+        for u in rows
+    ]
 
 
 @router.get("/spaces", response_model=list[SpaceOut])
 async def list_spaces(user: AuthUser, session: DbSession) -> list[SpaceOut]:
-    return [service.space_out(s) for s in await repo.list_spaces(session, user.id)]
+    return await service.spaces_out(session, await repo.list_spaces(session, user.id))
 
 
-@router.post("/spaces", response_model=SpaceOut, status_code=201)
-async def create_space(body: SpaceCreate, user: AuthUser, session: DbSession) -> SpaceOut:
-    return service.space_out(await service.create_space(session, user.id, body))
+@router.post(
+    "/spaces", response_model=SpaceOut, status_code=201, responses={200: {"model": SpaceOut}}
+)
+async def create_space(
+    body: SpaceCreate, response: Response, user: AuthUser, session: DbSession
+) -> SpaceOut:
+    """The university's space of this student: 201 when made, 200 when it was already there."""
+    space, university, created = await service.create_space(session, user.id, body)
+    if not created:
+        response.status_code = 200
+    return service.space_out(space, university)
 
 
 @router.patch("/spaces/{space_id}", response_model=SpaceOut)
 async def update_space(
     space_id: str, body: SpaceUpdate, user: AuthUser, session: DbSession
 ) -> SpaceOut:
-    return service.space_out(await service.update_space(session, user.id, space_id, body))
+    space = await service.update_space(session, user.id, space_id, body)
+    return (await service.spaces_out(session, [space]))[0]
 
 
 @router.delete("/spaces/{space_id}", status_code=204)
@@ -73,7 +94,7 @@ async def list_connections(
 ) -> list[ConnectionOut]:
     await repo.get_space(session, user.id, space_id)
     rows = await repo.list_connections(session, user.id, space_id)
-    return [await service.connection_out(services.vault, c) for c in rows]
+    return await service.connection_outs(session, services.vault, user.id, rows)
 
 
 @router.post("/spaces/{space_id}/connections", response_model=ConnectionStarted, status_code=201)
@@ -87,7 +108,8 @@ async def create_connection(
     """Creates the connection and enqueues a `connect` job (login + learn)."""
     conn, job_id = await service.create_connection(session, services.queue, user.id, space_id, body)
     return ConnectionStarted(
-        connection=await service.connection_out(services.vault, conn), job_id=job_id
+        connection=(await service.connection_outs(session, services.vault, user.id, [conn]))[0],
+        job_id=job_id,
     )
 
 
@@ -96,7 +118,7 @@ async def get_connection(
     connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> ConnectionOut:
     conn = await repo.get_connection(session, user.id, connection_id)
-    return await service.connection_out(services.vault, conn)
+    return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
 
 
 @router.post("/connections/{connection_id}/conversation", response_model=ThreadOut)
@@ -110,7 +132,7 @@ async def connection_conversation(
     thread = await conversations.attach_conversation(
         session, services, user.id, connection_id, body.job_id
     )
-    return ThreadOut.model_validate(thread)
+    return await threads.thread_out(session, thread)
 
 
 @router.delete("/connections/{connection_id}", status_code=204)

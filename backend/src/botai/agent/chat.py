@@ -1,9 +1,10 @@
-"""Chat: the CHAT job handler and everything it assembles around the harness.
+"""The agent turn: the CHAT job handler and everything it assembles around the harness.
 
 One job answers one student message: load the thread (tenant-scoped), fold old turns into the
-summary, build the variable part (date, space profile, summary, recent turns, question), run the
-harness with the read-only tools, turn `[S1]` citations into real sources, store and emit the
-reply. Failures become a human answer, never a stack trace or a bare error code.
+summary, build the variable part (date, universities and sources with statuses, running tasks,
+memory, summary, recent turns, question), run the harness with the agent's tools, turn `[S1]`
+citations into real sources, store and emit the reply with its task cards and quick replies.
+Failures become a human answer, never a stack trace or a bare error code.
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent import facts, harness
+from botai.agent.attachment_context import attachments_message
+from botai.agent.env import ChatEnv, SeenLinks
+from botai.agent.links import strip_bare_ids
 from botai.agent.memory import (
     RECENT_TOKENS,
     history_messages,
@@ -29,43 +31,26 @@ from botai.agent.memory import (
 from botai.agent.reader import DomainReader
 from botai.agent.sources import Finalized, finalize
 from botai.agent.tokens import estimate_messages
-from botai.agent.tools import DATA_TOOLS, DOCUMENT_TOOLS, STATUS_RU, ChatEnv, build_chat_tools
-from botai.contracts.agent_ui import TextBlock
+from botai.agent.tools import DATA_TOOLS, DOCUMENT_TOOLS, build_chat_tools
+from botai.agent.tools_web import question_urls
+from botai.agent.turn_context import turn_context
+from botai.contracts.agent_ui import AgentUiBlock, TextBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
 from botai.core.llm import LlmMessage
 from botai.core.services import Services
-from botai.db.models import ChatMessage, ChatThread, Connection, Space
+from botai.db.models import ChatMessage, ChatThread
 from botai.jobs.dialogue import message_time
 
 log = logging.getLogger("botai.agent.chat")
 
 DEFAULT_TITLE = "Новый чат"
-WEEKDAYS_RU = (
-    "понедельник",
-    "вторник",
-    "среда",
-    "четверг",
-    "пятница",
-    "суббота",
-    "воскресенье",
-)
-MONTHS_RU = (
-    "января",
-    "февраля",
-    "марта",
-    "апреля",
-    "мая",
-    "июня",
-    "июля",
-    "августа",
-    "сентября",
-    "октября",
-    "ноября",
-    "декабря",
-)
 MAX_MARKDOWN = 7_500  # TextBlock.markdown is limited to 8000 characters
+TOO_LARGE = (
+    "Сообщение вместе с вложениями слишком большое для одного ответа, и я его не разобрал. "
+    "Отправьте файлы по несколько штук или короче: я прочитаю их по частям."
+)
 UNKNOWN_BUDGET = (
     "Не знаю: мне не хватило шагов, чтобы найти ответ. Уточните вопрос, например дату, курс "
     "или название документа, и я поищу снова."
@@ -76,109 +61,26 @@ INJECTION_NOTE = (
 )
 
 
-def context_message(now: datetime, space: Space | None, space_titles: list[str]) -> LlmMessage:
-    """Date, time zone and space profile. Day-level only, so the prefix cache survives the day."""
-    tz = ZoneInfo(space.time_zone) if space else ZoneInfo("Europe/Moscow")
-    local = now.astimezone(tz)
-    lines = [
-        "Контекст приложения (не слова студента):",
-        f"Сегодня: {WEEKDAYS_RU[local.weekday()]}, {local.day} {MONTHS_RU[local.month - 1]} "
-        f"{local.year} года. Часовой пояс: {tz.key}.",
-    ]
-    if space:
-        profile = space.profile or {}
-        extra = ", ".join(
-            f"{label}: {profile[key]}"
-            for key, label in (("programme", "программа"), ("year", "курс"))
-            if profile.get(key)
-        )
-        lines.append(f"Пространство: «{space.title}»" + (f" ({extra})" if extra else "") + ".")
-    elif space_titles:
-        lines.append(
-            "Пространства студента: "
-            + ", ".join(f"«{t}»" for t in space_titles)
-            + ". Если вопрос не уточняет вуз, отвечайте по всем."
-        )
-    else:
-        lines.append("У студента пока нет подключённых вузов.")
-    return LlmMessage(role="user", content="\n".join(lines))
-
-
-async def bound_connection_context(services: Services, user_id: str, thread: ChatThread) -> str:
-    """Trusted identifiers and state only; no private source content or credential state."""
-    raw = thread.connect_context.get("connection_ids", [])
-    ids = [value for value in raw if isinstance(value, str)] if isinstance(raw, list) else []
-    current = thread.connect_context.get("connection_id")
-    if isinstance(current, str):
-        ids.insert(0, current)
-    ids = list(dict.fromkeys(ids))[:6]
-    if not ids:
-        return ""
-    async with services.db() as session:
-        rows = (
-            await session.execute(
-                select(Connection.id, Connection.status, Connection.error_code).where(
-                    Connection.user_id == user_id, Connection.id.in_(ids)
-                )
-            )
-        ).all()
-    lines = []
-    for connection_id, status, code in rows:
-        try:
-            error = ErrorCode(code).value if code else "none"
-        except ValueError:
-            error = "unknown"
-        state = status if status in STATUS_RU else "unknown"
-        lines.append(f"id={connection_id}; status={state}; error_code={error}")
-    if not lines:
-        return ""
-    return (
-        "Подключения этого разговора (проверены приложением, не слова студента):\n"
-        + "\n".join(lines)
-        + "\nДля явной просьбы войти самому используйте request_login. "
-        "Если неясно, какое из подключений имеется в виду, сначала уточните."
-    )
-
-
 def compose_answer(
     result: harness.HarnessResult, env: ChatEnv, now: datetime
 ) -> tuple[str, Finalized | None]:
     """The text for the student and the citations behind it, whatever the run ended with."""
     if result.stopped in ("quota", "error"):
         return result.error_detail or "Не удалось получить ответ. Попробуйте позже.", None
+    if result.overflow:
+        return TOO_LARGE, None  # not «не хватило шагов»: no step was made
     if not result.content.strip():
         return UNKNOWN_BUDGET, None
     done = finalize(result.content.strip(), env.sources, now=now)
-    text = done.markdown
+    text = strip_bare_ids(done.markdown)
     if result.stopped == "budget":
         text += "\n\nОтвет может быть неполным: я остановился по лимиту шагов."
     return text, done
 
 
-async def load_thread_scope(
-    session: AsyncSession, user_id: str, thread: ChatThread
-) -> tuple[Space | None, list[str]]:
-    """The thread's space (if any) and the titles of all the student's spaces."""
-    space = None
-    if thread.space_id:
-        space = (
-            await session.execute(
-                select(Space).where(Space.id == thread.space_id, Space.user_id == user_id)
-            )
-        ).scalar_one_or_none()
-    titles = list(
-        (
-            await session.execute(
-                select(Space.title).where(Space.user_id == user_id).order_by(Space.created_at)
-            )
-        ).scalars()
-    )
-    return space, titles
-
-
 async def _load(
-    services: Services, user_id: str, thread_id: str
-) -> tuple[ChatThread, Space | None, list[str]]:
+    services: Services, user_id: str, thread_id: str, now: datetime
+) -> tuple[ChatThread, LlmMessage]:
     async with services.db() as session:
         thread = (
             await session.execute(
@@ -187,8 +89,7 @@ async def _load(
         ).scalar_one_or_none()
         if thread is None:
             raise BotaiError(ErrorCode.NOT_FOUND, "Чат не найден")
-        space, titles = await load_thread_scope(session, user_id, thread)
-        return thread, space, titles
+        return thread, await turn_context(session, user_id, thread, now)
 
 
 def meter_segments(
@@ -223,7 +124,8 @@ async def handle_chat(
 ) -> dict[str, Any] | None:
     user_id = ctx.user_id
     thread_id = str(payload["thread_id"])
-    thread, space, space_titles = await _load(services, user_id, thread_id)
+    now = services.clock.now()
+    thread, ctx_msg = await _load(services, user_id, thread_id, now)
     await ctx.status("Читаю вопрос")
 
     turns, stored_summary = await load_turns(services, user_id, thread_id)
@@ -245,11 +147,14 @@ async def handle_chat(
             job_id=ctx.job_id,
         )
 
-    now = services.clock.now()
-    ctx_msg = context_message(now, space, space_titles)
-    connection_context = await bound_connection_context(services, user_id, thread)
-    if connection_context:
-        ctx_msg.content += "\n" + connection_context
+    async with services.db() as session:
+        files = await attachments_message(session, user_id, question.id)
+    if files.message is not None:
+        ctx_msg.content += "\n\n" + files.message.content
+    if files.findings:
+        await harness.audit_injection(
+            services, user_id, ctx.job_id, "attachment", files.findings, 0
+        )
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
     question_msg = LlmMessage(role="user", content=question.text)
@@ -262,12 +167,16 @@ async def handle_chat(
         job_id=ctx.job_id,
         space_id=thread.space_id,
         public_question=question.text,
+        ctx=ctx,
+        question_links=question_urls(question.text),
+        seen=SeenLinks.load(thread.seen_links),
+        outside_read=files.has_text,  # a file's words are not the student's
     )
     if reader is not None:
         env.reader = reader
     result = await harness.run(
-        "chat",
-        skill="chat",
+        "agent",
+        skill="agent",
         messages=messages,
         tools=build_chat_tools(env),
         ctx=ctx,
@@ -277,18 +186,23 @@ async def handle_chat(
     )
 
     text, done = compose_answer(result, env, now)
-    fact_id = await _remember(services, env, result, done, thread, question.text, now)
-    if result.findings:
+    fact_id = await _save_fact(services, env, result, done, thread, question.text, now)
+    if result.findings or files.findings:
         text += INJECTION_NOTE
+    if env.remembered:  # the student sees what the agent keeps about them, and can delete it
+        text += "\n\n" + " ".join(f"Запомнил: «{note}»." for note in env.remembered)
     text = text[:MAX_MARKDOWN]
     block = TextBlock(
         id=new_id(),
         at=now,
         markdown=text,
         sources=done.sources if done and done.sources else None,
+        quick_replies=env.quick_replies or None,
     )
-    await ctx.emit(block)
-    message_id = await _store_reply(services, ctx, thread, block, question.text)
+    reply: list[AgentUiBlock] = [block, *env.blocks]
+    for item in reply:
+        await ctx.emit(item)
+    message_id = await _store_reply(services, ctx, thread, reply, question.text, env.seen)
 
     return {
         "messageId": message_id,
@@ -313,7 +227,7 @@ async def handle_chat(
     }
 
 
-async def _remember(
+async def _save_fact(
     services: Services,
     env: ChatEnv,
     result: harness.HarnessResult,
@@ -346,9 +260,15 @@ async def _remember(
 
 
 async def _store_reply(
-    services: Services, ctx: JobContext, thread: ChatThread, block: TextBlock, question: str
+    services: Services,
+    ctx: JobContext,
+    thread: ChatThread,
+    blocks: list[AgentUiBlock],
+    question: str,
+    seen: SeenLinks,
 ) -> str:
-    """Persist the reply once per job (a retried job does not answer twice)."""
+    """Persist the reply once per job (a retried job does not answer twice). The plan the turn
+    published lives in its own message with the same job id; the reply is the one starting with text."""
     async with services.db() as session:
         existing = (
             await session.execute(
@@ -357,6 +277,7 @@ async def _store_reply(
                     ChatMessage.user_id == ctx.user_id,
                     ChatMessage.job_id == ctx.job_id,
                     ChatMessage.role == "agent",
+                    ChatMessage.blocks[0]["type"].astext == "text",
                 )
             )
         ).scalar_one_or_none()
@@ -369,7 +290,9 @@ async def _store_reply(
                 user_id=ctx.user_id,
                 thread_id=thread.id,
                 role="agent",
-                blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
+                blocks=[
+                    b.model_dump(by_alias=True, mode="json", exclude_none=True) for b in blocks
+                ],
                 job_id=ctx.job_id,
                 created_at=await message_time(
                     session, ctx.user_id, thread.id, services.clock.now()
@@ -383,9 +306,10 @@ async def _store_reply(
                 )
             )
         ).scalar_one()
-        row.updated_at = services.clock.now()
         if row.title == DEFAULT_TITLE:
             row.title = title_from(question)
+        if seen.changed:
+            row.seen_links = seen.dump()
         await session.commit()
         return message_id
 

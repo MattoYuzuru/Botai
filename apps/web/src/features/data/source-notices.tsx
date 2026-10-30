@@ -1,10 +1,10 @@
-import { Badge, Banner, Button, SourceStatus } from "@botai/design";
+import { Banner, Button, type SourceStatusBarItem } from "@botai/design";
 import { useIsFetching } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import type { Connection } from "@/api/types";
-import { useConnectionChat } from "@/features/chat/use-connection-chat";
 import { MascotSyncIndicator } from "@/features/mascot/mascot-sync-indicator";
+import { connectionChatLink } from "./chat-links";
 import { describeConnection } from "./connection-status";
-import { useReconnect } from "./use-reconnect";
 import type { SpaceInfo } from "./use-space-directory";
 
 /** Статусы, о которых человеку надо знать сразу. `stale` остаётся подписью свежести: обновление идёт само. */
@@ -42,9 +42,31 @@ export function collectNotices(spaces: readonly SpaceInfo[], attentionIds?: read
 }
 
 /**
- * Полосы состояния источников (styleguide §9): «Нужно снова войти», «Вуз что-то поменял, Варя чинит»,
- * «Не удалось обновить». Кнопки повтора нет; действия — только бизнес-смысла: «Войти снова», «Продолжить»,
- * «Спросить в чате».
+ * Чипы статусов вузов для шапки (`SourceStatusBar`): по одному на вуз с подключениями. Одна функция на
+ * «Сегодня», «Расписание», «Задания» и разделы «Учёбы»: подпись — короткое название вуза, а не адрес сайта.
+ */
+export function sourceStatusItems(spaces: readonly SpaceInfo[]): SourceStatusBarItem[] {
+  return spaces.flatMap((space) =>
+    space.health.state === "none"
+      ? []
+      : [
+          {
+            id: space.id,
+            title: space.shortTitle,
+            state: space.health.state,
+            updatedAt: space.health.updatedAt,
+            timeZone: space.timeZone,
+          },
+        ],
+  );
+}
+
+const ACTION_LABEL = { reauth: "Войти снова", answer: "Продолжить", chat: "Спросить в чате" } as const;
+
+/**
+ * Полосы состояния источников над содержимым экрана (styleguide §9): «Нужно снова войти», «Вуз что-то
+ * поменял, Варя чинит», «Не удалось обновить». Кнопки повтора нет; действие ведёт в чат: в тред задачи
+ * источника (`/chat?thread=`), а если треда нет — в новый чат с готовой просьбой (`/chat?draft=`).
  */
 export function SourceNotices({
   spaces,
@@ -55,8 +77,6 @@ export function SourceNotices({
   attentionIds?: readonly string[];
   nowMs: number;
 }) {
-  const reconnect = useReconnect();
-  const conversation = useConnectionChat();
   const notices = collectNotices(spaces, attentionIds);
   if (notices.length === 0) return null;
   const several = spaces.length > 1;
@@ -68,44 +88,14 @@ export function SourceNotices({
           timeZone: space.timeZone,
           stale,
         });
-        const action =
-          view.action === "reauth" ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              data-touch-expanded=""
-              loading={reconnect.isPending && reconnect.variables?.connectionId === connection.id}
-              onClick={() =>
-                reconnect.mutate({
-                  connectionId: connection.id,
-                  spaceId: space.id,
-                  spaceTitle: space.shortTitle,
-                })
-              }
-            >
-              Войти снова
-            </Button>
-          ) : view.action === "answer" ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              data-touch-expanded=""
-              loading={conversation.isPending && conversation.variables === connection.id}
-              onClick={() => conversation.mutate(connection.id)}
-            >
-              Продолжить
-            </Button>
-          ) : view.action === "chat" ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              data-touch-expanded=""
-              loading={conversation.isPending && conversation.variables === connection.id}
-              onClick={() => conversation.mutate(connection.id)}
-            >
-              Спросить в чате
-            </Button>
-          ) : undefined;
+        const chat = connectionChatLink(connection, space.title);
+        const action = view.action ? (
+          <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
+            <Link to={chat.to} search={chat.search}>
+              {ACTION_LABEL[view.action]}
+            </Link>
+          </Button>
+        ) : undefined;
         return (
           <li key={connection.id}>
             <Banner tone={view.tone} icon={view.icon} action={action}>
@@ -127,63 +117,6 @@ export function SourceNotices({
           </li>
         );
       })}
-    </ul>
-  );
-}
-
-/**
- * Подпись свежести по каждому вузу области экрана: метка вуза и `SourceStatus` («Обновлено 5 минут
- * назад», «Данные от 24 октября», «Нет сети. Показан снимок от …»). У любых данных видны вуз и время.
- */
-export function FreshnessFooter({
-  spaces,
-  nowMs,
-  className,
-}: {
-  spaces: readonly SpaceInfo[];
-  nowMs: number;
-  className?: string;
-}) {
-  const rows = spaces.filter((space) => space.health.state !== "none");
-  if (rows.length === 0) return null;
-  return (
-    <ul aria-label="Свежесть данных" className={className ?? "flex flex-col gap-1.5"}>
-      {rows.map((space) => (
-        <li key={space.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Badge tone="neutral">{space.shortTitle}</Badge>
-          <SourceStatus
-            state={space.health.state === "none" ? "ok" : space.health.state}
-            spaceId={space.id}
-            spaceTitle={space.shortTitle}
-            updatedAt={space.health.updatedAt}
-            nowMs={nowMs}
-            timeZone={space.timeZone}
-          />
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** Компактные статусы в шапке. Нажатие раскрывает пояснение и не фильтрует данные. */
-export function HeaderFreshness({ spaces, nowMs }: { spaces: readonly SpaceInfo[]; nowMs: number }) {
-  const rows = spaces.filter((space) => space.health.state !== "none");
-  if (rows.length === 0) return null;
-  return (
-    <ul aria-label="Свежесть данных" className="flex min-w-0 flex-wrap items-center gap-x-2">
-      {rows.map((space) => (
-        <li key={space.id} className="max-w-full min-w-0">
-          <SourceStatus
-            variant="compact"
-            state={space.health.state === "none" ? "ok" : space.health.state}
-            spaceId={space.id}
-            spaceTitle={space.shortTitle}
-            updatedAt={space.health.updatedAt}
-            nowMs={nowMs}
-            timeZone={space.timeZone}
-          />
-        </li>
-      ))}
     </ul>
   );
 }

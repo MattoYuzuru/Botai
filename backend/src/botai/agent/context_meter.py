@@ -14,7 +14,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent.chat import context_message, load_thread_scope
 from botai.agent.memory import (
     RECENT_TOKENS,
     history_messages,
@@ -27,6 +26,7 @@ from botai.agent.prompts import build_system_text
 from botai.agent.schemas import ContextOut, ContextSegment, ContextSource
 from botai.agent.tokens import estimate_messages, estimate_tokens, estimate_tools
 from botai.agent.tools import TOOL_SPECS
+from botai.agent.turn_context import turn_context
 from botai.core.jobs import JobKind, JobState
 from botai.core.services import Services
 from botai.db.models import ChatThread, Job
@@ -43,9 +43,9 @@ LABELS = {
 
 
 def system_tokens() -> int:
-    """Stable prefix: system.md + chat skills + tool schemas."""
+    """Stable prefix: system.md + agent skills + tool schemas."""
     specs = sorted(TOOL_SPECS.values(), key=lambda s: s.name)
-    return estimate_tokens(build_system_text("chat")) + estimate_tools(specs)
+    return estimate_tokens(build_system_text("agent")) + estimate_tools(specs)
 
 
 async def last_chat_result(session: AsyncSession, user_id: str, thread_id: str) -> dict[str, Any]:
@@ -79,8 +79,9 @@ async def build_context(
     last = await last_chat_result(session, user_id, thread.id)
     recorded: dict[str, int] = last.get("context") or {}
 
-    space, titles = await load_thread_scope(session, user_id, thread)
-    profile = estimate_messages([context_message(services.clock.now(), space, titles)])
+    profile = estimate_messages(
+        [await turn_context(session, user_id, thread, services.clock.now())]
+    )
 
     turns, stored = await load_turns(services, user_id, thread.id)
     _, recent = split_recent(turns, RECENT_TOKENS)

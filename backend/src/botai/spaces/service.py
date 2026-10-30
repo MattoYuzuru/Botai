@@ -1,13 +1,18 @@
-"""Spaces and connections: creation, secrets, jobs. Callers pass the request's `AsyncSession`."""
+"""Spaces and connections: a university per space, sources per university, secrets, jobs.
+
+Callers pass the request's `AsyncSession`. Reads for the agent (`ensure_space`, `list_sources`,
+`find_source`) flush but never commit: the caller owns the transaction.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.clock import SystemClock
@@ -15,11 +20,13 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import Connection, Job, Space
-from botai.jobs.queue import PgJobQueue, enqueue_in_session
+from botai.db.models import Connection, Job, Space, University
+from botai.jobs.events import IN_FLIGHT
+from botai.jobs.queue import SOURCE_KINDS, PgJobQueue, enqueue_in_session
 from botai.learn.addresses import navigation_url, url_origin
-from botai.spaces import repo, universities
+from botai.spaces import repo, universities, views
 from botai.spaces.schemas import (
+    ActiveTaskOut,
     ConnectionCreate,
     ConnectionOut,
     SecretIn,
@@ -27,26 +34,61 @@ from botai.spaces.schemas import (
     SpaceOut,
     SpaceUpdate,
 )
+from botai.spaces.views import ActiveTask, SourceView, TaskInfo, UniversitySources
 
 # Connections in these states have no finished setup (or were switched off): no sync, no repair.
 _NOT_READY = frozenset({"draft", "learning", "disabled"})
 _ICAL_SCHEMES = frozenset({"http", "https", "webcal"})
-_ORIGIN_MAX = 255
+MATERIALS_TITLE = "Мои материалы"
+MATERIALS_SHORT_TITLE = "Материалы"
+_NAME_NOT_ADDRESS = "Назовите вуз словами, а не адресом сайта"
 
 
-def space_out(space: Space) -> SpaceOut:
-    return SpaceOut.model_validate(space)
+# --- what the API shows ---------------------------------------------------------------------------
 
 
-async def connection_out(vault: Vault, conn: Connection) -> ConnectionOut:
+def space_out(space: Space, university: University | None) -> SpaceOut:
+    """`university` is the registry row of `space.university_id` (None for "My materials")."""
+    return SpaceOut(
+        id=space.id,
+        title=space.title,
+        short_title=university.short_title if university else MATERIALS_SHORT_TITLE,
+        aliases=list(universities.aliases_of(university)) if university else [],
+        university_id=space.university_id,
+        accent_hue=space.accent_hue,
+        time_zone=space.time_zone,
+        created_at=space.created_at,
+    )
+
+
+async def spaces_out(session: AsyncSession, spaces: Sequence[Space]) -> list[SpaceOut]:
+    ids = {s.university_id for s in spaces if s.university_id}
+    rows = (
+        {u.id: u for u in await session.scalars(select(University).where(University.id.in_(ids)))}
+        if ids
+        else {}
+    )
+    return [space_out(s, rows.get(s.university_id or "")) for s in spaces]
+
+
+def _active_task_out(task: ActiveTask | None) -> ActiveTaskOut | None:
+    return ActiveTaskOut(job_id=task.job_id, kind=task.kind, state=task.state) if task else None
+
+
+async def connection_out(
+    vault: Vault, conn: Connection, *, task: TaskInfo | None = None
+) -> ConnectionOut:
+    """`task` carries the thread and the active task of the source (`connection_outs` loads it)."""
+    task = task or TaskInfo()
     return ConnectionOut(
         id=conn.id,
         space_id=conn.space_id,
         origin=conn.origin,
-        kind=conn.kind,  # type: ignore[arg-type]  # validated by the response model
+        kind=views.normalize_kind(conn.kind),
         adapter=conn.adapter,
-        title=conn.title,
-        status=conn.status,  # type: ignore[arg-type]
+        title=views.display_title(conn),
+        entry_url=conn.entry_url,
+        status=conn.status,  # type: ignore[arg-type]  # validated by the response model
         has_password=await vault.has(conn.user_id, conn.id, SecretKind.PASSWORD),
         stored_secrets=[
             kind.value  # type: ignore[misc]
@@ -57,28 +99,88 @@ async def connection_out(vault: Vault, conn: Connection) -> ConnectionOut:
         next_sync_at=conn.next_sync_at,
         error_code=conn.error_code,
         error_detail=conn.error_detail,
+        thread_id=task.thread_id,
+        active_task=_active_task_out(task.active_task),
     )
+
+
+async def connection_outs(
+    session: AsyncSession, vault: Vault, user_id: str, conns: Sequence[Connection]
+) -> list[ConnectionOut]:
+    tasks = await views.load_task_info(session, user_id, [c.id for c in conns])
+    return [await connection_out(vault, c, task=tasks.get(c.id)) for c in conns]
 
 
 # --- spaces ---------------------------------------------------------------------------------------
 
 
-async def create_space(session: AsyncSession, user_id: str, body: SpaceCreate) -> Space:
-    uni = await universities.find_or_create(
+async def _space_of(
+    session: AsyncSession, user_id: str, university: University | None
+) -> tuple[Space, bool]:
+    """The one space of (user, university) - or of the user's materials - made if it is missing."""
+    uni_id = university.id if university else None
+    # The same key as the chat's own lookup: two requests for one university queue up here, and the
+    # unique index is only the last line of defence.
+    await session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtextextended(f"university-space:{user_id}:{uni_id or ''}", 0)
+            )
+        )
+    )
+    existing = await session.scalar(
+        select(Space)
+        .where(
+            Space.user_id == user_id,
+            Space.university_id == uni_id if uni_id else Space.university_id.is_(None),
+        )
+        .order_by(Space.created_at, Space.id)
+        .limit(1)
+    )
+    if existing is not None:
+        return existing, False
+    space = Space(
+        user_id=user_id,
+        university_id=uni_id,
+        title=(university.title if university else MATERIALS_TITLE)[:120],
+    )
+    if university is not None:
+        space.accent_hue = university.accent_hue
+    session.add(space)
+    await session.flush()
+    return space, True
+
+
+async def ensure_space(session: AsyncSession, user_id: str, university_id: str | None) -> Space:
+    """The space of this university for this user, created on first use (never a second one).
+
+    `university_id` is a registry id or the id of a catalog suggestion (which becomes a registry
+    row now); `None` is the user's "My materials" for documents outside any university.
+    """
+    university = (
+        await universities.find_or_create(session, title=university_id, university_id=university_id)
+        if university_id
+        else None
+    )
+    return (await _space_of(session, user_id, university))[0]
+
+
+async def create_space(
+    session: AsyncSession, user_id: str, body: SpaceCreate
+) -> tuple[Space, University, bool]:
+    """POST /spaces: the university by id, name or site, and its one space for this user.
+    The third value tells whether the space is new."""
+    if body.university_id is None and views.looks_like_address(body.title):
+        raise BotaiError(ErrorCode.VALIDATION, _NAME_NOT_ADDRESS)
+    university = await universities.find_or_create(
         session,
         title=body.title,
         university_id=body.university_id,
         homepage_url=body.homepage_url,
     )
-    space = Space(
-        user_id=user_id,
-        university_id=uni.id,
-        title=" ".join(body.title.split()),
-        accent_hue=uni.accent_hue,
-    )
-    session.add(space)
+    space, created = await _space_of(session, user_id, university)
     await session.commit()
-    return space
+    return space, university, created
 
 
 async def update_space(
@@ -89,6 +191,8 @@ async def update_space(
         title = " ".join(body.title.split())
         if not title:
             raise BotaiError(ErrorCode.VALIDATION, "Название не может быть пустым")
+        if views.looks_like_address(title):
+            raise BotaiError(ErrorCode.VALIDATION, _NAME_NOT_ADDRESS)
         space.title = title
     if body.time_zone is not None:
         try:
@@ -116,11 +220,66 @@ async def delete_space(session: AsyncSession, user_id: str, space_id: str) -> No
     await session.commit()
 
 
+# --- the universities of a student and their sources (the agent's view) ----------------------------
+
+
+async def list_sources(session: AsyncSession, user_id: str) -> list[UniversitySources]:
+    """Every university of the user with its sources, oldest first; each source with its
+    human title, the thread of its latest task and its active task."""
+    spaces = await repo.list_spaces(session, user_id)
+    unis = {
+        u.id: u
+        for u in await session.scalars(
+            select(University).where(
+                University.id.in_({s.university_id for s in spaces if s.university_id})
+            )
+        )
+    }
+    conns = list(
+        await session.scalars(
+            select(Connection)
+            .where(Connection.user_id == user_id)
+            .order_by(Connection.created_at, Connection.id)
+        )
+    )
+    tasks = await views.load_task_info(session, user_id, [c.id for c in conns])
+    result: list[UniversitySources] = []
+    for space in spaces:
+        uni = unis.get(space.university_id or "")
+        result.append(
+            UniversitySources(
+                space=space,
+                university=uni,
+                short_title=uni.short_title if uni else MATERIALS_SHORT_TITLE,
+                aliases=universities.aliases_of(uni) if uni else (),
+                sources=[_view(c, tasks.get(c.id)) for c in conns if c.space_id == space.id],
+            )
+        )
+    return result
+
+
+def _view(conn: Connection, task: TaskInfo | None) -> SourceView:
+    task = task or TaskInfo()
+    return SourceView(conn, views.display_title(conn), task.thread_id, task.active_task)
+
+
+async def find_source(session: AsyncSession, user_id: str, origin: str) -> Connection | None:
+    """The user's source on this site (`origin` may be a full address), oldest first."""
+    try:
+        wanted = universities.origin_of(origin)
+    except BotaiError:
+        return None
+    return await session.scalar(
+        select(Connection)
+        .where(Connection.user_id == user_id, Connection.origin == wanted)
+        .order_by(Connection.created_at, Connection.id)
+        .limit(1)
+    )
+
+
 # --- connections ----------------------------------------------------------------------------------
 
-
-def _host(origin: str) -> str:
-    return urlsplit(origin).hostname or ""
+_ORIGIN_MAX = 255
 
 
 async def create_connection(
@@ -134,7 +293,7 @@ async def create_connection(
     origin = universities.origin_of(url) if url else ""
     if len(origin) > _ORIGIN_MAX:
         raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
-    kind = body.kind or "other"
+    kind = views.normalize_kind(body.kind)
 
     conn: Connection | None = None
     if origin:
@@ -155,9 +314,10 @@ async def create_connection(
             space_id=space.id,
             origin=origin,
             kind=kind,
-            title=(body.title or _host(origin) or "Источник").strip()[:120],
+            title=views.source_title(kind=kind, title=body.title),
+            entry_url=views.clean_entry_url(url),
             status="draft",
-            allow_hosts=[_host(origin)] if origin else [],
+            allow_hosts=[urlsplit(origin).hostname or ""] if origin else [],
         )
         session.add(conn)
     # End our transaction before the queue (which works in its own) is called.
@@ -168,8 +328,8 @@ async def create_connection(
             JobKind.CONNECT,
             user_id=user_id,
             connection_id=conn.id,
-            # Keep the pre-chat REST entry point's original data selection explicit.
-            # Chat bootstrap supplies its own schedule-only LearningIntent instead.
+            # Keep the REST entry point's original data selection explicit. The agent connects
+            # through `connect_source`, which supplies its own LearningIntent instead.
             payload={
                 **({"url": url, "kind": body.kind} if url or body.kind else {}),
                 "kinds": ["scheduleEvents", "deadlines"],
@@ -182,6 +342,68 @@ async def create_connection(
             await session.commit()
         raise
     return conn, job_id
+
+
+async def lock_origin(session: AsyncSession, user_id: str, origin: str) -> None:
+    """Held until the transaction ends. Everything that creates a source of a site (REST, the
+    agent) takes it first, so one site never gets two sources of one student."""
+    await session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(f"source:{user_id}:{origin}", 0)))
+    )
+
+
+async def ensure_source(
+    session: AsyncSession,
+    user_id: str,
+    space_id: str,
+    *,
+    url: str,
+    kind: str | None = None,
+    title: str | None = None,
+    page_title: str | None = None,
+) -> tuple[Connection, bool]:
+    """The source of a site in a university: the one already there, or a new `draft` one.
+
+    The title is human (the given one, else the title of the page, else the name of the kind -
+    never the host) and `entry_url` is the page the student pointed at, if it is safe to keep.
+    The second value tells whether the source is new; starting its job is the caller's.
+    """
+    entry = views.clean_entry_url(url)
+    if entry is None:
+        raise BotaiError(
+            ErrorCode.VALIDATION,
+            "Нужна обычная HTTPS-ссылка без паролей, токенов и служебных кодов",
+        )
+    origin = universities.origin_of(entry)
+    if len(origin) > _ORIGIN_MAX:
+        raise BotaiError(ErrorCode.VALIDATION, "Ссылка слишком длинная")
+    space = await repo.get_space(session, user_id, space_id)
+    await lock_origin(session, user_id, origin)  # two requests for one site queue up here
+    existing = await session.scalar(
+        select(Connection)
+        .where(
+            Connection.user_id == user_id,
+            Connection.space_id == space.id,
+            Connection.origin == origin,
+        )
+        .order_by(Connection.created_at, Connection.id)
+        .limit(1)
+    )
+    if existing is not None:
+        return existing, False
+    conn = Connection(
+        user_id=user_id,
+        space_id=space.id,
+        origin=origin,
+        kind=views.normalize_kind(kind),
+        title=views.source_title(kind=kind, title=title, page_title=page_title),
+        entry_url=entry,
+        status="draft",
+        allow_hosts=[urlsplit(origin).hostname or ""],
+    )
+    session.add(conn)
+    await session.flush()
+    return conn, True
 
 
 async def delete_connection(session: AsyncSession, user_id: str, connection_id: str) -> None:
@@ -216,11 +438,9 @@ def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
 
 
 async def _connect_retry_payload(
-    session: AsyncSession,
-    conn: Connection,
-    context: dict[str, Any] | None,
-    payload: dict[str, Any] | None,
+    session: AsyncSession, conn: Connection, payload: dict[str, Any] | None
 ) -> dict[str, Any]:
+    """A retried CONNECT keeps what the source's previous attempt was asked to learn."""
     previous = await session.scalar(
         select(Job)
         .where(
@@ -232,17 +452,7 @@ async def _connect_retry_payload(
         .limit(1)
     )
     prior = previous.payload if previous else {}
-    canonical = _same_origin_intent(context, conn.origin)
-    source_intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
-    context_urls = context.get("entry_urls") if context else None
-    foreign_context = isinstance(context_urls, list) and any(
-        url_origin(url) != conn.origin for value in context_urls if (url := navigation_url(value))
-    )
-    # A conversation may now point at a child source: its parent's own intent wins then.
-    if canonical and not canonical["entry_urls"] and foreign_context:
-        intent = source_intent
-    else:
-        intent = canonical or source_intent
+    intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
     result = {
         key: value
         for key, value in (payload or {}).items()
@@ -252,16 +462,14 @@ async def _connect_retry_payload(
     if entry and url_origin(entry) != conn.origin:
         entry = None
     if intent is not None:
-        if not intent["entry_urls"]:
-            intent["entry_urls"] = list(source_intent["entry_urls"]) if source_intent else []
-            if not intent["entry_urls"] and entry:
-                intent["entry_urls"] = [entry]
+        if not intent["entry_urls"] and entry:
+            intent["entry_urls"] = [entry]
         result["learning_intent"] = intent
         result["kinds"] = list(intent["requested_kinds"])
         if intent["entry_urls"]:
             result["url"] = intent["entry_urls"][0]
     else:
-        result["kinds"] = ["scheduleEvents", "deadlines"]  # Legacy REST before a chat context.
+        result["kinds"] = ["scheduleEvents", "deadlines"]  # REST entry point without a chat intent
         if entry:
             result["url"] = entry
     return result
@@ -296,23 +504,18 @@ async def enqueue_for_connection(
         kind = JobKind.CONNECT
     elif conn.status in _NOT_READY:
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
-    from botai.spaces.conversations import bind_thread, canonical_thread, owned_thread
+    from botai.spaces.conversations import adopt_job, connection_thread, owned_thread
 
-    thread = await canonical_thread(session, user_id, conn.id)
-    bind_after_enqueue = False
-    if thread is None and thread_id is not None:
-        thread = await owned_thread(session, user_id, thread_id)
-        if manual_login:
-            # Worker terminal projection locks Job -> Thread. Keep this thread clean
-            # until enqueue has locked/selected the existing source job as well.
-            bind_after_enqueue = True
-        else:
-            bind_thread(thread, conn.id)
-    target_thread = thread.id if thread is not None else None
+    # The task shows up in the thread that asked for it; a plate without a thread uses the
+    # thread of the source's newest task.
+    if thread_id is not None:
+        await owned_thread(session, user_id, thread_id)
+        target_thread: str | None = thread_id
+    else:
+        existing_thread = await connection_thread(session, user_id, conn.id)
+        target_thread = existing_thread.id if existing_thread else None
     if kind == JobKind.CONNECT:
-        payload = await _connect_retry_payload(
-            session, conn, thread.connect_context if thread else None, payload
-        )
+        payload = await _connect_retry_payload(session, conn, payload)
     if manual_login and isinstance(queue, PgJobQueue):
         job = await enqueue_in_session(
             session,
@@ -325,9 +528,7 @@ async def enqueue_for_connection(
             now=now or SystemClock().now(),
         )
         if target_thread is not None and job.thread_id is None:
-            job.thread_id = target_thread
-        if bind_after_enqueue and thread is not None:
-            bind_thread(thread, conn.id)
+            await adopt_job(session, job, target_thread, now or SystemClock().now())
         await session.commit()
         return job.id
     if manual_login:
@@ -336,8 +537,8 @@ async def enqueue_for_connection(
             .where(
                 Job.user_id == user_id,
                 Job.connection_id == conn.id,
-                Job.kind.in_(("connect", "learn", "repair", "sync")),
-                Job.state.in_(("queued", "running", "waiting_user")),
+                Job.kind.in_(SOURCE_KINDS),
+                Job.state.in_(sorted(IN_FLIGHT)),
             )
             .order_by(Job.created_at, Job.id)
             .limit(1)
@@ -345,13 +546,9 @@ async def enqueue_for_connection(
         )
         if running is not None:
             if target_thread is not None and running.thread_id is None:
-                running.thread_id = target_thread
-            if bind_after_enqueue and thread is not None:
-                bind_thread(thread, conn.id)
+                await adopt_job(session, running, target_thread, now or SystemClock().now())
             await session.commit()
             return running.id
-    if bind_after_enqueue and thread is not None:
-        bind_thread(thread, conn.id)
     await session.commit()  # the queue works in its own transaction
     job_id = await queue.enqueue(
         kind,
@@ -361,13 +558,13 @@ async def enqueue_for_connection(
         payload=payload,
         dedupe=True,
     )
-    # An existing deduplicated legacy job can predate its conversation.
+    # A deduplicated job may have been queued before any thread asked for it.
     if target_thread is not None:
         job = await session.scalar(
             select(Job).where(Job.id == job_id, Job.user_id == user_id).with_for_update()
         )
         if job is not None and job.thread_id is None:
-            job.thread_id = target_thread
+            await adopt_job(session, job, target_thread, now or SystemClock().now())
             await session.commit()
     return job_id
 

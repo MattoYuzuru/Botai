@@ -30,22 +30,11 @@ def make_handlers(
     async def connect(
         ctx: JobContext, services: Services, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if ctx.connection_id is None and not payload.get("connection_id"):
-            from botai.spaces.conversations import bind_bootstrap
-
-            connection_id, payload = await bind_bootstrap(ctx, services, payload)
-        else:
-            connection_id = _connection_id(ctx, payload)
         explorer = Explorer(ctx, services, transport=transport, retry=retry)
-        return await explorer.connect(connection_id, payload)
-
-    async def learn(ctx: JobContext, services: Services, payload: dict[str, Any]) -> dict[str, Any]:
-        explorer = Explorer(ctx, services, transport=transport, retry=retry)
-        return await explorer.learn(_connection_id(ctx, payload), payload)
+        return await explorer.connect(_connection_id(ctx, payload), payload)
 
     return {
         JobKind.CONNECT: connect,
-        JobKind.LEARN: learn,
         JobKind.REPAIR: make_repair_handler(transport=transport, retry=retry),
     }
 

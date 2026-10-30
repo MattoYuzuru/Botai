@@ -41,7 +41,7 @@ async def spend(
             s,
             user_id=user_id,
             job_id=job_id,
-            purpose="chat",
+            purpose="agent",
             usage=usage(tokens, 0, 0),
             peak=False,
             now=at,
@@ -98,7 +98,7 @@ async def test_record_usage_writes_one_priced_row(tx_sessionmaker: Sm) -> None:
             s, user_id=uid, job_id=job, purpose="learn", usage=u, peak=False, now=NOW
         )
         await service.record_usage(
-            s, user_id=uid, job_id=None, purpose="chat", usage=u, peak=True, now=NOW
+            s, user_id=uid, job_id=None, purpose="agent", usage=u, peak=True, now=NOW
         )
     async with tx_sessionmaker() as s:
         rows = (await s.scalars(select(LlmUsageRow).order_by(LlmUsageRow.purpose))).all()
@@ -130,7 +130,7 @@ async def test_record_usage_survives_a_rollback_of_the_callers_work(engine: Any)
     try:
         async with sm() as s:
             await service.record_usage(
-                s, user_id=uid, job_id=None, purpose="chat", usage=usage(), peak=False
+                s, user_id=uid, job_id=None, purpose="agent", usage=usage(), peak=False
             )
             await s.rollback()  # whatever the caller does next
         async with sm() as s:
@@ -217,7 +217,7 @@ async def test_cache_hits_count_toward_the_budget_too(tx_sessionmaker: Sm) -> No
             s,
             user_id=uid,
             job_id=None,
-            purpose="chat",
+            purpose="agent",
             usage=usage(10, 900, 90),
             peak=False,
             now=NOW,
@@ -295,7 +295,11 @@ async def test_the_providers_gate_records_and_enforces_through_this_service(
     gate = DbUsageGate(lambda: tx_sessionmaker)
     await gate.check(uid)  # fresh user: allowed (default limits)
     await gate.record(
-        user_id=uid, job_id=None, purpose="chat", usage=usage(miss=2_500_000, out=0), peak=False
+        user_id=uid,
+        job_id=None,
+        purpose="agent",
+        usage=usage(miss=Settings().quota_tokens_per_day + 1, out=0),
+        peak=False,
     )
     with pytest.raises(BotaiError) as err:
         await gate.check(uid)

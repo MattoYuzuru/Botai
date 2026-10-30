@@ -127,7 +127,6 @@ fetch('/browser-plan-write',{method:'POST'}).catch(()=>{});
     env = await make_env([])
     await env.login()
     planner = PlanAuthor()
-    env.services.settings.botai_factory_v2_enabled = True
     env.services.llm = planner
     env.services.browser = dom_site.gateway
     clock = env.services.clock

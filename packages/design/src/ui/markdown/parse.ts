@@ -1,25 +1,50 @@
 /**
  * Безопасный разбор markdown ответа агента. Поддерживается узкое подмножество: абзацы, списки,
- * заголовки, **жирный**, `код`, блоки кода, цитаты и ссылки http(s). HTML не разбирается вовсе —
- * теги остаются обычным текстом; картинки не загружаются (показывается подпись); ссылки-действия,
- * `javascript:`, `data:`, `mailto:` и относительные пути ссылками не становятся (ADR-0004).
+ * заголовки, **жирный**, *курсив*, `код`, блоки кода, цитаты, таблицы GFM, графики (```chart) и ссылки.
+ * HTML не разбирается вовсе — теги остаются обычным текстом; картинки не загружаются (показывается подпись);
+ * ссылками становятся только абсолютные адреса: http(s) и внутренние `схема://…` (их разрешает вызывающий код
+ * через `resolveLink`). `javascript:`, `data:`, `mailto:` и относительные пути ссылками не становятся (ADR-0004).
  */
 import { safeHttpUrl } from "../../lib/safe-url";
+import { type ChartSpec, parseChartSpec } from "./chart-spec";
 
 export type Inline =
   | { type: "text"; value: string }
   | { type: "bold"; children: Inline[] }
+  | { type: "italic"; children: Inline[] }
   | { type: "code"; value: string }
+  /** `href` — как в тексте: для http(s) нормализованный адрес, для внутренних (`botai://…`) исходная строка. */
   | { type: "link"; href: string; children: Inline[] };
+
+export type TableAlign = "left" | "center" | "right" | null;
 
 export type Block =
   | { type: "paragraph"; children: Inline[] }
   | { type: "heading"; children: Inline[] }
   | { type: "list"; ordered: boolean; items: Inline[][] }
   | { type: "quote"; children: Inline[] }
-  | { type: "code"; value: string };
+  | { type: "code"; value: string; lang?: string }
+  | { type: "table"; align: TableAlign[]; header: Inline[][]; rows: Inline[][][] }
+  | { type: "chart"; spec: ChartSpec };
 
-const URL_RE = /https?:\/\/[^\s<>()[\]"']+[^\s<>()[\]"'.,;:!?]/;
+const URL_RE = /(?:https?|botai):\/\/[^\s<>()[\]"']+[^\s<>()[\]"'.,;:!?]/;
+const AUTOLINK_RE = /^<((?:https?|botai):\/\/[^\s<>]+)>/;
+const CUSTOM_SCHEME_RE = /^([a-z][a-z0-9+.-]*):\/\/\S+$/i;
+/** Схемы, которые не бывают внутренними ссылками приложения, даже с «//». */
+const FORBIDDEN_SCHEMES = new Set(["javascript", "data", "vbscript", "file", "blob", "about"]);
+const ALNUM = /[\p{L}\p{N}]/u;
+const WORDY = /[\p{L}\p{N}_]/u;
+
+/** Адрес из разметки → адрес ссылки или `null`. http(s) нормализуется, прочие абсолютные `схема://…` остаются как есть. */
+function linkTarget(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const http = safeHttpUrl(raw);
+  if (http) return http.href;
+  const custom = CUSTOM_SCHEME_RE.exec(raw.trim());
+  if (!custom || FORBIDDEN_SCHEMES.has((custom[1] ?? "").toLowerCase()) || /^https?$/i.test(custom[1] ?? ""))
+    return null;
+  return raw.trim();
+}
 
 /** Разбор строки на встроенные элементы. Незакрытая разметка остаётся текстом. */
 export function parseInline(source: string): Inline[] {
@@ -32,6 +57,7 @@ export function parseInline(source: string): Inline[] {
   let i = 0;
   while (i < source.length) {
     const rest = source.slice(i);
+    const previous = i === 0 ? "" : (source[i - 1] ?? "");
 
     if (rest.startsWith("`")) {
       const end = rest.indexOf("`", 1);
@@ -39,6 +65,17 @@ export function parseInline(source: string): Inline[] {
         flush();
         out.push({ type: "code", value: rest.slice(1, end) });
         i += end + 1;
+        continue;
+      }
+    }
+
+    // ***жирный курсив***
+    if (rest.startsWith("***")) {
+      const end = rest.indexOf("***", 3);
+      if (end > 3) {
+        flush();
+        out.push({ type: "bold", children: [{ type: "italic", children: parseInline(rest.slice(3, end)) }] });
+        i += end + 3;
         continue;
       }
     }
@@ -63,30 +100,54 @@ export function parseInline(source: string): Inline[] {
 
     const link = /^\[([^\]]+)\]\(([^)\s]+)\)/.exec(rest);
     if (link) {
-      const url = safeHttpUrl(link[2]);
+      const target = linkTarget(link[2]);
       flush();
-      if (url) out.push({ type: "link", href: url.href, children: parseInline(link[1] ?? "") });
+      if (target) out.push({ type: "link", href: target, children: parseInline(link[1] ?? "") });
       else out.push({ type: "text", value: link[1] ?? "" });
       i += link[0].length;
       continue;
     }
 
-    const bare = /^https?:\/\//.test(rest) ? URL_RE.exec(rest) : null;
+    // <https://…> — автоссылка.
+    const auto = AUTOLINK_RE.exec(rest);
+    if (auto) {
+      const target = linkTarget(auto[1]);
+      if (target) {
+        flush();
+        out.push({ type: "link", href: target, children: [{ type: "text", value: auto[1] ?? "" }] });
+        i += auto[0].length;
+        continue;
+      }
+    }
+
+    const bare = /^(?:https?|botai):\/\//.test(rest) ? URL_RE.exec(rest) : null;
     if (bare && bare.index === 0) {
-      const url = safeHttpUrl(bare[0]);
+      const target = linkTarget(bare[0]);
       flush();
-      if (url) out.push({ type: "link", href: url.href, children: [{ type: "text", value: bare[0] }] });
+      if (target) out.push({ type: "link", href: target, children: [{ type: "text", value: bare[0] }] });
       else out.push({ type: "text", value: bare[0] });
       i += bare[0].length;
       continue;
     }
 
-    // Курсива в интерфейсе нет: маркеры *слово* и _слово_ убираем, текст оставляем.
-    const emphasis = /^(\*|_)(?=\S)([^*_\n]+?)(?<=\S)\1/.exec(rest);
-    if (emphasis && (i === 0 || /\W/.test(source[i - 1] ?? " "))) {
-      text += emphasis[2] ?? "";
-      i += emphasis[0].length;
-      continue;
+    // Курсив: *слово* и _слово_ на границе слов. `snake_case`, `2*3*4` и `* пункт` курсивом не становятся.
+    if (rest.startsWith("*") && !ALNUM.test(previous)) {
+      const star = /^\*([^\s*](?:[^*\n]*[^\s*])?)\*(?![\p{L}\p{N}])/u.exec(rest);
+      if (star) {
+        flush();
+        out.push({ type: "italic", children: parseInline(star[1] ?? "") });
+        i += star[0].length;
+        continue;
+      }
+    }
+    if (rest.startsWith("_") && !WORDY.test(previous)) {
+      const under = /^_([^\s_](?:[^_\n]*[^\s_])?)_(?![\p{L}\p{N}_])/u.exec(rest);
+      if (under) {
+        flush();
+        out.push({ type: "italic", children: parseInline(under[1] ?? "") });
+        i += under[0].length;
+        continue;
+      }
     }
 
     text += source[i];
@@ -95,6 +156,38 @@ export function parseInline(source: string): Inline[] {
   flush();
   return out;
 }
+
+/** Ячейки строки таблицы: крайние `|` необязательны, `\|` — литерал. */
+function splitRow(line: string): string[] {
+  let body = line.trim();
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|") && !body.endsWith("\\|")) body = body.slice(0, -1);
+  const cells: string[] = [];
+  let current = "";
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index];
+    if (char === "\\" && body[index + 1] === "|") {
+      current += "|";
+      index++;
+    } else if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+const isDelimiterRow = (line: string): boolean =>
+  line.includes("|") && /^[\s|:-]+$/.test(line) && splitRow(line).every((cell) => /^:?-+:?$/.test(cell));
+
+function alignOf(cell: string): TableAlign {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  return left && right ? "center" : right ? "right" : left ? "left" : null;
+}
+
+const FENCE = /^\s*```/;
 
 export function parseMarkdown(source: string): Block[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
@@ -109,21 +202,53 @@ export function parseMarkdown(source: string): Block[] {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? "";
 
-    if (/^\s*```/.test(line)) {
+    if (FENCE.test(line)) {
       flushParagraph();
+      const lang = (/^\s*```\s*([^\s`]*)/.exec(line)?.[1] ?? "").toLowerCase();
       const code: string[] = [];
       index++;
-      while (index < lines.length && !/^\s*```/.test(lines[index] ?? "")) {
+      while (index < lines.length && !FENCE.test(lines[index] ?? "")) {
         code.push(lines[index] ?? "");
         index++;
       }
-      blocks.push({ type: "code", value: code.join("\n") });
+      const value = code.join("\n");
+      const spec = lang === "chart" ? parseChartSpec(value) : null;
+      if (spec) blocks.push({ type: "chart", spec });
+      else blocks.push(lang ? { type: "code", value, lang } : { type: "code", value });
       continue;
     }
 
     if (!line.trim()) {
       flushParagraph();
       continue;
+    }
+
+    // Таблица GFM: строка заголовка, строка-разделитель `|---|:---:|---:|` с тем же числом колонок, затем строки.
+    const next = lines[index + 1];
+    if (line.includes("|") && next !== undefined && isDelimiterRow(next)) {
+      const header = splitRow(line);
+      const delimiter = splitRow(next);
+      if (header.length === delimiter.length) {
+        flushParagraph();
+        const rows: Inline[][][] = [];
+        let cursor = index + 2;
+        while (cursor < lines.length) {
+          const row = lines[cursor] ?? "";
+          if (!row.trim() || !row.includes("|") || FENCE.test(row)) break;
+          const cells = splitRow(row).slice(0, header.length);
+          while (cells.length < header.length) cells.push("");
+          rows.push(cells.map(parseInline));
+          cursor++;
+        }
+        blocks.push({
+          type: "table",
+          align: delimiter.map(alignOf),
+          header: header.map(parseInline),
+          rows,
+        });
+        index = cursor - 1;
+        continue;
+      }
     }
 
     const heading = /^#{1,6}\s+(.*)$/.exec(line);

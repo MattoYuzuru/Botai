@@ -51,6 +51,9 @@ class ObservedRequest(BaseModel):
     response_content_type: str | None = None
     response_sample: str | None = None  # truncated body, in memory only, for learning
     evidence_id: str | None = None
+    # The page whose script issued the request (executor-owned, never shown to a model): the
+    # compiler derives the address a student opens to see this data from it.
+    initiator_url: str | None = None
     has_cookie: bool = False
     has_authorization: bool = False
     authorization_scheme: Literal["none", "bearer", "other"] = "none"

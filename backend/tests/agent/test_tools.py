@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.agent.env import ChatEnv
 from botai.agent.harness import HarnessTool
-from botai.agent.tools import TOOL_SPECS, ChatEnv, build_chat_tools
+from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.core.jobs import JobKind
 from botai.core.llm import ScriptedLlm
 from botai.core.queue import InMemoryJobQueue
@@ -58,7 +60,7 @@ async def rig(
     return Rig(env, {t.spec.name: t for t in build_chat_tools(env)}, queue)
 
 
-def test_chat_agent_has_exactly_these_read_only_tools() -> None:
+def test_the_agent_has_exactly_these_tools() -> None:
     assert set(TOOL_SPECS) == {
         "get_schedule",
         "get_deadlines",
@@ -66,17 +68,38 @@ def test_chat_agent_has_exactly_these_read_only_tools() -> None:
         "get_grades",
         "get_people",
         "get_news",
-        "list_connections",
         "search_documents",
         "search_facts",
         "search_public_web",
         "request_repair",
         "request_login",
+        "list_universities",
+        "find_university",
+        "connect_source",
+        "add_document_url",
+        "task_status",
+        "sync_source",
+        "read_document",
+        "browse_source",
+        "site_map",
+        "fetch_public_page",
+        "remember",
+        "forget",
+        "update_plan",
+        "offer_choices",
+        "rename_thread",
     }
-    # T5: nothing that opens an address or sends data out.
     for spec in TOOL_SPECS.values():
-        assert "url" not in spec.parameters["properties"]
         assert spec.parameters["additionalProperties"] is False
+        # T5: a credential, cookie or code is never a parameter of any tool.
+        assert not set(spec.parameters["properties"]) & {"password", "code", "cookie", "token"}
+    # Only these four name an address; the others take ids of the student's own things.
+    assert {n for n, s in TOOL_SPECS.items() if "url" in s.parameters["properties"]} == {
+        "connect_source",
+        "add_document_url",
+        "browse_source",
+        "fetch_public_page",
+    }
     assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {"connection_id"}
 
 
@@ -157,15 +180,17 @@ async def test_deadlines_are_sorted_and_overdue_is_flagged(sm: Sm, user_id: str)
     assert "Сданная" in await r.call("get_deadlines", include_done=True)
 
 
-async def test_connections_list_has_ids_for_repair(sm: Sm, user_id: str) -> None:
+async def test_universities_list_has_ids_statuses_and_links(sm: Sm, user_id: str) -> None:
     space = await add_space(sm, user_id, "Вуз А")
     conn = await add_connection(
         sm, user_id, space, "Расписание ЛК", status="stale", error_code="recipe_drift"
     )
     r = await rig(sm, user_id)
-    text = await r.call("list_connections")
-    assert f"id={conn}" in text
-    assert "статус: stale (данные устарели)" in text
+    text = await r.call("list_universities")
+    assert "«Вуз А»" in text
+    assert f"connection_id={conn}" in text
+    assert f"botai://connections/{conn}" in text
+    assert "статус: данные устарели" in text
     assert "код ошибки: recipe_drift" in text
 
 
@@ -301,6 +326,65 @@ async def test_repair_enqueues_once_and_refuses_what_a_human_must_do(sm: Sm, use
     assert "Такого подключения" in await r.call("request_repair", connection_id=foreign, reason="x")
     assert "Такого подключения" in await r.call("request_repair", connection_id="nope", reason="x")
     assert len(r.queue.jobs) == 1
+
+
+async def test_actions_reach_the_sources_of_every_university_from_any_thread(
+    sm: Sm, user_id: str
+) -> None:
+    """A thread is not a fence: the student in a chat about one university can ask to update or
+    repair a source of another, and the task starts in the chat they are in."""
+    here = await add_space(sm, user_id, "Первый вуз")
+    there = await add_space(sm, user_id, "Второй вуз")
+    far = await add_connection(sm, user_id, there, "Расписание", status="error")
+    stale = await add_connection(sm, user_id, there, "Сайт кафедры", status="stale")
+    async with sm() as session:
+        for conn_id in (far, stale):
+            row = await session.get(Connection, conn_id)
+            assert row is not None
+            row.adapter = "recipe"
+        await session.commit()
+    r = await rig(sm, user_id, space_id=here)
+    assert "запущено" in await r.call("sync_source", connection_id=stale)
+    assert "поставлена в очередь" in await r.call(
+        "request_repair", connection_id=far, reason="пусто"
+    )
+    assert [(j["kind"], j["thread_id"]) for j in r.queue.jobs] == [
+        (JobKind.SYNC, r.env.thread_id),
+        (JobKind.REPAIR, r.env.thread_id),
+    ]
+    listing = await r.call("list_universities")
+    assert "Первый вуз" in listing
+    assert "Второй вуз" in listing
+    assert f"connection_id={far}" in listing
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [
+        ("get_news", {}),
+        ("get_schedule", {}),
+        ("get_deadlines", {}),
+        ("get_courses", {}),
+        ("search_documents", {"query": "пересдача"}),
+        ("search_facts", {"query": "общежитие"}),
+        ("search_public_web", {"query": "пересдача"}),
+    ],
+    ids=lambda case: case[0],
+)
+async def test_after_any_text_from_outside_only_the_students_words_are_remembered(
+    sm: Sm, user_id: str, reading: tuple[str, dict[str, Any]]
+) -> None:
+    """A teacher writes the news and the timetable, a document or a hit says what it likes: what
+    these tools returned is not a fact about the student, whatever the model makes of it."""
+    r = await rig(sm, user_id)
+    assert (
+        await r.call("remember", note="Староста группы Иванов") == "Запомнено."
+    )  # nothing read yet
+    name, args = reading
+    await r.call(name, **args)
+    refused = await r.call("remember", note="Староста потока Петров")
+    assert refused.startswith("Не запомнено")
+    assert r.env.outside_read
 
 
 async def test_repair_does_not_start_a_second_job_while_one_runs(sm: Sm, user_id: str) -> None:
