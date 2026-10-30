@@ -31,8 +31,8 @@ export interface ComposerAttachment {
   error?: string;
 }
 
-/** Откуда пришли файлы: выбор, камера, вставка из буфера, перетаскивание или запись голоса. */
-export type FileSource = "picker" | "camera" | "paste" | "drop" | "voice";
+/** Откуда пришли файлы: выбор, камера, вставка из буфера или перетаскивание. */
+export type FileSource = "picker" | "camera" | "paste" | "drop";
 
 const ICONS: Record<AttachmentKind, IconName> = {
   image: "image",

@@ -205,6 +205,45 @@
         "title": "AttachmentOut",
         "type": "object"
       },
+      "Body_transcribe_api_v1_speech_transcribe_post": {
+        "properties": {
+          "audio": {
+            "contentMediaType": "application/octet-stream",
+            "title": "Audio",
+            "type": "string"
+          },
+          "durationMs": {
+            "anyOf": [
+              {
+                "maximum": 86400000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durationms"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          }
+        },
+        "required": [
+          "audio"
+        ],
+        "title": "Body_transcribe_api_v1_speech_transcribe_post",
+        "type": "object"
+      },
       "Body_upload_attachment_api_v1_attachments_post": {
         "properties": {
           "file": {
@@ -2345,6 +2384,20 @@
           "attention"
         ],
         "title": "TodayOut",
+        "type": "object"
+      },
+      "TranscriptOut": {
+        "description": "What was said, as plain text. The recording itself is not kept anywhere.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TranscriptOut",
         "type": "object"
       },
       "UniversityOut": {
@@ -4730,6 +4783,48 @@
         "summary": "List Sections",
         "tags": [
           "spaces"
+        ]
+      }
+    },
+    "/api/v1/speech/transcribe": {
+      "post": {
+        "description": "A recording up to 20 MiB and three minutes → the recognised text. The recording is kept\nnowhere: not in the database, not in a file, not in a log. `language` is an ISO 639-1 code\n(Russian by default); `durationMs` is what the page measured, used for the daily limit.",
+        "operationId": "transcribe_api_v1_speech_transcribe_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transcribe_api_v1_speech_transcribe_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transcribe",
+        "tags": [
+          "speech"
         ]
       }
     },

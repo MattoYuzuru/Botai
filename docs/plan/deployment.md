@@ -53,11 +53,11 @@ rollback. Автоматический backup/health rollback не решает 
 |---|---|
 | Пользователь `botai-deploy` | без пароля, группа `docker`, вход только ключом CI с `restrict` |
 | Каталог | `/srv/botai` (`0750`), `backups/` |
-| Секреты | `/srv/botai/app.secrets` (`0600`): `BOTAI_KEK`, `BOTAI_PROXY_SECRET` остаются на сервере; `DEEPSEEK_API_KEY`, `EXA_API_KEY` поступают из GitHub Secrets по stdin SSH, без аргументов и вывода |
+| Секреты | `/srv/botai/app.secrets` (`0600`): `BOTAI_KEK`, `BOTAI_PROXY_SECRET` остаются на сервере; `DEEPSEEK_API_KEY`, `EXA_API_KEY`, `GROQ_API_KEY` поступают из GitHub Secrets по stdin SSH, без аргументов и вывода |
 | Переменные compose | `/srv/botai/compose.vars`: `IMAGE_TAG`, `POSTGRES_PASSWORD`, `BOTAI_DIAGNOSTICS` |
 | Бэкап | `/etc/cron.d/botai-backup`: `pg_dump` в 03:15, хранение 14 дней. **KEK в бэкап не входит**: без `app.secrets` сохранённые пароли вузов не расшифровать — студенты введут их заново |
 | Caddy | блок `botai.mnema.app` в конце `/etc/caddy/Caddyfile`, бэкап `Caddyfile.bak-20261027-133201`, применён `reload`; TLS выпущен |
-| GitHub | Secrets `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEEPSEEK_API_KEY`, необязательный `EXA_API_KEY`; Variable `DEPLOY_ENABLED` |
+| GitHub | Secrets `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEEPSEEK_API_KEY`, необязательные `EXA_API_KEY` и `GROQ_API_KEY`; Variable `DEPLOY_ENABLED` |
 
 Скрипты: [bootstrap-server.sh](../../ops/deploy/bootstrap-server.sh) (один раз, идемпотентен),
 [remote-deploy.sh](../../ops/deploy/remote-deploy.sh) (каждый деплой),
@@ -79,6 +79,18 @@ Workflow main сериализован, на сервере `.deploy.lock` се�
 несекретном наборе настроек поиска или во frontend. Порядок провайдеров, ошибки и
 smoke — [public-search.md](../development/public-search.md). `compose.vars` в целом
 секретен, потому что содержит пароль БД: не выводить файл или `compose config` целиком.
+
+Голосовой ввод (речь в текст, [speech-to-text.md](../development/speech-to-text.md)) работает через Groq.
+`GROQ_API_KEY` — GitHub Secret, который `deploy.yml` отправляет пятой строкой stdin в `remote-deploy.sh`;
+скрипт функцией `set_secret` заменяет одноимённую строку `app.secrets` (или добавляет её), а пустое значение и
+отсутствующая строка (прежний порядок из четырёх строк) оставляют серверный ключ как есть. `app.secrets` читают
+все сервисы Compose через `env_file`, поэтому в `compose.prod.yaml` ключа нет: там только несекретные
+`STT_PROVIDER` (`groq` или `off`), `STT_MODEL`, `STT_REQUESTS_PER_HOUR`, `STT_SECONDS_PER_DAY`, которые меняются в
+`compose.vars`. Без ключа или при `STT_PROVIDER=off` эндпоинт отвечает `503 stt_unavailable`, остальное
+приложение не затронуто. Ключ в GitHub Secret ещё не ключ работающего контейнера: он доставляется следующим штатным
+деплоем. Запросы к `api.groq.com` идут через EgressProxy с отдельным разрешением на этот хост. Тело запроса диктовки
+ограничено тем же middleware, что и вложения (21 МиБ): лимит в Caddy `request_body { max_size 22MB }` из раздела ниже
+покрывает и его.
 
 ### Размер загрузок
 
@@ -210,7 +222,7 @@ flowchart LR
 | Что | Как |
 |---|---|
 | Пользователь для CI | `botai-deploy`: без пароля и sudo, в группе `docker`, владелец `/srv/botai`, вход только по ключу CI |
-| Секреты GitHub | `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEEPSEEK_API_KEY`, `EXA_API_KEY`; прикладные ключи — в `app.secrets`, пароль БД — в `compose.vars`, оба файла защищены и не входят в образ |
+| Секреты GitHub | `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEEPSEEK_API_KEY`, `EXA_API_KEY`, `GROQ_API_KEY`; прикладные ключи — в `app.secrets`, пароль БД — в `compose.vars`, оба файла защищены и не входят в образ |
 | Откат | Тег образа = SHA коммита; при провале health-check — `up -d` с прошлым тегом |
 | Бэкап | Ночной `pg_dump` в `/srv/botai/backups`, хранение 14 дней; **KEK в бэкап не входит** |
 
@@ -224,7 +236,8 @@ flowchart LR
 3. Проверить `alembic_version`, права конфигурации и состояние диагностики. Режим и том
    `botai_diagdata` должны пережить следующий деплой с `keep`.
 4. Ограниченно выполнить фиксированный smoke каждого настроенного поискового провайдера
-   из worker. Проверить ключи в памяти без вывода значений; сравнение с frontend/логами
+   из worker; диктовку владелец проверяет одним нажатием микрофона в чате (не более нескольких
+   записей) или `python -m botai.speech --file …` из контейнера API. Проверить ключи в памяти без вывода значений; сравнение с frontend/логами
    выполняется без печати искомых строк. Вузовский кабинет здесь не открывать.
 5. При сбое остановить rollout, восстановить прежний образ/настройки согласно ограничениям
    миграции и проверить здоровье. Автоматический rollback не отменяет DDL и не возвращает

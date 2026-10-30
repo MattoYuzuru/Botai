@@ -45,6 +45,9 @@ export interface ChatHandlerOptions {
 const CONTEXT_LIMIT = 1_000_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** Что «услышал» стенд на любой записи: фраза из примеров чата. Ошибки сервиса в тестах подменяются своим обработчиком. */
+export const MOCK_DICTATION = "Какие у меня пары завтра";
+
 /** Грубая копия серверной защиты: слово без пробелов с цифрой или символом внутри, строка из цифр, «пароль: …». */
 function looksLikeSecret(text: string): boolean {
   const value = text.trim();
@@ -72,10 +75,10 @@ interface Upload {
  * Разбор multipart-тела загрузки. В браузере это `request.formData()`; окружение тестов (jsdom поверх Node) не
  * разбирает чужой multipart, и тогда тело читается как текст: имя, тип и размер те же, содержимое — для проверки.
  */
-async function readUpload(request: Request): Promise<Upload | null> {
+async function readUpload(request: Request, field = "file"): Promise<Upload | null> {
   try {
     const form = await request.clone().formData();
-    const entry = form.get("file");
+    const entry = form.get(field);
     if (!entry || typeof entry === "string") return null;
     const file = entry as File;
     const threadId = form.get("threadId");
@@ -98,7 +101,7 @@ async function readUpload(request: Request): Promise<Upload | null> {
       const name = /name="([^"]*)"/.exec(head)?.[1];
       const filename = /filename="([^"]*)"/.exec(head)?.[1];
       if (name === "threadId") threadId = body;
-      else if (name === "file" && filename !== undefined) {
+      else if (name === field && filename !== undefined) {
         const bytes = new TextEncoder().encode(body);
         result = {
           file: {
@@ -568,6 +571,17 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       attachmentBytes(db).delete(id);
       save();
       return new HttpResponse(null, { status: 204 });
+    }),
+
+    // ---------- Диктовка: запись → текст для поля ввода ----------
+
+    http.post("*/api/v1/speech/transcribe", async ({ request }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const upload = await readUpload(request, "audio");
+      if (!upload || upload.file.size === 0)
+        return problem(422, "validation", "Запись пустая. Запишите ещё раз.");
+      return HttpResponse.json({ text: MOCK_DICTATION });
     }),
   ];
 }

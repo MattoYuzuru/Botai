@@ -72,7 +72,7 @@ function Body({ item }: { item: ViewerAttachment }): ReactNode {
           <Icon name="audio" size={24} />
         </span>
         <p className="text-center type-heading text-fg [overflow-wrap:anywhere]">{item.name}</p>
-        {/* biome-ignore lint/a11y/useMediaCaption: голосовое сообщение без расшифровки, субтитров нет */}
+        {/* biome-ignore lint/a11y/useMediaCaption: аудиовложение без расшифровки, субтитров нет */}
         <audio controls preload="metadata" src={item.url} className="w-full" />
       </div>
     );

@@ -817,6 +817,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/transcribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transcribe
+         * @description A recording up to 20 MiB and three minutes → the recognised text. The recording is kept
+         *     nowhere: not in the database, not in a file, not in a log. `language` is an ISO 639-1 code
+         *     (Russian by default); `durationMs` is what the page measured, used for the daily limit.
+         */
+        post: operations["transcribe_api_v1_speech_transcribe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/today": {
         parameters: {
             query?: never;
@@ -977,6 +999,15 @@ export interface components {
             name: string;
             /** Size */
             size: number;
+        };
+        /** Body_transcribe_api_v1_speech_transcribe_post */
+        Body_transcribe_api_v1_speech_transcribe_post: {
+            /** Audio */
+            audio: string;
+            /** Durationms */
+            durationMs?: number | null;
+            /** Language */
+            language?: string | null;
         };
         /** Body_upload_attachment_api_v1_attachments_post */
         Body_upload_attachment_api_v1_attachments_post: {
@@ -1684,6 +1715,14 @@ export interface components {
             deadlines: components["schemas"]["DeadlineOut"][];
             /** Events */
             events: components["schemas"]["ScheduleEventOut"][];
+        };
+        /**
+         * TranscriptOut
+         * @description What was said, as plain text. The recording itself is not kept anywhere.
+         */
+        TranscriptOut: {
+            /** Text */
+            text: string;
         };
         /** UniversityOut */
         UniversityOut: {
@@ -3346,6 +3385,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SectionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transcribe_api_v1_speech_transcribe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_transcribe_api_v1_speech_transcribe_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptOut"];
                 };
             };
             /** @description Validation Error */

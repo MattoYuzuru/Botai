@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MOCK_DICTATION } from "@/mocks/chat-handlers";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 
 const harness = chatHarness();
@@ -167,7 +168,24 @@ describe("вложения: «+», чипы, отправка", () => {
   });
 });
 
-describe("голосовое сообщение: запись MediaRecorder без расшифровки", () => {
+describe("аудиофайл через «+» остаётся вложением", () => {
+  it("файл не распознаётся: агент честно говорит об этом, запись проигрывается во вьюере", async () => {
+    const { user } = await openNewChat();
+    await user.upload(fileInput(), file("лекция.webm", "audio/webm"));
+    const list = await screen.findByRole("list", { name: "Вложения" }, wait);
+    await waitFor(
+      () => expect(within(list).getByRole("button", { name: "Открыть лекция.webm" })).toBeEnabled(),
+      wait,
+    );
+    await user.click(sendButton());
+    expect(await screen.findByText(/расшифровки пока нет/, undefined, wait)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Открыть лекция.webm" }, wait));
+    const viewer = await screen.findByRole("dialog");
+    expect(viewer.querySelector("audio")).not.toBeNull();
+  });
+});
+
+describe("диктовка: речь в текст в поле ввода", () => {
   class FakeRecorder {
     static isTypeSupported = (type: string) => type === "audio/webm;codecs=opus";
     state: "inactive" | "recording" = "inactive";
@@ -200,36 +218,99 @@ describe("голосовое сообщение: запись MediaRecorder бе
     return track;
   }
 
-  it("запись → чип → отправка; агент честно говорит, что расшифровки нет; запись проигрывается во вьюере", async () => {
+  const mic = () => screen.getByRole("button", { name: "Надиктовать текст" });
+
+  it("запись → «Готово» → текст в поле, сообщение не отправлено; человек правит и отправляет сам", async () => {
     const track = mockMicrophone();
     const { user } = await openNewChat();
-    await user.click(screen.getByRole("button", { name: "Записать голосовое сообщение" }));
-    expect(await screen.findByText(/Идёт запись/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Остановить и прикрепить" }));
-    const list = await screen.findByRole("list", { name: "Вложения" }, wait);
-    const name = /Голосовое сообщение \d\d\.\d\d \d\d-\d\d\.webm/;
+    await user.click(mic());
+    expect(await screen.findByRole("button", { name: "Отменить запись" })).toBeInTheDocument();
+    expect(document.querySelector("[data-equalizer]")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Готово" }));
+
+    await waitFor(() => expect(composer()).toHaveValue(MOCK_DICTATION), wait);
+    expect(composer()).toHaveFocus();
+    expect(track.stop).toHaveBeenCalled();
+    // Ни вложения, ни сообщения: звук ушёл только на распознавание.
+    expect(chips()).toBeNull();
+    expect(screen.queryByText(MOCK_DICTATION, { selector: "[data-timeline] *" })).toBeNull();
+
+    await user.type(composer(), " и послезавтра");
+    await user.click(sendButton());
     await waitFor(
-      () => expect(within(list).getByRole("button", { name: /^Открыть Голосовое/ })).toBeEnabled(),
+      () =>
+        expect(
+          within(timeline() as HTMLElement).getByText(`${MOCK_DICTATION} и послезавтра`),
+        ).toBeInTheDocument(),
       wait,
     );
-    expect(within(list).getByText(name)).toBeInTheDocument();
-    expect(track.stop).toHaveBeenCalled();
-    await user.click(sendButton());
-    expect(await screen.findByText(/расшифровки пока нет/, undefined, wait)).toBeInTheDocument();
-
-    await user.click(await screen.findByRole("button", { name: /^Открыть Голосовое/ }, wait));
-    const viewer = await screen.findByRole("dialog");
-    expect(viewer.querySelector("audio")).not.toBeNull();
   });
 
-  it("отмена записи ничего не прикрепляет; отказ в микрофоне — сообщение словами, без alert", async () => {
+  it("отмена ничего не отправляет на сервер и не меняет поле", async () => {
     const track = mockMicrophone();
+    const requests = vi.fn();
+    harness.server.use(
+      http.post("*/api/v1/speech/transcribe", () => {
+        requests();
+        return HttpResponse.json({ text: "не должно появиться" });
+      }),
+    );
     const { user } = await openNewChat();
-    await user.click(screen.getByRole("button", { name: "Записать голосовое сообщение" }));
+    await user.type(composer(), "черновик");
+    await user.click(mic());
     await user.click(await screen.findByRole("button", { name: "Отменить запись" }));
-    expect(chips()).toBeNull();
     expect(track.stop).toHaveBeenCalled();
+    expect(composer()).toHaveValue("черновик");
+    expect(requests).not.toHaveBeenCalled();
+  });
 
+  it("сервис выключен, лимит исчерпан: человеческий текст в alert, поле не тронуто", async () => {
+    mockMicrophone();
+    harness.server.use(
+      http.post("*/api/v1/speech/transcribe", () =>
+        HttpResponse.json(
+          {
+            type: "https://botai.mnema.app/errors/stt_unavailable",
+            title: "stt_unavailable",
+            status: 503,
+            code: "stt_unavailable",
+            detail: "Распознавание речи сейчас не работает. Напишите текстом.",
+          },
+          { status: 503, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    const { user } = await openNewChat();
+    await user.click(mic());
+    await user.click(await screen.findByRole("button", { name: "Готово" }));
+    expect(await screen.findByRole("alert", undefined, wait)).toHaveTextContent(
+      "Распознавание речи сейчас не работает. Напишите текстом.",
+    );
+    expect(composer()).toHaveValue("");
+
+    harness.server.use(
+      http.post("*/api/v1/speech/transcribe", () =>
+        HttpResponse.json(
+          {
+            type: "https://botai.mnema.app/errors/quota_exceeded",
+            title: "quota_exceeded",
+            status: 429,
+            code: "quota_exceeded",
+            detail: "Слишком много записей за час. Попробуйте через 12 мин или напишите текстом.",
+            scope: "speech_hour",
+          },
+          { status: 429, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "Закрыть" }));
+    await user.click(mic());
+    await user.click(await screen.findByRole("button", { name: "Готово" }));
+    expect(await screen.findByRole("alert", undefined, wait)).toHaveTextContent("Попробуйте через 12 мин");
+  });
+
+  it("отказ в микрофоне — сообщение словами, без alert браузера", async () => {
+    mockMicrophone();
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: {
@@ -238,14 +319,15 @@ describe("голосовое сообщение: запись MediaRecorder бе
           .mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" })),
       },
     });
-    await user.click(screen.getByRole("button", { name: "Записать голосовое сообщение" }));
+    const { user } = await openNewChat();
+    await user.click(mic());
     expect(await screen.findByRole("alert")).toHaveTextContent(/Нет доступа к микрофону/);
   });
 
-  it("браузер без MediaRecorder: кнопки записи нет", async () => {
+  it("браузер без MediaRecorder: кнопки микрофона нет", async () => {
     vi.stubGlobal("MediaRecorder", undefined);
     await openNewChat();
-    expect(screen.queryByRole("button", { name: "Записать голосовое сообщение" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Надиктовать текст" })).toBeNull();
     expect(userEvent).toBeDefined();
     void ask;
   });

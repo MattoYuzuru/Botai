@@ -95,6 +95,10 @@ export function humanMessage(error: unknown): string {
       return "Инструкция со страницы отклонена. Содержимое сайта используется только как данные.";
     case "llm_unavailable":
       return "Модель сейчас недоступна. Не удалось продолжить работу с подключением.";
+    case "stt_unavailable":
+      return "Распознавание речи сейчас недоступно. Напишите текстом.";
+    case "stt_rate_limited":
+      return "Сервис распознавания перегружен. Повторите чуть позже или напишите текстом.";
     default:
       return error.status >= 500
         ? "У BotAI сейчас неполадка. Мы уже разбираемся."
