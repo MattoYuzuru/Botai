@@ -153,6 +153,25 @@ async def test_with_several_universities_and_no_hint_the_student_is_asked_which(
     assert KEY not in await dump_database(env.sm)
 
 
+async def test_a_calendar_the_student_switched_off_is_not_reopened_by_a_pasted_link(
+    env: Env,
+) -> None:
+    who = await student(env)
+    await post(who.client, who.thread_id, LINKS[0])
+    (task,) = await calendar_tasks(env, who.user_id)
+    async with env.sm() as session:
+        job = await session.get(m.Job, task.id)
+        conn = await session.get(m.Connection, task.connection_id)
+        assert job is not None
+        assert conn is not None
+        job.state, conn.status = "cancelled", "disabled"
+        await session.commit()
+    sent = await post(who.client, who.thread_id, LINKS[1])
+    assert "отключили" in refusal(sent)["detail"]
+    assert len(await calendar_tasks(env, who.user_id)) == 1
+    assert KEY not in sent.text
+
+
 async def test_a_student_with_no_university_is_asked_for_one_too(env: Env) -> None:
     client = env.new_client()
     account = await env.account(client)

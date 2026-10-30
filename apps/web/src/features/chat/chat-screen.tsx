@@ -30,7 +30,7 @@ import { composerState } from "./composer-state";
 import { ContextButton } from "./context-meter-view";
 import { EmptyChat } from "./empty-chat";
 import { useOpenThread } from "./open-thread";
-import { isSecretInChat } from "./outbox";
+import { isCalendarLink, isSecretInChat } from "./outbox";
 import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
 import type { MessageQuote } from "./quote";
 import { outbox, useOutbox } from "./runtime";
@@ -240,6 +240,20 @@ export function ChatScreen() {
               tone: "warning",
               description: "Сообщение не отправлено и удалено.",
             });
+            return;
+          }
+          // Личная ссылка календаря: сообщение стёрто так же, текст в поле не возвращается. Сервер открыл в этом
+          // чате защищённое поле для ссылки (или просит назвать вуз): подсказка объясняет, куда смотреть.
+          if (isCalendarLink(error)) {
+            toast("Ссылку календаря в чат не отправили", {
+              tone: "info",
+              description: humanMessage(error),
+            });
+            if (item.threadId) {
+              void queryClient.invalidateQueries({ queryKey: chatKeys.messages(item.threadId) });
+              void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(item.threadId) });
+            }
+            void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
             return;
           }
           // Сервер не принял вложения: они уже загружены и возвращаются чипами для повторной отправки.

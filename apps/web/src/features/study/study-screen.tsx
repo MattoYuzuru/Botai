@@ -17,7 +17,7 @@ import { sectionsQuery } from "@/api/queries";
 import type { Connection } from "@/api/types";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
-import { addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
+import { addCalendarLink, addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
 import { resolveDataState } from "@/features/data/data-state";
 import { ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
 import { type SpaceInfo, useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
@@ -31,8 +31,8 @@ import { SourceList } from "./source-list";
 /**
  * «Учёба» (`/study`): вуз — единица со многими источниками. У каждого вуза: название, сокращение и сводный
  * статус; список его источников (личный кабинет, учебная платформа, документация, таблицы, документы) со
- * статусом и временем обновления; «Добавить источник» открывает новый чат с готовой просьбой, «Добавить
- * документ» — шит (есть и у вуза без документов); ниже разделы
+ * статусом и временем обновления; «Добавить источник» и его вариант «Календарь (iCal)» открывают новый чат с готовой
+ * просьбой, «Добавить документ» — шит (есть и у вуза без документов); ниже разделы
  * с данными (Предметы, Оценки, … «Документы и вложения») в фиксированном порядке (FR-014). Профиль и
  * настройки — внизу экрана (§7.1).
  */
@@ -169,6 +169,12 @@ function UniversityPanel({
             <Link {...addSourceLink(space.title)}>
               <Icon name="plus" size={20} />
               Добавить источник
+            </Link>
+          </Button>
+          <Button variant="ghost" asChild>
+            <Link {...addCalendarLink(space.title)}>
+              <Icon name="schedule" size={20} />
+              Календарь (iCal)
             </Link>
           </Button>
           <Button variant="ghost" leadingIcon="document" onClick={onAddDocument}>

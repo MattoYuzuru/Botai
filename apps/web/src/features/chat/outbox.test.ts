@@ -3,6 +3,8 @@ import { ApiError, NetworkError } from "@/api/errors";
 import type { Message, Thread } from "@/api/types";
 import type { MessageAccepted } from "@/api/v3";
 import {
+  conflictKind,
+  isCalendarLink,
   isSecretInChat,
   Outbox,
   type OutboxDeps,
@@ -296,6 +298,44 @@ describe("очередь исходящих сообщений", () => {
     expect(isSecretInChat(new ApiError(409, "agent_busy", ""))).toBe(false);
     expect(isSecretInChat(new ApiError(422, "validation", ""))).toBe(false);
     expect(isSecretInChat(new NetworkError())).toBe(false);
+  });
+
+  it("личная ссылка календаря (409 secret_link_calendar): стёрта из очереди и хранилища, повтора нет, это не секрет «пароля»", async () => {
+    const link = "https://calendar.example.org/export/ics.xml?private_token=k9Xq2LmZp7Vb";
+    const post = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(
+          409,
+          "secret_link_calendar",
+          "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
+        ),
+      );
+    const { outbox, advance, events, storage } = setup({ postMessage: post });
+    outbox.send(`вот ссылка ${link}`, target);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1);
+    const rejected = events.at(-1);
+    expect(rejected).toMatchObject({ type: "rejected" });
+    expect(rejected?.type === "rejected" && isCalendarLink(rejected.error)).toBe(true);
+    // Не «пароль в чате»: у экрана для них разные подсказки.
+    expect(rejected?.type === "rejected" && isSecretInChat(rejected.error)).toBe(false);
+    expect(outbox.snapshot).toEqual([]);
+    expect(storage.data.has("botai.chat.outbox")).toBe(false);
+    expect([...storage.data.values()].join("")).not.toContain("private_token");
+    await advance(60_000);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(setup({ storage }).outbox.snapshot).toEqual([]);
+  });
+
+  it("conflictKind различает коды 409; текст отказа календаря не принимается за пароль", () => {
+    const detail = "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже";
+    expect(conflictKind(new ApiError(409, "secret_link_calendar", detail))).toBe("calendar_link");
+    expect(conflictKind(new ApiError(409, "secret_in_chat", detail))).toBe("secret_in_chat");
+    expect(conflictKind(new ApiError(409, "agent_busy", ""))).toBe("agent_busy");
+    expect(conflictKind(new ApiError(422, "secret_link_calendar", detail))).toBe("other");
+    expect(isCalendarLink(new ApiError(409, "agent_busy", ""))).toBe(false);
+    expect(isCalendarLink(new NetworkError())).toBe(false);
   });
 
   it("любой другой 409 — отказ по существу: сообщение снимается, текст возвращается человеку", async () => {

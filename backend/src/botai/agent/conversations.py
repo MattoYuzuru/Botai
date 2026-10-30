@@ -52,6 +52,10 @@ SECRET_IN_CHAT_TEXT = "Пароль и код вводятся только в �
 CALENDAR_LINK_OPENED = (
     "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже"
 )
+CALENDAR_LINK_OFF = (
+    "Это личная ссылка календаря, в чат её вставлять нельзя. Этот календарь вы отключили: "
+    "включите его в списке источников, и я открою защищённое поле для ссылки"
+)
 CALENDAR_LINK_ASK = (
     "Это личная ссылка календаря, в чат её вставлять нельзя. Напишите, для какого вуза этот "
     "календарь, и я открою защищённое поле для ссылки"
@@ -502,15 +506,18 @@ async def _refuse_calendar_link(
         await session.rollback()
     else:
         await session.commit()
+    if started is None:
+        detail = CALENDAR_LINK_ASK
+    elif started.outcome == "exists":  # a calendar the student switched off: theirs to switch on
+        detail = CALENDAR_LINK_OFF
+    else:
+        detail = CALENDAR_LINK_OPENED
     diagnostic_event(
         "chat.calendar_link",
         thread_id=thread_id,
-        outcome="started" if started is not None else "refused",
+        outcome="started" if detail == CALENDAR_LINK_OPENED else "refused",
     )
-    return BotaiError(
-        ErrorCode.SECRET_LINK_CALENDAR,
-        CALENDAR_LINK_OPENED if started is not None else CALENDAR_LINK_ASK,
-    )
+    return BotaiError(ErrorCode.SECRET_LINK_CALENDAR, detail)
 
 
 async def _attach_files(

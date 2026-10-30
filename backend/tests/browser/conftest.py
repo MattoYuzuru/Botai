@@ -26,7 +26,7 @@ from botai.browser.gateway import PlaywrightGateway
 from botai.browser.proxy import EgressProxy, derive_key
 from tests.fakeuni.app import create_fakeuni
 
-FAKEUNI_HOSTS = ("fakeuni.test", "id.fakeuni.test", "api.fakeuni.test")
+FAKEUNI_HOSTS = ("fakeuni.test", "id.fakeuni.test", "api.fakeuni.test", "calendar.fakeuni.test")
 PROXY_SECRET = derive_key(b"test-master-secret-0123456789abcdef", "proxy-token")
 
 

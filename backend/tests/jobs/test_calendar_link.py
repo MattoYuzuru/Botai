@@ -358,6 +358,19 @@ async def test_a_calendar_whose_link_stopped_working_asks_for_a_new_one_by_itsel
     assert len(await jobs_of(env, who.user_id, "connect")) == 2
 
 
+async def test_a_calendar_the_student_switched_off_is_not_started_again(env: Env) -> None:
+    who = await student(env)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    await make_working(env, who, status="disabled")
+    for replace in (False, True):
+        told = await connect_calendar(
+            who.chat(env), {"university_query": UNIVERSITY, "replace_link": replace}
+        )
+        assert told.startswith("Результат: календарь «Календарь»")
+        assert "отключён студентом" in told
+    assert len(await jobs_of(env, who.user_id, "connect")) == 1
+
+
 async def test_users_do_not_share_calendars_or_see_each_others_tasks(env: Env) -> None:
     alice, bob = await student(env), await student(env)
     await connect_calendar(alice.chat(env), {"university_query": UNIVERSITY})

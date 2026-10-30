@@ -207,6 +207,24 @@ describe("«Учёба»: вуз и его источники", () => {
     expect(router.state.location.search.thread).toBeUndefined();
   });
 
+  it("«Календарь (iCal)» — вариант «Добавить источник»: чат с готовой просьбой подключить календарь вуза, без ссылки", async () => {
+    connectSeveralSources();
+    const { router } = renderApp("/study");
+    const hse = await panel(/^Высшая школа экономики/);
+    // «Добавить источник» остаётся прежним; вариант стоит рядом и назван вариантом, без слова «источник».
+    expect(await within(hse).findByRole("link", { name: "Добавить источник" })).toBeInTheDocument();
+    const calendar = await within(hse).findByRole("link", { name: "Календарь (iCal)" });
+    const link = hrefOf(calendar);
+    expect(link.pathname).toBe("/chat");
+    expect(link.draft).toContain("Высшая школа экономики");
+    expect(link.draft).toMatch(/календар/i);
+    expect(link.draft).not.toMatch(/https?:|webcal:|\.ics/);
+    await userEvent.click(calendar);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(router.state.location.search.draft).toContain("Высшая школа экономики");
+    expect(router.state.location.search.thread).toBeUndefined();
+  });
+
   it("«Подключить ещё вуз» — чат с открытой фразой; ссылок на /connect на экране нет", async () => {
     renderApp("/study");
     const more = await screen.findByRole("link", { name: "Подключить ещё вуз" });

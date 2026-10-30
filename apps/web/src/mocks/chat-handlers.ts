@@ -59,6 +59,11 @@ function looksLikeSecret(text: string): boolean {
   return /\d/.test(value) || /\w[^\w\s]\w/u.test(value) || /[a-zа-яё][A-ZА-ЯЁ]/u.test(value);
 }
 
+/** Грубая копия серверного узнавания личной ссылки календаря: `webcal://`, файл `.ics`, `/export/ics`, `/ical/`. */
+function hasCalendarLink(text: string): boolean {
+  return /webcals?:\/\/|\.ics(?:[?#\s]|$)|\/export\/ics|\/ical\//i.test(text);
+}
+
 function problem(status: number, code: string, detail: string) {
   return new HttpResponse(
     JSON.stringify({ type: `https://botai.mnema.app/errors/${code}`, title: code, status, code, detail }),
@@ -401,6 +406,12 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
           : runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
       if (body.targetJobId && body.targetJobId !== dialogue?.jobId)
         return problem(409, "stale_target", "Этот шаг уже завершён. Откройте текущее состояние разговора");
+      if (hasCalendarLink(text))
+        return problem(
+          409,
+          "secret_link_calendar",
+          "Это личная ссылка календаря, в чат её вставлять нельзя. Напишите, для какого вуза этот календарь, и я открою защищённое поле для ссылки",
+        );
       const secretOpen = runtime.pending.some((item) => item.channel === "native" && item.secret);
       if (secretOpen && looksLikeSecret(text))
         return problem(409, "secret_in_chat", "Пароль и код вводятся только в защищённое поле, не в чат");

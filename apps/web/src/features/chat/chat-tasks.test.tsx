@@ -130,6 +130,41 @@ describe("один тред: подключение, вход, вопросы а
     expect(composer()).toHaveValue("");
   });
 
+  it("личная ссылка календаря (409 secret_link_calendar): стёрта из очереди и хранилища, в поле не вернулась, подсказка ведёт к защищённому полю", async () => {
+    const link = "https://calendar.example.org/export/ics.xml?private_token=k9Xq2LmZp7Vb";
+    harness.server.use(
+      http.post("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json(
+          {
+            type: "https://botai.mnema.app/errors/secret_link_calendar",
+            title: "secret_link_calendar",
+            status: 409,
+            code: "secret_link_calendar",
+            detail: "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
+          },
+          { status: 409, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    const { user } = await openNewChat();
+    await ask(user, `Вот моя ссылка: ${link}`);
+    expect(
+      await screen.findByText(
+        "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
+        undefined,
+        wait,
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
+    // Ни в очереди, ни в localStorage, ни в поле ввода, ни в ленте: ссылка открывает весь календарь.
+    expect(window.localStorage.getItem("botai.chat.outbox")).toBeNull();
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain("private_token");
+    expect(document.body.textContent).not.toContain("private_token");
+    expect(composer()).toHaveValue("");
+    // Это не окрик про пароль: у такого отказа свой заголовок.
+    expect(screen.queryByText("Пароль и коды вводите только в защищённое поле")).toBeNull();
+  });
+
   it("повторная просьба подключить уже подключённое: «уже подключено» с быстрыми ответами, задача не запускается", async () => {
     const { user } = await openNewChat();
     await ask(user, "Подключи ЦУ https://my.fakeuni.test");

@@ -80,16 +80,18 @@ export const retryDelay = (attempts: number) => Math.min(2_000 * 2 ** Math.max(0
 const BUSY_DELAY_MS = 3_000;
 export const BUSY_MAX_ATTEMPTS = 5;
 
-export type ConflictKind = "agent_busy" | "secret_in_chat" | "other";
+export type ConflictKind = "agent_busy" | "secret_in_chat" | "calendar_link" | "other";
 
 /**
  * Чем кончился 409. Бэкенд различает коды: `agent_busy` — ход агента ещё идёт, `secret_in_chat` — человек написал
- * пароль или код в обычное поле. Пока код не пришёл, узнаём по тексту отказа; всё, что похоже на «защищённое поле»,
- * считается секретом: такой текст нельзя ни повторять, ни возвращать в поле.
+ * пароль или код в обычное поле, `secret_link_calendar` — он вставил личную ссылку календаря. Пока код не пришёл,
+ * узнаём по тексту отказа; всё, что похоже на «защищённое поле», считается секретом: такой текст нельзя ни повторять,
+ * ни возвращать в поле.
  */
 export function conflictKind(error: ApiError): ConflictKind {
   if (error.status !== 409) return "other";
   if (error.code === "secret_in_chat") return "secret_in_chat";
+  if (error.code === "secret_link_calendar") return "calendar_link";
   if (error.code === "agent_busy") return "agent_busy";
   if (/защищённ|парол|секрет/i.test(error.detail)) return "secret_in_chat";
   if (/ещё отвечает|уже идёт/i.test(error.detail)) return "agent_busy";
@@ -99,6 +101,13 @@ export function conflictKind(error: ApiError): ConflictKind {
 /** Сообщение с секретом сервер не принял: оно удалено из очереди и из хранилища, в поле не возвращается. */
 export const isSecretInChat = (error: unknown): boolean =>
   isApiError(error) && conflictKind(error) === "secret_in_chat";
+
+/**
+ * Личную ссылку календаря сервер тоже не оставляет в чате: сообщение удалено из очереди и из хранилища, в поле
+ * не возвращается, а защищённое поле для ссылки открывается в том же чате (или сервер просит назвать вуз).
+ */
+export const isCalendarLink = (error: unknown): boolean =>
+  isApiError(error) && conflictKind(error) === "calendar_link";
 type Listener = () => void;
 
 export class Outbox {

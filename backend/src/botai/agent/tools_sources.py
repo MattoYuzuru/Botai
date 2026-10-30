@@ -479,6 +479,11 @@ async def _calendar_exists(env: ChatEnv, conn: Connection, title: str, space_tit
         fetched_at=conn.last_sync_at or conn.created_at,
     )
     zone = await env.tz_for(conn.space_id)
+    if conn.status == "disabled":
+        return (
+            f"Результат: календарь «{data_text(title)}» в «{data_text(space_title)}» отключён "
+            "студентом, ничего не запущено. Он включается в списке источников приложения."
+        )
     return (
         f"Результат: календарь уже подключён, ничего не запущено. «{data_text(title)}» в "
         f"«{data_text(space_title)}»: статус {STATUS_RU.get(conn.status, conn.status)}, обновлено "

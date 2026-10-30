@@ -58,6 +58,19 @@ test.describe("«Учёба»: разделы", () => {
     expect(new URL(page.url()).searchParams.get("draft")).toBeTruthy();
   });
 
+  test("«Календарь (iCal)» — вариант «Добавить источник»: чат с готовой просьбой подключить календарь вуза", async ({
+    page,
+  }) => {
+    await open(page, "/study", "connected");
+    const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
+    await hse.getByRole("link", { name: "Календарь (iCal)" }).click();
+    await expect(page).toHaveURL(/\/chat\?draft=/);
+    const draft = new URL(page.url()).searchParams.get("draft") ?? "";
+    expect(draft).toContain("Высшая школа экономики");
+    expect(draft).toMatch(/календар/i);
+    expect(draft).not.toMatch(/https?:|webcal:|\.ics/);
+  });
+
   test("раздел открывается из панели, «Назад» возвращает на «Учёбу»", async ({ page }) => {
     await open(page, "/study", "connected");
     await page

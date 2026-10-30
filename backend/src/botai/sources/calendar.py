@@ -86,7 +86,8 @@ QUESTION = "Ссылка на экспорт календаря (iCal)"
 @dataclass(frozen=True, slots=True)
 class CalendarStart:
     """What `start_calendar_source` did: `started` (a new task), `running` (this source already has
-    one, `job` is it), or `exists` (an active calendar of this university: nothing was started)."""
+    one, `job` is it), or `exists` (a calendar of this university that works, or was switched off by
+    the student: nothing was started)."""
 
     outcome: Literal["started", "running", "exists"]
     connection: Connection
@@ -134,6 +135,10 @@ async def start_calendar_source(
         )
         session.add(conn)
         await session.flush()
+    elif conn.status == "disabled":
+        return CalendarStart(
+            "exists", conn, None, space
+        )  # switched off by the student: theirs to switch on
     else:
         running = await session.scalar(
             select(Job)

@@ -4,6 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSpaceStore } from "@/app/active-space";
 import type { Scenario } from "@/mocks/db";
+import { addConnection, hrefOf } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -48,6 +49,54 @@ describe("«Источники»: управление", () => {
     expect(within(sheet).getByText(/сегодня в 17:35/)).toBeInTheDocument();
     expect(within(sheet).getByText(/Сохранён зашифрованным/)).toBeInTheDocument();
     expect(within(sheet).queryByRole("button", { name: /Повторить|Обновить/ })).toBeNull();
+  });
+
+  it("в разделе «Источники» у вуза есть «Добавить источник» и его вариант «Календарь (iCal)» — оба в чат", async () => {
+    renderApp(`/study/connections?space=${hseId()}`);
+    const add = await screen.findByRole("link", { name: "Добавить источник" });
+    const calendar = await screen.findByRole("link", { name: "Календарь (iCal)" });
+    for (const link of [add, calendar]) expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(calendar).draft).toContain("Высшая школа экономики");
+    expect(hrefOf(calendar).draft).toMatch(/календар/i);
+  });
+
+  describe("календарь по ссылке (adapter ical)", () => {
+    async function openCalendar(patch: Parameters<typeof addConnection>[2] = {}) {
+      addConnection(current.db, hseId(), {
+        title: "Календарь",
+        kind: "calendar",
+        adapter: "ical",
+        origin: "https://calendar.fakeuni.test",
+        entryUrl: null,
+        hasPassword: false,
+        ...patch,
+      });
+      renderApp(`/study/connections?space=${hseId()}`);
+      await userEvent.click(await screen.findByRole("button", { name: /^Календарь/ }));
+      return screen.findByRole("dialog", { name: "Календарь" });
+    }
+
+    it("новую ссылку принимает защищённое поле чата, а не форма в карточке", async () => {
+      const sheet = await openCalendar();
+      expect(
+        within(sheet).queryByRole("button", { name: /Добавить ссылку на календарь или ключ/ }),
+      ).toBeNull();
+      expect(within(sheet).queryByLabelText("Ссылка на календарь")).toBeNull();
+      const replace = within(sheet).getByRole("link", { name: "Ввести новую ссылку" });
+      expect(hrefOf(replace).pathname).toBe("/chat");
+      expect(hrefOf(replace).draft).toContain("«Календарь»");
+      expect(hrefOf(replace).draft).toContain("Высшая школа экономики");
+      expect(hrefOf(replace).draft).not.toMatch(/https?:|webcal:|\.ics/);
+    });
+
+    it("ссылка умерла: «Нужна новая ссылка» и кнопка «Новая ссылка» вместо «Войти снова»", async () => {
+      const sheet = await openCalendar({ status: "needs_reauth" });
+      expect(within(sheet).getByText("Нужна новая ссылка")).toBeInTheDocument();
+      expect(within(sheet).getByText(/Ссылка на календарь .* перестала работать/)).toBeInTheDocument();
+      expect(within(sheet).queryByRole("link", { name: "Войти снова" })).toBeNull();
+      const fresh = within(sheet).getByRole("link", { name: "Новая ссылка" });
+      expect(hrefOf(fresh).draft).toContain("новой ссылки календаря");
+    });
   });
 
   it("ссылка календаря: уходит один раз с нужным видом, значение нигде не показывается после сохранения", async () => {

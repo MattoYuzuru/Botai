@@ -11,7 +11,7 @@ import type { Connection, ConnectionKind, ConnectionStatus, ConnectionTask } fro
 
 export type ConnectionTone = "success" | "info" | "warning" | "danger" | "neutral";
 /** Бизнес-действие рядом со статусом. Кнопки «Повторить» нет: повторы идут в фоне. */
-export type ConnectionAction = "reauth" | "answer" | "chat";
+export type ConnectionAction = "reauth" | "link" | "answer" | "chat";
 
 export interface ConnectionView {
   tone: ConnectionTone;
@@ -150,6 +150,16 @@ export function describeConnection(
         attention: true,
       };
     case "needs_reauth":
+      // К календарю по ссылке не входят: ссылка перестала работать (её отозвали или пересоздали), нужна новая.
+      if (connection.adapter === "ical")
+        return {
+          tone: "warning",
+          icon: "reauth",
+          label: "Нужна новая ссылка",
+          detail: `Ссылка на календарь${where} перестала работать, возможно, её отозвали. Старые данные помечены устаревшими`,
+          action: "link",
+          attention: true,
+        };
       return {
         tone: "warning",
         icon: "reauth",

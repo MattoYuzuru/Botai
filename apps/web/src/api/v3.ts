@@ -33,7 +33,12 @@ export type MessageAccepted = Omit<S["MessageAccepted"], "message"> & { message:
 export type ThreadRuntime = S["ThreadRuntime"];
 
 /** Машинные коды 409 при отправке сообщения (`contracts/conversation.md`). */
-export type MessageConflictCode = "agent_busy" | "secret_in_chat" | "stale_target" | "request_reused";
+export type MessageConflictCode =
+  | "agent_busy"
+  | "secret_in_chat"
+  | "secret_link_calendar"
+  | "stale_target"
+  | "request_reused";
 
 // ---------- Вложения (§3.6) ----------
 

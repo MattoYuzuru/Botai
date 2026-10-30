@@ -283,6 +283,7 @@ type ActionProposal = {
 | `injection_blocked` | Инструкция со страницы отклонена | Показать, что именно отклонено |
 | `agent_busy` (409) | В треде ещё идёт ход агента | Повторить отправку позже |
 | `secret_in_chat` (409) | Текст похож на секрет, пока задача ждёт защищённый ввод | Удалить сообщение; ввод — в защищённое поле |
+| `secret_link_calendar` (409) | В сообщении личная ссылка календаря (iCal) | Удалить сообщение (не сохраняется); защищённое поле для ссылки открыто в этом чате либо нужно назвать вуз |
 | `stale_target` (409) | Адресованная задача завершена или заменена | Перечитать runtime |
 | `request_reused` (409) | Идентификатор запроса уже использован для другого тела | Новый идентификатор |
 
@@ -297,6 +298,7 @@ type ActionProposal = {
 | 2026-10-29 | Optional `X-Botai-Data-Reset` на `/me`, без изменения JSON | FR-023: после очистки очередь и offline snapshots не восстанавливают удалённые попытки; потребители API auth/PWA/chat/offline |
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
 | 2026-10-30 | Новый код ошибки `login_guard_refused` (§7) | Блокировка нашего guard входа больше не выдаётся за `source_unavailable`; потребители: UI заданий, агент |
+| 2026-10-30 | Новый код ошибки `secret_link_calendar` (409, §7), инструмент агента `connect_calendar`, задача `CONNECT` с `payload.calendar`, метка «Ссылка передана» | Календарь по личной ссылке iCal: ссылка-секрет не принимается в чате и вводится защищённым полем; потребители: чат (PWA), агент, API сообщений |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
 | 2026-10-30 | Единый тред (ADR-0013): удалены `purpose`/`connectContext` и `ThreadRuntime.purpose/connection`; `ThreadOut` получил `lastMessageAt`, `unread`, `attention`, `activeTask`, `preview` (убран `updatedAt`); `GET` списка возвращает все треды; новые `PATCH`/`DELETE` треда, `POST …/read`, `GET/DELETE /me/memory`; `runtime` = `{activeJob, tasks, pending, receipts}`; блоки `plan`, `task`, `attachment`, `text.quickReplies` | Агент хаба v3; ломает фронтенд чата (WS5: типы `ThreadOut`, `ThreadRuntime`, моки), сводку тредов в «Учёбе»; пользователей нет, совместимость не требуется |
