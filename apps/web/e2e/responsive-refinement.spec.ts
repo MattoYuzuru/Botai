@@ -9,7 +9,7 @@ test("шапка, предупреждение и пустые данные на
   const width = phone ? 400 : 1920;
   await page.setViewportSize({ width, height: phone ? 775 : 1080 });
   await open(page, "/", "connected");
-  const stored = await page.evaluate(async () => {
+  await page.evaluate(async () => {
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb } = await import(/* @vite-ignore */ path);
     const db = createDb("connected");
