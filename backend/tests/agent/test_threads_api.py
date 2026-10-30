@@ -121,6 +121,30 @@ async def test_a_new_agent_message_is_unread_until_the_thread_is_opened(api: Api
     assert (await listing(api))[thread]["unread"] is True
 
 
+async def test_a_message_that_arrived_after_the_client_looked_stays_unread(api: Api) -> None:
+    thread = await add_thread(api.sm, api.user_id)
+    shown = T - timedelta(hours=2)
+    await add_agent_message(api, thread, "Увидел", at=shown)
+    await add_agent_message(api, thread, "Пришло позже", at=T - timedelta(hours=1))
+    async with api.client() as client:
+        stamp = shown.isoformat()
+        response = await client.post(f"/api/v1/chat/threads/{thread}/read", json={"upTo": stamp})
+        assert response.status_code == 204
+        assert (await listing(api))[thread]["unread"] is True
+        # a time from the future cannot mark what does not exist yet as read
+        future = (T + timedelta(days=30)).isoformat()
+        await client.post(f"/api/v1/chat/threads/{thread}/read", json={"upTo": future})
+        assert (await listing(api))[thread]["unread"] is False
+        await add_agent_message(api, thread, "Ещё позже", at=T + timedelta(days=31))
+        assert (await listing(api))[thread]["unread"] is True
+        # without a body: everything written so far
+        assert (await client.post(f"/api/v1/chat/threads/{thread}/read")).status_code == 204
+        assert (await listing(api))[thread]["unread"] is False
+        # an older mark never moves the read line back
+        await client.post(f"/api/v1/chat/threads/{thread}/read", json={"upTo": stamp})
+        assert (await listing(api))[thread]["unread"] is False
+
+
 async def test_attention_follows_the_running_work_of_the_thread(api: Api) -> None:
     thread = await add_thread(api.sm, api.user_id)
     assert (await listing(api))[thread]["attention"] is None

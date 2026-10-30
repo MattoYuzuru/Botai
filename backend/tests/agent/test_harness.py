@@ -13,8 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent import harness
-from botai.agent.harness import BUDGETS, WRAP_UP_NOTE, HarnessTool, build_prefix
+from botai.agent.harness import BUDGETS, STALE_RESULT, WRAP_UP_NOTE, HarnessTool, build_prefix
 from botai.agent.llm import DeepSeekProvider
+from botai.agent.tokens import estimate_messages, estimate_tools
 from botai.contracts.agent_ui import ThinkingBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext
@@ -227,6 +228,42 @@ async def test_input_budget_stops_before_sending_an_oversized_request() -> None:
     res = await run_chat(llm, [], ask("слово " * 80_000))
     assert res.stopped == "budget"
     assert llm.requests == []
+
+
+async def test_many_big_results_in_a_long_turn_still_end_in_an_answer() -> None:
+    """Twenty rounds of a 20k-character page would be 130k tokens: the oldest results are
+    replaced by a stub so every request fits and the turn ends with an answer, not a budget stop."""
+    t = tool("t", "строка данных\n" * 1500)  # ~20k characters
+    rounds = 20
+    llm = ScriptedLlm(
+        queue=[calls_response(call("t", call_id=f"c{i}", n=i)) for i in range(rounds)]
+        + [answer("Итог по данным.")]
+    )
+    res = await run_chat(llm, [t])
+    assert res.stopped == "answer"
+    assert res.content == "Итог по данным."
+    limit = BUDGETS["agent"].max_input_tokens
+    assert limit is not None
+    for request in llm.requests:
+        assert estimate_messages(request.messages) + estimate_tools(request.tools) <= limit
+    tool_messages = [m.content for m in llm.requests[-1].messages if m.role == "tool"]
+    assert STALE_RESULT in tool_messages  # the oldest were dropped from the conversation
+    assert tool_messages[-1] != STALE_RESULT  # the newest is still there
+
+
+async def test_all_results_of_one_step_share_one_cap() -> None:
+    """Sixteen calls of one step with 20k characters each are not 320k characters in one request."""
+    tools = [tool(f"t{i}", "строка данных\n" * 1500) for i in range(16)]
+    llm = ScriptedLlm(
+        queue=[calls_response(*(call(f"t{i}", call_id=f"c{i}") for i in range(16))), answer()]
+    )
+    res = await run_chat(llm, tools)
+    assert res.stopped == "answer"
+    results = [m.content for m in llm.requests[1].messages if m.role == "tool"]
+    assert len(results) == 16
+    assert sum(len(r) for r in results) < BUDGETS["agent"].step_result_chars + 16 * 600
+    assert results[0].count("строка данных") > 1000  # the first result keeps what it needs
+    assert all(r.endswith("</source_data>") for r in results)  # a cut never opens the wrapper
 
 
 async def test_quota_exceeded_is_reported_not_raised() -> None:

@@ -204,7 +204,8 @@ async def mark_read(
         )
     )
     now = services.clock.now()
-    seen = up_to if up_to is not None else max(now, newest) if newest else now
+    ceiling = max(now, newest) if newest else now
+    seen = min(up_to, ceiling) if up_to is not None else ceiling  # not past what exists
     if thread.last_read_at is None or seen > thread.last_read_at:
         thread.last_read_at = seen
     await session.commit()

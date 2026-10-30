@@ -439,6 +439,61 @@ async def test_password_like_message_is_refused_while_a_secret_question_is_open(
     assert "пароль123" not in json.dumps((await env.job(job_id)).payload, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    "secret",
+    ["Qwerty123", "пароль Qwerty123", "код 123 456", "123456", "424 242", "P@ssw0rd", "мойПароль"],
+)
+async def test_what_looks_like_a_password_or_a_code_is_refused_while_a_secret_field_is_open(
+    env: Env, secret: str
+) -> None:
+    client, user, thread, job_id = await start(env)
+    waiting = asyncio.create_task(ctx(env, user, job_id).ask_secret(password_question(env)))
+    try:
+        await wait_pending(client, thread)
+        refused = await post(client, thread, secret)
+        assert refused.status_code == 409, secret
+        assert refused.json()["code"] == "secret_in_chat"
+        assert secret not in refused.text
+        async with env.sm() as session:
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ChatMessage)
+                    .where(ChatMessage.thread_id == thread, ChatMessage.role == "user")
+                )
+                == 0
+            )
+        assert await chat_jobs(env, thread) == []
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "words",
+    ["да", "ок", "спасибо", "Привет!", "?", "2", "Какое расписание на завтра?", "Привет, как дела"],
+)
+async def test_plain_words_pass_while_a_secret_field_is_open(env: Env, words: str) -> None:
+    client, user, thread, job_id = await start(env)
+    waiting = asyncio.create_task(ctx(env, user, job_id).ask_secret(password_question(env)))
+    try:
+        await wait_pending(client, thread)
+        response = await post(client, thread, words)
+        assert response.status_code == 202, (words, response.text)
+        assert (await env.job(response.json()["jobId"])).kind == "chat"
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def test_the_same_secret_is_a_plain_message_when_no_secret_field_is_open(env: Env) -> None:
+    """The guard is for the moment a protected input is waiting; otherwise "код группы 2101" is
+    just a fact the student tells."""
+    client, _user, thread = await student(env)
+    response = await post(client, thread, "Код группы 2101")
+    assert response.status_code == 202, response.text
+
+
 async def test_second_message_waits_for_the_running_agent_turn_but_not_a_dialogue_answer(
     env: Env,
 ) -> None:
@@ -1636,3 +1691,56 @@ async def test_unthreaded_connect_retry_retains_both_kinds_and_own_url(env: Env)
     assert job.payload["url"] == URL
     assert job.payload["kinds"] == ["scheduleEvents", "deadlines"]
     assert "learning_intent" not in job.payload
+
+
+# --- deleting a thread while the student keeps writing ------------------------------------------
+
+
+async def live_jobs(env: Env, user: str) -> list[Job]:
+    async with env.sm() as session:
+        return list(
+            await session.scalars(
+                select(Job).where(Job.user_id == user, Job.state.in_(["queued", "running"]))
+            )
+        )
+
+
+async def test_a_message_posted_while_the_thread_is_deleted_leaves_no_turn_behind(
+    env: Env,
+) -> None:
+    """Either the message came first and its turn is stopped with the thread, or the thread was
+    gone first and the post finds nothing. A turn of a deleted thread must not stay in the queue."""
+    client, user, _ = await student(env)
+    for _ in range(6):
+        made = await client.post("/api/v1/chat/threads", json={})
+        thread = made.json()["id"]
+        sent, removed = await asyncio.gather(
+            post(client, thread, "Что у меня завтра?"),
+            client.delete(f"/api/v1/chat/threads/{thread}"),
+        )
+        assert removed.status_code == 204
+        assert sent.status_code in (202, 404), sent.text
+        assert [j for j in await live_jobs(env, user) if j.kind == "chat"] == []
+        async with env.sm() as session:
+            assert await session.get(ChatThread, thread) is None
+
+
+async def test_a_task_cannot_be_queued_into_a_thread_that_is_gone(env: Env) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    client, user, thread = await student(env)
+    assert (await client.delete(f"/api/v1/chat/threads/{thread}")).status_code == 204
+    with pytest.raises(IntegrityError):
+        await env.services.queue.enqueue(
+            JobKind.CONNECT, user_id=user, thread_id=thread, payload={}, dedupe=False
+        )
+    assert await live_jobs(env, user) == []
+
+
+async def test_deleting_a_thread_keeps_the_history_of_the_jobs_it_had(env: Env) -> None:
+    client, user, thread, job_id = await start(env)
+    await finish(env, job_id)
+    assert (await client.delete(f"/api/v1/chat/threads/{thread}")).status_code == 204
+    kept = await env.job(job_id)
+    assert kept.state == "done"
+    assert kept.thread_id is None

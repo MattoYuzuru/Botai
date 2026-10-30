@@ -79,11 +79,13 @@ async def turn_context(
     if own and own.id == thread.space_id:
         profile = own.profile or {}
         extra = ", ".join(
-            f"{label}: {profile[key]}"
+            f"{label}: {data_text(str(profile[key]), 60)}"
             for key, label in (("programme", "программа"), ("year", "курс"))
             if profile.get(key)
         )
-        lines.append(f"Чат относится к вузу «{own.title}»" + (f" ({extra})" if extra else "") + ".")
+        lines.append(
+            f"Чат относится к вузу «{data_text(own.title)}»" + (f" ({extra})" if extra else "") + "."
+        )
 
     owned = await service.list_sources(session, user_id)
     if not owned:

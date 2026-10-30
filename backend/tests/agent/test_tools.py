@@ -327,6 +327,36 @@ async def test_repair_enqueues_once_and_refuses_what_a_human_must_do(sm: Sm, use
     assert len(r.queue.jobs) == 1
 
 
+async def test_actions_reach_the_sources_of_every_university_from_any_thread(
+    sm: Sm, user_id: str
+) -> None:
+    """A thread is not a fence: the student in a chat about one university can ask to update or
+    repair a source of another, and the task starts in the chat they are in."""
+    here = await add_space(sm, user_id, "Первый вуз")
+    there = await add_space(sm, user_id, "Второй вуз")
+    far = await add_connection(sm, user_id, there, "Расписание", status="error")
+    stale = await add_connection(sm, user_id, there, "Сайт кафедры", status="stale")
+    async with sm() as session:
+        for conn_id in (far, stale):
+            row = await session.get(Connection, conn_id)
+            assert row is not None
+            row.adapter = "recipe"
+        await session.commit()
+    r = await rig(sm, user_id, space_id=here)
+    assert "запущено" in await r.call("sync_source", connection_id=stale)
+    assert "поставлена в очередь" in await r.call(
+        "request_repair", connection_id=far, reason="пусто"
+    )
+    assert [(j["kind"], j["thread_id"]) for j in r.queue.jobs] == [
+        (JobKind.SYNC, r.env.thread_id),
+        (JobKind.REPAIR, r.env.thread_id),
+    ]
+    listing = await r.call("list_universities")
+    assert "Первый вуз" in listing
+    assert "Второй вуз" in listing
+    assert f"connection_id={far}" in listing
+
+
 async def test_repair_does_not_start_a_second_job_while_one_runs(sm: Sm, user_id: str) -> None:
     space = await add_space(sm, user_id)
     conn = await add_connection(sm, user_id, space, "Расписание", status="stale")
