@@ -8,8 +8,11 @@ it("отметка прочтения называет последнее пок
   vi.stubGlobal("fetch", fetch);
   await chatApi.markRead("T1", "2026-10-28T10:00:00.123456Z");
   await chatApi.markRead("T1");
-  const [[firstUrl, first], [, second]] = fetch.mock.calls as unknown as [string, RequestInit][];
-  expect(String(firstUrl)).toContain("/api/v1/chat/threads/T1/read");
+  const calls = fetch.mock.calls as unknown as [string, RequestInit][];
+  expect(calls).toHaveLength(2);
+  const [url, first] = calls[0] ?? ["", {}];
+  const second = calls[1]?.[1] ?? {};
+  expect(String(url)).toContain("/api/v1/chat/threads/T1/read");
   expect(first.method).toBe("POST");
   expect(JSON.parse(String(first.body))).toEqual({ upTo: "2026-10-28T10:00:00.123456Z" });
   expect(second.body).toBeUndefined();
