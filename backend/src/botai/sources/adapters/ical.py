@@ -8,6 +8,7 @@ pattern); otherwise it is a class. Recurring events are expanded inside the sync
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, ClassVar, Literal
@@ -65,6 +66,25 @@ def _categories(comp: Any) -> list[str]:
         if cats:
             out.extend(str(c) for c in cats)
     return out
+
+
+_UNTIL = re.compile(r"UNTIL=(\d{8})(?:T(\d{6})(Z?))?")
+
+
+def _until_in_utc(rule: str, start: datetime) -> str:
+    """The rule with its `UNTIL` as a UTC time, as `dateutil` wants it for an event with a zone.
+
+    Calendars write the end of a series as a date (`UNTIL=20261231`, the whole last day counts) or
+    as a local time (`UNTIL=20261231T093000`, in the zone of `DTSTART`); only the UTC form is
+    accepted for a start with a zone, and the others used to turn a whole series into one class."""
+
+    def fix(found: re.Match[str]) -> str:
+        day, clock, zulu = found.groups()
+        moment = datetime.strptime(day + (clock or "235959"), "%Y%m%d%H%M%S")
+        zone = UTC if zulu else start.tzinfo or UTC
+        return "UNTIL=" + moment.replace(tzinfo=zone).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+    return _UNTIL.sub(fix, rule)
 
 
 def _external_id(uid: str, start: datetime | None = None) -> str:
@@ -224,7 +244,7 @@ class IcalAdapter:
         self, comp: Any, start: datetime, lo: datetime, hi: datetime, ctx: SyncContext
     ) -> list[datetime]:
         try:
-            text = comp.get("RRULE").to_ical().decode()
+            text = _until_in_utc(comp.get("RRULE").to_ical().decode(), start)
             rule = rrulestr(text, dtstart=start)
             found: list[datetime] = []
             for occ in rule.between(lo, hi, inc=True):
