@@ -77,6 +77,9 @@ log = logging.getLogger(__name__)
 NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 10_000
 SETTLE_MS = 3_000
+# After a login step: cabinets keep analytics and long polls busy forever, so a step waits this
+# long for quiet and then goes on with whatever the page shows. Silence is not proof of anything.
+AUTH_SETTLE_MS = 8_000
 READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
 AUTH_EVALUATE_S = 0.5
@@ -730,7 +733,7 @@ class PlaywrightHandle:
         if self._entry_guarded and window is None:
             self._guard_refusals.append(("auth_scan_failed", ""))  # no window: nothing will post
         self._steps_open += 1
-        deadline = monotonic() + SETTLE_MS / 1000
+        deadline = monotonic() + AUTH_SETTLE_MS / 1000
         try:
             yield
             if self._entry_guarded:
@@ -750,9 +753,7 @@ class PlaywrightHandle:
                         break
                     remaining = deadline - monotonic()
                     if remaining <= 0:
-                        raise BotaiError(
-                            ErrorCode.SOURCE_UNAVAILABLE, "Страница входа не завершила загрузку"
-                        )
+                        break  # still busy (analytics, long polls): the flow reads the page as is
                     await asyncio.sleep(min(0.02, remaining))
         finally:
             self._steps_open -= 1
