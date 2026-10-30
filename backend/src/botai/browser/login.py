@@ -17,6 +17,7 @@ needs no agent.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from collections.abc import Callable, Coroutine, Sequence
@@ -38,6 +39,7 @@ from botai.browser.forms import (
     UnknownPage,
     best_step,
     detect,
+    login_entry_selector,
     replay,
     safe_label,
     secretish,
@@ -82,6 +84,8 @@ log = logging.getLogger(__name__)
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 MAX_ADDITIONAL_LOGIN_HOSTS = 4
+# «Войти» on a cabinet landing: one click normally, a second for a chooser of login methods.
+MAX_ENTRY_CLICKS = 2
 _BOT_PROTECTION_DETAIL = (
     "Сайт вуза не пускает автоматический заход. Мы не обходим такую защиту: "
     "попробуйте позже или войдите на сайте самостоятельно."
@@ -189,6 +193,7 @@ class _Run:
     human_progress: bool = False
     push_confirmed: bool = False
     guard_fallbacks: int = 0
+    entry_clicks: int = 0
 
 
 def _avoid_tokens(creds: _Creds) -> list[str]:
@@ -1197,6 +1202,14 @@ class LoginFlow:
             now = await run.handle.snapshot()
             if page_signature(now) != signature or not isinstance(detect(now), UnknownPage):
                 return now
+        # A cabinet landing («Вы не вошли — Войти») leads to its SSO by one click: take it before
+        # calling the human. A POST it might send is still refused by the guard (no user step).
+        selector = login_entry_selector(snap) if run.entry_clicks < MAX_ENTRY_CLICKS else None
+        if selector is not None:
+            run.entry_clicks += 1
+            diagnostic_event("auth.entry_click", connection_id=run.connection_id)
+            with contextlib.suppress(BotaiError):
+                return await run.handle.click(selector)
         return await self._human(
             run,
             snap,

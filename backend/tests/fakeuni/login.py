@@ -383,6 +383,23 @@ def _cu_otp_page(user: str, error: str = "") -> str:
     )
 
 
+@router.get("/cu/gate", response_model=None)
+async def cu_gate(request: Request) -> HTMLResponse:
+    """A cabinet landing without fields: «Вы не вошли — Войти» leads to the SSO only by a click."""
+    if is_logged_in(request):  # the same address shows the cabinet once logged in (an SPA route)
+        return HTMLResponse(
+            "<!doctype html><title>Кабинет ЦУ</title><main><h1>Мои занятия</h1>"
+            "<article>Семинар по тестированию</article></main>"
+        )
+    return HTMLResponse(
+        "<!doctype html><title>Кабинет</title><main><h1>Вы не вошли в аккаунт</h1>"
+        "<p>Для продолжения, пожалуйста, войдите</p>"
+        "<button type=button id=go>Войти</button></main><script>"
+        "document.getElementById('go').addEventListener('click', () => {"
+        "location.href = '/cu/app'; });</script>"
+    )
+
+
 @router.get("/cu/app", response_model=None)
 async def cu_app(request: Request) -> HTMLResponse | RedirectResponse:
     if not is_logged_in(request):

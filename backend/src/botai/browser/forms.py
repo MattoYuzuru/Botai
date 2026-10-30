@@ -324,6 +324,29 @@ def detect(snapshot: PageSnapshot) -> Detection:
     return UnknownPage("no fields to mirror")
 
 
+_LOGIN_ENTRY = re.compile(
+    r"^(войти|вход|войти в (аккаунт|кабинет|систему|личный кабинет)|авторизоваться"
+    r"|авторизация|log ?in|sign ?in)$",
+    re.IGNORECASE,
+)
+
+
+def login_entry_selector(snapshot: PageSnapshot) -> str | None:
+    """A page without fields whose only way on is a «Войти» button or link (a cabinet landing that
+    leads to its SSO). The selector names the control by its visible text, never by page data."""
+    if not snapshot.html:
+        return None
+    try:
+        nodes = LexborHTMLParser(snapshot.html).css("a, button, [role=button]")
+    except Exception:  # selectolax rejects some documents
+        return None
+    for node in nodes:
+        text = " ".join((node.text(strip=True) or node.attributes.get("aria-label") or "").split())
+        if _LOGIN_ENTRY.match(text):
+            return f':is(a, button, [role=button]):visible:text-is("{text}")'
+    return None
+
+
 def has_credential_fields(snapshot: PageSnapshot) -> bool:
     """True if the page asks for a login, password or code (so it cannot be the logged-in page)."""
     for form in snapshot.forms:

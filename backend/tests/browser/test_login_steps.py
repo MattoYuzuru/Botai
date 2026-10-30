@@ -116,6 +116,21 @@ POST_JS = "u => fetch(u, {method: 'POST'}).then(() => true).catch(() => false)"
 # ------------------------------------------------------------------ a whole login, by steps
 
 
+async def test_a_landing_with_only_a_login_button_is_clicked_through_to_native_fields(
+    new_rig: Callable[..., Rig],
+) -> None:
+    rig = new_rig()
+    student = Student()
+    ctx = rig.ctx(student)
+    state = await rig.flow.ensure_for_entry(
+        ctx, user_id=rig.user, connection_id=rig.conn, entry_url=f"{ORIGIN}/cu/gate"
+    )
+
+    assert await works(state)
+    assert login.CU.submissions == ["email", "password", "otp"]
+    assert not rig.screens.links  # no fallback screen: the landing was clicked through
+
+
 async def test_multi_step_js_login_passes_with_native_fields_and_stores_the_password(
     new_rig: Callable[..., Rig],
 ) -> None:
