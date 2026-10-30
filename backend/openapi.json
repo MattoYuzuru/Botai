@@ -1386,7 +1386,7 @@
         "type": "object"
       },
       "MessageIn": {
-        "description": "The text may be empty only when files are attached.",
+        "description": "The text may be empty only when files are attached. `quote` shows what the message answers.",
         "properties": {
           "attachmentIds": {
             "items": {
@@ -1408,6 +1408,16 @@
               }
             ],
             "title": "Clientmessageid"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuoteIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "targetJobId": {
             "anyOf": [
@@ -1743,6 +1753,34 @@
           "resetsAt"
         ],
         "title": "QuotaOut",
+        "type": "object"
+      },
+      "QuoteIn": {
+        "description": "The question a quick reply responds to, as plain text, and its block if known.\nThe server keeps its first `QUOTE_MAX` characters.",
+        "properties": {
+          "blockId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blockid"
+          },
+          "text": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "QuoteIn",
         "type": "object"
       },
       "ReadIn": {

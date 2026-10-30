@@ -107,6 +107,28 @@
             "maxLength": 60
           },
           "description": "Кнопки быстрых ответов под последним ответом; нажатие отправляет текст как сообщение студента."
+        },
+        "quote": {
+          "$ref": "#/$defs/quote"
+        }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Короткая цитата того, на что отвечает сообщение студента: вопрос агента или задачи, обычным текстом."
+        },
+        "blockId": {
+          "$ref": "#/$defs/id",
+          "description": "Блок, который цитируется, если он известен."
         }
       }
     },
@@ -320,6 +342,11 @@
         "cancelLabel": {
           "type": "string",
           "maxLength": 40
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Что подтверждается, markdown (сводка собранного): показывается в одном сообщении с вопросом и кнопками."
         }
       }
     },

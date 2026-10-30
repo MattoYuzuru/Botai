@@ -173,7 +173,7 @@ async def handle_chat(
         )
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
-    question_msg = LlmMessage(role="user", content=question.text)
+    question_msg = LlmMessage(role="user", content=question.prompt)
     messages = [ctx_msg, *([summary_msg] if summary_msg else []), *recent_msgs, question_msg]
 
     env = ChatEnv(

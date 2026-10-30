@@ -27,7 +27,7 @@ from botai.agent.schemas import (
 )
 from botai.agent.threads import primary_task
 from botai.attachments import service as attachments
-from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, TextBlock
+from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, Quote, TextBlock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -310,6 +310,20 @@ def _waiting_dialogue(job: Job) -> bool:
     )
 
 
+def _quote_of(body: MessageIn, *, task: bool) -> Quote | None:
+    """The quote of a message as it is stored: plain one-line text under the same secret rules as
+    the message. The quote only decorates, so a bad one is dropped instead of refusing the message."""
+    if body.quote is None or not body.text.strip():
+        return None
+    text = " ".join(body.quote.text.split())
+    try:
+        text = safe_text(text) if task else reject_secret_links(text)
+    except BotaiError:
+        return None
+    text = dialogue.clip_quote(text)
+    return Quote(text=text, block_id=body.quote.block_id) if text else None
+
+
 async def post_message(
     session: AsyncSession, services: Services, user_id: str, thread_id: str, body: MessageIn
 ) -> MessageAccepted:
@@ -362,6 +376,9 @@ async def post_message(
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
+    quote = _quote_of(body, task=target is not None)
+    if quote is None and target is not None and text.strip():
+        quote = await dialogue.question_quote(session, target)
     if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
@@ -379,7 +396,7 @@ async def post_message(
     at = await dialogue.message_time(session, user_id, thread.id, now)
     blocks: list[dict[str, Any]] = []
     if text.strip():
-        block = TextBlock(id=new_id(), at=at, markdown=text)
+        block = TextBlock(id=new_id(), at=at, markdown=text, quote=quote)
         blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
     message = ChatMessage(
         id=new_id(),
@@ -517,8 +534,20 @@ async def _replay(
     sent_files = [
         str(b.get("attachmentId")) for b in existing.blocks if b.get("type") == "attachment"
     ]
+    stored_quote = next(
+        (
+            b["quote"]["text"]
+            for b in existing.blocks
+            if b.get("type") == "text" and isinstance(b.get("quote"), dict)
+        ),
+        None,
+    )
+    submitted_quote = _quote_of(
+        body, task=existing_job is not None and existing_job.kind in TASK_KINDS
+    )
     if (
         stored != submitted
+        or (submitted_quote is not None and submitted_quote.text != stored_quote)
         or sorted(sent_files) != sorted(dict.fromkeys(body.attachment_ids))
         or (body.target_job_id is not None and body.target_job_id != existing.job_id)
     ):

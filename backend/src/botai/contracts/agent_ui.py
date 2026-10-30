@@ -26,6 +26,15 @@ class Source(BaseModel):
 
 
 QuickReply = Annotated[str, Field(min_length=1, max_length=60)]
+QUOTE_MAX = 200
+
+
+class Quote(BaseModel):
+    """What a student's message answers: the question of the agent or of a task, as short plain text."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, alias_generator=to_camel)
+    text: str = Field(min_length=1, max_length=QUOTE_MAX)
+    block_id: Ulid | None = Field(default=None)
 
 
 class TextBlock(_Block):
@@ -33,6 +42,7 @@ class TextBlock(_Block):
     markdown: str = Field(max_length=8000)
     sources: list[Source] | None = Field(default=None, max_length=10)
     quick_replies: list[QuickReply] | None = Field(default=None, max_length=4)
+    quote: Quote | None = None
 
 
 class ThinkingBlock(_Block):
@@ -76,6 +86,7 @@ class ConfirmBlock(_Block):
     question: str = Field(max_length=500)
     confirm_label: str = Field(max_length=40)
     cancel_label: str = Field(max_length=40)
+    details: str | None = Field(default=None, max_length=2000)
 
 
 class SummaryItem(BaseModel):

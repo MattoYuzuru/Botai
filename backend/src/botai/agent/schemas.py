@@ -48,10 +48,19 @@ class ThreadOut(ApiModel):
     preview: str | None  # start of the last text message, up to 120 characters
 
 
+class QuoteIn(ApiModel):
+    """The question a quick reply responds to, as plain text, and its block if known.
+    The server keeps its first `QUOTE_MAX` characters."""
+
+    text: str = Field(min_length=1, max_length=1000)
+    block_id: str | None = Field(default=None, pattern=ULID)
+
+
 class MessageIn(ApiModel):
-    """The text may be empty only when files are attached."""
+    """The text may be empty only when files are attached. `quote` shows what the message answers."""
 
     text: str = Field(default="", max_length=8000)
+    quote: QuoteIn | None = None
     attachment_ids: list[Annotated[str, Field(pattern=ULID)]] = Field(
         default_factory=list, max_length=10
     )

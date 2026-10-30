@@ -1364,13 +1364,14 @@ export interface components {
         };
         /**
          * MessageIn
-         * @description The text may be empty only when files are attached.
+         * @description The text may be empty only when files are attached. `quote` shows what the message answers.
          */
         MessageIn: {
             /** Attachmentids */
             attachmentIds?: string[];
             /** Clientmessageid */
             clientMessageId?: string | null;
+            quote?: components["schemas"]["QuoteIn"] | null;
             /** Targetjobid */
             targetJobId?: string | null;
             /**
@@ -1504,6 +1505,17 @@ export interface components {
             tokensLimit: number;
             /** Tokenstoday */
             tokensToday: number;
+        };
+        /**
+         * QuoteIn
+         * @description The question a quick reply responds to, as plain text, and its block if known.
+         *     The server keeps its first `QUOTE_MAX` characters.
+         */
+        QuoteIn: {
+            /** Blockid */
+            blockId?: string | null;
+            /** Text */
+            text: string;
         };
         /**
          * ReadIn

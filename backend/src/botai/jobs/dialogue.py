@@ -9,12 +9,57 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.contracts.agent_ui import AgentUiBlock, InputBlock
+from botai.contracts.agent_ui import QUOTE_MAX, AgentUiBlock, InputBlock, Quote
 from botai.core.diagnostics import diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.ids import new_id
 from botai.db.models import ChatMessage, ChatThread, Job, JobEvent
 from botai.jobs.events import TERMINAL, iso
+
+
+def clip_quote(text: str) -> str:
+    """One line of at most `QUOTE_MAX` characters; a cut shows as an ellipsis."""
+    text = " ".join(text.split())
+    return text if len(text) <= QUOTE_MAX else text[: QUOTE_MAX - 1].rstrip() + "…"
+
+
+def question_of(block: AgentUiBlock) -> str | None:
+    """What an asking block asks, as plain text for a quote."""
+    if block.type == "approval":
+        return block.proposal.intent
+    if block.type in {"choice", "input", "confirm"}:
+        return block.question
+    return None
+
+
+def quote_of_block(block: AgentUiBlock) -> Quote | None:
+    text = question_of(block)
+    return Quote(text=clip_quote(text), block_id=block.id) if text and text.strip() else None
+
+
+async def question_quote(session: AsyncSession, job: Job) -> Quote | None:
+    """The quote of the open plain-text question of a task (`pending.channel == "dialogue"`):
+    the student's reply in the composer then answers it."""
+    pending = state_of(job).get("pending")
+    if not isinstance(pending, dict) or pending.get("channel") != "dialogue":
+        return None
+    block_id = pending.get("block_id")
+    if not isinstance(block_id, str):
+        return None
+    data = await session.scalar(
+        select(JobEvent.data)
+        .where(
+            JobEvent.job_id == job.id,
+            JobEvent.type == "block",
+            JobEvent.data["id"].astext == block_id,
+        )
+        .order_by(JobEvent.seq.desc())
+        .limit(1)
+    )
+    question = data.get("question") if isinstance(data, dict) else None
+    if not isinstance(question, str) or not question.strip():
+        return None
+    return Quote(text=clip_quote(question), block_id=block_id)
 
 
 def state_of(job: Job) -> dict[str, Any]:
@@ -224,8 +269,11 @@ async def project_block(
     kind = data.get("type")
     safe = dict(data)
     if kind in {"login", "input", "choice", "confirm", "approval", "wait"}:
-        label = data.get("question") or data.get("message") or "Ручной вход в браузере"
-        safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": str(label)[:500]}
+        label = str(data.get("question") or data.get("message") or "Ручной вход в браузере")[:500]
+        details = data.get("details") if kind == "confirm" else None
+        if isinstance(details, str) and details.strip():
+            label = f"{details.strip()}\n\n{label}"  # what is confirmed reads with the question
+        safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": label}
     existing = await session.scalar(
         select(ChatMessage).where(
             ChatMessage.user_id == job.user_id,

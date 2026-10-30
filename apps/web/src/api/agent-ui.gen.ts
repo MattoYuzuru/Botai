@@ -39,6 +39,17 @@ export interface Text {
    * @maxItems 4
    */
   quickReplies?: string[];
+  quote?: Quote;
+}
+export interface Quote {
+  /**
+   * Короткая цитата того, на что отвечает сообщение студента: вопрос агента или задачи, обычным текстом.
+   */
+  text: string;
+  /**
+   * ULID
+   */
+  blockId?: string;
 }
 export interface Thinking {
   type: "thinking";
@@ -103,6 +114,10 @@ export interface Confirm {
   question: string;
   confirmLabel: string;
   cancelLabel: string;
+  /**
+   * Что подтверждается, markdown (сводка собранного): показывается в одном сообщении с вопросом и кнопками.
+   */
+  details?: string;
 }
 export interface Summary {
   type: "summary";

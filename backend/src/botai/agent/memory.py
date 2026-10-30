@@ -33,10 +33,16 @@ class Turn:
     id: str
     role: Literal["user", "assistant"]
     text: str
+    quote: str | None = None  # the question a student's message answers (a quick reply, an answer)
+
+    @property
+    def prompt(self) -> str:
+        """What the model reads: the words, after the question they answer when there is one."""
+        return f"[В ответ на: «{self.quote}»]\n{self.text}" if self.quote else self.text
 
     @property
     def tokens(self) -> int:
-        return estimate_tokens(self.text) + 4
+        return estimate_tokens(self.prompt) + 4
 
 
 def turn_from_blocks(message_id: str, role: str, blocks: Sequence[dict[str, Any]]) -> Turn | None:
@@ -46,6 +52,16 @@ def turn_from_blocks(message_id: str, role: str, blocks: Sequence[dict[str, Any]
     text = "\n\n".join(
         str(b.get("markdown", "")) for b in blocks if b.get("type") == "text" and b.get("markdown")
     ).strip()
+    quote = next(
+        (
+            str(b["quote"]["text"])
+            for b in blocks
+            if b.get("type") == "text"
+            and isinstance(b.get("quote"), dict)
+            and b["quote"].get("text")
+        ),
+        None,
+    )
     files = [str(b.get("name", ""))[:120] for b in blocks if b.get("type") == "attachment"]
     if files:
         text = (
@@ -56,7 +72,7 @@ def turn_from_blocks(message_id: str, role: str, blocks: Sequence[dict[str, Any]
         )
     if not text:
         return None
-    return Turn(message_id, "user" if role == "user" else "assistant", text)
+    return Turn(message_id, "user" if role == "user" else "assistant", text, quote)
 
 
 def split_recent(
@@ -88,7 +104,7 @@ def pack_summary(upto_id: str, text: str) -> str:
 
 
 def history_messages(recent: Sequence[Turn]) -> list[LlmMessage]:
-    return [LlmMessage(role=t.role, content=t.text) for t in recent]
+    return [LlmMessage(role=t.role, content=t.prompt) for t in recent]
 
 
 def summary_message(text: str) -> LlmMessage | None:
@@ -141,7 +157,7 @@ async def refresh_summary(
     if not fresh:
         return text
     dialogue = "\n".join(
-        f"{'Студент' if t.role == 'user' else 'Ассистент'}: {t.text}" for t in fresh
+        f"{'Студент' if t.role == 'user' else 'Ассистент'}: {t.prompt}" for t in fresh
     )
     prompt = (
         f"Прежняя сводка:\n{text}\n\n" if text else ""
