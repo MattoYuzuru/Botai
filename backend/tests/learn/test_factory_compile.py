@@ -298,6 +298,41 @@ def test_browser_entry_never_executes_mismatching_or_unbound_templates(template:
         )
 
 
+def test_browser_entry_keeps_a_key_the_page_address_repeats_as_a_list() -> None:
+    endpoint = recipes.news_endpoint()
+    endpoint["browserPlanRef"] = "pNews"
+    entry = ORIGIN + "/news?state=open&state=done&week=2026-10-26"
+    compiled = compile_source(
+        endpoint, browser_plans={"pNews": TrustedPlan()}, browser_plan_urls={"pNews": entry}
+    )
+    assert compiled.endpoint["request"]["query"] == {
+        "state": ["open", "done"],
+        "week": "2026-10-26",
+    }
+    assert as_spec(compiled)["recipe"]["version"] == 2
+    too_many = ORIGIN + "/news?" + "&".join(f"state=v{i}" for i in range(9))
+    with pytest.raises(FactoryCompileError, match="browser_entry_unrepresentable"):
+        compile_source(
+            endpoint,
+            browser_plans={"pNews": TrustedPlan()},
+            browser_plan_urls={"pNews": too_many},
+        )
+
+
+def test_browser_entry_template_stands_for_one_value_not_a_repeated_key() -> None:
+    endpoint = recipes.news_endpoint()
+    endpoint["browserPlanRef"] = "pNews"
+    endpoint["request"]["query"] = {"week": "{weekStart}"}
+    with pytest.raises(FactoryCompileError, match="browser_entry_template_mismatch"):
+        compile_source(
+            endpoint,
+            browser_plans={"pNews": TrustedPlan()},
+            browser_plan_urls={"pNews": ORIGIN + "/news?week=2026-10-26&week=2026-11-02"},
+            now=NOW,
+            time_zone=ZoneInfo("Europe/Moscow"),
+        )
+
+
 def test_browser_entry_keeps_certified_literal_if_no_clock_was_supplied() -> None:
     endpoint = recipes.news_endpoint()
     endpoint["browserPlanRef"] = "pNews"

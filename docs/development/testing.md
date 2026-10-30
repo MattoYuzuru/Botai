@@ -68,13 +68,56 @@ SMS-шагом (`/cu/…`), JSON API, HTML-страница, Moodle WS, iCal). �
 на …»), смену формата ответа (`recipe_drift`), **скользящее окно дат** (`fakeuni/slide.py`:
 `GET /api/get-myschedule?begin_date=…` отдаёт 7 дней от даты и игнорирует `end_date`, неделя
 контрольной — одна пара, соседние недели полные; страница `/schedule?begin_date=…` вызывает этот
-API; `slide.STATE.sparse` делает расписание тонким во всех окнах). На нём
+API; `slide.STATE.sparse` делает расписание тонким во всех окнах; **правила повторения и повторяющийся ключ query** — `fakeuni/lms.py`, см. ниже). На нём
 `tests/learn/test_horizon_story.py` проверяет probe, обход окон `dateWindow`, поля карточки,
 `open_url`, карту сайта, вопрос студенту при редких данных и расширение горизонта в repair, а
 `tests/browser/test_initiator.py` — страницу-инициатор запроса в настоящем Chromium.
 `fakeuni/spa.py` — SPA-кабинет `/spa-cabinet/faq`: без JS это пустая оболочка, скрипт берёт bearer из
 localStorage, читает `/spa-cabinet/api/faq` и рисует вопросы; он же пытается сделать POST, обратиться к
 чужому host и открыть WebSocket (`spa.STATE` считает то, что дошло до сервера).
+
+### Кабинет с правилами повторения (`fakeuni/lms.py`)
+
+SPA без календаря: `/learn/timetable` («Мои пары») показывает **правила** курсов, `/learn/tasks` —
+задания. Данные отдают `GET /api/lms/students/me/timetables` (массив курсов →
+`eventRows[].calendarEvent.schedule {startDate, endDate, dayOfWeek: "monday", startTime, endTime,
+interval}`, аудитория `{title, building}`, `hosts[] {name, email}`; путь принимает только литерал
+`me`, id из `/api/account/me` отвечает 404) и `GET /api/lms/tasks/student?state=…&state=…`
+(**повторяющийся ключ**; запрос с частью значений получает только эти задания). Cookie-сессия, без
+bearer; названия, аудитории и люди выдуманы. `lms.STATE` показывает, какие сегменты и значения
+`state` спрашивали, и меняет правила (`remove_rule`, `add_rule`).
+
+| Что | Где |
+|---|---|
+| Путь целиком: настоящий Chromium видит повторяющийся ключ и правила → автор → canary → sync → домен | `tests/learn/test_lms_browser.py` (модель скриптована, `-m browser`) |
+| Тот же путь без Chromium: рецепт (weekly, `intervalWeeks` из поля, ключ-список), 36 занятий с карточкой без почты, статусы заданий, названия курсов; ошибки автора из инцидента (один `state` вместо пяти, `{accountId}` вместо `me`) возвращаются словами; удалённое правило снимает будущие занятия, добавленное появляется, сдвиг времени и интервала; слова для студента (что видела, чем остановилась, почему не вышло, что можно сделать) | `tests/learn/test_lms_story.py` (записанные ответы автора L2, `ScriptedLlm`-очередь) |
+| Названия дней, интервал из источника, список ключа в compiler/lint/schema/typed-модели, probe не подменяет повторяющийся ключ, статус-фильтр query не «личное значение», а логин в camelCase — личное; слово `me` внутри сегмента и в значении query | `tests/sources/test_recipe_expressions.py`, `tests/learn/test_auth_bindings.py`, `test_data_lint.py`, `test_factory_compile.py`, `test_probe.py`, `tests/core/test_recipe_v2_contract.py` (+ `contracts/examples/*/weekly-rules-recipe.json`) |
+| Экземпляры правила: скользящий горизонт не снимает то, мимо чего скользнул; сокращённый `horizon.days` не снимает дальние; внутри окна исчезнувший день снимается; неполный и «неверимый» sync ничего не снимает | `tests/sources/test_occurrences.py` (настоящий адаптер + normalizer на стенде), `test_normalize.py`, `test_lms_story.py` |
+| Статусы заданий по целым словам: `notEvaluated`, `pendingEvaluation`, `awaiting_evaluation`, `reviewed`, `preview`, `failed` | `tests/sources/test_normalize.py` |
+| Промпты, подсказки и описания схемы не содержат ключей стенда (`eventRows`, `calendarEvent`, `hosts`...): пример в них был бы ответом | `tests/learn/test_recipe_rules_prompt.py` |
+| Фразы для студента: у каждого кода canary/compiler есть своя | `tests/learn/test_words.py` |
+
+**L2 на этом стенде** — `tests/learn/test_lms_live.py` (`live_llm` + `browser`, без `BOTAI_LIVE_LLM=1`
+пропускается): настоящий Chromium, EgressProxy, настоящая модель, планировщик и автор. Команда
+(из `backend/`, ключ из env-файла не печатается):
+
+~~~bash
+DATABASE_URL=postgresql+asyncpg://botai:botai@127.0.0.1:55432/botai \
+BOTAI_ENV_FILE=/путь/к/env-файлу BOTAI_LIVE_LLM=1 BOTAI_LIVE_LLM_BUDGET_USD=0.4 \
+BOTAI_LIVE_RECORD_DIR=/куда/сложить/обмены \
+  uv run --frozen pytest tests/learn/test_lms_live.py -s
+~~~
+
+`BOTAI_LIVE_RECORD_DIR` сохраняет каждый обмен (сообщения запроса и ответ) для сборки
+`ScriptedLlm`-очередей; тест печатает кандидатов, находки lint/canary и блоки студенту. Прогоны
+30.10.2026 (DeepSeek, профили из настроек): до исправлений провал воспроизвёлся (день недели словом
+→ `fields`, один `state` вместо пяти → `evidence_query_mismatch`, затем `observed.value` на
+`inProgress`; автор собрал `startsAt` из `startDate` и получил 5 записей из сентября); после —
+расписание 36 занятий, курсы 3, задания 5, дедлайны 5, преподаватели 5. Восемь прогонов, по 11–13
+вызовов модели, **≈ $0.17 суммарно** (счётчик `MeteredLlm` по ответам API; $0.013–0.034 на прогон,
+лимит задачи $1.5). Вид «аудитории» из этого ответа не собирается (в онлайн-занятии нет аудитории,
+а пропущенное обязательное поле отклоняет весь ответ), студенту это объясняется словами. Живой
+кабинет настоящего вуза этим не проверен.
 
 ## Сквозной тест бэкенда (L1, `backend/tests/e2e/`)
 

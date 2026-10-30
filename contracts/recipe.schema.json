@@ -874,11 +874,18 @@
           "type": "string"
         },
         "intervalWeeks": {
+          "description": "Каждые N недель: число 1–4 или указатель на поле интервала в правиле источника (отсчёт — от недели startDate либо anchorDate).",
           "default": 1,
-          "maximum": 4,
-          "minimum": 1,
-          "title": "Intervalweeks",
-          "type": "integer"
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            {
+              "$ref": "#/$defs/v2JsonScalar"
+            }
+          ]
         },
         "endDayOffset": {
           "default": 0,
@@ -906,7 +913,8 @@
           "$ref": "#/$defs/v2JsonScalar"
         },
         "weekdays": {
-          "$ref": "#/$defs/v2JsonScalar"
+          "$ref": "#/$defs/v2JsonScalar",
+          "description": "День недели: ISO-число 1–7 (1 — понедельник) или слово источника: monday…sunday, mon…sun, пн…вс, понедельник…воскресенье; допустим список. Другие слова не угадываются."
         },
         "startTime": {
           "$ref": "#/$defs/v2JsonScalar"
@@ -1028,6 +1036,7 @@
             ],
             "properties": {
               "intervalWeeks": {
+                "type": "integer",
                 "minimum": 2
               }
             }
@@ -1070,11 +1079,18 @@
           "type": "string"
         },
         "intervalWeeks": {
+          "description": "Каждые N недель: число 1–4 или указатель на поле интервала в правиле источника (отсчёт — от недели startDate либо anchorDate).",
           "default": 1,
-          "maximum": 4,
-          "minimum": 1,
-          "title": "Intervalweeks",
-          "type": "integer"
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            {
+              "$ref": "#/$defs/v2HtmlScalar"
+            }
+          ]
         },
         "endDayOffset": {
           "default": 0,
@@ -1102,7 +1118,8 @@
           "$ref": "#/$defs/v2HtmlScalar"
         },
         "weekdays": {
-          "$ref": "#/$defs/v2HtmlScalar"
+          "$ref": "#/$defs/v2HtmlScalar",
+          "description": "День недели: ISO-число 1–7 (1 — понедельник) или слово источника: monday…sunday, mon…sun, пн…вс, понедельник…воскресенье; допустим список. Другие слова не угадываются."
         },
         "startTime": {
           "$ref": "#/$defs/v2HtmlScalar"
@@ -1224,6 +1241,7 @@
             ],
             "properties": {
               "intervalWeeks": {
+                "type": "integer",
                 "minimum": 2
               }
             }
@@ -2134,8 +2152,21 @@
                 "pattern": "^[A-Za-z0-9_.-]{1,40}$"
               },
               "additionalProperties": {
-                "$ref": "#/$defs/template"
-              }
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/template"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "items": {
+                      "$ref": "#/$defs/template"
+                    }
+                  }
+                ]
+              },
+              "description": "Параметры адреса. Значение — литерал или шаблон. Ключ, который в наблюдённом адресе повторяется (?tag=a&tag=b), записывается списком всех своих значений в том порядке, как их отправляла страница: \"tag\": [\"a\", \"b\"]. Список — только у GET и только для v2."
             },
             "body": {
               "type": "object",
@@ -2203,6 +2234,27 @@
                   "required": [
                     "body"
                   ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "method": {
+                    "const": "POST"
+                  }
+                },
+                "required": [
+                  "method"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "query": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/template"
+                    }
+                  }
                 }
               }
             }

@@ -51,7 +51,7 @@ from botai.core.research import ResearchContext
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db import models as m
-from botai.learn import horizon, revisions
+from botai.learn import horizon, revisions, words
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import (
     AuthorError,
@@ -176,6 +176,13 @@ class Explorer:
         self._browser_plan_urls: dict[str, str] = {}
         self._horizon_asked: set[Kind] = set()
         self._observed_at: datetime | None = None
+        # What the student is told when something is left: where research looked, what it saw,
+        # why each kind that did not work out did not (codes of the checks, in order of arrival).
+        self._seen_pages: list[str] = []
+        self._seen_kinds: list[Kind] = []
+        self._stop_reason = ""
+        self._limit_told = False
+        self._gaps: dict[Kind, list[str]] = {}
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -820,11 +827,19 @@ class Explorer:
             if self._research is not None:
                 sctx.before_request = self._research.before_request
             obs = await self._observe(info, sctx.session or session, redactor, extra)
+            self._remember_observation(obs)
             if obs.limited and not self._observation_limited:
+                self._limit_told = True
                 await ui.say(
-                    "Пока не удалось полностью проверить источник: исследование достигло "
-                    "ограничения, план просмотра не сработал или запрос данных завершился ошибкой. "
-                    "Это не означает, что данных нет."
+                    " ".join(
+                        part
+                        for part in (
+                            f"Просмотрела кабинет не до конца: {words.stop(obs.stop_reason)}.",
+                            words.seen(self._seen_pages, self._seen_kinds),
+                            "Это не значит, что данных нет.",
+                        )
+                        if part
+                    )
                 )
             self._observation_limited = self._observation_limited or obs.limited
             if self._observed_session is not None:
@@ -926,16 +941,7 @@ class Explorer:
         pending = [k for k in self.intent.requested_kinds if k not in chosen]
 
         if not chosen:
-            await ui.say(
-                (
-                    "Пока не удалось проверить "
-                    if self._observation_limited or self._verification_failed
-                    else "Не нашла в кабинете "
-                )
-                + (", ".join(KIND_LABELS[k].lower() for k in pending) or "запрошенные данные")
-                + ". Ничего не сохраняю. Если пришлёте ссылку на страницу, где это видно, "
-                "попробую ещё раз."
-            )
+            await ui.say(self._nothing_connected(pending))
             return await self._fail(
                 info,
                 "Не удалось проверить запрошенные данные"
@@ -964,13 +970,8 @@ class Explorer:
         spec, report = built
         if pending:
             await ui.say(
-                (
-                    "Не удалось проверить: "
-                    if self._observation_limited or self._verification_failed
-                    else "Не нашла: "
-                )
-                + ", ".join(KIND_LABELS[k].lower() for k in pending)
-                + ". Остальное подключаю, к этому можно вернуться позже."
+                f"Подключаю не всё. Не вышло: {self._gap_lines(pending)}. "
+                f"Остальное подключаю, к этому можно вернуться позже. {words.remedy()}"
             )
         if warning:
             await ui.say(f"**Важно.** {warning} Учитывайте это перед подтверждением подключения.")
@@ -1287,12 +1288,16 @@ class Explorer:
                 )
             except AuthorError:
                 self._verification_failed = True
+                self._gap(kind, "no_answer")
                 await stage.finish("failed", "Модель не вернула пригодный ответ")
                 return None
             self.tokens += authored.tokens
             candidate_count = len(authored.candidates)
+            self._gap(kind, *authored.rejected_codes)
             if not authored.candidates:
                 rejected = bool(authored.rejected) or feedback is not None
+                if not rejected:
+                    self._gap(kind, "not_found")
                 self._verification_failed = self._verification_failed or rejected
                 reason = (
                     "Проверка отклонила все варианты" if rejected else "Подходящих данных не видно"
@@ -1330,6 +1335,8 @@ class Explorer:
                         else None
                     )
                     verified.append(Chosen(kind, bound, report, comparison))
+            if not verified and self.tokens >= self._token_limit():
+                self._gap(kind, "token_budget")
             if verified or self.tokens >= self._token_limit():
                 break
             if attempt + 1 < MAX_CANARY_AUTHOR_ROUNDS:
@@ -1354,6 +1361,7 @@ class Explorer:
             )
             return None
         picked = await self._pick(kind, verified, sctx.tz)
+        self._gaps.pop(kind, None)
         note = found_text(kind, picked.report.count(kind))
         if picked.comparison is not None and picked.comparison.baseline:
             c = picked.comparison
@@ -1398,6 +1406,7 @@ class Explorer:
         )
         lint = lint_spec(spec, lint_ctx)
         if not lint.ok:
+            self._gap(kind, *sorted(lint.codes()))
             return None, lint.reasons()
         facts = {
             "kind": kind,
@@ -1431,6 +1440,7 @@ class Explorer:
                 reason="session_expired",
                 **facts,
             )
+            self._gap(kind, "session_expired")
             return None, [
                 f"вариант {index + 1}: доступ к данным не воспроизведён "
                 f"с авторизацией {candidate.auth.get('type')}. "
@@ -1447,6 +1457,7 @@ class Explorer:
         )
         if report.ok:
             return (candidate, report), findings
+        self._gap(kind, *(finding.code for finding in report.findings))
         findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
         wide = (
             self._walk_candidate(candidate, info)
@@ -1588,27 +1599,75 @@ class Explorer:
             idx = 0
         return verified[idx if 0 <= idx < len(verified) else 0]
 
+    def _remember_observation(self, obs: Observations) -> None:
+        """Keep where research looked and what it saw for the words said at the end."""
+        for page in obs.pages:
+            name = words.page_name(page.title)
+            if name and name not in self._seen_pages:
+                self._seen_pages.append(name)
+        for kind in obs.discovered_kinds:
+            if kind not in self._seen_kinds:
+                self._seen_kinds.append(kind)
+        self._stop_reason = obs.stop_reason or self._stop_reason
+
+    def _gap(self, kind: Kind, *codes: str) -> None:
+        """Why the last attempt at this kind of data did not work out (a code of the checks)."""
+        self._gaps.setdefault(kind, []).extend(codes)
+
+    def _gap_lines(self, pending: list[Kind]) -> str:
+        """`расписание — причина; задания — причина`, one phrase per kind that is left."""
+        lines: list[str] = []
+        for kind in pending:
+            codes = self._gaps.get(kind)
+            if not codes and self._observation_limited:
+                codes = ["not_reached"]  # the look around ended before this kind was tried
+            lines.append(f"{words.label(kind)} — {words.why(codes or [])}")
+        return "; ".join(lines)
+
+    def _nothing_connected(self, pending: list[Kind]) -> str:
+        """The message when research ends with nothing to save: what was seen, why not, what to do."""
+        seen = words.seen(self._seen_pages, self._seen_kinds)
+        if not (self._observation_limited or self._verification_failed):
+            wanted = words.labels(pending) or "запрошенные данные"
+            return " ".join(
+                part
+                for part in (
+                    f"Не нашла в кабинете: {wanted}.",
+                    seen,
+                    "Ничего не сохраняю. Пришлите ссылку на страницу, где это видно, — "
+                    "попробую ещё раз.",
+                )
+                if part
+            )
+        stopped = (
+            f"Просмотр шёл не до конца: {words.stop(self._stop_reason)}."
+            if self._observation_limited and self._stop_reason
+            else ""
+        )
+        # What was seen and why the look stopped was said when it stopped.
+        told = self._limit_told
+        head = " ".join(
+            part
+            for part in ("Ничего не подключила.", "" if told else seen, "" if told else stopped)
+            if part
+        )
+        return (
+            f"{head}\n\nНе вышло: {self._gap_lines(pending)}.\n\n{words.remedy(can_continue=True)}"
+        )
+
     async def _ask_page(self, info: ConnInfo, pending: list[Kind], *, have_some: bool) -> bool:
-        labels = ", ".join(KIND_LABELS[k].lower() for k in pending)
+        gaps = self._gap_lines(pending)
         if have_some:
             choice = await self.ui.choose(
-                (
-                    "Не удалось проверить: "
-                    if self._observation_limited or self._verification_failed
-                    else "Не нашла: "
-                )
-                + f"{labels}. Можно дать ссылку на страницу, где это видно.",
+                f"Не вышло: {gaps}. Можно дать ссылку на страницу, где это видно.",
                 [("link", "Дать ссылку", None), ("skip", "Пропустить", "Это можно добавить позже")],
             )
             if choice != "link":
                 return False
         answer = await self.ui.ask_learning_turn(
-            (
-                f"Пока не удалось проверить: {labels}. "
-                if self._observation_limited or self._verification_failed
-                else f"Не вижу: {labels}. "
-            )
-            + "Пришлите ссылку или поясните, что здесь есть и что подключить."
+            f"Не вышло: {gaps}. "
+            "Пришлите ссылку на страницу, где это видно, или поясните, что здесь есть и что "
+            "подключить."
         )
         if not answer:
             return False

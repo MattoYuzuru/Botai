@@ -22,6 +22,10 @@ from botai.core.vault import Vault
 
 AdapterKind = Literal["recipe", "moodle_ws", "ical", "document"]
 
+# External ids of the occurrences a repeating rule is unrolled into start with this. Such a row is
+# not something the source listed: it exists while the rule says so (see `normalize._mark_missing`).
+OCCURRENCE_PREFIX = "occ1:"
+
 # Why an endpoint produced nothing usable. Structural problems mean the source no longer matches
 # the spec (drift); the others are about data or transport.
 Problem = Literal[
@@ -151,6 +155,9 @@ class EndpointOutcome:
     status: int | None = None
     binding_id: str | None = None
     windows: int = 0  # date windows answered by a dateWindow endpoint
+    # `[start, end)` of the days a weekly expansion looked at in this read. What the rules do not
+    # produce inside it is gone; outside it they said nothing.
+    expanded: tuple[datetime, datetime] | None = None
     window_items: list[int] = field(default_factory=list[int])  # records of each window
 
     @property

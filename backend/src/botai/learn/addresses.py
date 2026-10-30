@@ -121,9 +121,13 @@ def request_literals(
     query = request.get("query")
     values: dict[str, frozenset[str]] = {}
     for key, raw in (query if isinstance(query, dict) else {}).items():
-        literal = templates.PLACEHOLDER.sub("", raw) if isinstance(raw, str) else ""
-        if literal:
-            values[str(key)] = frozenset({literal})
+        literals = {
+            literal
+            for item in (raw if isinstance(raw, list) else [raw])
+            if isinstance(item, str) and (literal := templates.PLACEHOLDER.sub("", item))
+        }
+        if literals:
+            values[str(key)] = frozenset(literals)
     return words, values
 
 

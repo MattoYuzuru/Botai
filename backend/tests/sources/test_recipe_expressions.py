@@ -235,6 +235,57 @@ def test_invalid_weekday_shape_has_a_static_failure(bad: Any) -> None:
         expand_weekly(weekly(), series(days=bad), now=NOW)
 
 
+@pytest.mark.parametrize(
+    ("word", "iso_day"),
+    [
+        ("monday", 1),
+        ("Tuesday", 2),
+        (" wed ", 3),
+        ("TH", 4),
+        ("пятница", 5),
+        ("Сб", 6),
+        ("вс.", 7),
+        ("воскресенье", 7),
+        ("3", 3),
+    ],
+)
+def test_a_weekday_named_by_the_source_is_an_iso_day(word: str, iso_day: int) -> None:
+    # 2026-10-26 is a Monday: the only day of this window with the named ISO day is that day.
+    result = expand_weekly(
+        weekly(horizon={"from": "{weekStart}", "days": 7}), series(days=[word]), now=NOW
+    )
+    assert [occ.local_date.isoweekday() for occ in result] == [iso_day]
+
+
+def test_weekday_names_form_a_list_and_nothing_is_guessed() -> None:
+    result = expand_weekly(
+        weekly(horizon={"from": "{weekStart}", "days": 7}),
+        series(days=["monday", "Ср", 5]),
+        now=NOW,
+    )
+    assert [occ.local_date.isoformat() for occ in result] == [
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30",
+    ]
+    for guess in ("mon,wed", "mondays", "poniedelnik", "понедельникам", "", "0", "8"):
+        with pytest.raises(ExpressionError, match="fields"):
+            expand_weekly(weekly(), series(days=guess), now=NOW)
+
+
+def test_the_interval_of_the_rule_is_read_from_the_source() -> None:
+    expression = weekly(intervalWeeks={"path": "/interval"})
+    every_week = expand_weekly(expression, series(interval=1), now=NOW)
+    every_other = expand_weekly(expression, series(interval=2), now=NOW)
+    # the count starts at the week of the rule's first date (2026-10-01, a Thursday)
+    assert [occ.local_date.isoformat() for occ in every_other] == ["2026-10-27", "2026-11-10"]
+    assert len(every_week) == 3
+    assert expand_weekly(expression, series(interval="2"), now=NOW) == every_other
+    for bad in (0, 5, True, "x", None, 1.5):
+        with pytest.raises(ExpressionError, match="fields"):
+            expand_weekly(expression, series(interval=bad), now=NOW)
+
+
 def test_horizon_and_timezone_are_validated_before_requests() -> None:
     with pytest.raises(ValidationError):
         weekly(timeZone="Unknown/Zone")

@@ -22,6 +22,8 @@ from pydantic.alias_generators import to_camel
 from botai.contracts.browser_plan import BrowserPlan
 from botai.sources.templates import is_date_template
 
+MAX_REPEATED_VALUES = 8
+
 Kind = Literal[
     "courses", "scheduleEvents", "deadlines", "assignments", "grades", "people", "locations", "news"
 ]
@@ -114,13 +116,17 @@ class ExpansionHorizon(_M):
 
 class _Weekly(_Zoned):
     type: Literal["weekly"]
-    interval_weeks: int = Field(default=1, ge=1, le=4, strict=True)
     end_day_offset: Literal[0, 1] = 0
     horizon: ExpansionHorizon
     max_occurrences: int = Field(default=512, ge=1, le=512, strict=True)
 
 
+IntervalWeeks = Annotated[int, Field(ge=1, le=4, strict=True)]
+
+
 class JsonWeekly(_Weekly):
+    # A constant, or the source's own interval ("every N weeks") read from the rule.
+    interval_weeks: IntervalWeeks | JsonScalar = 1
     start_date: JsonScalar
     until_date: JsonScalar
     weekdays: JsonScalar
@@ -138,6 +144,7 @@ class JsonWeekly(_Weekly):
 
 
 class HtmlWeekly(_Weekly):
+    interval_weeks: IntervalWeeks | HtmlScalar = 1
     start_date: HtmlScalar
     until_date: HtmlScalar
     weekdays: HtmlScalar
@@ -157,7 +164,13 @@ class HtmlWeekly(_Weekly):
 def _validate_weekly(value: JsonWeekly | HtmlWeekly) -> None:
     if (value.end_time is None) == (value.duration_minutes is None):
         raise ValueError("weekly expansion requires exactly one of endTime and durationMinutes")
-    if value.interval_weeks > 1 and value.anchor_date is None:
+    # A constant multiweek interval needs the week it counts from; an interval read from the rule
+    # counts from the week of the rule's own start date.
+    if (
+        isinstance(value.interval_weeks, int)
+        and value.interval_weeks > 1
+        and value.anchor_date is None
+    ):
         raise ValueError("multiweek expansion requires an explicit anchorDate")
     if value.duration_minutes is not None and value.end_day_offset:
         raise ValueError("endDayOffset requires endTime")
@@ -255,6 +268,9 @@ def _scalar_sources(value: _M) -> list[JsonScalar | HtmlScalar]:
     return found
 
 
+QueryValues = Annotated[list[str], Field(min_length=2, max_length=MAX_REPEATED_VALUES)]
+
+
 class RecipeRequest(_M):
     render: bool = False
     auth_binding: str | None = None
@@ -262,8 +278,19 @@ class RecipeRequest(_M):
     method: Literal["GET", "POST"]
     read_only_post: bool = Field(default=False)
     path: str
-    query: dict[str, str] | None = None
+    # A key that repeats in the address (`?state=a&state=b`) is a list of its values, in order.
+    query: dict[str, str | QueryValues] | None = None
     body: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def validate_repeated_keys(self) -> Self:
+        if self.method != "GET" and any(isinstance(v, list) for v in (self.query or {}).values()):
+            raise ValueError("a repeated query key belongs to a GET request")
+        return self
+
+    @property
+    def has_repeated_keys(self) -> bool:
+        return any(isinstance(v, list) for v in (self.query or {}).values())
 
 
 class Pagination(_M):
@@ -339,7 +366,7 @@ class Endpoint(_M):
             if self.request.method != "GET" or self.request.render or self.response.expand:
                 raise ValueError("dateWindow requires a plain GET without weekly expansion")
             moved = (self.request.query or {}).get(window.param or "")
-            if moved is None or not is_date_template(moved):
+            if not isinstance(moved, str) or not is_date_template(moved):
                 raise ValueError("dateWindow moves a date template of the request query")
         if self.response.expand is not None and self.kind != "scheduleEvents":
             raise ValueError("weekly expansion only supports scheduleEvents")
@@ -469,6 +496,8 @@ class Recipe(_M):
                 for endpoint in self.endpoints
             ):
                 raise ValueError("date windows and interface addresses require recipe v2")
+            if any(endpoint.request.has_repeated_keys for endpoint in self.endpoints):
+                raise ValueError("repeated query keys require recipe v2")
             for endpoint in self.endpoints:
                 response = endpoint.response
                 if (

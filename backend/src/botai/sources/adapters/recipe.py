@@ -29,6 +29,7 @@ from botai.contracts.specs import (
 )
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import (
+    OCCURRENCE_PREFIX,
     AdapterKind,
     AdapterResult,
     EndpointOutcome,
@@ -45,6 +46,7 @@ from botai.sources.expressions import (
     collect,
     expand_weekly,
     field_value,
+    horizon_instants,
     structured_fields,
 )
 from botai.sources.extract import (
@@ -175,7 +177,12 @@ class RecipeAdapter:
         bootstrap_failed: set[str],
         reader: RenderedPageReader,
     ) -> tuple[EndpointOutcome, list[Record]]:
-        outcome = EndpointOutcome(endpoint_id=endpoint.id, kind=endpoint.kind, ok=True)
+        outcome = EndpointOutcome(
+            endpoint_id=endpoint.id,
+            kind=endpoint.kind,
+            ok=True,
+            expanded=_expanded(endpoint, ctx.now),
+        )
 
         def fail(problem: Problem, url: str = "") -> tuple[EndpointOutcome, list[Record]]:
             outcome.ok = False
@@ -191,9 +198,13 @@ class RecipeAdapter:
         pagination = endpoint.pagination
         window = pagination if pagination is not None and pagination.type == "dateWindow" else None
 
-        def query_at(at: datetime) -> dict[str, str]:
+        def query_at(at: datetime) -> dict[str, str | list[str]]:
+            """The query at one moment; a repeated key keeps its values, in order."""
             return {
-                k: render(v, now=at, tz=ctx.tz, params=params) for k, v in (req.query or {}).items()
+                k: [render(item, now=at, tz=ctx.tz, params=params) for item in v]
+                if isinstance(v, list)
+                else render(v, now=at, tz=ctx.tz, params=params)
+                for k, v in (req.query or {}).items()
             }
 
         try:
@@ -209,7 +220,10 @@ class RecipeAdapter:
             )
         except TemplateError as exc:
             return fail("bootstrap" if exc.name in bootstrap_failed else "format")
-        if req.method == "POST" and not (req.read_only_post and is_read_only_post(req.path, query)):
+        if req.method == "POST" and not (
+            req.read_only_post
+            and is_read_only_post(req.path, {k: v for k, v in query.items() if isinstance(v, str)})
+        ):
             return fail("status", url)
 
         if req.browser_plan is not None:
@@ -369,7 +383,7 @@ class RecipeAdapter:
         ctx: SyncContext,
         reader: RenderedPageReader,
         url: str,
-        query: Mapping[str, str],
+        query: Mapping[str, str | list[str]],
         params: Mapping[str, str],
     ) -> tuple[EndpointOutcome, list[Record]]:
         response_spec = endpoint.response
@@ -386,7 +400,12 @@ class RecipeAdapter:
                 or "body"
             )
         outcome = EndpointOutcome(
-            endpoint.id, endpoint.kind, True, source_url=url, transport="browser"
+            endpoint.id,
+            endpoint.kind,
+            True,
+            source_url=url,
+            transport="browser",
+            expanded=_expanded(endpoint, ctx.now),
         )
         request = httpx.Request("GET", url, params=query)
         try:
@@ -548,7 +567,7 @@ class RecipeAdapter:
                         now=ctx.now,
                         remaining_instances=remaining_instances - len(records),
                     ):
-                        instance_id = hashlib.sha256(
+                        digest = hashlib.sha256(
                             json.dumps(
                                 [
                                     "weekly-v1",
@@ -564,7 +583,7 @@ class RecipeAdapter:
                         records.append(
                             Record(
                                 kind=endpoint.kind,
-                                external_id=instance_id,
+                                external_id=OCCURRENCE_PREFIX + digest,
                                 fields={
                                     **record.fields,
                                     "startsAt": occurrence.starts_at,
@@ -627,6 +646,16 @@ class RecipeAdapter:
             if ok and (rec := _make_record(endpoint, spec.identity, fields, source_url)):
                 records.append(rec)
         return len(nodes), records, None, len(nodes), len(nodes)
+
+
+def _expanded(endpoint: Endpoint, now: datetime) -> tuple[datetime, datetime] | None:
+    expansion = endpoint.response.expand
+    if expansion is None:
+        return None
+    try:
+        return horizon_instants(expansion, now)
+    except ExpressionError:
+        return None
 
 
 def _has_password(tree: Any) -> bool:

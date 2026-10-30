@@ -34,6 +34,7 @@ from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
 from botai.sources.extract import selector_valid
 from botai.sources.readonly import is_read_only_post
+from botai.sources.states import is_status
 from botai.sources.vocab import REQUIRED, STRUCTURED_FIELDS, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
 
 SCHEMA = "adapter-spec.schema.json"
@@ -342,7 +343,8 @@ def _endpoint(
                 issues.append(
                     LintIssue("param.secret_name", where, "имя параметра похоже на секрет")
                 )
-            _check_template(value, known, where, issues)
+            for item in value if isinstance(value, list) else [value]:
+                _check_template(item, known, where, issues)
     if request["method"] == "POST" and not (
         request.get("readOnlyPost") and is_read_only_post(request["path"], _query_literals(request))
     ):
@@ -408,6 +410,7 @@ def _date_window(
         and any(
             "weekStart" in templates.placeholders(value)
             for value in (request.get("query") or {}).values()
+            if isinstance(value, str)
         )
     ):
         issues.append(
@@ -546,6 +549,7 @@ def _response(
     expansion = response.get("expand")
     if expansion:
         for name in (
+            "intervalWeeks",
             "startDate",
             "untilDate",
             "weekdays",
@@ -754,7 +758,14 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
             yield from _path_literals(request["path"], (*base, "request", "path"))
             for section in ("query", "body"):
                 for key, value in (request.get(section) or {}).items():
-                    yield _p(*base, "request", section, key), templates.PLACEHOLDER.sub("", value)
+                    for item in value if isinstance(value, list) else [value]:
+                        literal = templates.PLACEHOLDER.sub("", item)
+                        # A filter on a status (`inProgress`) is made of words every learning system
+                        # shares; the author sees it unmasked and the compiler has proved it equal
+                        # to what the page sent. A name or a code in a query is still a value.
+                        if section == "query" and is_status(literal):
+                            continue
+                        yield _p(*base, "request", section, key), literal
             if request.get("browserPlan") is not None:
                 yield from _browser_plan_literals(
                     request["browserPlan"], (*base, "request", "browserPlan")

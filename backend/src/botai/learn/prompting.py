@@ -128,6 +128,7 @@ def task_prompt(
         .replace("{{required}}", ", ".join(f"`{r}`" for r in required))
         .replace("{{feedback}}", _feedback_note(feedback))
         .replace("{{problem}}", PROBLEMS.get(problem or "", "сайт отвечает не так, как описано"))
+        .replace("{{recipe_rules}}", load("recipe_rules.md").strip())
         .replace("{{factory_rules}}", _factory_rules())
     )
     if previous is not None:

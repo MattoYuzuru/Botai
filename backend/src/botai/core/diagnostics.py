@@ -327,6 +327,7 @@ _CODES: dict[str, set[str]] = {
         "other_origin",
         "override_count",
         "unknown_query_key",
+        "repeated_query_key",
         "value_not_observed",
         "not_a_date_key",
         "date_out_of_range",

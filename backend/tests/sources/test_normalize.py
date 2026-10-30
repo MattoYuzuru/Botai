@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.sources import normalize, schedule
-from botai.sources.adapter import AdapterResult, EndpointOutcome, ExtractedDocument, Record
+from botai.sources.adapter import (
+    OCCURRENCE_PREFIX,
+    AdapterResult,
+    EndpointOutcome,
+    ExtractedDocument,
+    Record,
+)
 from botai.sources.runner import assess
 from tests.sources import recipes
 from tests.sources.helpers import NOW
@@ -92,6 +98,65 @@ def test_grade_values_are_text_and_states_have_synonyms() -> None:
         row = normalize.coerce("deadlines", rec("deadlines", {**due, "state": raw}), MSK)
         assert row is not None
         assert row["state"] == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # the words of learning systems, however they are written
+        ("backlog", "open"),
+        ("inProgress", "open"),
+        ("IN_PROGRESS", "open"),
+        ("in-progress", "open"),
+        ("In progress", "open"),
+        ("assigned", "open"),
+        ("Назначено", "open"),
+        ("review", "submitted"),
+        ("inReview", "submitted"),
+        ("submitted", "submitted"),
+        ("На проверке", "submitted"),
+        ("evaluated", "graded"),
+        ("Оценено", "graded"),
+        ("graded", "graded"),
+        # a work that was handed in and marked is graded, whether the mark passes or not
+        ("failed", "graded"),
+        ("overdue", "missed"),
+        ("Просрочено", "missed"),
+        # a word that postpones or negates is read before the word next to it
+        ("pendingEvaluation", "submitted"),
+        ("awaiting_evaluation", "submitted"),
+        ("waitingForReview", "submitted"),
+        ("pending", "open"),
+        ("notEvaluated", "unknown"),
+        ("NOT_GRADED", "unknown"),
+        ("Не оценено", "unknown"),
+        ("notSubmitted", "open"),
+        ("Не сдано", "open"),
+        # part of a word is not the word
+        ("reviewed", "unknown"),
+        ("preview", "unknown"),
+        ("renewed", "unknown"),
+        ("undone", "unknown"),
+        ("ungraded", "unknown"),
+        ("", "unknown"),
+        ("??", "unknown"),
+    ],
+)
+def test_the_state_of_a_task_is_read_by_words_not_by_pieces_of_words(
+    raw: str, expected: str
+) -> None:
+    due = {"title": "T", "dueAt": "2026-10-28T20:00:00+00:00"}
+    row = normalize.coerce("deadlines", rec("deadlines", {**due, "state": raw}), MSK)
+    assert row is not None
+    assert row["state"] == expected, raw
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["review"], {"state": "review"}])
+def test_a_state_that_is_not_text_is_unknown(raw: object) -> None:
+    due = {"title": "T", "dueAt": "2026-10-28T20:00:00+00:00"}
+    row = normalize.coerce("deadlines", rec("deadlines", {**due, "state": raw}), MSK)
+    assert row is not None
+    assert row["state"] == "unknown"
 
 
 def test_required_columns_and_length_limits() -> None:
@@ -177,6 +242,63 @@ async def test_a_partial_kind_never_marks_rows_missing(db: AsyncSession) -> None
     db.expire_all()
     archived = (await db.execute(select(normalize.m.Course.archived))).scalar_one()
     assert archived is False
+
+
+def _class(title: str, day: int, ext: str) -> Record:
+    return rec(
+        "scheduleEvents",
+        {
+            "title": title,
+            "startsAt": f"2026-11-{day:02d}T06:30:00+00:00",
+            "endsAt": f"2026-11-{day:02d}T07:50:00+00:00",
+        },
+        ext,
+    )
+
+
+async def test_the_future_of_a_vanished_rule_is_removed_a_listed_class_is_only_flagged(
+    db: AsyncSession,
+) -> None:
+    seeded = await seed_connection(db)
+    kwargs: dict[str, Any] = {
+        "user_id": seeded.user_id,
+        "connection_id": seeded.connection_id,
+        "tz": MSK,
+    }
+    prefix = OCCURRENCE_PREFIX
+    first = AdapterResult(
+        [
+            _class("Лекция", 2, f"{prefix}a-past"),
+            _class("Лекция", 9, f"{prefix}a-future"),
+            _class("Семинар", 10, f"{prefix}b-future"),
+            _class("Лекция", 30, f"{prefix}c-beyond-the-horizon"),
+            _class("Консультация", 11, "listed-by-the-source"),
+        ],
+        NOW,
+        [EndpointOutcome("s", "scheduleEvents", ok=True)],
+    )
+    await normalize.apply_result(db, result=first, now=NOW - timedelta(days=30), **kwargs)
+    later = NOW + timedelta(days=6)  # 2026-11-02 12:00 UTC: the first class is behind
+    # the rules looked at 03.11–29.11 and say only the seminar of 10.11
+    horizon = (datetime(2026, 11, 3, tzinfo=UTC), datetime(2026, 11, 30, tzinfo=UTC))
+    again = AdapterResult(
+        [_class("Семинар", 10, f"{prefix}b-future")],
+        later,
+        [EndpointOutcome("s", "scheduleEvents", ok=True, expanded=horizon)],
+    )
+    stats = await normalize.apply_result(db, result=again, now=later, **kwargs)
+    assert stats["scheduleEvents"].missing == 3  # the past one, a-future and the listed one
+
+    db.expire_all()
+    rows = await db.execute(
+        select(normalize.m.ScheduleEvent.external_id, normalize.m.ScheduleEvent.changed)
+    )
+    assert {r[0]: r[1] for r in rows.all()} == {
+        f"{prefix}a-past": False,  # it took place: stays as it happened
+        f"{prefix}b-future": False,  # the rule still says it
+        f"{prefix}c-beyond-the-horizon": False,  # the rules did not look there: kept, unflagged
+        "listed-by-the-source": True,  # moved or cancelled by the source itself: flagged, kept
+    }  # `a-future` is gone: inside the horizon, and the rule stopped saying it
 
 
 async def test_documents_are_replaced_when_the_hash_changes(db: AsyncSession) -> None:

@@ -79,6 +79,15 @@ def test_nested_sources_and_weekly_generated_required_fields_pass(
     assert result.ok, result.reasons()
 
 
+def test_the_interval_pointer_is_checked_like_every_other_operand() -> None:
+    spec = nested(weekly=True)
+    expansion = response(spec)["expand"]
+    expansion["intervalWeeks"] = {"from": "day", "path": "/interval"}
+    assert lint_spec(spec, CTX).ok
+    expansion["intervalWeeks"] = {"from": "day", "path": "/apiKey"}
+    assert "pointer.secret" in lint_spec(spec, CTX).codes()
+
+
 @pytest.mark.parametrize("change", ["alias", "source", "zone", "weekly_source", "weekly_zone"])
 def test_typed_cross_field_errors_are_static_and_never_include_input(change: str) -> None:
     spec = nested(weekly=change.startswith("weekly"))
@@ -210,3 +219,94 @@ def test_v1_does_not_accept_v2_fields_and_existing_fixture_still_passes() -> Non
     spec["recipe"]["version"] = 1
     assert lint_spec(spec, CTX).codes() == {"schema"}
     assert lint_spec(recipes.full_recipe(), CTX).ok
+
+
+# --- repeated query keys and the constants of the source's own vocabulary ---------------------
+
+STATES = ["backlog", "inProgress", "review", "failed", "evaluated"]
+
+
+def tasks_spec(states: list[str]) -> dict[str, Any]:
+    endpoint = {
+        "id": "deadlines",
+        "kind": "deadlines",
+        "request": {
+            "method": "GET",
+            "path": "/api/tasks",
+            "query": {"state": states if len(states) > 1 else states[0]},
+        },
+        "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+                "externalId": {"path": "/id", "required": True},
+                "title": {"path": "/exercise/name", "required": True},
+                "dueAt": {"path": "/deadline", "transform": "iso", "required": True},
+            },
+        },
+    }
+    spec = recipes.recipe_spec([endpoint], require=("deadlines",))
+    spec["recipe"]["version"] = 2
+    return spec
+
+
+def test_a_repeated_key_of_filter_values_passes_lint() -> None:
+    assert lint_spec(tasks_spec(STATES), CTX).ok
+
+
+def seen_ctx(*values: str) -> LintContext:
+    return LintContext(
+        allowed_hosts=CTX.allowed_hosts, expected_origin=CTX.expected_origin, observed=list(values)
+    )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["inProgress", "IN_PROGRESS", "notEvaluated", "awaiting-review", "Backlog", "hasSolution"],
+)
+def test_a_filter_made_of_status_words_is_not_a_personal_value(status: str) -> None:
+    seen = seen_ctx(*STATES, status)
+    assert lint_spec(tasks_spec([*STATES[:2], status]), seen).ok
+    assert lint_spec(tasks_spec([status, "backlog"]), seen).ok
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Ivanov",
+        "ГРП-26",
+        "ABC12",
+        "Evaluated2",
+        "group7",
+        "IVANOV",
+        # camel and snake case do not make a status of a login or a name
+        "jSmith",
+        "ivanPetrov",
+        "deLaCruz",
+        "PETROV_AA",
+        "smithJohn",
+        "WHITE_FOX",
+    ],
+)
+def test_a_name_or_a_code_of_the_student_is_still_refused_in_a_query(value: str) -> None:
+    seen = seen_ctx(value)
+    for states in ([value], ["backlog", value], [value, "inProgress"]):
+        result = lint_spec(tasks_spec(states), seen)
+        assert "observed.value" in result.codes(), (value, states)
+        assert value not in str(result.reasons())
+
+
+def test_the_exemption_is_for_a_query_not_for_a_path_or_a_body() -> None:
+    seen = seen_ctx("inProgress")
+    spec = tasks_spec(["backlog", "inProgress"])
+    assert lint_spec(spec, seen).ok
+    spec["recipe"]["endpoints"][0]["request"]["path"] = "/api/tasks/inProgress"
+    assert "observed.value" in lint_spec(spec, seen).codes()
+
+
+def test_lint_checks_every_value_of_a_repeated_key() -> None:
+    spec = tasks_spec(["backlog", "{missing}"])
+    assert "template.unknown" in lint_spec(spec, CTX).codes()
+    spec = tasks_spec(["backlog", "inProgress"])
+    spec["recipe"]["endpoints"][0]["request"]["query"] = {"password": ["a", "b"]}
+    assert "param.secret_name" in lint_spec(spec, CTX).codes()
