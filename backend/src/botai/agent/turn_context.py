@@ -28,7 +28,9 @@ from botai.agent.env import (
 from botai.agent.tasks import active_tasks
 from botai.core.llm import LlmMessage
 from botai.db.models import ChatThread, Space
+from botai.domain import primary
 from botai.spaces import service
+from botai.spaces.views import SourceView
 
 WEEKDAYS_RU = (
     "понедельник",
@@ -54,6 +56,7 @@ MONTHS_RU = (
     "декабря",
 )
 MAX_SOURCES_LISTED = 30
+ROLE_RU = {"primary": "основной", "secondary": "дополнительный"}
 
 
 def _zone(name: str | None) -> ZoneInfo:
@@ -91,6 +94,7 @@ async def turn_context(
         )
 
     owned = await service.list_sources(session, user_id)
+    schedule = await primary.live_schedule_sources(session, user_id)
     if not owned:
         lines.append("У студента пока нет подключённых вузов и источников.")
     else:
@@ -101,6 +105,9 @@ async def turn_context(
             if entry.space.university_id:
                 head += f" university_id={entry.space.university_id}"
             lines.append(head + (":" if entry.sources else ", источников пока нет"))
+            found = schedule.get(entry.space.id)
+            if found is not None and len(found.order) > 1:
+                lines.append(_choice_note(found, entry.sources))
             for source in entry.sources:
                 if listed >= MAX_SOURCES_LISTED:
                     break
@@ -110,10 +117,13 @@ async def turn_context(
                 error = f", код ошибки {conn.error_code}" if conn.error_code else ""
                 site = urlsplit(conn.entry_url or conn.origin or "").hostname or ""
                 where = f", сайт {site}" if site else ""
+                found = schedule.get(conn.space_id)
+                role = found.role_of(conn.id) if found else None
                 lines.append(
                     f"  - «{data_text(source.title)}» ({conn.kind}{where}) — {state}{error}; обновлено "
-                    f"{fmt_updated(conn.last_sync_at, zone)}; connection_id={conn.id}; "
-                    f"{connection_link(conn.id)}"
+                    f"{fmt_updated(conn.last_sync_at, zone)}; "
+                    + (f"расписание: {ROLE_RU[role]}; " if role else "")
+                    + f"connection_id={conn.id}; {connection_link(conn.id)}"
                 )
         if sum(len(e.sources) for e in owned) > listed:
             lines.append("  …остальные источники: list_universities.")
@@ -138,3 +148,19 @@ async def turn_context(
         )
         lines.extend(f"- [{n.id}] {data_text(n.note, 300)}" for n in remembered)
     return LlmMessage(role="user", content="\n".join(lines), data=True)
+
+
+def _choice_note(found: primary.ScheduleSources, sources: list[SourceView]) -> str:
+    """Two sources of one university carry its schedule: who decides, and whether the student said so."""
+    titles = {s.connection.id: data_text(s.title, 60) for s in sources}
+    names = ", ".join(f"«{titles.get(i, '?')}»" for i in found.order)
+    first = f"«{titles.get(found.order[0], '?')}»"
+    if found.chosen:
+        return (
+            f"  Расписание берётся из нескольких источников ({names}); основной — {first}, "
+            "его выбрал студент."
+        )
+    return (
+        f"  Расписание берётся из нескольких источников ({names}); основной по умолчанию — {first}, "
+        "студент основной не выбирал."
+    )
