@@ -29,6 +29,7 @@ from botai.agent.memory import (
     refresh_summary,
     split_recent,
     summary_message,
+    turn_messages,
 )
 from botai.agent.reader import DomainReader
 from botai.agent.sources import Finalized, finalize
@@ -114,7 +115,7 @@ def meter_segments(
     ctx_msg: LlmMessage,
     summary: LlmMessage | None,
     recent: list[LlmMessage],
-    question: LlmMessage,
+    question: list[LlmMessage],
 ) -> dict[str, int]:
     """Estimated tokens by kind for the context meter (agent-harness.md §6)."""
     by_tool = {"data": 0, "documents": 0}
@@ -128,7 +129,7 @@ def meter_segments(
         "profile": estimate_messages([ctx_msg]),
         "data": by_tool["data"],
         "documents": by_tool["documents"],
-        "history": estimate_messages([*([summary] if summary else []), *recent, question]),
+        "history": estimate_messages([*([summary] if summary else []), *recent, *question]),
     }
 
 
@@ -174,8 +175,8 @@ async def handle_chat(
         )
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
-    question_msg = LlmMessage(role="user", content=question.prompt)
-    messages = [ctx_msg, *([summary_msg] if summary_msg else []), *recent_msgs, question_msg]
+    question_msgs = turn_messages(question)
+    messages = [ctx_msg, *([summary_msg] if summary_msg else []), *recent_msgs, *question_msgs]
 
     env = ChatEnv(
         services=services,
@@ -233,7 +234,7 @@ async def handle_chat(
         "tools": [t.name for t in result.tool_calls],
         "blockedCalls": result.blocked_calls,
         "injections": len(result.findings),
-        "context": meter_segments(result, ctx_msg, summary_msg, recent_msgs, question_msg),
+        "context": meter_segments(result, ctx_msg, summary_msg, recent_msgs, question_msgs),
         "sources": [
             {
                 "title": r.title,

@@ -43,6 +43,9 @@ class TextBlock(_Block):
     sources: list[Source] | None = Field(default=None, max_length=10)
     quick_replies: list[QuickReply] | None = Field(default=None, max_length=4)
     quote: Quote | None = None
+    # A pick from a question (an option, a confirm button, "password passed"): not the student's own
+    # words, so a model reads it as data.
+    picked: bool | None = None
 
 
 class ThinkingBlock(_Block):
@@ -75,6 +78,7 @@ class InputBlock(_Block):
     placeholder: str | None = Field(default=None, max_length=120)
     required: bool
     max_length: int = Field(default=500, ge=1, le=2000)
+    login: bool = False  # a field of a source's login: its value is never shown or read by a model
     secret: bool = False
     autocomplete: Literal[
         "off", "username", "email", "current-password", "one-time-code", "url"

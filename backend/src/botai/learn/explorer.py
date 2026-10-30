@@ -84,7 +84,7 @@ from botai.learn.summary import (
     finished_text,
     found_text,
     plain,
-    weeks_to,
+    weeks_ahead,
 )
 from botai.learn.ui import Ui, describe, kinds_text, sample_of
 from botai.search.service import SearchResult
@@ -695,7 +695,7 @@ class Explorer:
     ) -> None:
         if outcome.status == "ok":
             if connected:
-                await self.ui.say(await self._closing(outcome, info))
+                await self.ui.say(await self._closing_or_plain(outcome, info))
             else:
                 what = kinds_text(outcome.kinds) or "данные пока не найдены"
                 await self.ui.say(
@@ -712,39 +712,58 @@ class Explorer:
         else:
             await self.ui.say("Данные пока загрузить не удалось, попробую снова позже.")
 
+    async def _closing_or_plain(self, outcome: SyncOutcome, info: ConnInfo) -> str:
+        """The closing message. The source is already active and read when it is written, so a failure
+        of the wording (a read of the database) never fails the job: a plain sentence replaces it."""
+        try:
+            return await self._closing(outcome, info)
+        except (JobCancelled, JobClaimLost, asyncio.CancelledError):
+            raise
+        except Exception:
+            log.exception("the closing message of a connection could not be written")
+            what = kinds_text(outcome.kinds) or "данные пока не найдены"
+            return f"Готово! Источник подключён: {what}. Дальше всё обновляется само."
+
     async def _closing(self, outcome: SyncOutcome, info: ConnInfo) -> str:
         """The friendly last message of a connection: what is connected, how far ahead, how often
-        it is refreshed and what to ask. The numbers are those the first read stored."""
+        it is refreshed and what to ask. The numbers are those the first read stored; the classes are
+        counted from now on, so "N занятий на M недель вперёд" holds for the same N classes."""
+        now = self.services.clock.now()
         counts: dict[Kind, int] = {}
         for kind in KIND_LABELS:
             stats = outcome.kinds.get(kind)
             if stats:
                 counts[kind] = stats["inserted"] + stats["updated"] + stats["unchanged"]
+        weeks: int | None = None
         async with self.services.db() as db:
             space = await db.get(m.Space, info.space_id)
-            conn = await db.get(m.Connection, info.connection_id)
-            row = await db.get(m.AdapterSpecRow, conn.spec_id) if conn and conn.spec_id else None
-            last = (
-                await db.scalar(
-                    select(func.max(m.ScheduleEvent.starts_at)).where(
-                        m.ScheduleEvent.user_id == info.user_id,
-                        m.ScheduleEvent.connection_id == info.connection_id,
-                    )
-                )
-                if counts.get("scheduleEvents")
+            university = (
+                await db.get(m.University, space.university_id)
+                if space and space.university_id
                 else None
             )
+            conn = await db.get(m.Connection, info.connection_id)
+            row = await db.get(m.AdapterSpecRow, conn.spec_id) if conn and conn.spec_id else None
+            if counts.get("scheduleEvents"):
+                ahead, last = (
+                    await db.execute(
+                        select(func.count(), func.max(m.ScheduleEvent.starts_at)).where(
+                            m.ScheduleEvent.user_id == info.user_id,
+                            m.ScheduleEvent.connection_id == info.connection_id,
+                            m.ScheduleEvent.ends_at >= now,
+                        )
+                    )
+                ).one()
+                if ahead:
+                    counts["scheduleEvents"] = ahead
+                    weeks = weeks_ahead(last, now, info.tz)
         every = (
             schedule.freshness_of(row.spec).every_minutes
             if row
             else schedule.DEFAULT_EVERY["recipe"]
         )
-        return finished_text(
-            counts,
-            university=space.title if space else None,
-            every_minutes=every,
-            weeks=weeks_to(last, self.services.clock.now(), info.tz),
-        )
+        name = university.short_title if university else space.title if space else None
+        return finished_text(counts, university=name, every_minutes=every, weeks=weeks)
 
     # --- the exploration ---------------------------------------------------------------------
 

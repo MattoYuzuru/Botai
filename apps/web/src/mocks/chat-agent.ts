@@ -162,6 +162,7 @@ export function observe(ctx: AgentCtx, sim: JobSim, threadId: string): void {
             id: ulid(),
             at,
             markdown: acknowledgementText(asked, values),
+            picked: true,
             ...(question ? { quote: { text: question.slice(0, 200), blockId } } : {}),
           } as never,
         ],
@@ -189,7 +190,8 @@ export function acknowledgementText(block: KnownBlock, values: unknown): string 
   if (block.type === "input") {
     if (block.inputKind === "password") return "Пароль передан";
     if (block.inputKind === "code") return "Код передан";
-    const auth = block.autocomplete === "username" || block.autocomplete === "one-time-code";
+    const auth =
+      block.login === true || block.autocomplete === "username" || block.autocomplete === "one-time-code";
     if (block.secret || auth) return block.autocomplete === "username" ? "Логин передан" : "Ответ передан";
     return typeof values === "string" && values ? values : "Ответ передан";
   }

@@ -15,12 +15,13 @@ from botai.learn.summary import (
     day_title,
     every_text,
     finished_text,
+    fit_text,
     found_text,
     kind_line,
     plain,
     plural,
     upcoming_days,
-    weeks_to,
+    weeks_ahead,
 )
 from botai.learn.ui import kinds_text
 from botai.sources.adapter import Record
@@ -161,6 +162,25 @@ def test_a_long_day_is_cut_and_the_whole_text_fits_the_block() -> None:
     assert len(text) <= 2000
 
 
+def test_a_text_too_long_for_the_block_is_cut_between_lines_not_in_the_middle_of_one() -> None:
+    long_title = "Очень длинное название занятия " * 3
+    days = [
+        event(i, day, "09:30", "10:50", f"{long_title} {i}", "А-" + "1" * 40)
+        for day in ("2026-10-28", "2026-10-30")
+        for i in range(8)
+    ]
+    text = confirm_details({"scheduleEvents": days}, NOW, MSK)
+    assert len(text) <= 2000
+    last = text.splitlines()[-1]
+    assert last.startswith("- ")  # a whole item ends it, never a heading without its lines
+    assert last.count("Очень длинное название") == 3  # the item is whole
+    assert fit_text("a\nbb\nccc", 5) == "a\nbb"
+    assert fit_text("a\nbb\nccc", 6) == "a\nbb"
+    assert fit_text("a\nbb\nccc", 3) == "a"
+    assert fit_text("**Среда**\n- пара\n\n**Пятница**\n- пара", 28) == "**Среда**\n- пара"
+    assert fit_text("short", 100) == "short"
+
+
 def test_source_text_cannot_make_links_or_markup_in_the_confirmation() -> None:
     hostile = event(
         1,
@@ -178,11 +198,32 @@ def test_source_text_cannot_make_links_or_markup_in_the_confirmation() -> None:
     assert len(plain("я" * 300)) == 100
 
 
-def test_weeks_to_counts_calendar_weeks_from_this_one() -> None:
-    assert weeks_to(datetime(2026, 12, 6, 10, tzinfo=MSK), NOW, MSK) == 6
-    assert weeks_to(datetime(2026, 10, 30, 10, tzinfo=MSK), NOW, MSK) == 1
-    assert weeks_to(datetime(2026, 10, 20, 10, tzinfo=MSK), NOW, MSK) is None  # all over
-    assert weeks_to(None, NOW, MSK) is None
+def test_addresses_of_the_data_lose_their_path_and_scheme_so_no_token_becomes_a_link() -> None:
+    text = plain("Лекция https://zoom.example/j/123?pwd=SeCrEtToKen99&uid=1 и http://x.test#a")
+    assert text == "Лекция zoom.example и x.test"
+    hostile = event(
+        1,
+        "2026-10-28",
+        "09:30",
+        "10:50",
+        "Zoom https://evil.test/a?token=abcdef1234567890",
+        "online",
+    )
+    details = confirm_details({"scheduleEvents": [hostile]}, NOW, MSK)
+    assert "://" not in details
+    assert "token=" not in details
+    assert "· Zoom evil.test ·" in details
+
+
+def test_weeks_ahead_count_only_what_lies_ahead_rounded_up() -> None:
+    # Tuesday 27 October to Sunday 6 December: 41 days, six weeks (the week already gone is not counted)
+    assert weeks_ahead(datetime(2026, 12, 6, 10, tzinfo=MSK), NOW, MSK) == 6
+    assert weeks_ahead(datetime(2026, 11, 2, 10, tzinfo=MSK), NOW, MSK) == 1  # 7 days
+    assert weeks_ahead(datetime(2026, 11, 3, 10, tzinfo=MSK), NOW, MSK) == 2  # 8 days
+    assert weeks_ahead(datetime(2026, 10, 30, 10, tzinfo=MSK), NOW, MSK) == 1
+    assert weeks_ahead(datetime(2026, 10, 27, 20, tzinfo=MSK), NOW, MSK) == 1  # later today
+    assert weeks_ahead(datetime(2026, 10, 20, 10, tzinfo=MSK), NOW, MSK) is None  # all over
+    assert weeks_ahead(None, NOW, MSK) is None
 
 
 def test_every_is_said_in_hours_when_it_is_whole_hours() -> None:
@@ -198,20 +239,29 @@ def test_the_closing_message_is_friendly_and_says_what_to_ask() -> None:
     assert finished_text(
         {"scheduleEvents": 35}, university="НИУ ВШЭ", every_minutes=180, weeks=6
     ) == (
-        "Готово! Расписание НИУ ВШЭ подключено: 35 занятий на 6 недель вперёд. "
-        "Обновляю само каждые 3 часа — спросите, например, «что у меня завтра?»"
+        "Готово! Расписание из «НИУ ВШЭ» подключено: 35 занятий на 6 недель вперёд. "
+        "Дальше обновляется само каждые 3 часа — спросите, например, «что у меня завтра?»"
     )
     assert finished_text({"deadlines": 12}, university=None, every_minutes=60) == (
         "Готово! Дедлайны подключены: 12 заданий со сроками. "
-        "Обновляю само каждый час — спросите, например, «какие у меня сроки на этой неделе?»"
+        "Дальше обновляется само каждый час — спросите, например, «какие у меня сроки на этой неделе?»"
     )
     assert finished_text(
         {"scheduleEvents": 3, "courses": 8}, university="НИУ ВШЭ", every_minutes=0, weeks=1
     ) == (
-        "Готово! Данные НИУ ВШЭ подключены: расписание — 3 занятия на 1 неделю вперёд; "
+        "Готово! Данные из «НИУ ВШЭ» подключены: расписание — 3 занятия на 1 неделю вперёд; "
         "курсы — 8 курсов. Спросите, например, «что у меня завтра?»"
     )
     assert "данных в нём пока не нашлось" in finished_text({}, university=None, every_minutes=180)
+    # no gender in the wording: the full name of a university is never put in the nominative
+    for text in (
+        finished_text(
+            {"scheduleEvents": 1}, university="Центральный университет", every_minutes=180
+        ),
+        finished_text({"courses": 2}, university="ЦУ", every_minutes=180),
+    ):
+        assert "Обновляю" not in text
+        assert " из «" in text
 
 
 def test_the_moment_does_not_depend_on_the_server_zone() -> None:

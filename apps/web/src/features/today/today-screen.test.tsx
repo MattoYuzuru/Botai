@@ -187,6 +187,67 @@ describe("«Сегодня»: сегодня пар нет", () => {
     expect(within(upcoming).queryAllByRole("listitem")).toHaveLength(0);
   });
 
+  it("поиск ближайших пар не удался и прежних данных нет — об этом сказано словами, а не молчанием или вечным скелетоном", async () => {
+    freeDay();
+    current.server.use(http.get("*/api/v1/schedule", () => HttpResponse.error()));
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(await within(upcoming).findByText("Ближайшие пары не загрузились")).toBeInTheDocument();
+    expect(within(upcoming).getByText(/Обновление идёт само/)).toBeInTheDocument();
+    expect(within(upcoming).queryByRole("status")).toBeNull();
+    expect(within(upcoming).queryByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toBeNull();
+    // и это не «пар тоже нет»: пары могут быть, просто их не удалось получить
+    expect(screen.queryByText(/пар тоже нет/)).toBeNull();
+  });
+
+  it("ближайшие пары из офлайн-снимка подписаны, как остальные данные, и «пар тоже нет» не объявляют", async () => {
+    freeDay();
+    const snapshotAt = new Date(NOW - 3 * 3_600_000).toISOString();
+    current.server.use(
+      http.get("*/api/v1/schedule", () =>
+        HttpResponse.json(
+          [
+            {
+              ...eventFixture(),
+              id: "e-snap",
+              title: "Пара из снимка",
+              startsAt: new Date(NOW + 86_400_000).toISOString(),
+              endsAt: new Date(NOW + 86_400_000 + 80 * 60_000).toISOString(),
+            },
+          ],
+          { headers: { "x-botai-snapshot-at": snapshotAt } },
+        ),
+      ),
+    );
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(await within(upcoming).findByText("Пара из снимка")).toBeInTheDocument();
+    expect(within(upcoming).getByText(/Нет сети\. Показан снимок от 27 октября, 14:40/)).toBeInTheDocument();
+  });
+
+  it("пары, которые сервер пометил устаревшими, подписаны датой получения", async () => {
+    freeDay();
+    const old = eventFixture();
+    current.server.use(
+      http.get("*/api/v1/schedule", () =>
+        HttpResponse.json([
+          {
+            ...old,
+            id: "e-old",
+            title: "Старая пара",
+            startsAt: new Date(NOW + 86_400_000).toISOString(),
+            endsAt: new Date(NOW + 86_400_000 + 80 * 60_000).toISOString(),
+            provenance: { ...old.provenance, stale: true, fetchedAt: "2026-10-24T09:00:00.000Z" },
+          },
+        ]),
+      ),
+    );
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(await within(upcoming).findByText("Старая пара")).toBeInTheDocument();
+    expect(within(upcoming).getByText("Данные от 24 октября")).toBeInTheDocument();
+  });
+
   it("устаревшие данные без пар «Сегодня пар нет» не объявляют и ближайшие не ищут: данные могут быть неполными", async () => {
     const asked: string[] = [];
     const snapshotAt = new Date(NOW - 3 * 3_600_000).toISOString();

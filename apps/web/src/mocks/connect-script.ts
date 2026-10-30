@@ -74,6 +74,7 @@ export async function runConnect(
         inputKind: "text",
         required: true,
         secret: false,
+        login: true,
         autocomplete: "username",
         maxLength: 200,
       },
@@ -88,6 +89,7 @@ export async function runConnect(
       inputKind: "password",
       required: true,
       secret: true,
+      login: true,
       autocomplete: "current-password",
       maxLength: 200,
     });

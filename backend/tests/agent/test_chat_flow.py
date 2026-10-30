@@ -459,8 +459,10 @@ async def test_the_agent_reads_a_reply_after_the_question_it_answers(sm: Sm, use
     ctx = InMemoryJobContext(user_id=user_id, job_id=new_id())
     await handle_chat(ctx, r.services, {"thread_id": r.thread_id, "message_id": question})
 
-    # The model reads the short answer after the question it answers, so "Да" means something.
-    last = llm.requests[0].messages[-1]
-    assert last.role == "user"
-    assert last.content.startswith("[В ответ на: «Вышка — это НИУ ВШЭ?")
-    assert last.content.endswith("\nДа, НИУ ВШЭ")
+    # The model reads the short answer after the question it answers, so "Да" means something. The
+    # question is data in a message of its own; the student's channel holds only their words.
+    asked, said = llm.requests[0].messages[-2:]
+    assert asked.data is True
+    assert "<source_data" in asked.content
+    assert "Вышка — это НИУ ВШЭ?" in asked.content
+    assert (said.role, said.content, said.data) == ("user", "Да, НИУ ВШЭ", False)

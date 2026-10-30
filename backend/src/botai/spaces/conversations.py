@@ -475,13 +475,23 @@ async def _child_connection(
     if conn is None:
         host = urlsplit(url).hostname or ""
         kind = _guess_kind(requested)
+        title = source_title(kind=kind)  # a human name like every source, never the host alone
+        taken = set(
+            await session.scalars(
+                select(Connection.title).where(
+                    Connection.user_id == user_id, Connection.space_id == space.id
+                )
+            )
+        )
+        if title in taken:  # two sources of one kind are told apart by their site
+            title = f"{title} ({host})"[:120]
         conn = Connection(
             id=new_id(),
             user_id=user_id,
             space_id=space.id,
             origin=origin,
             kind=kind,
-            title=source_title(kind=kind),  # a human name like every source, never the host
+            title=title,
             status="draft",
             allow_hosts=[host],
         )

@@ -77,9 +77,31 @@ async def test_connect_learns_the_spec_confirms_and_syncs(make_env: EnvFactory) 
     # and the end is a friendly line: what is connected, how often it refreshes, what to ask
     closing = ls.blocks_of(env.ctx, "text")[-1].markdown
     assert closing == (
-        "Готово! Данные Фейкуни подключены: расписание — 4 занятия на 1 неделю вперёд; "
-        "дедлайны — 2 задания со сроками. Обновляю само каждые 3 часа — "
+        "Готово! Данные из «Фейкуни» подключены: расписание — 2 занятия на 1 неделю вперёд; "
+        "дедлайны — 2 задания со сроками. Дальше обновляется само каждые 3 часа — "
         "спросите, например, «что у меня завтра?»"
+    )
+    # the classes are counted from now on: the Monday that is over is stored, but not "ahead"
+    assert await env.count(m.ScheduleEvent) == 4
+
+
+async def test_a_failure_of_the_closing_text_does_not_fail_a_source_that_is_already_active(
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(self: object, outcome: object, info: object) -> str:
+        raise RuntimeError("the database went away for a moment")
+
+    monkeypatch.setattr("botai.learn.explorer.Explorer._closing", broken)
+    env = await make_env([ls.timetable_answer(), ls.deadlines_answer()])
+    result = await env.run()
+
+    assert result["status"] == "ok"
+    assert (await env.conn()).status == "active"
+    assert await env.count(m.ScheduleEvent) == 4
+    closing = ls.blocks_of(env.ctx, "text")[-1].markdown
+    assert closing == (
+        "Готово! Источник подключён: расписание — 4 занятия, дедлайны — 2 задания со сроками. "
+        "Дальше всё обновляется само."
     )
 
 

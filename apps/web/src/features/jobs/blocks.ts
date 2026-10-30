@@ -88,7 +88,7 @@ function isValidKnown(o: Rec): boolean {
   if (!isId(o.id) || !isStr(o.at)) return false;
   switch (o.type) {
     case "text":
-      return isStr(o.markdown) && SOURCE_OK(o.sources) && QUOTE_OK(o.quote);
+      return isStr(o.markdown) && SOURCE_OK(o.sources) && QUOTE_OK(o.quote) && optBool(o.picked);
     case "thinking":
       return (
         isStr(o.stage) &&
@@ -112,6 +112,7 @@ function isValidKnown(o: Rec): boolean {
         isBool(o.required) &&
         optStr(o.placeholder) &&
         optBool(o.secret) &&
+        optBool(o.login) &&
         (o.autocomplete === undefined || AUTOCOMPLETE.includes(o.autocomplete as string)) &&
         (o.maxLength === undefined || (typeof o.maxLength === "number" && o.maxLength >= 1))
       );

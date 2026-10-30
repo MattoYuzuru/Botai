@@ -94,6 +94,9 @@ _TITLE = 100
 DETAILS_MAX = 2000  # ConfirmBlock.details
 
 _MARKUP = re.compile(r"[*`\[\]<>\\|]|botai://")
+# An address from a university's data keeps only its host: no scheme, so nothing makes it a link, and
+# no path or query, where a token or a session key may sit.
+_ADDRESS = re.compile(r"\b(?:https?|botai)://([^\s/?#<>]*)\S*", re.I)
 
 
 def plural(n: int, forms: Forms) -> str:
@@ -116,9 +119,24 @@ def found_text(kind: Kind, n: int) -> str:
 
 def plain(text: object, limit: int = _TITLE) -> str:
     """Text of a source as one plain line: nothing in it can become a link, a bold run or a list."""
-    line = " ".join(_MARKUP.sub(" ", str(text)).split())
+    line = " ".join(_MARKUP.sub(" ", _ADDRESS.sub(r"\1", str(text))).split())
     line = line.lstrip("#>-+ ")
     return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+
+
+def fit_text(text: str, limit: int) -> str:
+    """At most `limit` characters, cut between lines and never in the middle of one; a heading left
+    without its lines (a day, "Ближайшие пары:") is cut with them."""
+    if len(text) <= limit:
+        return text
+    lines = text[:limit].split("\n")
+    if text[limit] != "\n":
+        lines.pop()  # the last line was cut
+    while lines and (
+        not lines[-1] or (not lines[-1].startswith("- ") and lines[-1].endswith((":", "**")))
+    ):
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _when(record: Record, name: str, tz: ZoneInfo) -> datetime | None:
@@ -144,14 +162,14 @@ def _days(records: Sequence[Record], tz: ZoneInfo) -> list[date]:
     return sorted({m.date() for r in records if (m := _when(r, "startsAt", tz))})
 
 
-def weeks_to(last: datetime | None, now: datetime, tz: ZoneInfo) -> int | None:
-    """How many calendar weeks from this one the classes reach (the current week counts), given the
-    start of the last class; None when there is none or it is already over."""
+def weeks_ahead(last: datetime | None, now: datetime, tz: ZoneInfo) -> int | None:
+    """How many weeks lie ahead up to the last class, counted from today and rounded up (the days
+    already gone do not count); None when there is no class or the last one is over."""
     if last is None:
         return None
     today = now.astimezone(tz).date()
     end = last.astimezone(tz).date()
-    return None if end < today else (_monday(end) - _monday(today)).days // 7 + 1
+    return None if end < today else -(-((end - today).days + 1) // 7)
 
 
 def kind_line(kind: Kind, records: Sequence[Record], tz: ZoneInfo) -> str:
@@ -233,7 +251,7 @@ def confirm_details(
     ]
     if "scheduleEvents" in records:
         lines += ["", *preview_lines(records["scheduleEvents"], now, tz)]
-    return "\n".join(lines)[:DETAILS_MAX]
+    return fit_text("\n".join(lines), DETAILS_MAX)
 
 
 def every_text(minutes: int) -> str:
@@ -261,20 +279,21 @@ def finished_text(
 ) -> str:
     """The closing message of a connection: what is connected, how it is kept fresh, what to ask.
 
-    `counts` are what the first read stored; `weeks` is how far the classes reach (when known).
+    `university` is its short name; `counts` are what the first read stored, for the classes only
+    those still ahead; `weeks` is how far ahead they reach (when known).
     """
     kinds: list[Kind] = [kind for kind in ORDER if counts.get(kind)]
     if not kinds:
         return (
             "Готово, источник подключён, но данных в нём пока не нашлось. "
-            "Как только они появятся, обновлю сама."
+            "Как только они появятся, подтянутся сами."
         )
 
     def phrase(kind: Kind) -> str:
         text = counted(counts[kind], UNITS[kind])
         return f"{text} {_ahead(weeks)}" if kind == "scheduleEvents" and weeks else text
 
-    where = f" {plain(university, 60)}" if university else ""
+    where = f" из «{plain(university, 60)}»" if university else ""
     if len(kinds) == 1:
         name, many = _SECTION[kinds[0]]
         head = (
@@ -286,4 +305,4 @@ def finished_text(
     ask = f"спросите, например, «{_ASK[kinds[0]]}»"
     if every_minutes <= 0:
         return f"{head} {ask[0].upper()}{ask[1:]}"
-    return f"{head} Обновляю само {every_text(every_minutes)} — {ask}"
+    return f"{head} Дальше обновляется само {every_text(every_minutes)} — {ask}"

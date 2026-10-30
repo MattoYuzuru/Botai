@@ -28,7 +28,7 @@ from botai.core.clock import Clock
 from botai.core.dialogue import DialogueContext
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
-from botai.learn.summary import DETAILS_MAX, UNITS, counted
+from botai.learn.summary import DETAILS_MAX, UNITS, counted, fit_text
 from botai.sources.adapter import Record
 from botai.sources.vocab import KIND_LABELS
 
@@ -98,7 +98,7 @@ class Ui:
                 question=question[:500],
                 confirm_label=yes[:40],
                 cancel_label=no[:40],
-                details=details[:DETAILS_MAX] if details else None,
+                details=fit_text(details, DETAILS_MAX) if details else None,
             )
         )
         return truthy(answer)

@@ -27,7 +27,7 @@ import { sortEvents, toScheduleItem } from "@/features/schedule/events";
 import { DeadlineSheet } from "@/features/tasks/deadline-sheet";
 import { type DeadlineView, sortByDue, toDeadlineView } from "@/features/tasks/deadlines";
 import { ConnectPrompt } from "./connect-prompt";
-import { UpcomingClasses, upcomingDay } from "./upcoming-classes";
+import { UpcomingClasses, type UpcomingStatus, upcomingDay, upcomingFreshness } from "./upcoming-classes";
 
 const NEAREST = 3;
 /** Как далеко вперёд ищем ближайший день с парами, когда сегодня пар нет: три недели. */
@@ -78,6 +78,23 @@ export function TodayScreen() {
   });
   const upcomingEvents = useMemo(() => sortEvents(upcoming.data?.data ?? []), [upcoming.data]);
   const nearest = useMemo(() => upcomingDay(upcomingEvents, timeZone), [upcomingEvents, timeZone]);
+  // Нет сети — запрос стоит на паузе и ответа не будет: это не «ещё ищем». Сбой без прежних данных — словами.
+  const upcomingStatus: UpcomingStatus = upcoming.data
+    ? "ready"
+    : upcoming.fetchStatus === "paused"
+      ? "offline"
+      : upcoming.isError
+        ? "failed"
+        : "loading";
+  const upcomingNote = upcoming.data
+    ? upcomingFreshness({
+        events: nearest?.events ?? [],
+        snapshotAt: upcoming.data.snapshotAt,
+        refreshFailedAt: upcoming.isRefetchError ? upcoming.dataUpdatedAt : null,
+        nowMs,
+        timeZone,
+      })
+    : null;
 
   if (!directory.loaded) {
     return (
@@ -138,7 +155,7 @@ export function TodayScreen() {
                   as="h3"
                   title="Сегодня пар нет"
                   description={
-                    upcoming.isSuccess && nearest === null
+                    upcomingStatus === "ready" && nearest === null && upcomingNote === null
                       ? "В расписании на ближайшие три недели пар тоже нет."
                       : undefined
                   }
@@ -156,11 +173,12 @@ export function TodayScreen() {
                 />
               )}
             </section>
-            {scheduleState === "empty" && (nearest !== null || upcoming.isPending) && (
+            {scheduleState === "empty" && (nearest !== null || upcomingStatus !== "ready") && (
               <UpcomingClasses
-                loading={upcoming.isPending}
+                status={upcomingStatus}
                 day={nearest?.day ?? null}
                 events={nearest?.events ?? []}
+                freshness={upcomingNote}
                 spaces={directory.byId}
                 nowMs={nowMs}
                 timeZone={timeZone}

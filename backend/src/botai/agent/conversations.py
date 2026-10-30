@@ -310,18 +310,38 @@ def _waiting_dialogue(job: Job) -> bool:
     )
 
 
-def _quote_of(body: MessageIn, *, task: bool) -> Quote | None:
-    """The quote of a message as it is stored: plain one-line text under the same secret rules as
-    the message. The quote only decorates, so a bad one is dropped instead of refusing the message."""
+def _quote_of(body: MessageIn) -> Quote | None:
+    """The quote a client sent with a message to the agent, as it is stored: plain one-line text under
+    the secret rule of links. It only decorates, so a bad one is dropped instead of refusing the message."""
     if body.quote is None or not body.text.strip():
         return None
     text = " ".join(body.quote.text.split())
     try:
-        text = safe_text(text) if task else reject_secret_links(text)
+        text = reject_secret_links(text)
     except BotaiError:
         return None
     text = dialogue.clip_quote(text)
     return Quote(text=text, block_id=body.quote.block_id) if text else None
+
+
+async def _verified(
+    session: AsyncSession, user_id: str, thread_id: str, quote: Quote | None
+) -> Quote | None:
+    """The quote with a block id only if that block is an agent message of this thread; a block the
+    thread does not have is not kept as a reference (the words of the quote still are)."""
+    if quote is None or quote.block_id is None:
+        return quote
+    known = await session.scalar(
+        select(ChatMessage.id)
+        .where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.role == "agent",
+            ChatMessage.blocks.contains([{"id": quote.block_id}]),
+        )
+        .limit(1)
+    )
+    return quote if known is not None else Quote(text=quote.text)
 
 
 async def post_message(
@@ -376,9 +396,13 @@ async def post_message(
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
-    quote = _quote_of(body, task=target is not None)
-    if quote is None and target is not None and text.strip():
-        quote = await dialogue.question_quote(session, target)
+    # A reply to a task is quoted by the server from the question the task is asking; a quote of the
+    # client (quick replies of the agent) is kept only for a message to the agent, and only with a block
+    # that is in this thread.
+    if target is not None:
+        quote = await dialogue.question_quote(session, target) if text.strip() else None
+    else:
+        quote = await _verified(session, user_id, thread.id, _quote_of(body))
     if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
@@ -542,9 +566,8 @@ async def _replay(
         ),
         None,
     )
-    submitted_quote = _quote_of(
-        body, task=existing_job is not None and existing_job.kind in TASK_KINDS
-    )
+    to_task = existing_job is not None and existing_job.kind in TASK_KINDS
+    submitted_quote = None if to_task else _quote_of(body)  # a task's quote is the server's
     if (
         stored != submitted
         or (submitted_quote is not None and submitted_quote.text != stored_quote)

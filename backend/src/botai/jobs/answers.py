@@ -44,8 +44,9 @@ _BAD_ANSWER = "Ответ не подходит к вопросу"
 
 
 def acknowledgement_text(block: AgentUiBlock, values: list[str] | str | bool | None) -> str:
-    """What the thread shows for an answer: the picked option in words ("Да, всё верно"). A password,
-    a code and a login are never repeated; free text that looks like a secret is not either."""
+    """What the thread shows for an answer: the picked option in words ("Да, всё верно"). The value of
+    any field of a login (a password, a code, a login, whatever else the form asks) is never repeated,
+    and neither is free text that looks like a secret."""
     if isinstance(block, ConfirmBlock):
         return block.confirm_label if values is True else block.cancel_label
     if isinstance(block, ChoiceBlock):
@@ -60,7 +61,10 @@ def acknowledgement_text(block: AgentUiBlock, values: list[str] | str | bool | N
         words = [
             labels[value] if value in labels else _free_text(value) for value in picked if value
         ]
-        return ", ".join(words)[:500] or "Не знаю"
+        # Nothing picked: a skipped single question is "don't know", an empty multiple one is nothing.
+        return ", ".join(words)[:500] or (
+            "Ничего не выбрано" if block.mode == "multi" else "Не знаю"
+        )
     if isinstance(block, InputBlock):
         if block.input_kind == "password":
             return "Пароль передан"
@@ -177,11 +181,7 @@ async def record_answer(
     if (
         isinstance(block, InputBlock)
         and job.connection_id is not None
-        and block.input_kind != "url"
-        and (
-            block.autocomplete in {"username", "current-password", "one-time-code"}
-            or block.input_kind in {"password", "code"}
-        )
+        and dialogue.is_auth_input(block)
     ):
         handoff = await session.scalar(
             select(JobEvent.id)
@@ -273,6 +273,7 @@ async def record_answer(
                 at=at,
                 markdown=acknowledgement_text(block, body.values),
                 quote=dialogue.quote_of_block(block),
+                picked=True,  # its words come from the question, not from the student
             )
             session.add(
                 ChatMessage(

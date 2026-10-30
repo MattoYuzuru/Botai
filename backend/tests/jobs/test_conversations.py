@@ -1175,8 +1175,9 @@ async def test_cross_host_continuation_is_same_chat_but_separate_connection_and_
         assert origin.allow_hosts == ["schedule.fakeuni.test"]
         assert target.origin == "https://study.fakeuni.test"
         assert target.allow_hosts == ["study.fakeuni.test"]
-        # A source of another site is named like any other, never by its host.
-        assert (target.kind, target.title) == ("schedule", "Расписание")
+        # A source of another site is named like any other, never by its host alone; the parent is
+        # already "Расписание", so the sibling of the same kind is told apart by its site.
+        assert (target.kind, target.title) == ("schedule", "Расписание (study.fakeuni.test)")
     state = await runtime_of(client, thread)
     assert state["activeJob"]["id"] == child.id
     assert state["activeJob"]["connectionId"] == result["connectionId"]
@@ -1294,7 +1295,11 @@ async def test_continuation_waits_for_source_group_before_locking_existing_child
     ("requested", "kind", "title"),
     [
         (["courses", "deadlines"], "lms", "Система обучения"),
-        (["scheduleEvents"], "schedule", "Расписание"),
+        (
+            ["scheduleEvents"],
+            "schedule",
+            "Расписание (study.fakeuni.test)",
+        ),  # the parent is "Расписание"
         (["news"], "other", "Источник"),
     ],
 )
@@ -1311,7 +1316,36 @@ async def test_a_source_of_another_site_gets_a_human_name_not_its_host(
         child = await session.get(Connection, result["connectionId"])
         assert child is not None
         assert (child.kind, child.title) == (kind, title)
-        assert "fakeuni.test" not in child.title
+
+
+async def test_two_sources_of_one_kind_in_a_university_are_told_apart_by_their_site(
+    env: Env,
+) -> None:
+    _, user, thread = await student(env)
+    parent, parent_job = await source_task(env, user, thread)
+    intent = {"entry_urls": [CHILD_URL], "requested_kinds": ["courses"], "absent_kinds": []}
+    first = await continue_source(
+        ctx(env, user, parent_job, parent), env.services, parent, CHILD_URL, intent
+    )
+    async with env.sm() as session:
+        space = (await session.get(Connection, parent)).space_id  # type: ignore[union-attr]
+    other_parent, other_job = await source_task(
+        env, user, thread, space=space, origin="https://third.fakeuni.test"
+    )
+    other_url = "https://other.fakeuni.test/courses"
+    second = await continue_source(
+        ctx(env, user, other_job, other_parent),
+        env.services,
+        other_parent,
+        other_url,
+        {**intent, "entry_urls": [other_url]},
+    )
+    async with env.sm() as session:
+        titles = [
+            (await session.get(Connection, found["connectionId"])).title  # type: ignore[union-attr]
+            for found in (first, second)
+        ]
+    assert titles == ["Система обучения", "Система обучения (other.fakeuni.test)"]
 
 
 async def test_unthreaded_continuation_creates_one_thread_before_ui_attach(env: Env) -> None:

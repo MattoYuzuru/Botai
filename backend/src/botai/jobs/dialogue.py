@@ -96,12 +96,15 @@ def advance_input(job: Job) -> None:
 
 
 def is_auth_input(block: AgentUiBlock) -> bool:
-    return (
-        isinstance(block, InputBlock)
-        and block.input_kind != "url"
-        and (
-            block.input_kind in {"password", "code"}
-            or block.autocomplete in {"username", "current-password", "one-time-code"}
+    """A field of a login: marked so by its author, or recognisable by what it is."""
+    return isinstance(block, InputBlock) and (
+        block.login
+        or (
+            block.input_kind != "url"
+            and (
+                block.input_kind in {"password", "code"}
+                or block.autocomplete in {"username", "current-password", "one-time-code"}
+            )
         )
     )
 
