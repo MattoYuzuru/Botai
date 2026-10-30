@@ -34,7 +34,7 @@ describe("один тред: подключение, вход, вопросы а
     await user.type(within(pendingQuestion() as HTMLElement).getByLabelText("Ответ"), "student");
     await user.click(within(pendingQuestion() as HTMLElement).getByRole("button", { name: "Ответить" }));
 
-    // Пароль — секрет: поле скрыто, значение уходит через jobs/answers, в ленте остаётся «Введено».
+    // Пароль — секрет: поле скрыто, значение уходит через jobs/answers, в ленте остаётся отметка «Пароль передан».
     const password = await screen.findByText("Вход в lk.fakeuni.test. Пароль", undefined, wait);
     expect(pendingQuestion()?.contains(password)).toBe(true);
     await user.type(

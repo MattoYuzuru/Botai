@@ -425,3 +425,42 @@ async def test_tools_only_see_the_students_own_connections(sm: Sm, user_id: str)
     tool_msg = next(m for m in llm.requests[1].messages if m.role == "tool")
     assert "Чужое расписание" not in tool_msg.content
     assert "Расписание ЛК" in tool_msg.content
+
+
+# --- a reply that answers a question --------------------------------------------------------------
+
+
+async def test_the_agent_reads_a_reply_after_the_question_it_answers(sm: Sm, user_id: str) -> None:
+    from botai.db.models import ChatMessage
+
+    llm = ScriptedLlm(queue=[final("Хорошо, подключаю расписание НИУ ВШЭ.")])
+    r = await make_rig(sm, user_id, llm)
+    question = new_id()
+    async with sm() as session:
+        session.add(
+            ChatMessage(
+                id=question,
+                user_id=user_id,
+                thread_id=r.thread_id,
+                role="user",
+                blocks=[
+                    {
+                        "type": "text",
+                        "id": new_id(),
+                        "at": NOW.isoformat(),
+                        "markdown": "Да, НИУ ВШЭ",
+                        "quote": {"text": "Вышка — это НИУ ВШЭ? Ссылка: https://lk.fakeuni.test/x"},
+                    }
+                ],
+                created_at=NOW - timedelta(minutes=1),
+            )
+        )
+        await session.commit()
+    ctx = InMemoryJobContext(user_id=user_id, job_id=new_id())
+    await handle_chat(ctx, r.services, {"thread_id": r.thread_id, "message_id": question})
+
+    # The model reads the short answer after the question it answers, so "Да" means something.
+    last = llm.requests[0].messages[-1]
+    assert last.role == "user"
+    assert last.content.startswith("[В ответ на: «Вышка — это НИУ ВШЭ?")
+    assert last.content.endswith("\nДа, НИУ ВШЭ")

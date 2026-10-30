@@ -644,10 +644,12 @@ async def check_connect_job(env: Env, connect: Attendance, connection_id: str) -
     stages = [b["stage"] for b in connect.blocks("thinking")]
     assert "Смотрю страницы кабинета" in stages
     assert any(s.startswith("Разбираю:") for s in stages)
+    # The student confirms once, with the summary in the same message as the question.
     assert [b["type"] for b in connect.blocks() if b["type"] in {"summary", "confirm"}] == [
-        "summary",
-        "confirm",
+        "confirm"
     ]
+    (confirmation,) = [b for b in connect.blocks() if b["type"] == "confirm"]
+    assert "4 занятия" in confirmation["details"]
 
 
 async def check_the_app_shows_fakeuni(
