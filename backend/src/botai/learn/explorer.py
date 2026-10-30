@@ -66,7 +66,13 @@ from botai.learn.author import (
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
 from botai.learn.discovery import DiscoveryBudget, ProbeKit, adaptive_observe
 from botai.learn.entry import entry_queries, rank_entries
-from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
+from botai.learn.intent import (
+    DEFAULT_KINDS,
+    LearningIntent,
+    apply_intent,
+    intent_request,
+    prepare_turn,
+)
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
@@ -107,7 +113,6 @@ from botai.spaces.views import source_title
 
 log = logging.getLogger(__name__)
 
-DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents",)
 TOKEN_BUDGET = 1_500_000
 MAX_LINK_ROUNDS = 2
 MAX_CANARY_AUTHOR_ROUNDS = 2
@@ -183,6 +188,8 @@ class Explorer:
         self._stop_reason = ""
         self._limit_told = False
         self._gaps: dict[Kind, list[str]] = {}
+        # Links to other sites that already went on as sibling sources (never continued twice).
+        self._continued: set[str] = set()
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -211,7 +218,7 @@ class Explorer:
         if not isinstance(self.ctx, ResearchContext):
             return
         if self._research is not None and self._research.state.intent_key == intent_key(
-            self.intent
+            self.intent, info.origin
         ):
             return
         self._research = await ResearchLedger.load(
@@ -428,19 +435,48 @@ class Explorer:
                 )
         return self.intent != before
 
-    async def _continue_foreign(self, info: ConnInfo) -> dict[str, Any] | None:
-        foreign = [url for url in self.intent.entry_urls if url_origin(url) != info.origin]
+    def _foreign(self, info: ConnInfo) -> list[str]:
+        """Links the student gave to other sites that no sibling source has taken yet."""
+        return [
+            url
+            for url in self.intent.entry_urls
+            if url_origin(url) != info.origin and url not in self._continued
+        ]
+
+    def _has_saved_work(self) -> bool:
+        """An earlier slice of this research already accepted a kind (the ledger keeps it)."""
+        return self._research is not None and bool(self._research.state.candidates)
+
+    async def _continue_foreign(
+        self,
+        info: ConnInfo,
+        *,
+        done: dict[str, Any] | None = None,
+        saved: Collection[Kind] = (),
+    ) -> dict[str, Any] | None:
+        """Take a link on another site as a sibling source.
+
+        `done` is the outcome of this connection when it has been settled first (what was accepted
+        is saved, or the student declined it): its status is then the truth about the data and is
+        not touched, and the outcome gains a `continuation`. Without `done` nothing was accepted
+        here, so the connection goes back to the status it had. `saved` are the kinds that stay with
+        this connection: the sibling is asked only for the rest.
+        """
+        foreign = self._foreign(info)
         if not foreign:
             return None
-        diagnostic_event("learn.outcome", outcome="continued", entry_count=len(foreign))
+        diagnostic_event(
+            "learn.outcome", outcome="continued", entry_count=len(foreign), chosen_count=len(saved)
+        )
         # A recipe still has exactly one origin. A student's link creates a sibling source;
         # credentials and bearer values are not copied between the two connections.
         from botai.spaces.conversations import continue_source
 
         url = foreign[-1]
+        left: tuple[Kind, ...] = tuple(k for k in self.intent.requested_kinds if k not in saved)
         child_intent = LearningIntent(
             (url,),
-            self.intent.requested_kinds,
+            left or self.intent.requested_kinds,
             self.intent.absent_kinds,
             self.intent.user_note,
             self.intent.discovery_mode,
@@ -448,15 +484,37 @@ class Explorer:
         result = await continue_source(
             self.ctx, self.services, info.connection_id, url, child_intent.checkpoint()
         )
-        status = self._previous_status
-        if status in (None, "learning", "syncing"):
-            status = "active" if info.adapter else "draft"
-        await self._set(info.connection_id, status=status)
+        self._continued.update(foreign)
+        if done is None:
+            status = self._previous_status
+            if status in (None, "learning", "syncing"):
+                status = "active" if info.adapter else "draft"
+            await self._set(info.connection_id, status=status)
         await self.ui.say(
             "Эта страница находится на другом сайте. Подключаю её отдельным источником "
             "в том же пространстве; при необходимости попрошу войти."
         )
-        return {"status": "continued", **result}
+        return (
+            {"status": "continued", **result} if done is None else {**done, "continuation": result}
+        )
+
+    async def _then_continue(
+        self, info: ConnInfo, done: dict[str, Any], *, saved: Collection[Kind] = ()
+    ) -> dict[str, Any]:
+        """A link on another site given while this connection was being settled goes on as a
+        sibling source once what was accepted here is saved. A failure to start the sibling is
+        told; it does not undo the data that is already stored."""
+        if not self._foreign(info):
+            return done
+        try:
+            continued = await self._continue_foreign(info, done=done, saved=saved)
+        except BotaiError as err:
+            await self.ui.say(
+                "Данные этого сайта обработаны, а вторую страницу подключить не получилось"
+                f"{': ' + err.detail if err.detail else ''}. Пришлите ссылку ещё раз."
+            )
+            return done
+        return continued if continued is not None else done
 
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._manual_connect = payload.get("manual_login") is True
@@ -532,15 +590,17 @@ class Explorer:
             await self._initial_note(await self._redactor(info))
             await self._checkpoint()
             await self._drain(await self._redactor(info))
-            continued = await self._continue_foreign(info)
-            if continued is not None:
-                return continued
+            # What is already saved is finished first; a link to another site goes on after it.
             resumed = await self._resume_activation(info)
             if resumed is not None:
-                return resumed
+                return await self._then_continue(info, resumed, saved=resumed.get("kinds", ()))
+            if not self._has_saved_work():  # else the exploration saves what it accepted first
+                continued = await self._continue_foreign(info)
+                if continued is not None:
+                    return continued
             reused = await self._reuse(info)
             if reused is not None:
-                return reused
+                return await self._then_continue(info, reused)
             return await self._explore(info, wanted_kinds(payload), base_spec=None)
         except (JobCancelled, asyncio.CancelledError):
             # nobody answered in time (JobCancelled), or the student stopped the job and the
@@ -790,9 +850,10 @@ class Explorer:
         redactor = await self._redactor(info)
         await self._initial_note(redactor)
         await self._drain(redactor)
-        continued = await self._continue_foreign(info)
-        if continued is not None:
-            return continued
+        if not self._has_saved_work():  # else the rounds below save what was accepted first
+            continued = await self._continue_foreign(info)
+            if continued is not None:
+                return continued
         sctx = self._sync_context(info, session)
         await self._research_for(info)
         if self._research is not None:
@@ -808,10 +869,16 @@ class Explorer:
         lint_ctx = LintContext(allowed_hosts=info.allow_hosts, expected_origin=info.origin)
         for round_no in range(MAX_LINK_ROUNDS + 1):
             await self._drain(redactor)
-            continued = await self._continue_foreign(info)
-            if continued is not None:
-                return continued
             chosen = self._scoped_selection(chosen)
+            if self._foreign(info):
+                # A link to another site. Nothing accepted yet (and nothing kept by an earlier
+                # slice): go there now. Otherwise what was accepted is saved first, below.
+                if not chosen and not self._has_saved_work():
+                    continued = await self._continue_foreign(info)
+                    if continued is not None:
+                        return continued
+                if chosen:
+                    break
             pending = [k for k in self.intent.requested_kinds if k not in chosen]
             diagnostic_event(
                 "learn.round",
@@ -873,6 +940,8 @@ class Explorer:
                     if restored is not None:
                         chosen[kind] = restored
                         pending.remove(kind)
+            if self._foreign(info) and chosen:
+                break  # the accepted kinds are saved first, below; then the link goes on
             if not obs.empty:
                 lint_ctx = LintContext(
                     allowed_hosts=info.allow_hosts,
@@ -914,6 +983,9 @@ class Explorer:
                 continue
             if not pending or round_no == MAX_LINK_ROUNDS:
                 break
+            owed: list[Kind] = [kind for kind in pending if kind in self._asked_kinds()]
+            if chosen and not owed:
+                break  # all that was asked for is in; the rest is told in the summary
             if self._research is not None:
                 memory = self._research.state.memory
                 if memory.exhausted or memory.overflowed:
@@ -927,17 +999,17 @@ class Explorer:
                     self._research.state.phase = "observe"
                     await self._research.save()
                     raise JobDeferred("Продолжаю поиск доступных разделов")
-            continued = await self._continue_foreign(info)
-            if continued is not None:
-                return continued
-            if not await self._ask_page(info, pending, have_some=bool(chosen)):
+            if self._foreign(info):
+                break
+            if not await self._ask_page(info, owed or pending, have_some=bool(chosen)):
                 break
 
         await self._drain(redactor)
-        continued = await self._continue_foreign(info)
-        if continued is not None:
-            return continued
         chosen = self._scoped_selection(chosen)
+        if self._foreign(info) and not chosen:
+            continued = await self._continue_foreign(info)  # nothing accepted: nothing to save
+            if continued is not None:
+                return continued
         pending = [k for k in self.intent.requested_kinds if k not in chosen]
 
         if not chosen:
@@ -955,6 +1027,30 @@ class Explorer:
                 say=False,
             )
 
+        # Settle what was accepted for this connection (assemble, verify, confirm, save). A link
+        # to another site goes on as a sibling source only after that, with the status it left.
+        done = await self._conclude(
+            info, chosen, pending, base_spec, revision, digest, sctx, lint_ctx, warning, redactor
+        )
+        return await self._then_continue(info, done, saved=tuple(chosen))
+
+    async def _conclude(
+        self,
+        info: ConnInfo,
+        chosen: dict[Kind, Chosen],
+        pending: list[Kind],
+        base_spec: dict[str, Any] | None,
+        revision: int,
+        digest: str,
+        sctx: SyncContext,
+        lint_ctx: LintContext,
+        warning: str | None,
+        redactor: Redactor,
+    ) -> dict[str, Any]:
+        """The accepted kinds become the connection: one description for all of them is verified on
+        the student's session, shown to the student and, once confirmed, stored and read."""
+        ui, svc = self.ui, self.services
+
         assembly_base = base_spec
         if assembly_base is None:
             async with svc.db() as db:
@@ -968,9 +1064,14 @@ class Explorer:
                 info, "Собранное описание не прошло проверку", ErrorCode.RECIPE_REJECTED
             )
         spec, report = built
-        if pending:
+        # What the student asked for and did not get is said at once; what the research tried on
+        # its own and could not read is only noted in the summary: it blocks nothing.
+        asked = self._asked_kinds()
+        owed: list[Kind] = [kind for kind in pending if kind in asked]
+        extra: list[Kind] = [kind for kind in pending if kind not in asked]
+        if owed:
             await ui.say(
-                f"Подключаю не всё. Не вышло: {self._gap_lines(pending)}. "
+                f"Подключаю не всё. Не вышло: {self._gap_lines(owed)}. "
                 f"Остальное подключаю, к этому можно вернуться позже. {words.remedy()}"
             )
         if warning:
@@ -987,6 +1088,7 @@ class Explorer:
                 svc.clock.now(),
                 info.tz,
                 heading=f"Нашла в «{plain(info.title, 80)}»:",
+                unconnected=self._gap_lines(extra) if extra else "",
             ),
         )
         diagnostic_event("learn.confirmation", confirmed=confirmed, chosen_count=len(chosen))
@@ -997,7 +1099,7 @@ class Explorer:
             )
         before = self.intent
         await self._drain(redactor)
-        if self.intent != before:
+        if self.intent != before and not self._only_foreign_added(before, info):
             # Never activate a description the user changed while its confirmation was pending.
             self._confirmation_revisions += 1
             if self._confirmation_revisions > MAX_LINK_ROUNDS:
@@ -1011,6 +1113,27 @@ class Explorer:
             self._research.state.phase = "activate"
             await self._research.save()
         return await self._activate(info, spec, chosen, warning, digest, base_spec is not None)
+
+    def _asked_kinds(self) -> tuple[Kind, ...]:
+        """The kinds the student asked for. Without such a request (auto mode) `requested_kinds`
+        is only what the research has seen in the cabinet: nothing is owed to the student then, and
+        what could not be read is told in the summary instead of being asked about."""
+        if self.intent.discovery_mode != "requested":
+            return ()
+        return tuple(k for k in self.intent.requested_kinds if k not in self.intent.absent_kinds)
+
+    def _only_foreign_added(self, before: LearningIntent, info: ConnInfo) -> bool:
+        """The last words of the student brought a link to another site and changed nothing about
+        this one: the confirmation they were shown still holds."""
+
+        def mine(intent: LearningIntent) -> tuple[object, ...]:
+            urls = tuple(url for url in intent.entry_urls if url_origin(url) == info.origin)
+            return (urls, intent.requested_kinds, intent.absent_kinds, intent.discovery_mode)
+
+        def foreign(intent: LearningIntent) -> set[str]:
+            return {url for url in intent.entry_urls if url_origin(url) != info.origin}
+
+        return mine(self.intent) == mine(before) and bool(foreign(self.intent) - foreign(before))
 
     def _scoped_selection(self, chosen: dict[Kind, Chosen]) -> dict[Kind, Chosen]:
         return {
@@ -1821,7 +1944,7 @@ class Explorer:
                 raise BotaiError(
                     ErrorCode.RECIPE_REJECTED, "Не удалось проверить сохранённую активацию"
                 ) from None
-            if receipt.intent_key != intent_key(self.intent):
+            if receipt.intent_key != intent_key(self.intent, info.origin):
                 return None  # A new instruction requires new proof and confirmation.
             row = await db.get(m.AdapterSpecRow, receipt.spec_id)
             if (
@@ -1884,7 +2007,7 @@ class Explorer:
                 if job is None:
                     raise JobClaimLost
                 receipt = ActivationReceipt(
-                    intent_key=intent_key(self.intent),
+                    intent_key=intent_key(self.intent, info.origin),
                     spec_id=row.id,
                     revision=revision,
                     spec_digest=research_digest(row.spec),

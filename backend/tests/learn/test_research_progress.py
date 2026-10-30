@@ -262,3 +262,22 @@ async def test_a_question_already_asked_and_the_probe_count_survive_restart_and_
     assert answered.state.intent_key != restarted.state.intent_key
     assert answered.state.horizon_asked == ["scheduleEvents"]
     assert answered.state.memory.probes == 3
+
+
+async def test_a_link_to_another_site_does_not_discard_what_the_research_accepted() -> None:
+    """The link becomes a source of its own; the proofs of this one stay valid."""
+    ctx = MemoryContext()
+    ledger = await load(ctx)
+    ledger.state.candidates["scheduleEvents"] = proposal()
+    await ledger.save()
+    foreign = LearningIntent(
+        entry_urls=(*INTENT.entry_urls, "https://calendar.example.test/page"),
+        requested_kinds=INTENT.requested_kinds,
+    )
+    assert intent_key(foreign, ORIGIN) == intent_key(INTENT, ORIGIN)
+    assert intent_key(foreign) != intent_key(INTENT)  # without an origin every link counts
+
+    restored = await load(ctx, intent=foreign)
+
+    assert restored.state.intent_key == intent_key(INTENT, ORIGIN)
+    assert set(restored.state.candidates) == {"scheduleEvents"}

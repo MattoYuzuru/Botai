@@ -26,6 +26,7 @@ from botai.core.research import (
     ResearchUsage,
 )
 from botai.core.vault import VaultError
+from botai.learn.addresses import url_origin
 from botai.learn.author import Candidate
 from botai.learn.intent import LearningIntent
 from botai.learn.memory import DiscoveryMemory
@@ -37,8 +38,12 @@ def digest(value: object) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def intent_key(intent: LearningIntent) -> str:
+def intent_key(intent: LearningIntent, origin: str | None = None) -> str:
+    """What a research of one source was asked for. A link to another site is not part of it: it
+    becomes a source of its own, so it neither renews the proof nor discards what was accepted here."""
     data = intent.checkpoint()
+    if origin is not None:
+        data["entry_urls"] = [url for url in data["entry_urls"] if url_origin(url) == origin]
     if intent.discovery_mode == "auto":
         # Inferred kinds are findings, not a new instruction from the student.
         data["requested_kinds"] = []
@@ -141,7 +146,7 @@ class ResearchLedger:
         intent: LearningIntent,
         initial_tokens: int = 0,
     ) -> ResearchLedger:
-        key, hosts_key = intent_key(intent), digest(sorted(allow_hosts))
+        key, hosts_key = intent_key(intent, origin), digest(sorted(allow_hosts))
         try:
             checkpoint = await ctx.load_research()
             usage = (

@@ -17,13 +17,18 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from botai.contracts.agent_ui import ConfirmBlock
+from botai.core.dialogue import DialogueTurn
+from botai.core.jobs import JobKind
 from botai.core.llm import LlmRequest, LlmResponse
 from botai.db import models as m
 from botai.domain import repo
+from botai.learn.intent import LearningIntent
 from tests.fakeuni import lms, login
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
 from tests.learn.lms_env import ENTRY, scripted_lms_site
+from tests.learn.test_conversation import ConversationContext
 from tests.learn.test_probe import plan
 from tests.sources.helpers import NOW
 
@@ -445,7 +450,8 @@ async def test_a_kind_that_cannot_be_connected_is_explained_not_coded(
             author(courses_endpoint()),
         ],
     )
-    result = await study.run(payload={"url": ENTRY}, choices=["skip"])
+    # the student asked for all three: what was not read is asked about, not just noted
+    result = await study.run(payload={"url": ENTRY, "kinds": KINDS}, choices=["skip"])
     assert result["status"] == "ok", result
     assert sorted(result["kinds"]) == ["courses", "scheduleEvents"]
 
@@ -459,6 +465,258 @@ async def test_a_kind_that_cannot_be_connected_is_explained_not_coded(
     for code in ("evidence_", "lint", "canary", "requestEvidenceId", "bootstrap"):
         assert code not in text
     assert "backlog" not in text  # no value of the source is repeated to the student
+
+
+# --- what the student is asked, and what a link to another site does to what was accepted -------
+
+OTHER_SITE = "https://other.fakeuni.test/week"
+
+
+def locations_endpoint() -> dict[str, Any]:
+    """Rooms nobody asked for. The rule has no field with a room, so the check refuses them."""
+    row = {"from": "row"}
+    return {
+        "id": "locations",
+        "kind": "locations",
+        "request": {"method": "GET", "path": lms.TIMETABLES_PATH},
+        "response": {
+            "format": "json",
+            "collections": [{"as": "course", "path": ""}, {"as": "row", "path": "/eventRows"}],
+            "fields": {
+                "externalId": {**row, "path": "/calendarEvent/calendarEventId", "required": True},
+                "title": {**row, "path": "/calendarEvent/roomTitle", "required": True},
+            },
+        },
+    }
+
+
+def finish_with(*kinds: str) -> list[LlmResponse]:
+    """The planner opens the timetable and hands over, having seen `kinds` in the cabinet."""
+    return [
+        plan(1, "navigate", "l0", kinds=["scheduleEvents"], evidence=["p0", "r2"]),
+        plan(2, "finish", kinds=list(kinds), evidence=["r2", "r3"]),
+    ]
+
+
+async def test_a_kind_the_research_tried_on_its_own_never_asks_the_student_anything(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The incident: the schedule, the courses were accepted, rooms nobody asked for were refused,
+    and the student was asked for a link to a page with rooms."""
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(courses_endpoint()),
+            author(locations_endpoint()),
+            author(locations_endpoint()),
+        ],
+        discovery=finish_with("scheduleEvents", "courses", "locations"),
+    )
+    result = await study.run(payload={"url": ENTRY})  # the student named no kind: auto mode
+    assert result["status"] == "ok", result
+    assert sorted(result["kinds"]) == ["courses", "scheduleEvents"]
+    assert (await study.conn()).status == "active"
+    assert await study.count(m.ScheduleEvent) > 0
+
+    # straight to the summary: nothing to choose, no link to give
+    assert [type(b).__name__ for b in study.asked] == ["ConfirmBlock"]
+    text = said(study)
+    assert "Подключаю не всё" not in text
+    assert "аудитор" not in text.lower().replace("заодно", "")  # not as a question or a promise
+    confirm = study.asked[0]
+    assert (
+        "Заодно пробовала, но не вышло (это не мешает остальному): аудитории — " in confirm.details
+    )
+    assert "- **Расписание:**" in confirm.details
+    assert "- **Курсы:**" in confirm.details
+    for code in ("evidence_", "required_fields_missing", "canary"):
+        assert code not in confirm.details
+
+
+async def test_when_everything_asked_for_is_accepted_the_summary_comes_without_questions(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(schedule_endpoint()), author(deadlines_endpoint())],
+        discovery=finish_with("scheduleEvents", "deadlines", "courses", "locations"),
+    )
+    result = await study.run(payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]})
+    assert result["status"] == "ok", result
+    assert sorted(result["kinds"]) == ["deadlines", "scheduleEvents"]  # nothing is tried unasked
+    assert [type(b).__name__ for b in study.asked] == ["ConfirmBlock"]
+    assert "Заодно" not in study.asked[0].details
+
+
+async def test_a_requested_kind_that_failed_is_still_asked_about(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),
+            author(deadlines_endpoint("backlog")),
+        ],
+    )
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]}, choices=["skip"]
+    )
+    assert result["status"] == "ok", result
+    assert [type(b).__name__ for b in study.asked] == ["ChoiceBlock", "ConfirmBlock"]
+    assert study.asked[0].question.startswith("Не вышло: дедлайны — ")
+    assert "Подключаю не всё. Не вышло: дедлайны" in said(study)
+
+
+async def test_a_link_to_another_site_saves_what_was_accepted_first(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The incident: the student answers the question about the missing tasks with a link to
+    another site, and the accepted classes used to be thrown away with the connection left a draft."""
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),
+            author(deadlines_endpoint("backlog")),
+        ],
+    )
+    seen: list[dict[str, Any]] = []
+
+    async def continue_source(ctx: Any, services: Any, parent: str, url: str, intent: Any) -> Any:
+        """The sibling starts when the classes are already stored and the source is active."""
+        seen.append(
+            {
+                "parent": parent,
+                "url": url,
+                "intent": intent,
+                "specs": await study.specs(),
+                "events": len(await events(study)),
+                "status": (await study.conn()).status,
+                "told": said(study),
+            }
+        )
+        return {"connectionId": "sibling-fixture", "jobId": "sibling-job-fixture"}
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]},
+        choices=["link"],
+        links=[OTHER_SITE],
+    )
+
+    assert result["status"] == "ok", result
+    assert result["kinds"] == ["scheduleEvents"]
+    assert result["continuation"] == {
+        "connectionId": "sibling-fixture",
+        "jobId": "sibling-job-fixture",
+    }
+    (started,) = seen
+    assert started["parent"] == study.seeded.connection_id
+    assert started["url"] == OTHER_SITE
+    assert started["specs"] == [(1, "active")]  # saved before the sibling began
+    assert started["events"] > 0
+    assert started["status"] == "active"
+    assert "Готово!" in started["told"]  # the closing line of the saved connection came first
+    # the sibling is asked for what this connection did not get, from the new page only
+    assert started["intent"]["entry_urls"] == [OTHER_SITE]
+    assert started["intent"]["requested_kinds"] == ["deadlines"]
+    assert LearningIntent.restore(started["intent"]).discovery_mode == "requested"
+
+    conn = await study.conn()
+    assert (conn.status, conn.adapter) == ("active", "recipe")
+    assert conn.spec_id is not None
+    assert await study.specs() == [(1, "active")]
+    assert [type(b).__name__ for b in study.asked] == ["ChoiceBlock", "InputBlock", "ConfirmBlock"]
+    text = said(study)
+    assert "Подключаю не всё. Не вышло: дедлайны" in text
+    assert text.index("Готово!") < text.index("Эта страница находится на другом сайте")
+
+
+async def test_declining_the_summary_still_takes_the_link_and_leaves_the_status_alone(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),
+            author(deadlines_endpoint("backlog")),
+        ],
+    )
+    taken: list[str] = []
+
+    async def continue_source(ctx: Any, services: Any, parent: str, url: str, intent: Any) -> Any:
+        taken.append(url)
+        return {"connectionId": "sibling-fixture", "jobId": "sibling-job-fixture"}
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]},
+        choices=["link"],
+        links=[OTHER_SITE],
+        confirm=False,
+    )
+
+    assert taken == [OTHER_SITE]  # the link was the student's own ask
+    assert result["status"] == "error"  # nothing was saved, and the status says so
+    assert "continuation" in result
+    conn = await study.conn()
+    assert (conn.status, conn.spec_id) == ("error", None)
+    assert await study.specs() == []
+    assert await study.count(m.ScheduleEvent) == 0
+
+
+async def test_a_link_given_while_the_summary_waits_does_not_make_the_summary_stale(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link to another site is not a change of what is being connected here: the summary the
+    student confirmed is saved as it is, and the link goes on afterwards."""
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(schedule_endpoint()), author(deadlines_endpoint())],
+    )
+    taken: list[dict[str, Any]] = []
+
+    async def continue_source(ctx: Any, services: Any, parent: str, url: str, intent: Any) -> Any:
+        taken.append({"url": url, "specs": await study.specs()})
+        return {"connectionId": "sibling-fixture", "jobId": "sibling-job-fixture"}
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+    ctx = ConversationContext(
+        user_id=study.seeded.user_id, connection_id=study.seeded.connection_id
+    )
+
+    def respond(block: Any) -> Any:
+        if isinstance(block, ConfirmBlock):  # the student answers, and adds a link from the phone
+            ctx.turns.append(DialogueTurn("turn-link-fixture", OTHER_SITE, NOW))
+            return True
+        return None
+
+    ctx._responder = respond
+    payload = {"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]}
+    result = await study.handlers[JobKind.CONNECT](ctx, study.services, payload)
+
+    assert result["status"] == "ok", result
+    assert sorted(result["kinds"]) == ["deadlines", "scheduleEvents"]
+    assert [b for b in ctx.blocks if isinstance(b, ConfirmBlock)].__len__() == 1  # asked once
+    assert taken == [{"url": OTHER_SITE, "specs": [(1, "active")]}]
+    assert (await study.conn()).status == "active"
 
 
 async def test_nothing_connected_says_what_was_seen_tried_and_can_be_done(
