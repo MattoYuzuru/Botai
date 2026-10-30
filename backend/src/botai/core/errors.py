@@ -33,6 +33,11 @@ class ErrorCode(StrEnum):
     VALIDATION = "validation"
     CONFLICT = "conflict"
     BLOCK_ANSWERED = "block_answered"
+    # 409 on sending a message: the client decides what to do from the code
+    AGENT_BUSY = "agent_busy"  # the agent's turn is still running: retry later
+    SECRET_IN_CHAT = "secret_in_chat"  # noqa: S105 - a code name; looks like a secret in chat: delete
+    REQUEST_REUSED = "request_reused"  # the client request id was used for another body
+    STALE_TARGET = "stale_target"  # the addressed task has ended or was replaced
     NOT_IMPLEMENTED = "not_implemented"
     TOO_MANY_ATTEMPTS = "too_many_attempts"
     INTERNAL = "internal_error"
@@ -45,6 +50,10 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.VALIDATION: 422,
     ErrorCode.CONFLICT: 409,
     ErrorCode.BLOCK_ANSWERED: 409,
+    ErrorCode.AGENT_BUSY: 409,
+    ErrorCode.SECRET_IN_CHAT: 409,
+    ErrorCode.REQUEST_REUSED: 409,
+    ErrorCode.STALE_TARGET: 409,
     ErrorCode.QUOTA_EXCEEDED: 429,
     ErrorCode.NOT_IMPLEMENTED: 501,
     ErrorCode.TOO_MANY_ATTEMPTS: 429,

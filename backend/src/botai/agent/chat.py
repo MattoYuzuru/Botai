@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from botai.agent import facts, harness
 from botai.agent.env import ChatEnv
+from botai.agent.links import strip_bare_ids
 from botai.agent.memory import (
     RECENT_TOKENS,
     history_messages,
@@ -64,7 +65,7 @@ def compose_answer(
     if not result.content.strip():
         return UNKNOWN_BUDGET, None
     done = finalize(result.content.strip(), env.sources, now=now)
-    text = done.markdown
+    text = strip_bare_ids(done.markdown)
     if result.stopped == "budget":
         text += "\n\nОтвет может быть неполным: я остановился по лимиту шагов."
     return text, done

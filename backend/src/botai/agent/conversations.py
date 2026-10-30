@@ -43,7 +43,7 @@ _BLOCK = TypeAdapter(AgentUiBlock)
 RUNTIME_TASKS = 20
 RUNTIME_RECEIPTS = 200
 _ASKING = {"input", "choice", "confirm", "approval", "login", "wait"}
-SECRET_IN_CHAT = "Пароль и код вводятся только в защищённое поле, не в чат"  # noqa: S105
+SECRET_IN_CHAT_TEXT = "Пароль и код вводятся только в защищённое поле, не в чат"  # noqa: S105
 
 
 def message_out(message: ChatMessage) -> MessageOut:
@@ -90,7 +90,7 @@ async def create_thread(
                 body.title is not None and existing.title != title
             ):
                 raise BotaiError(
-                    ErrorCode.CONFLICT, "Этот запрос уже использован для другого разговора"
+                    ErrorCode.REQUEST_REUSED, "Этот запрос уже использован для другого разговора"
                 )
             return existing
     now = services.clock.now()
@@ -271,11 +271,12 @@ async def post_message(
             raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
         if target.state not in IN_FLIGHT:
             raise BotaiError(
-                ErrorCode.CONFLICT, "Этот шаг уже завершён. Откройте текущее состояние разговора"
+                ErrorCode.STALE_TARGET,
+                "Этот шаг уже завершён. Откройте текущее состояние разговора",
             )
         if await _continued(session, target):
             raise BotaiError(
-                ErrorCode.CONFLICT, "Этот шаг уже заменён. Откройте текущее состояние разговора"
+                ErrorCode.STALE_TARGET, "Этот шаг уже заменён. Откройте текущее состояние разговора"
             )
     else:
         waiting = next(
@@ -297,12 +298,12 @@ async def post_message(
             if conn.status == "disabled":
                 raise BotaiError(ErrorCode.FORBIDDEN, "Подключение отключено")
         if _waiting_secret(target):
-            raise BotaiError(ErrorCode.CONFLICT, SECRET_IN_CHAT)
+            raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
     else:
         if any(job.kind == JobKind.CHAT.value for job in jobs):
-            raise BotaiError(ErrorCode.CONFLICT, "Ассистент ещё отвечает на прошлое сообщение")
+            raise BotaiError(ErrorCode.AGENT_BUSY, "Ассистент ещё отвечает на прошлое сообщение")
         if credential_like(text) and any(_waiting_secret(job) for job in jobs):
-            raise BotaiError(ErrorCode.CONFLICT, SECRET_IN_CHAT)
+            raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
     # Appends to a thread are serialized: even two events in one clock tick keep their order.
     now = await dialogue.message_time(session, user_id, thread.id, services.clock.now())
     block = TextBlock(id=new_id(), at=now, markdown=text)
@@ -403,7 +404,9 @@ async def _replay(
     if stored != submitted or (
         body.target_job_id is not None and body.target_job_id != existing.job_id
     ):
-        raise BotaiError(ErrorCode.CONFLICT, "Этот запрос уже использован для другого сообщения")
+        raise BotaiError(
+            ErrorCode.REQUEST_REUSED, "Этот запрос уже использован для другого сообщения"
+        )
     if existing.job_id is None:
-        raise BotaiError(ErrorCode.CONFLICT, "Сообщение ещё не связано с заданием")
+        raise BotaiError(ErrorCode.REQUEST_REUSED, "Сообщение ещё не связано с заданием")
     return MessageAccepted(message=message_out(existing), job_id=existing.job_id)

@@ -183,6 +183,20 @@ async def test_a_retried_turn_stores_one_reply_even_with_a_plan_message(
     assert kinds.count("plan") == 1
 
 
+async def test_a_bare_identifier_copied_into_the_answer_is_removed(sm: Sm, user_id: str) -> None:
+    r = await make_rig(sm, user_id, ScriptedLlm())
+    r.llm._queue.append(
+        final(
+            f"Работа идёт в чате {r.thread_id} (connection_id={r.conn_id}), см. botai://threads/{r.thread_id}."
+        )
+    )
+    ctx, _ = await r.ask("Что происходит?")
+    markdown = text_block(ctx).markdown
+    assert r.conn_id not in markdown
+    assert f"botai://threads/{r.thread_id}" in markdown
+    assert markdown.count(r.thread_id) == 1
+
+
 # --- memory -------------------------------------------------------------------------------------
 
 

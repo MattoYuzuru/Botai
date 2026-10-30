@@ -241,7 +241,9 @@ async def test_thread_creation_is_idempotent_and_tenant_scoped(env: Env) -> None
     assert same.json()["id"] == thread
     space = (await client.post("/api/v1/spaces", json={"title": "Фикстурный вуз"})).json()["id"]
     for conflict in ({**body, "title": "Другой"}, {**body, "spaceId": space}):
-        assert (await client.post("/api/v1/chat/threads", json=conflict)).status_code == 409
+        reused = await client.post("/api/v1/chat/threads", json=conflict)
+        assert reused.status_code == 409
+        assert reused.json()["code"] == "request_reused"
     async with env.sm() as session:
         assert (
             await session.scalar(
@@ -386,6 +388,7 @@ async def test_password_like_message_is_refused_while_a_secret_question_is_open(
         ):
             refused = await client.post(f"/api/v1/chat/threads/{thread}/messages", json=body)
             assert refused.status_code == 409
+            assert refused.json()["code"] == "secret_in_chat"
             assert refused.json()["detail"].startswith("Пароль и код вводятся только")
             assert "пароль123" not in refused.text
         async with env.sm() as session:
@@ -421,6 +424,7 @@ async def test_second_message_waits_for_the_running_agent_turn_but_not_a_dialogu
     turn = first.json()["jobId"]
     busy = await post(client, thread, "Ещё вопрос")
     assert busy.status_code == 409
+    assert busy.json()["code"] == "agent_busy"
     assert busy.json()["detail"].startswith("Ассистент ещё отвечает")
     # A task's plain question is answered even while the agent turn runs.
     question = dialogue_question(env, "Какая неделя нужна?")
@@ -430,7 +434,8 @@ async def test_second_message_waits_for_the_running_agent_turn_but_not_a_dialogu
     assert answer.status_code == 202
     assert answer.json()["jobId"] == job_id
     assert await waiting == "Текущая неделя"
-    assert (await post(client, thread, "И ещё")).status_code == 409
+    still_busy = await post(client, thread, "И ещё")
+    assert (still_busy.status_code, still_busy.json()["code"]) == (409, "agent_busy")
     async with env.sm() as session:
         row = await session.get(Job, turn)
         assert row is not None
@@ -462,6 +467,7 @@ async def test_target_job_must_be_a_live_task_of_this_thread(env: Env) -> None:
     await finish(env, job_id)
     late = await post(client, thread, "Уточнение", targetJobId=job_id)
     assert late.status_code == 409
+    assert late.json()["code"] == "stale_target"
     async with env.sm() as session:
         assert (
             await session.scalar(
@@ -679,11 +685,10 @@ async def test_dialogue_answer_and_checkpoint_are_replay_safe(env: Env) -> None:
             f"/api/v1/jobs/{job_id}/answers", json={"blockId": question.id, "values": "late"}
         )
     ).status_code == 409
-    assert (
-        await client.post(
-            f"/api/v1/chat/threads/{thread}/messages", json={**body, "text": "changed"}
-        )
-    ).status_code == 409
+    changed = await client.post(
+        f"/api/v1/chat/threads/{thread}/messages", json={**body, "text": "changed"}
+    )
+    assert (changed.status_code, changed.json()["code"]) == (409, "request_reused")
 
 
 async def test_explicit_clarification_clears_automatic_discovery_of_the_task(env: Env) -> None:
@@ -713,9 +718,9 @@ async def test_native_secret_never_enters_composer_history_or_receipts(env: Env)
     waiting = asyncio.create_task(worker.ask_secret(question))
     await wait_pending(client, thread)
     response = await post(client, thread, SECRET, targetJobId=job_id)
-    assert response.status_code == 409
+    assert (response.status_code, response.json()["code"]) == (409, "secret_in_chat")
     implicit = await post(client, thread, SECRET)
-    assert implicit.status_code == 409
+    assert (implicit.status_code, implicit.json()["code"]) == (409, "secret_in_chat")
     answer = await client.post(
         f"/api/v1/jobs/{job_id}/answers", json={"blockId": question.id, "values": SECRET}
     )
@@ -867,7 +872,8 @@ async def test_terminal_history_survives_event_purge_and_a_message_starts_the_ag
     assert state["pending"] == []
     history = (await client.get(f"/api/v1/chat/threads/{thread}/messages")).json()
     assert any("Подключение не завершено" in m["blocks"][0].get("markdown", "") for m in history)
-    assert (await post(client, thread, "late", targetJobId=job_id)).status_code == 409
+    late = await post(client, thread, "late", targetJobId=job_id)
+    assert (late.status_code, late.json()["code"]) == (409, "stale_target")
     normal = await post(client, thread, "Что делать дальше?")
     assert normal.status_code == 202
     state = await runtime_of(client, thread)
@@ -1071,6 +1077,7 @@ async def test_cross_host_continuation_is_same_chat_but_separate_connection_and_
     }
     stale_response = await client.post(f"/api/v1/chat/threads/{thread}/messages", json=stale)
     assert stale_response.status_code == 409  # the parent handed its work to the child
+    assert stale_response.json()["code"] == "stale_target"
     async with env.sm() as session:
         assert (
             await session.scalar(
@@ -1567,7 +1574,7 @@ async def test_unconfigured_repair_restores_own_intent_url_query_and_current_job
     runtime = await runtime_of(client, thread)
     assert runtime["activeJob"]["id"] == job_id
     stale = await post(client, thread, "старый ответ", targetJobId=first_job)
-    assert stale.status_code == 409
+    assert (stale.status_code, stale.json()["code"]) == (409, "stale_target")
     current = await post(client, thread, "Продолжаю с этой ссылки", targetJobId=job_id)
     assert current.status_code == 202
     assert current.json()["jobId"] == job_id

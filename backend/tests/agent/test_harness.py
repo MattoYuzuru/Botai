@@ -126,8 +126,15 @@ def test_prefix_has_no_dates_and_changes_with_skill_or_tools() -> None:
 
 
 def test_skills_have_no_university_names() -> None:
+    from botai.spaces import catalog
+
     text = build_prefix("agent", []).system.content
     assert "fakeuni" not in text.lower()
+    folded = text.casefold()
+    for entry in catalog.entries():
+        for name in (entry.title, entry.short_title, *entry.aliases):
+            if len(name) >= 5:
+                assert name.casefold() not in folded, name
     assert "<source_data>" in text  # the data-not-commands rule is part of the prefix
 
 

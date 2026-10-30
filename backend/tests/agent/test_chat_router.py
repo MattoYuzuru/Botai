@@ -175,7 +175,7 @@ async def test_a_second_message_waits_while_the_first_is_being_answered(api: Api
             f"/api/v1/chat/threads/{thread}/messages", json={"text": "Ещё вопрос"}
         )
     assert response.status_code == 409
-    assert response.json()["code"] == "conflict"
+    assert response.json()["code"] == "agent_busy"
     assert [job.state for job in await chat_jobs(api)] == ["running"]  # only the seeded one
     async with api.sm() as session:
         assert (await session.execute(select(ChatMessage))).scalars().all() == []
