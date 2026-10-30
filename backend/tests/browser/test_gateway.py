@@ -518,7 +518,13 @@ async def test_page_scripts_cannot_bypass_the_proxy(
         fakeuni_port,
     )
     assert result == "blocked"
-    assert egress.stats["deny:ip_literal"] > before
+    # Two walls: the page's own fetch dies at the asset gate (a fetch is never an asset), and an
+    # address that got past it would die at the proxy. Either way nothing is tunnelled.
+    assert handle._assets is not None  # pyright: ignore[reportPrivateUsage]
+    assert (
+        handle._assets.counts["asset_type"] > 0  # pyright: ignore[reportPrivateUsage]
+        or egress.stats["deny:ip_literal"] > before
+    )
 
 
 async def test_a_typed_value_never_rides_along_in_an_error(open_browser: Opener) -> None:

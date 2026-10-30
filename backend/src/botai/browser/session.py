@@ -143,6 +143,7 @@ def encode_session(state: SessionState) -> str:
             ],
             "captured_at": state.captured_at.isoformat(),
             "expires_hint": state.expires_hint.isoformat() if state.expires_hint else None,
+            "asset_hosts": list(state.asset_hosts),
             "browser_storage": [
                 {
                     "origin": entry.origin,

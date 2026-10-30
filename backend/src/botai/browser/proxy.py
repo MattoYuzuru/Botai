@@ -6,12 +6,20 @@ host allowlist of one connection. The proxy refuses, before any DNS lookup where
 
 * methods other than CONNECT and ports other than 443;
 * hosts outside the token's allowlist (exact names; an optional domain-suffix rule exists for the
-  login mode only and is capped);
+  login mode only and is capped; and a small capped allowance for page-asset hosts that the
+  browser's own guard vouches for with `ARM`, below);
 * IP literals in any spelling;
 * names resolving to private, loopback, link-local, CGNAT, multicast, reserved or transition
   (NAT64, 6to4, Teredo) addresses, and DNS rebinding (the address is resolved once, checked, and
   the very same address is connected to);
 * more tunnels than the token's budget.
+
+`ARM host:443` (same Basic credentials as CONNECT) admits one more public host for the page assets
+of a browser context, within the token's `max_asset_hosts`. The proxy cannot tell a style sheet from
+a document, so it does not decide what an asset is: the browser guard does, and arms a host only for
+a GET of a style sheet, script, font, image or media. A host that nobody armed (a server redirect of
+a document to a new site, which the browser guard never sees) stays refused, as before. Tokens of
+API clients carry no allowance, so `ARM` is refused for them.
 
 Only the host, the decision, the reason and the byte counts are logged: never a token, a path or a
 body. The module imports nothing heavy so `python -m botai.browser.proxy` starts fast.
@@ -48,6 +56,13 @@ log = logging.getLogger("botai.browser.proxy")
 ALLOWED_PORT = 443
 TOKEN_VERSION = 1
 MAX_HOSTS_PER_TOKEN = 12
+# Extra public hosts one browser context may load page assets from (style sheets, scripts, fonts,
+# images, media of an identity provider or a static host). Real login pages use 1 to 5 such hosts
+# (Yandex ID: a static host and an analytics host; Google and Microsoft: 3 to 5 CDN names); 16 is
+# three times the largest seen and small enough that a hostile page cannot reach far with it.
+# `MAX_ASSET_HOSTS` is the ceiling any token may carry.
+ASSET_HOSTS = 16
+MAX_ASSET_HOSTS = 32
 MAX_HEAD_BYTES = 16 * 1024
 PROXY_USER = "botai"
 
@@ -182,6 +197,7 @@ class Grant:
     expires_at: float
     max_connects: int
     max_dynamic_hosts: int
+    max_asset_hosts: int = 0
 
 
 def _b64(raw: bytes) -> str:
@@ -209,10 +225,13 @@ def mint_token(
     suffixes: Iterable[str] = (),
     max_connects: int = 300,
     max_dynamic_hosts: int = 10,
+    max_asset_hosts: int = 0,
     now: float | None = None,
 ) -> str:
     """Create a connection token. `hosts` are exact names; `suffixes` (login mode only) admit
-    subdomains of a domain, at most `max_dynamic_hosts` distinct hosts per token."""
+    subdomains of a domain, at most `max_dynamic_hosts` distinct hosts per token.
+    `max_asset_hosts` (browser contexts only, never an API client) lets the holder `ARM` that many
+    more public hosts for page assets."""
     clean: list[str] = []
     for raw in hosts:
         host = normalize_host(raw)
@@ -231,6 +250,7 @@ def mint_token(
         not 0 < ttl_s <= 24 * 3600
         or not 1 <= max_connects <= 10_000
         or not 0 <= max_dynamic_hosts <= 50
+        or not 0 <= max_asset_hosts <= MAX_ASSET_HOSTS
     ):
         raise ValueError("token lifetime or budget out of range")
     if len(set(clean)) > MAX_HOSTS_PER_TOKEN:
@@ -244,6 +264,7 @@ def mint_token(
         "s": sorted(set(domains)),
         "m": max_connects,
         "d": max_dynamic_hosts,
+        "a": max_asset_hosts,
     }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     return f"{body}.{_sign(secret, body)}"
@@ -269,6 +290,7 @@ def verify_token(secret: bytes, token: str, *, now: float | None = None) -> Gran
             expires_at=float(payload["x"]),
             max_connects=int(payload["m"]),
             max_dynamic_hosts=int(payload["d"]),
+            max_asset_hosts=int(payload.get("a", 0)),
         )
     except (ValueError, KeyError, TypeError, binascii.Error):
         return None
@@ -294,6 +316,7 @@ class _Usage:
     connects: int = 0
     active: int = 0
     dynamic_hosts: set[str] = field(default_factory=lambda: set[str]())
+    asset_hosts: set[str] = field(default_factory=lambda: set[str]())  # armed by the browser guard
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +327,7 @@ class Denial:
 
 _STATUS_TEXT = {
     200: "Connection Established",
+    204: "No Content",
     400: "Bad Request",
     403: "Forbidden",
     405: "Method Not Allowed",
@@ -405,6 +429,7 @@ class EgressProxy:
         suffixes: Iterable[str] = (),
         max_connects: int = 300,
         max_dynamic_hosts: int = 10,
+        max_asset_hosts: int = 0,
     ) -> str:
         return mint_token(
             self._secret,
@@ -413,7 +438,32 @@ class EgressProxy:
             suffixes=suffixes,
             max_connects=max_connects,
             max_dynamic_hosts=max_dynamic_hosts,
+            max_asset_hosts=max_asset_hosts,
         )
+
+    def arm_asset_host(self, token: str, host: str) -> Denial | None:
+        """In-process twin of the `ARM` request: the same checks, for a proxy in this process."""
+        grant = self._grant_from_token(token)
+        normalized = normalize_host(host)
+        denial: Denial | None
+        if grant is None:
+            denial = Denial(407, "auth_failed")
+        elif normalized is None:
+            denial = Denial(400, "bad_request")
+        elif is_ip_literal(normalized):
+            denial = Denial(403, "ip_literal")
+        else:
+            denial = self._arm(grant, normalized)
+        shown = _LOG_UNSAFE.sub("?", normalized or "-")[:100]
+        self._record(
+            decision="deny" if denial else "allow",
+            reason=denial.reason if denial else "asset_armed",
+            status=denial.status if denial else 204,
+            grant=grant,
+            host=normalized,
+            host_for_log=shown,
+        )
+        return denial
 
     def url_for(self, token: str) -> str:
         return proxy_url_with_token(self.url, token)
@@ -454,7 +504,8 @@ class EgressProxy:
     def _reserve(self, grant: Grant, usage: _Usage, host: str) -> Denial | None:
         """Check the allowlist and the budgets and, in the same synchronous step, take the slot:
         parallel CONNECTs must not all pass the same check before any of them is counted."""
-        dynamic = host not in grant.hosts and host not in usage.dynamic_hosts
+        armed = host in usage.asset_hosts
+        dynamic = host not in grant.hosts and host not in usage.dynamic_hosts and not armed
         if dynamic:
             if not any(host.endswith("." + suffix) for suffix in grant.suffixes):
                 return Denial(403, "not_allowlisted")
@@ -471,6 +522,24 @@ class EgressProxy:
         usage.connects += 1
         usage.active += 1
         self._reserved += 1
+        return None
+
+    def _arm(self, grant: Grant, host: str) -> Denial | None:
+        """Admit `host` as a page-asset host of this token. Public-only and DNS pinning are still
+        decided per CONNECT; this only spends one of the token's asset slots (counted even if the
+        name later fails to resolve, like a dynamic host)."""
+        if grant.max_asset_hosts <= 0:
+            return Denial(403, "asset_not_allowed")
+        usage = self._usage_for(grant)
+        if (
+            host in grant.hosts
+            or host in usage.asset_hosts
+            or any(host.endswith("." + suffix) for suffix in grant.suffixes)
+        ):
+            return None  # already reachable: nothing to spend
+        if len(usage.asset_hosts) >= grant.max_asset_hosts:
+            return Denial(403, "too_many_hosts")
+        usage.asset_hosts.add(host)
         return None
 
     def check_target(self, grant: Grant, authority: str) -> tuple[str, Denial | None]:
@@ -539,6 +608,9 @@ class EgressProxy:
         _user, sep, token = decoded.partition(":")
         if not sep:
             return None
+        return self._grant_from_token(token)
+
+    def _grant_from_token(self, token: str) -> Grant | None:
         grant = verify_token(self._secret, token)
         if grant is None:
             return None
@@ -597,6 +669,21 @@ class EgressProxy:
                 await self._reply(
                     writer, status, [("Proxy-Authenticate", 'Basic realm="botai-egress"')]
                 )
+                return
+            if method == "ARM":
+                host, denial = self.check_target(grant, authority)
+                diagnostic_host = host
+                host_for_log = _LOG_UNSAFE.sub("?", host)[:100]
+                if denial is None:
+                    denial = self._arm(grant, host)
+                if denial is not None:
+                    reason, status = denial.reason, denial.status
+                    await self._reply(
+                        writer, status, [("X-Botai-Egress", f"denied; reason={reason}")]
+                    )
+                    return
+                decision, reason, status = "allow", "asset_armed", 204
+                await self._reply(writer, status)
                 return
             if method != "CONNECT":
                 reason, status = "method_not_allowed", 405
@@ -658,42 +745,66 @@ class EgressProxy:
                 reason, status = "internal", 500
                 await self._reply(writer, status)
         finally:
-            self.stats[f"{decision}:{reason}"] += 1
-            facts: dict[str, object] = {}
-            if grant is not None:
-                facts["grant_hash"] = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
-            if diagnostic_host is not None:
-                host_hash = url_facts("https://" + diagnostic_host).get("host_hash")
-                if host_hash is not None:
-                    facts["host_hash"] = host_hash
-            diagnostic_event(
-                "egress.decision",
-                # An embedded server may inherit the starter job's context. A tunnel belongs
-                # to its verified grant, never to that old task; the reader joins the digest.
-                job_id=None,
-                thread_id=None,
-                connection_id=None,
-                request_id=None,
-                message_id=None,
-                block_id=None,
-                job_kind=None,
+            self._record(
                 decision=decision,
                 reason=reason,
                 status=status,
-                up_bytes=up,
-                down_bytes=down,
-                **facts,
-            )
-            log.info(
-                "egress host=%s decision=%s reason=%s status=%d up=%d down=%d",
-                host_for_log,
-                decision,
-                reason,
-                status,
-                up,
-                down,
+                grant=grant,
+                host=diagnostic_host,
+                host_for_log=host_for_log,
+                up=up,
+                down=down,
             )
             _close(writer)
+
+    def _record(
+        self,
+        *,
+        decision: str,
+        reason: str,
+        status: int,
+        grant: Grant | None,
+        host: str | None,
+        host_for_log: str,
+        up: int = 0,
+        down: int = 0,
+    ) -> None:
+        """Count and log one decision: host, verdict and sizes only, never a path or a token."""
+        self.stats[f"{decision}:{reason}"] += 1
+        facts: dict[str, object] = {}
+        if grant is not None:
+            facts["grant_hash"] = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
+        if host is not None:
+            host_hash = url_facts("https://" + host).get("host_hash")
+            if host_hash is not None:
+                facts["host_hash"] = host_hash
+        diagnostic_event(
+            "egress.decision",
+            # An embedded server may inherit the starter job's context. A tunnel belongs
+            # to its verified grant, never to that old task; the reader joins the digest.
+            job_id=None,
+            thread_id=None,
+            connection_id=None,
+            request_id=None,
+            message_id=None,
+            block_id=None,
+            job_kind=None,
+            decision=decision,
+            reason=reason,
+            status=status,
+            up_bytes=up,
+            down_bytes=down,
+            **facts,
+        )
+        log.info(
+            "egress host=%s decision=%s reason=%s status=%d up=%d down=%d",
+            host_for_log,
+            decision,
+            reason,
+            status,
+            up,
+            down,
+        )
 
     async def _reply(
         self, writer: asyncio.StreamWriter, status: int, extra: Sequence[tuple[str, str]] = ()

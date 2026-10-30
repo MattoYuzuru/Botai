@@ -10,6 +10,9 @@
 * `/blocked`: the site refuses the visit (bot protection page).
 * `/cu/app` → `id.fakeuni.test/cu/realms/...` → `/cu/login-actions/authenticate`: a Keycloak-like
   JS login in three steps (e-mail, password, SMS code); see the section below.
+* `/assets/login`, `/assets/plain`, `/assets/legacy`, `/sso-assets/start`, `/sibling/login`: pages whose
+  CSS and JS come from another host (`cdn.fakeuni-assets.test`, or a sibling `static.fakeuni.test`);
+  `/redirect/open` is an open redirect. See the last section.
 
 Wrong credentials re-render the same form with an error, like real sites. Every successful path
 ends with the `FAKEUNI_SESSION` cookie on fakeuni.test. Nothing here resembles a real university.
@@ -874,3 +877,301 @@ async def readonly_socket(socket: WebSocket) -> None:
     READ_ONLY_SOCKETS += 1
     await socket.accept()
     await socket.close()
+
+
+# --- pages whose style sheets and scripts come from another host ----------------------------------
+#
+# An identity provider (or a cabinet) loads its CSS and JS from a CDN or static host that is not the
+# login host: `cdn.fakeuni-assets.test` is such a host (not a subdomain of the origin);
+# `static.fakeuni.test` is a *sibling* under the origin's own registered domain, where a cookie with
+# `Domain=.fakeuni.test` would travel. The stand answers under every name; what reached it is
+# recorded per Host, so a refused request is the one that never shows up here.
+
+ASSET_HOST = "cdn.fakeuni-assets.test"
+SIBLING_HOST = "static.fakeuni.test"
+_CDN = f"https://{ASSET_HOST}"
+
+
+class AssetStats:
+    """Requests that reached the stand, with the headers a leak would ride on."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, str | None]] = []
+
+    def reset(self) -> None:
+        self.requests.clear()
+
+    def to(self, host: str) -> list[dict[str, str | None]]:
+        return [r for r in self.requests if r["host"] == host]
+
+    def paths(self, host: str) -> list[str]:
+        return [str(r["path"]) for r in self.to(host)]
+
+
+ASSETS = AssetStats()
+
+
+def _note(request: Request | WebSocket, body: bytes | None = None) -> None:
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    ASSETS.requests.append(
+        {
+            "host": host,
+            "method": request.scope.get("method", "WS"),
+            "path": request.url.path,
+            "query": request.url.query,
+            "body": None if body is None else body.decode("utf-8", "replace"),
+            "cookie": request.headers.get("cookie"),
+            "authorization": request.headers.get("authorization"),
+            "referer": request.headers.get("referer"),
+        }
+    )
+
+
+_ASSET_CSS = """#app { display: block; }
+body { background: rgb(1, 2, 3); }
+#a-step2[hidden] { display: none; }
+"""
+
+# The login form is built by this script: without it the page is an empty `#app` that the inline
+# style hides. «Далее» shows the password step. The probes at the end try what a page of the
+# university must not be able to do to an asset host.
+_ASSET_JS = (
+    """(function () {
+  var CDN = '"""
+    + _CDN
+    + """';
+  var app = document.getElementById('app');
+  app.innerHTML =
+    '<label for="a-email">Почта</label>' +
+    '<input id="a-email" name="username" type="email" autocomplete="username">' +
+    '<button id="a-next" type="button">Далее</button>' +
+    '<div id="a-step2" hidden><label for="a-password">Пароль</label>' +
+    '<input id="a-password" name="password" type="password" autocomplete="current-password">' +
+    '</div><p id="a-state">step1</p><p id="a-probes"></p>' +
+    '<a id="a-cdn" href="' + CDN + '/assets/document">Продолжить на другом сайте</a>' +
+    '<img id="a-pixel" src="' + CDN + '/assets/pixel.png" width="1" height="1" alt="">';
+  document.getElementById('a-next').addEventListener('click', function () {
+    document.getElementById('a-step2').hidden = false;
+    document.getElementById('a-state').textContent = 'step2';
+  });
+  var results = {};
+  function done(name, value) {
+    results[name] = value;
+    if (Object.keys(results).length === 5) {
+      document.getElementById('a-probes').setAttribute('data-done', JSON.stringify(results));
+    }
+  }
+  var x = new XMLHttpRequest();
+  x.open('GET', CDN + '/assets/data');
+  x.onload = function () { done('xhr', 'reached'); };
+  x.onerror = function () { done('xhr', 'blocked'); };
+  x.send();
+  fetch(CDN + '/assets/data').then(function () { done('fetch', 'reached'); },
+                                   function () { done('fetch', 'blocked'); });
+  fetch(CDN + '/assets/data', {method: 'POST', body: 'x', mode: 'no-cors'}).then(
+    function () { done('post', 'reached'); }, function () { done('post', 'blocked'); });
+  try { navigator.sendBeacon(CDN + '/assets/beacon', 'x'); } catch (e) {}
+  done('beacon', 'sent');
+  var socket = new WebSocket('wss://' + CDN.slice(8) + '/assets/socket');
+  socket.onclose = function () { done('socket', 'closed'); };
+})();
+"""
+)
+
+_ASSET_HEAD = (
+    '<style>#app{display:none}</style><link rel="stylesheet" href="' + _CDN + '/assets/login.css">'
+)
+
+
+def _asset_response(body: str, media_type: str) -> Response:
+    return Response(
+        body,
+        media_type=media_type,
+        headers={
+            "set-cookie": "CDN_TRACK=1; Path=/; Secure; SameSite=None",  # the CDN's own cookie
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+        },
+    )
+
+
+@router.get("/assets/login", response_class=HTMLResponse)
+async def assets_login(request: Request) -> str:
+    """The form is built by a script from the asset host; its style sheet shows it."""
+    _note(request)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход — внешние файлы</title>"
+        + _ASSET_HEAD
+        + f'<script src="{_CDN}/assets/login.js" defer></script></head>'
+        "<body><div id='app'></div></body></html>"
+    )
+
+
+@router.get("/assets/login.css")
+async def assets_css(request: Request) -> Response:
+    _note(request)
+    return _asset_response(_ASSET_CSS, "text/css")
+
+
+@router.get("/assets/login.js")
+async def assets_js(request: Request) -> Response:
+    _note(request)
+    return _asset_response(_ASSET_JS, "application/javascript")
+
+
+@router.get("/assets/enable.js")
+async def assets_enable_js(request: Request) -> Response:
+    """The submit button of the identity page is disabled until this script runs."""
+    _note(request)
+    return _asset_response(
+        "document.addEventListener('DOMContentLoaded', function () {"
+        " document.getElementById('go').disabled = false; });",
+        "application/javascript",
+    )
+
+
+@router.get("/assets/pixel.png")
+async def assets_pixel(request: Request) -> Response:
+    _note(request)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    return Response(png, media_type="image/png", headers={"cache-control": "no-store"})
+
+
+@router.get("/assets/data")
+async def assets_data(request: Request) -> JSONResponse:
+    _note(request)
+    return JSONResponse({"ok": True}, headers={"access-control-allow-origin": "*"})
+
+
+@router.post("/assets/data")
+async def assets_data_post(request: Request) -> JSONResponse:
+    _note(request, await request.body())
+    return JSONResponse({"ok": True}, headers={"access-control-allow-origin": "*"})
+
+
+@router.post("/assets/beacon")
+async def assets_beacon(request: Request) -> Response:
+    _note(request)
+    return Response(status_code=204)
+
+
+@router.websocket("/assets/socket")
+async def assets_socket(socket: WebSocket) -> None:
+    _note(socket)
+    await socket.accept()
+    await socket.close()
+
+
+@router.get("/assets/document", response_class=HTMLResponse)
+async def assets_document(request: Request) -> str:
+    """A document served by the asset host: the page of a site the student never approved."""
+    _note(request)
+    return _page("Чужой документ", "<p id='foreign'>Страница стороннего сайта</p>")
+
+
+@router.get("/assets/plain", response_class=HTMLResponse)
+async def assets_plain(request: Request) -> str:
+    """An ordinary form (posting to /plain/login) on a page that also loads CDN assets."""
+    _note(request)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход</title>"
+        f'<link rel="stylesheet" href="{_CDN}/assets/login.css">'
+        f'<script src="{_CDN}/assets/enable.js" defer></script></head><body>'
+        '<form id="plain" method="post" action="/plain/login">'
+        '<label for="u">Логин</label><input id="u" name="login" type="text" autocomplete="username">'
+        '<label for="p">Пароль</label>'
+        '<input id="p" name="pass" type="password" autocomplete="current-password">'
+        '<button id="go" type="submit" disabled>Войти</button></form></body></html>'
+    )
+
+
+@router.get("/sso-assets/start", response_model=None)
+async def sso_assets_start() -> RedirectResponse:
+    return RedirectResponse("https://id.fakeuni.test/sso-assets/login", status_code=302)
+
+
+@router.get("/sso-assets/login", response_class=HTMLResponse)
+async def sso_assets_login(request: Request) -> str:
+    """The identity host of the incident: its submit button is enabled by a script from a CDN."""
+    _note(request)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Единый вход</title>"
+        f'<link rel="stylesheet" href="{_CDN}/assets/login.css">'
+        f'<script src="{_CDN}/assets/enable.js" defer></script></head><body>'
+        '<form id="sso" method="post" action="/sso/login">'
+        '<label for="login">Логин</label>'
+        '<input id="login" name="username" type="text" autocomplete="username">'
+        '<label for="pw">Пароль</label>'
+        '<input id="pw" name="password" type="password" autocomplete="current-password">'
+        '<button id="go" type="submit" disabled>Продолжить</button></form></body></html>'
+    )
+
+
+@router.get("/assets/arm.js")
+async def assets_arm_js(request: Request) -> Response:
+    """A script from any host: asking for it is what makes the host an asset host of a context."""
+    _note(request)
+    return _asset_response("/* an asset */", "application/javascript")
+
+
+@router.get("/assets/x.png")
+async def assets_exfil_pixel(request: Request) -> Response:
+    """An image whose address carries data: what a page uses to send a value out by GET."""
+    _note(request)
+    return await assets_pixel(request)
+
+
+@router.api_route("/redirect/open", methods=["GET", "POST"])
+async def redirect_open(to: str, code: int = 302) -> RedirectResponse:
+    """An open redirect, as some sites have: to anywhere, with the status the caller asks for."""
+    return RedirectResponse(to, status_code=code)
+
+
+@router.get("/assets/legacy", response_class=HTMLResponse)
+async def assets_legacy(request: Request) -> HTMLResponse:
+    """A page with a legacy referrer policy: its whole address (with the query) goes to a CDN."""
+    _note(request)
+    return HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход</title>"
+        + _ASSET_HEAD
+        + f'<script src="{_CDN}/assets/login.js" defer></script></head>'
+        "<body><div id='app'></div></body></html>",
+        headers={"referrer-policy": "unsafe-url"},
+    )
+
+
+@router.get("/sibling/login", response_class=HTMLResponse)
+async def sibling_login(request: Request, needed: int = 0) -> HTMLResponse:
+    """A form whose files come from a sibling under the domain of a session cookie the page itself
+    sets (`Domain=.fakeuni.test`): a browser would send that cookie to the sibling. With `needed`,
+    the submit button stays disabled until the script from the sibling runs."""
+    _note(request)
+    sibling = f"https://{SIBLING_HOST}"
+    script = f'<script src="{sibling}/assets/enable.js" defer></script>' if needed else ""
+    button = '<button id="go" type="submit"' + (" disabled" if needed else "") + ">Войти</button>"
+    response = HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход</title>"
+        f'<link rel="stylesheet" href="{sibling}/assets/login.css">{script}</head><body>'
+        '<form id="plain" method="post" action="/plain/login">'
+        '<label for="u">Логин</label><input id="u" name="login" type="text" autocomplete="username">'
+        '<label for="p">Пароль</label>'
+        '<input id="p" name="pass" type="password" autocomplete="current-password">'
+        f"{button}</form></body></html>"
+    )
+    response.set_cookie("SRC_DOMAIN", "1", domain="fakeuni.test", secure=True, httponly=True)
+    return response
+
+
+@router.get("/assets/sw.js")
+async def assets_service_worker(request: Request) -> Response:
+    """A service worker that, as soon as it is installed, posts to the asset host."""
+    _note(request)
+    return Response(
+        "self.addEventListener('install', () => {"
+        f" fetch('{_CDN}/assets/data', {{method: 'POST', body: 'from-the-worker'}}).catch(() => {{}});"
+        " });",
+        media_type="application/javascript",
+        headers={"cache-control": "no-store"},
+    )

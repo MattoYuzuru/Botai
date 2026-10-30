@@ -126,6 +126,27 @@ class SessionState(BaseModel):
     expires_hint: datetime | None = None
     browser_storage: list[SessionOriginStorage] = Field(default_factory=list, repr=False)
     entry_url: SecretStr | None = Field(default=None, repr=False, min_length=1, max_length=2000)
+    # Hosts that served page assets (not login hosts: never part of `allow_hosts`) during the login
+    # that made this session. A read of the same connection may load assets from these and no others.
+    asset_hosts: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("asset_hosts")
+    @classmethod
+    def plain_asset_host_names(cls, hosts: list[str]) -> list[str]:
+        for host in hosts:
+            labels = host.split(".")
+            if (
+                host != host.lower()
+                or len(host) > 253
+                or not all(
+                    label
+                    and len(label) <= 63
+                    and all(c.isascii() and (c.isalnum() or c == "-") for c in label)
+                    for label in labels
+                )
+            ):
+                raise ValueError("an asset host is a plain lower-case DNS name")
+        return list(dict.fromkeys(hosts))
 
     @model_validator(mode="after")
     def unique_bearer_audiences(self) -> SessionState:
