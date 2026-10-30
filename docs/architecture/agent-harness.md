@@ -116,11 +116,11 @@ sequenceDiagram
 | Разговор | `remember`, `forget`, `update_plan`, `offer_choices`, `rename_thread` |
 
 Инструменты — типизированные функции, а не произвольный код. Результат — текст с метками
-источников `[S1]`, ссылки между сущностями приложения — `botai://threads|connections|documents/{id}`,
+источников `[S1]`, ссылки между сущностями приложения — `botai://threads|connections|documents|attachments/{id}`,
 голые идентификаторы студенту не показываются. Инструменты, меняющие состояние (`connect_source`,
-`add_document_url`, `sync_source`, `request_repair`, `request_login`, `remember`, `forget`,
-`update_plan`, `rename_thread`), сбрасывают кэш одинаковых вызовов хода: повторное чтение после
-действия видит результат действия.
+`add_document_url`, `sync_source`, `request_repair`, `request_login`, `remember`, `forget`),
+сбрасывают кэш одинаковых вызовов хода: повторное чтение после действия видит результат действия.
+`update_plan` и `rename_thread` читаемого не меняют и кэш не сбрасывают.
 
 **Подключение из чата.** `connect_source(title, university_id | university_query, url?, kind_hint?)` находит
 или создаёт вуз и его пространство (одно на пару «студент — вуз»), создаёт источник с человеческим
