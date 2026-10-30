@@ -29,6 +29,7 @@ from botai.contracts.agent_ui import (
     TextBlock,
     ThinkingBlock,
 )
+from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobKind
 from botai.core.vault import SecretKind
@@ -1215,6 +1216,31 @@ async def test_cross_host_continuation_is_same_chat_but_separate_connection_and_
     replay = await client.post(f"/api/v1/chat/threads/{thread}/messages", json=before_handoff)
     assert replay.status_code == 202
     assert replay.json() == accepted.json()
+
+
+async def test_a_page_of_a_calendar_service_is_never_continued_as_a_source(env: Env) -> None:
+    _, user, thread = await student(env)
+    parent, parent_job = await source_task(env, user, thread)
+    handoff = ctx(env, user, parent_job, parent)
+    for page in (
+        "https://calendar.yandex.ru/week?uid=123",
+        "https://calendar.google.com/calendar/u/0/r",
+        "https://outlook.office365.com/calendar/view/week",
+    ):
+        with pytest.raises(BotaiError) as refused:
+            await continue_source(handoff, env.services, parent, page, INTENT)
+        assert refused.value.code == ErrorCode.VALIDATION
+        assert "подключи календарь" in refused.value.detail
+    async with env.sm() as session:
+        sources = await session.scalar(
+            select(func.count()).select_from(Connection).where(Connection.user_id == user)
+        )
+        children = await session.scalar(
+            select(func.count()).select_from(Job).where(Job.payload["parent_job_id"].is_not(None))
+        )
+    assert sources == 1  # the parent only
+    assert children == 0
+    assert "continuation_job_id" not in (await env.job(parent_job)).payload
 
 
 @pytest.mark.parametrize("competing_kind", [JobKind.CONNECT, JobKind.SYNC])

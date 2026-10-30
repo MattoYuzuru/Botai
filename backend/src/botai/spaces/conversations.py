@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock, TextBlock
-from botai.core.calendar_link import calendar_link_in
+from botai.core.calendar_link import calendar_link_in, is_calendar_service_page
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.execution import guard_job
 from botai.core.ids import new_id
@@ -36,6 +36,13 @@ from botai.spaces.views import display_title, source_title
 _BLOCK = TypeAdapter(AgentUiBlock)
 
 
+CALENDAR_PAGE_TEXT = (
+    "Это страница сервиса календаря (Яндекс, Google, Outlook, iCloud), а не кабинет вуза: "
+    "входить в неё на сайте нельзя. Календарь подключается личной ссылкой экспорта (iCal), без "
+    "входа: напишите в чате «подключи календарь», и я открою для неё защищённое поле"
+)
+
+
 def safe_url(value: object) -> str:
     url = navigation_url(value)
     if url is None:
@@ -43,6 +50,10 @@ def safe_url(value: object) -> str:
             ErrorCode.VALIDATION,
             "Нужна обычная HTTPS-ссылка без паролей, токенов и служебных кодов",
         )
+    if is_calendar_service_page(url):
+        # Not a cabinet to learn through a browser and a login of the service: a calendar is read
+        # by its export link (`connect_calendar`). No source is made of this address.
+        raise BotaiError(ErrorCode.VALIDATION, CALENDAR_PAGE_TEXT)
     return url
 
 

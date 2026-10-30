@@ -73,13 +73,16 @@ ADAPTER = "ical"
 ATTEMPTS = 3
 log = logging.getLogger(__name__)
 
-GUIDE = (
-    "Чтобы читать календарь, мне нужна его личная ссылка на экспорт (iCal). Где её взять:\n\n"
+GUIDE_STEPS = (
     "- **Яндекс Календарь**: настройки календаря → «Экспорт» → скопируйте ссылку на файл iCal.\n"
     "- **Google Календарь** (на компьютере): настройки нужного календаря → «Интеграция "
     "календаря» → «Секретный адрес в формате iCal».\n"
     "- **Outlook**: настройки → «Календарь» → «Общие календари» → «Опубликовать календарь» → "
-    "права «Можно просматривать все сведения» → ссылка ICS.\n\n"
+    "права «Можно просматривать все сведения» → ссылка ICS."
+)
+GUIDE = (
+    "Чтобы читать календарь, мне нужна его личная ссылка на экспорт (iCal). Где её взять:\n\n"
+    f"{GUIDE_STEPS}\n\n"
     "Эта ссылка открывает весь календарь, поэтому никому её не показывайте и не вставляйте в "
     "чат: введите её только в защищённое поле ниже. Я сохраню её зашифрованной и больше не "
     "покажу."
@@ -178,6 +181,17 @@ async def start_calendar_source(
 # --- a link typed into the chat -------------------------------------------------------------------
 
 OFFER = "Похоже, это личная ссылка календаря"
+# What the thread says when the student gave a page of a calendar service (not a personal link): it
+# is no cabinet to log in to, and a calendar is read by its export link instead.
+PAGE_LEAD = (
+    "Это страница календаря в браузере, а не кабинет вуза: читать её со входом на сайте я не буду. "
+    "Календарь читается по личной ссылке экспорта (iCal), без входа"
+)
+PAGE_STEPS = (
+    f"Где взять ссылку на экспорт:\n\n{GUIDE_STEPS}\n\n"
+    "Саму ссылку в чат не вставляйте: она открывает весь календарь и вводится только в "
+    "защищённое поле."
+)
 REFUSAL = (
     "Это личная ссылка календаря, в чат её вставлять нельзя: она открывает весь календарь. "
     "Подключить календарь можно через защищённое поле: я предложил это ниже, в чате"
@@ -203,20 +217,26 @@ def _button(text: str) -> str:
 
 
 async def _offer_for(
-    session: AsyncSession, user_id: str, thread_id: str, thread_space_id: str | None
+    session: AsyncSession,
+    user_id: str,
+    thread_id: str,
+    thread_space_id: str | None,
+    *,
+    page: bool = False,
 ) -> Offer:
     """The question for this thread: the thread's university, else the student's only one; with
-    several and no hint, which one. Nothing is created: the answer decides."""
+    several and no hint, which one. Nothing is created: the answer decides. `page`: the student
+    gave a page of a calendar service, not a personal link (nothing is secret about it)."""
+    # How the question opens. A personal link is also told it does not belong in the chat.
+    asked = PAGE_LEAD if page else f"{OFFER}, а в чат её присылать нельзя"
     owned = [entry for entry in await service.list_sources(session, user_id) if entry.university]
     chosen = next((e for e in owned if e.space.id == thread_space_id), None)
     if chosen is None and len(owned) == 1:
         chosen = owned[0]
     if chosen is None:
         if not owned:
-            return Offer(
-                f"{OFFER}, а в чат её присылать нельзя. Для какого вуза подключить календарь? Напишите название вуза."
-            )
-        text = f"{OFFER}, а в чат её присылать нельзя. Для какого вуза подключить календарь?"
+            return Offer(f"{asked}. Для какого вуза подключить календарь? Напишите название вуза.")
+        text = f"{asked}. Для какого вуза подключить календарь?"
         if len(owned) > BUTTONS:
             text += " Если нужного вуза нет в кнопках, напишите его название."
         return Offer(
@@ -237,41 +257,58 @@ async def _offer_for(
             .order_by(Job.created_at, Job.id)
             .limit(1)
         )
+        # The lead of a question that is not about choosing a university: the same sentence, with
+        # the colon (`Похоже, ...: в чат её присылать нельзя.`) or a full stop.
+        lead = f"{PAGE_LEAD}." if page else f"{OFFER}: в чат её присылать нельзя."
         if running is not None and running.thread_id == thread_id:
             return Offer(
-                f"{OFFER}: в чат её присылать нельзя. Защищённое поле для неё уже открыто выше, "
-                "введите ссылку там."
+                f"{lead} Защищённое поле для неё уже открыто выше, введите ссылку там."
+                if not page
+                else f"{lead} Защищённое поле для ссылки уже открыто выше: введите её там."
             )
         if running is not None and running.thread_id:
             return Offer(
-                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} уже ждёт ссылку в "
+                f"{lead} Календарь вуза {where} уже ждёт ссылку в "
                 f"[другом чате](botai://threads/{running.thread_id}): введите её в защищённое поле там."
             )
         if conn.status == "disabled":
             return Offer(
-                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} отключён: включите "
+                f"{lead} Календарь вуза {where} отключён: включите "
                 "его в списке источников, и я открою защищённое поле для ссылки."
             )
         if conn.spec_id is not None and conn.status not in {"needs_reauth", "error", "draft"}:
             return Offer(
-                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} уже подключён. "
+                f"{lead} Календарь вуза {where} уже подключён. "
                 "Заменить ссылку на новую? Я открою для неё защищённое поле.",
                 (YES_REPLACE, NO_REPLACE),
             )
+    reason = "" if page else ": она открывает весь календарь"
     return Offer(
-        f"{OFFER}, а в чат её присылать нельзя: она открывает весь календарь. Подключить "
-        f"календарь вуза {where}? Ссылку я попрошу ввести в защищённом поле.",
+        f"{asked}{reason}. Подключить календарь вуза {where}? "
+        "Ссылку я попрошу ввести в защищённом поле.",
         (YES, NO),
     )
 
 
 async def offer_calendar(
-    session: AsyncSession, user_id: str, thread: ChatThread, now: datetime
+    session: AsyncSession,
+    user_id: str,
+    thread: ChatThread,
+    now: datetime,
+    *,
+    page: bool = False,
+    space_id: str | None = None,
 ) -> None:
     """Writes the question into the thread, once: a second ask while the first is the last word of
-    the thread adds nothing. Commits. Creates no source and no task."""
-    thread_id, space_id = thread.id, thread.space_id
-    offer = await _offer_for(session, user_id, thread_id, space_id)
+    the thread adds nothing. Commits. Creates no source and no task.
+
+    `page`: the student gave a page of a calendar service (not a personal link), so the question
+    also says how a calendar is connected and where its export link is taken. `space_id`: the
+    university the question is about, when the thread does not say (a task knows its own)."""
+    thread_id = thread.id
+    offer = await _offer_for(session, user_id, thread_id, space_id or thread.space_id, page=page)
+    if page:
+        offer = dataclasses.replace(offer, text=f"{offer.text}\n\n{PAGE_STEPS}")
     last = await session.scalar(
         select(ChatMessage)
         .where(ChatMessage.user_id == user_id, ChatMessage.thread_id == thread_id)
@@ -282,7 +319,7 @@ async def offer_calendar(
         last is not None
         and last.role == "agent"
         and bool(last.blocks)
-        and str(last.blocks[0].get("markdown", "")).startswith(OFFER)
+        and str(last.blocks[0].get("markdown", "")).startswith((OFFER, PAGE_LEAD))
     )
     if already:
         await session.rollback()

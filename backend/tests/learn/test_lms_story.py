@@ -24,6 +24,7 @@ from botai.core.llm import LlmRequest, LlmResponse
 from botai.db import models as m
 from botai.domain import repo
 from botai.learn.intent import LearningIntent
+from botai.sources import calendar
 from tests.fakeuni import lms, login
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
@@ -717,6 +718,189 @@ async def test_a_link_given_while_the_summary_waits_does_not_make_the_summary_st
     assert [b for b in ctx.blocks if isinstance(b, ConfirmBlock)].__len__() == 1  # asked once
     assert taken == [{"url": OTHER_SITE, "specs": [(1, "active")]}]
     assert (await study.conn()).status == "active"
+
+
+# --- a calendar service is no cabinet: its page is not a source, a calendar has its own way ------
+
+CALENDAR_PAGE = "https://calendar.yandex.ru/week?uid=123"
+
+
+async def forbid_siblings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    taken: list[str] = []
+
+    async def continue_source(ctx: Any, services: Any, parent: str, url: str, intent: Any) -> Any:
+        taken.append(url)
+        raise AssertionError("a page of a calendar service must not become a source")
+
+    monkeypatch.setattr("botai.spaces.conversations.continue_source", continue_source)
+    return taken
+
+
+async def test_a_link_to_a_calendar_service_is_no_source_and_the_accepted_kinds_are_kept(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The incident: the student answered with a link to a web calendar, the second source went to
+    log in to Yandex ID, and the accepted classes were lost."""
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),
+            author(deadlines_endpoint("backlog")),
+        ],
+    )
+    taken = await forbid_siblings(monkeypatch)
+
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]},
+        choices=["link"],
+        links=[CALENDAR_PAGE],
+    )
+
+    assert taken == []
+    assert result["status"] == "ok", result
+    assert result["kinds"] == ["scheduleEvents"]
+    assert "continuation" not in result
+    conn = await study.conn()
+    assert (conn.status, conn.adapter) == ("active", "recipe")
+    assert await study.count(m.ScheduleEvent) > 0
+    assert [type(b).__name__ for b in study.asked] == ["ChoiceBlock", "InputBlock", "ConfirmBlock"]
+
+    # the student is told, in words, that a calendar is not a cabinet and how its link is taken
+    text = said(study)
+    assert "Это страница календаря в браузере, а не кабинет вуза" in text
+    assert "«Экспорт»" in text
+    assert "Секретный адрес в формате iCal" in text
+    assert "Эта страница находится на другом сайте" not in text
+    assert text.count("Это страница календаря в браузере") == 1
+    assert text.index("Это страница календаря") < text.index("Подключаю не всё")
+    assert "calendar.yandex.ru" not in text  # the address of the page is not repeated
+
+
+async def test_a_calendar_service_given_at_the_start_is_not_taken_for_the_site_to_connect(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(schedule_endpoint()), author(deadlines_endpoint())],
+    )
+    taken = await forbid_siblings(monkeypatch)
+    intent = {
+        "entry_urls": [CALENDAR_PAGE, ENTRY],
+        "requested_kinds": ["scheduleEvents", "deadlines"],
+        "absent_kinds": [],
+        "user_note": "",
+    }
+
+    result = await study.run(payload={"learning_intent": intent})
+
+    assert taken == []
+    assert result["status"] == "ok", result
+    assert sorted(result["kinds"]) == ["deadlines", "scheduleEvents"]
+    assert said(study).count("Это страница календаря в браузере") == 1
+
+
+async def test_a_source_that_is_a_calendar_service_is_not_learned_through_its_login(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling made of such a page before this was fixed: it must not open a browser login."""
+    study = await connect(make_env, fakeuni_app, monkeypatch, [author(schedule_endpoint())])
+    conn = await study.conn()
+    conn.origin, conn.allow_hosts = "https://calendar.yandex.ru", ["calendar.yandex.ru"]
+    await study.db.flush()
+
+    result = await study.run(payload={"url": "https://calendar.yandex.ru/week"})
+
+    assert result["status"] == "error"
+    assert study.llm.requests == []  # nothing was observed, no model was asked
+    assert study.asked == []
+    conn = await study.conn()
+    assert (conn.status, conn.spec_id) == ("error", None)
+    text = said(study)
+    assert "Это страница календаря в браузере" in text
+    assert "Не получилось подключить: это страница сервиса календаря" in text
+
+
+async def test_a_calendar_service_is_not_accepted_as_the_site_to_connect(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source without an address asks for the site; a calendar page is an answer that gets the
+    way to a calendar, not a second question and not a source."""
+    study = await connect(make_env, fakeuni_app, monkeypatch, [author(schedule_endpoint())])
+    conn = await study.conn()
+    conn.origin, conn.allow_hosts = "", []
+    await study.db.flush()
+
+    result = await study.run(payload={}, links=[CALENDAR_PAGE, ENTRY])
+
+    assert result["status"] == "error"
+    assert [type(b).__name__ for b in study.asked] == ["InputBlock"]  # asked once, not twice
+    assert study.llm.requests == []
+    text = said(study)
+    assert "Это страница календаря в браузере" in text
+    assert "Не получилось подключить: Не получилось определить адрес сайта" in text
+    assert (await study.conn()).origin == ""
+
+
+async def test_the_calendar_question_goes_into_the_thread_of_the_task_with_its_buttons(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [
+            author(schedule_endpoint()),
+            author(deadlines_endpoint("backlog")),
+            author(deadlines_endpoint("backlog")),
+        ],
+    )
+    # the task lives in a thread of the university, as a task started by the agent does
+    conn = await study.conn()
+    thread = m.ChatThread(user_id=study.seeded.user_id, space_id=conn.space_id, title="Подключение")
+    study.db.add(thread)
+    await study.db.flush()
+    thread_id = thread.id
+    study.db.add(
+        m.Job(
+            id="01J00000000000000000000JOB",
+            user_id=study.seeded.user_id,
+            kind="connect",
+            state="running",
+            connection_id=study.seeded.connection_id,
+            thread_id=thread_id,
+            payload={},
+            run_after=NOW,
+        )
+    )
+    await study.db.flush()
+
+    result = await study.run(
+        payload={"url": ENTRY, "kinds": ["scheduleEvents", "deadlines"]},
+        choices=["link"],
+        links=[CALENDAR_PAGE],
+    )
+
+    assert result["status"] == "ok", result
+    study.db.expire_all()
+    questions = list(
+        await study.db.scalars(
+            select(m.ChatMessage).where(
+                m.ChatMessage.thread_id == thread_id, m.ChatMessage.role == "agent"
+            )
+        )
+    )
+    (question,) = [q.blocks[0] for q in questions if "Подключить календарь" in str(q.blocks[0])]
+    assert question["markdown"].startswith(calendar.PAGE_LEAD)
+    assert "Подключить календарь вуза «Фейкуни»?" in question["markdown"]
+    assert "«Экспорт»" in question["markdown"]  # how the export link is taken
+    assert question["quickReplies"] == [calendar.YES, calendar.NO]
+    assert "calendar.yandex.ru" not in str(question)
+    assert "Это страница календаря в браузере" not in said(study)  # said once, where it belongs
 
 
 async def test_nothing_connected_says_what_was_seen_tried_and_can_be_done(

@@ -40,6 +40,7 @@ from botai.browser.session import EntrySessionProvider, encode_session, session_
 from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
 from botai.core.browser import BrowserHandle, ObservedRequest, SessionState
+from botai.core.calendar_link import is_calendar_service_page
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -94,7 +95,7 @@ from botai.learn.summary import (
 )
 from botai.learn.ui import Ui, describe, kinds_text, sample_of
 from botai.search.service import SearchResult
-from botai.sources import schedule
+from botai.sources import calendar, schedule
 from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
@@ -190,6 +191,9 @@ class Explorer:
         self._gaps: dict[Kind, list[str]] = {}
         # Links to other sites that already went on as sibling sources (never continued twice).
         self._continued: set[str] = set()
+        # A page of a calendar service was given: it is no source, the student was told so (once).
+        self._calendar_told = False
+        self._calendar_page_given = False
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -336,6 +340,7 @@ class Explorer:
                 requested_kinds=tuple(wanted_kinds(payload)),
                 discovery_mode="requested" if "kinds" in payload else "auto",
             )
+        self._without_calendar_pages()
         self._initial_note_pending = bool(self.intent.user_note)
         if payload.get("_research_engine") == 1:
             self._initial_note_pending = False
@@ -417,9 +422,60 @@ class Explorer:
                 self.intent = apply_intent(
                     self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
                 )
+        self._without_calendar_pages()
         self._trace_intent(changed=self.intent != before, rejected_count=turn.rejected_links)
+        if self._calendar_page_given:
+            await self._offer_calendar()
         if checkpoint:
             await self._checkpoint()
+
+    def _without_calendar_pages(self) -> None:
+        """A page of a calendar service (calendar.yandex.ru, Google Calendar in the browser) is not
+        a cabinet: it never becomes an entry of this research, a source, or a login of that service.
+        The student is told how a calendar is connected instead (`_offer_calendar`)."""
+        pages = [url for url in self.intent.entry_urls if is_calendar_service_page(url)]
+        if pages:
+            self._calendar_page_given = True
+            self.intent = replace(
+                self.intent,
+                entry_urls=tuple(url for url in self.intent.entry_urls if url not in pages),
+            )
+
+    async def _offer_calendar(self) -> None:
+        """Say, in the thread of this task, that a calendar is read by its export link and ask
+        whether to connect it (`calendar.offer_calendar`, the question with buttons). A task outside
+        any thread says it in its own words. Once per task."""
+        if self._calendar_told:
+            return
+        self._calendar_told = True
+        diagnostic_event("learn.outcome", outcome="skipped", reason="validation")
+        async with self.services.db() as db:
+            job = await db.scalar(
+                select(m.Job).where(m.Job.id == self.ctx.job_id, m.Job.user_id == self.ctx.user_id)
+            )
+            thread = (
+                await db.scalar(
+                    select(m.ChatThread).where(
+                        m.ChatThread.id == job.thread_id, m.ChatThread.user_id == self.ctx.user_id
+                    )
+                )
+                if job is not None and job.thread_id
+                else None
+            )
+            if job is not None and thread is not None:
+                conn = await db.get(m.Connection, job.connection_id) if job.connection_id else None
+                await calendar.offer_calendar(
+                    db,
+                    self.ctx.user_id,
+                    thread,
+                    self.services.clock.now(),
+                    page=True,
+                    space_id=conn.space_id if conn is not None else None,
+                )
+                return
+        await self.ui.say(
+            f"{calendar.PAGE_LEAD}.\n\n{calendar.PAGE_STEPS}\n\nНапишите «подключи календарь», и я открою защищённое поле."
+        )
 
     async def _drain(self, redactor: Redactor) -> bool:
         before = self.intent
@@ -551,10 +607,21 @@ class Explorer:
         self._previous_status = info.status
         await self._set(connection_id, status="learning", clear_error=not manual_existing)
         try:
+            if self._calendar_page_given:  # the earlier intent of this task held such a page
+                await self._offer_calendar()
             origin = await self._resolve_origin(info, payload)
             if origin is None:
                 return await self._fail(
                     info, "Не получилось определить адрес сайта", ErrorCode.VALIDATION
+                )
+            if is_calendar_service_page(f"{origin}/"):
+                # A source made of a calendar service earlier (a link given to a task): its
+                # browser login is not what reads a calendar.
+                await self._offer_calendar()
+                return await self._fail(
+                    info,
+                    "это страница сервиса календаря, а не кабинет вуза",
+                    ErrorCode.VALIDATION,
                 )
             info = await self._info(connection_id)
             if self._manual_login:
@@ -641,7 +708,10 @@ class Explorer:
                 "Какой сайт подключить? Нужна ссылка на личный кабинет, расписание или LMS."
             )
             if answer:
+                self._calendar_page_given = False
                 await self._turn(answer, await self._redactor(info))
+                if self._calendar_page_given:
+                    return None  # a calendar is no site to connect: the student was told the way
             origin = url_origin(self.intent.entry_urls[0]) if self.intent.entry_urls else None
             if origin is None:
                 await self.ui.say("Подойдёт только адрес вида https://example.org без порта.")
@@ -1795,7 +1865,10 @@ class Explorer:
         if not answer:
             return False
         before = self.intent
+        self._calendar_page_given = False
         await self._turn(answer, await self._redactor(info))
+        if self._calendar_page_given:
+            return False  # the student pointed to a calendar, not to a page of this cabinet
         return self.intent != before
 
     # --- the final spec ----------------------------------------------------------------------

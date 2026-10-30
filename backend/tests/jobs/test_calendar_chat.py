@@ -426,3 +426,88 @@ async def test_a_second_link_while_the_question_is_the_last_word_adds_nothing(en
     for link in LINKS[:3]:
         await post(who.client, who.thread_id, link)
     assert len(await offers(env, who.thread_id)) == 1
+
+
+# --- a page of a calendar service (not a personal link) gets a question of its own -----------------
+
+
+async def page_offers(env: Env, thread: str) -> list[dict[str, Any]]:
+    return [
+        message.blocks[0]
+        for message in await messages(env, thread, "agent")
+        if str(message.blocks[0].get("markdown", "")).startswith(calendar.PAGE_LEAD)
+    ]
+
+
+async def offer_page(env: Env, who: Student) -> None:
+    async with env.sm() as session:
+        thread = await session.get(m.ChatThread, who.thread_id)
+        assert thread is not None
+        await calendar.offer_calendar(session, who.user_id, thread, env.clock.now(), page=True)
+
+
+async def test_a_page_of_a_calendar_service_is_told_apart_from_a_personal_link_and_shows_the_way(
+    env: Env,
+) -> None:
+    who = await student(env)
+    await offer_page(env, who)
+    (question,) = await page_offers(env, who.thread_id)
+    text = question["markdown"]
+    assert "а не кабинет вуза" in text
+    assert "личная ссылка" not in text  # nothing here is secret: it is a page
+    assert "в чат её присылать нельзя" not in text
+    assert "Подключить календарь вуза «Фейкуни»?" in text
+    assert "«Экспорт»" in text  # the way to the export link, in words
+    assert question["quickReplies"] == [calendar.YES, calendar.NO]
+    assert await offers(env, who.thread_id) == []  # the question about a personal link is not it
+
+    await offer_page(env, who)  # asked again while it is the last word: nothing is added
+    assert len(await page_offers(env, who.thread_id)) == 1
+    assert await made(env, who.user_id) == (0, 0)  # and nothing is created before the answer
+
+
+async def test_with_several_universities_the_question_about_a_page_asks_which_one(env: Env) -> None:
+    who = await student(env)
+    await who.client.post("/api/v1/spaces", json={"title": "Второй институт"})
+    await offer_page(env, who)
+    (question,) = await page_offers(env, who.thread_id)
+    assert "Для какого вуза подключить календарь?" in question["markdown"]
+    assert all(reply.startswith("Календарь для ") for reply in question["quickReplies"])
+
+
+async def test_a_calendar_that_works_is_offered_a_new_link_when_a_page_is_given(env: Env) -> None:
+    who = await student(env)
+    async with env.sm() as session:
+        conn = m.Connection(
+            id=new_id(),
+            user_id=who.user_id,
+            space_id=who.space_id,
+            origin="https://calendar.fakeuni.test",
+            kind="calendar",
+            adapter="ical",
+            title="Календарь",
+            status="active",
+            allow_hosts=["calendar.fakeuni.test"],
+        )
+        spec = m.AdapterSpecRow(
+            origin="https://calendar.fakeuni.test",
+            adapter="ical",
+            revision=1,
+            state="active",
+            spec={"adapter": "ical", "origin": "https://calendar.fakeuni.test"},
+        )
+        session.add_all([spec, conn])
+        await session.flush()
+        conn.spec_id = spec.id
+        await session.commit()
+        spec_id = spec.id
+    try:
+        await offer_page(env, who)
+        (question,) = await page_offers(env, who.thread_id)
+        assert "уже подключён" in question["markdown"]
+        assert question["quickReplies"] == [calendar.YES_REPLACE, calendar.NO_REPLACE]
+        assert await made(env, who.user_id) == (1, 0)
+    finally:
+        async with env.sm() as session:
+            await session.delete(await session.get(m.AdapterSpecRow, spec_id))
+            await session.commit()

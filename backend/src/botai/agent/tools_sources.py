@@ -28,6 +28,7 @@ from botai.agent.env import (
 from botai.agent.tasks import TaskView, active_tasks
 from botai.contracts.agent_ui import TaskBlock
 from botai.contracts.specs import Kind
+from botai.core.calendar_link import is_calendar_service_page
 from botai.core.errors import BotaiError
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -53,6 +54,15 @@ from botai.spaces.views import SourceView
 NO_REPAIR_STATUSES = {"needs_reauth": "нужен повторный вход человеком", "disabled": "отключено"}
 EXACT = 1.0  # universities.search: the name or a known short name matched whole
 TITLE_CHARS = 120
+_CALENDAR_SERVICE = (
+    "Результат: не запущено. Это страница календаря в браузере (Яндекс, Google, Outlook, iCloud), "
+    "а не кабинет вуза: входить в неё через браузер нельзя, источник из неё не делается. Календарь "
+    "подключается личной ссылкой экспорта (iCal): без пароля и входа на сайт, ссылку студент вводит "
+    "в защищённое поле. Скажите студенту, где её взять:\n"
+    + calendar.GUIDE_STEPS
+    + "\nЗатем, когда студент согласится, вызовите connect_calendar (не connect_source): поле "
+    "для ссылки откроется в этом чате. Саму ссылку просить в чат нельзя."
+)
 _NEEDS_TITLE = (
     "Результат: не запущено. Укажите человеческое название источника в title "
     "(например «Единый личный кабинет», «Smart LMS», «Список группы»), а не адрес сайта."
@@ -263,9 +273,12 @@ async def _previous_intent(session: AsyncSession, conn: Connection) -> LearningI
         .order_by(Job.created_at.desc(), Job.id.desc())
         .limit(1)
     )
-    stored = service.same_origin_intent(
-        previous.payload.get("learning_intent") if previous else None, conn.origin
-    )
+    try:
+        stored = service.same_origin_intent(
+            previous.payload.get("learning_intent") if previous else None, conn.origin
+        )
+    except BotaiError:
+        return None  # an earlier intent that no longer passes the checks is not worth keeping
     return LearningIntent.restore(stored) if stored is not None else None
 
 
@@ -382,6 +395,8 @@ def _kinds_arg(raw: object) -> list[Kind] | str:
 async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
     raw_url = args.get("url")
     url: str | None = None
+    if raw_url and is_calendar_service_page(str(raw_url)):
+        return _CALENDAR_SERVICE
     if raw_url:
         try:
             url = safe_url(raw_url)

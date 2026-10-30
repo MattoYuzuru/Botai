@@ -725,3 +725,32 @@ async def test_an_unknown_kind_is_a_message_to_the_model_and_starts_nothing(env:
     assert result.startswith("Результат: не запущено. kinds")
     assert "scheduleEvents" in result
     assert await jobs_of(env, user, "connect") == []
+
+
+# --- a page of a calendar service is no cabinet --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://calendar.yandex.ru/week?uid=123",
+        "https://calendar.google.com/calendar/u/0/r",
+        "https://outlook.office365.com/calendar/view/week",
+    ],
+)
+async def test_a_page_of_a_calendar_service_is_never_a_source_the_agent_is_pointed_to_the_calendar(
+    env: Env, url: str
+) -> None:
+    client, user = await student(env)
+    chat = tools(env, user, await thread_of(client))
+    result = await connect_source(
+        chat, {"url": url, "title": "Календарь", "university_query": "Вышка"}
+    )
+    assert result.startswith("Результат: не запущено")
+    assert "connect_calendar" in result  # the way the agent takes instead
+    assert "«Экспорт»" in result  # and what the student is told: where the export link is taken
+    assert "Секретный адрес в формате iCal" in result
+    assert "в чат" in result  # the link itself is never asked for in the chat
+    assert await jobs_of(env, user) == []
+    assert await count(env, Connection, Connection.user_id == user) == 0
+    assert chat.blocks == []

@@ -151,6 +151,31 @@ async def test_bad_urls_are_rejected_without_a_connection(
         assert (await s.execute(select(Connection))).first() is None
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://calendar.yandex.ru/week?uid=123",
+        "https://calendar.google.com/calendar/u/0/r",
+        "https://outlook.office365.com/calendar/view/week",
+    ],
+)
+async def test_a_page_of_a_calendar_service_is_not_made_a_source_and_the_way_is_told(
+    client: httpx.AsyncClient,
+    tx_sessionmaker: Sm,
+    clock: FrozenClock,
+    queue: InMemoryJobQueue,
+    url: str,
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    space = await _space(client)
+    r = await client.post(f"/api/v1/spaces/{space}/connections", json={"url": url})
+    assert r.status_code == 422
+    assert "подключи календарь" in r.text  # a calendar is connected by its export link
+    assert queue.jobs == []
+    async with tx_sessionmaker() as s:
+        assert (await s.execute(select(Connection))).first() is None
+
+
 async def test_unknown_kind_is_a_validation_error(
     client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
 ) -> None:
