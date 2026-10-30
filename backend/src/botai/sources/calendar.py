@@ -136,9 +136,8 @@ async def start_calendar_source(
         session.add(conn)
         await session.flush()
     elif conn.status == "disabled":
-        return CalendarStart(
-            "exists", conn, None, space
-        )  # switched off by the student: theirs to switch on
+        # Switched off by the student: theirs to switch on, not the agent's to restart.
+        return CalendarStart("exists", conn, None, space)
     else:
         running = await session.scalar(
             select(Job)
@@ -328,9 +327,8 @@ class CalendarConnector:
             info = await load_conn_info(db, user_id, connection_id)
         if info.status == "disabled":
             return {"status": "skipped", "detail": "disabled"}
-        configured = (
-            info.origin != ""
-        )  # a calendar that had a link: it keeps working until a new one does
+        # A calendar that had a link keeps working (and keeps its status) until a new one does.
+        configured = info.origin != ""
         if not configured:
             await set_connection(
                 svc, connection_id, user_id, ctx=self.ctx, status="learning", clear_error=True

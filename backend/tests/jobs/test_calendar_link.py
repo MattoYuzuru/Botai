@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,12 +29,14 @@ from botai.agent.tools_sources import (
     sync_source,
 )
 from botai.contracts.agent_ui import TaskBlock
+from botai.core import diagnostics
 from botai.core.http import NO_RETRY
 from botai.core.jobs import JobKind
 from botai.core.llm import ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.db import models as m
 from botai.learn.handlers import make_handlers
+from botai.settings import Settings
 from botai.sources.runner import make_sync_handler
 from botai.spaces import service as spaces_service
 from tests.agent.rig import call, final, step
@@ -64,6 +67,12 @@ class Directory(httpx.AsyncBaseTransport):
         self.requests.append(request)
         if request.url.host == "down.fakeuni.test":
             raise httpx.ConnectError("no route to host", request=request)
+        if request.url.host == "moved.fakeuni.test":  # a link that leads to another site
+            return httpx.Response(
+                302,
+                headers={"location": "https://elsewhere.fakeuni.test/export.ics"},
+                request=request,
+            )
         return await self._fakeuni.handle_async_request(request)
 
 
@@ -86,6 +95,20 @@ async def _shared_rows(env: Env) -> AsyncIterator[None]:
         await session.execute(delete(m.AdapterSpecRow).where(m.AdapterSpecRow.id.not_in(specs)))
         await session.execute(delete(m.AuditLog).where(m.AuditLog.id > audit))
         await session.commit()
+
+
+@pytest.fixture
+def traces(tmp_path: Path) -> Iterator[Path]:
+    """The operator's diagnostics switched on, writing to a directory of this test."""
+    diagnostics.configure_diagnostics(
+        Settings(botai_diagnostics=True, botai_diagnostics_dir=str(tmp_path))
+    )
+    try:
+        yield tmp_path
+    finally:
+        diagnostics.configure_diagnostics(
+            Settings(botai_diagnostics=False, botai_diagnostics_dir=str(tmp_path))
+        )
 
 
 @pytest.fixture
@@ -227,12 +250,25 @@ async def make_working(env: Env, who: Student, *, status: str = "active") -> m.C
     return await calendar_of(env, who.user_id)
 
 
-async def no_leak(env: Env, wiretap: WireTap, *models: ScriptedLlm, stored: bool = True) -> None:
+def trace_records(directory: Path) -> str:
+    return "\n".join(path.read_text() for path in directory.glob("*.jsonl*"))
+
+
+async def no_leak(
+    env: Env,
+    wiretap: WireTap,
+    traces: Path,
+    *models: ScriptedLlm,
+    stored: bool = True,
+) -> None:
     """The link of the fixture is nowhere but in the Vault: not in a dump of the database (the
-    `secrets` table holds ciphertext only), not in a log line, not in a request to the model."""
+    `secrets` table holds ciphertext only), not in a log line, not in the operator diagnostics,
+    not in a request to the model."""
     dump = await dump_database(env.sm)
     assert ("secrets:" in dump) is stored
-    for text in (dump, wiretap.text, sent_to_models(*models) if models else ""):
+    trace_text = trace_records(traces)
+    assert "learn.calendar" in trace_text  # the switch was on, and the task wrote to it
+    for text in (dump, wiretap.text, trace_text, sent_to_models(*models) if models else ""):
         assert leaks(text, MARKERS) == []
         assert "private_token" not in text
         assert "feed.ics?token" not in text
@@ -445,7 +481,7 @@ async def test_connect_source_leaves_the_calendar_of_the_university_alone(env: E
 
 
 async def test_the_student_hands_the_link_over_and_the_calendar_is_read(
-    env: Env, fakeuni_app: object, wiretap: WireTap
+    env: Env, fakeuni_app: object, wiretap: WireTap, traces: Path
 ) -> None:
     """The whole story through the agent: «my timetable is in a calendar» -> the tool -> the
     protected field -> the Vault -> the check -> the first sync -> what is in it."""
@@ -536,12 +572,12 @@ async def test_the_student_hands_the_link_over_and_the_calendar_is_read(
     assert len(asked) == 2
     assert {r.headers.get("cookie") for r in asked} == {None}
     assert all(r.url.params["private_token"] == fakeuni.SERVICE_TOKEN for r in asked)
-    await no_leak(env, wiretap, llm)
+    await no_leak(env, wiretap, traces, llm)
     assert fakeuni.SERVICE_URL not in said(await history(who))
 
 
 async def test_a_wrong_link_is_asked_again_with_the_reason_and_nothing_is_kept(
-    env: Env, fakeuni_app: object, wiretap: WireTap
+    env: Env, fakeuni_app: object, wiretap: WireTap, traces: Path
 ) -> None:
     who = await student(env)
     await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
@@ -566,7 +602,7 @@ async def test_a_wrong_link_is_asked_again_with_the_reason_and_nothing_is_kept(
     assert (conn.status, conn.error_code) == ("error", "validation")
     assert conn.last_sync_at is None
     assert await env.services.vault.get(who.user_id, conn.id, SecretKind.ICAL_URL) is None
-    await no_leak(env, wiretap, stored=False)
+    await no_leak(env, wiretap, traces, stored=False)
     assert "wrong-key-0000" not in await dump_database(env.sm) + wiretap.text
 
     # asking again opens the field again, and a good link finishes what was left
@@ -596,8 +632,24 @@ async def test_a_calendar_that_does_not_answer_or_is_not_a_link_is_told_apart(
     assert "возможно, она скопирована не целиком или уже отозвана" in text
 
 
+async def test_a_link_that_leads_to_another_site_is_refused_and_that_site_is_never_asked(
+    env: Env, fakeuni_app: object
+) -> None:
+    who = await student(env)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    network = start_worker(env, fakeuni_app)
+    seen: set[str] = set()
+    await hand_over(who, "https://moved.fakeuni.test/export/ics.xml?private_token=abc123", seen)
+    task = await hand_over(who, fakeuni.SERVICE_URL, seen)  # the second try is a good link
+    await env.wait_for(task, {"done"})
+    assert "Ссылка ведёт на другой адрес, чем календарь" in said(await history(who))
+    assert (await calendar_of(env, who.user_id)).status == "active"
+    hosts = {request.url.host for request in network.requests}
+    assert hosts == {"moved.fakeuni.test", HOST}  # elsewhere.fakeuni.test was never reached
+
+
 async def test_the_link_can_be_replaced_and_a_refused_one_keeps_the_old_calendar(
-    env: Env, fakeuni_app: object, wiretap: WireTap
+    env: Env, fakeuni_app: object, wiretap: WireTap, traces: Path
 ) -> None:
     who = await student(env)
     start_worker(env, fakeuni_app)
@@ -632,7 +684,7 @@ async def test_the_link_can_be_replaced_and_a_refused_one_keeps_the_old_calendar
     stored = await env.services.vault.get(who.user_id, conn.id, SecretKind.ICAL_URL)
     assert stored is not None
     assert stored.get_secret_value() == fakeuni.PATH_URL  # the new link replaced the old one
-    await no_leak(env, wiretap)
+    await no_leak(env, wiretap, traces)
 
     # a replacement that fails changes nothing about the calendar that works
     told = await connect_calendar(
