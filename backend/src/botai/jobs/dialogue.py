@@ -9,7 +9,15 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.contracts.agent_ui import QUOTE_MAX, AgentUiBlock, InputBlock, Quote
+from botai.contracts.agent_ui import (
+    QUOTE_MAX,
+    AgentUiBlock,
+    ApprovalBlock,
+    ChoiceBlock,
+    ConfirmBlock,
+    InputBlock,
+    Quote,
+)
 from botai.core.diagnostics import diagnostic_event
 from botai.core.dialogue import DialogueTurn
 from botai.core.ids import new_id
@@ -25,9 +33,9 @@ def clip_quote(text: str) -> str:
 
 def question_of(block: AgentUiBlock) -> str | None:
     """What an asking block asks, as plain text for a quote."""
-    if block.type == "approval":
+    if isinstance(block, ApprovalBlock):
         return block.proposal.intent
-    if block.type in {"choice", "input", "confirm"}:
+    if isinstance(block, ChoiceBlock | InputBlock | ConfirmBlock):
         return block.question
     return None
 
@@ -268,12 +276,12 @@ async def project_block(
         return
     kind = data.get("type")
     safe = dict(data)
-    if kind in {"login", "input", "choice", "confirm", "approval", "wait"}:
-        label = str(data.get("question") or data.get("message") or "Ручной вход в браузере")[:500]
-        details = data.get("details") if kind == "confirm" else None
-        if isinstance(details, str) and details.strip():
-            label = f"{details.strip()}\n\n{label}"  # what is confirmed reads with the question
-        safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": label}
+    # A confirmation with a body keeps its form: what is confirmed reads with the question. It holds
+    # no credential, and as a block of its own it stays out of the text a model reads as history.
+    keeps_form = kind == "confirm" and bool(str(data.get("details") or "").strip())
+    if kind in {"login", "input", "choice", "confirm", "approval", "wait"} and not keeps_form:
+        label = data.get("question") or data.get("message") or "Ручной вход в браузере"
+        safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": str(label)[:500]}
     existing = await session.scalar(
         select(ChatMessage).where(
             ChatMessage.user_id == job.user_id,
@@ -305,7 +313,7 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
     "connect": (
         "Подключение отменено.",
         "Подключение не завершено. Можно уточнить источник или продолжить настройку.",
-        "Источник подключён.",
+        "",  # a connection ends with its own closing message (what is connected, how it updates)
     ),
     "repair": (
         "Починка остановлена.",
@@ -320,14 +328,14 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
     "ingest": (
         "Загрузка документа остановлена.",
         "Документ добавить не удалось.",
-        "Документ добавлен.",
+        "",  # a document reports its own summary
     ),
 }
 _UNSETTLED = {"unresolved", "rolled_back", "skipped"}
 
 
 def terminal_text(job: Job) -> str | None:
-    """None: the task already told its outcome itself (a document reports its own summary)."""
+    """None: the task already told its outcome itself (a connection and a document both do)."""
     cancelled, failed_text, done = _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
     status = (job.result or {}).get("status")
     failed = job.state == "failed" or status == "error"
@@ -342,9 +350,7 @@ def terminal_text(job: Job) -> str | None:
         return "Автоматическая настройка не завершена. Можно уточнить источник или продолжить."
     if status == "healthy":
         return "Источник работает, чинить нечего."
-    if job.kind == "ingest":
-        return None
-    return done
+    return done or None
 
 
 async def project_terminal(session: AsyncSession, job: Job, now: datetime) -> None:

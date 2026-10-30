@@ -132,7 +132,7 @@ async def test_a_moved_endpoint_is_found_fixed_and_reported(make_env: EnvFactory
     report = ls.blocks_of(env.ctx, "text")[-1].markdown
     assert "Исправлено" in report
     assert "адрес запроса: `/api/v2/timetable` → `/api/v3/schedule`" in report
-    assert "Данные на месте — расписание: 4" in report
+    assert "Данные на месте: расписание — 4 занятия." in report
     stages = [b.stage for b in ls.blocks_of(env.ctx, "thinking")]
     assert "Чиню: расписание" in stages
     assert (await env.sync())["status"] == "ok"  # the next scheduled sync runs on revision 2
@@ -186,7 +186,7 @@ async def test_a_complaint_about_a_healthy_source_gets_an_honest_answer(
     assert env.llm.requests == []
     text = ls.blocks_of(env.ctx, "text")[0].markdown
     assert "сайт отвечает так же, как раньше" in text
-    assert "расписание: 4" in text
+    assert "Сейчас в данных: расписание — 4 занятия" in text
 
 
 # --- when there is nothing to fix, or no fix -------------------------------------------------
@@ -248,7 +248,9 @@ async def test_a_candidate_reading_other_data_goes_to_the_student(make_env: EnvF
 
     assert declined["status"] == "unresolved"
     assert any(isinstance(b, ConfirmBlock) for b in env.asked)
-    assert ls.blocks_of(env.ctx, "summary")[0].title == "Вот что читается теперь"
+    (asked,) = [b for b in env.asked if isinstance(b, ConfirmBlock)]
+    assert (asked.details or "").startswith("Вот что читается теперь:")
+    assert "- **Расписание:** 4 занятия" in (asked.details or "")
     assert await env.specs() == [(1, "active")]
 
     env.services.clock.advance(timedelta(days=1))  # type: ignore[attr-defined]

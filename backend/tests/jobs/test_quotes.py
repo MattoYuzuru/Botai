@@ -170,8 +170,10 @@ async def test_a_confirm_answer_is_the_label_of_the_pressed_button(env: Env) -> 
     await waiting
     rows = await messages(client, thread)
     asked = next(row for row in rows if row["blocks"][0]["id"] == block.id)
-    # What is confirmed reads together with the question in the history.
-    assert asked["blocks"][0]["markdown"] == "Нашла **35 занятий**.\n\nВсё верно?"
+    # What is confirmed stays with the question in the history, as one message.
+    assert asked["blocks"][0]["type"] == "confirm"
+    assert asked["blocks"][0]["details"] == "Нашла **35 занятий**."
+    assert asked["blocks"][0]["question"] == "Всё верно?"
     (reply,) = user_texts(rows)
     assert reply["markdown"] == "Да, всё верно"
     assert reply["quote"] == {"text": "Всё верно?", "blockId": block.id}

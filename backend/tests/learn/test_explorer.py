@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock, SummaryBlock, TextBlock
+from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock, TextBlock
 from botai.core.browser import FakeBrowserGateway, FakePage
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
@@ -54,15 +54,33 @@ async def test_connect_learns_the_spec_confirms_and_syncs(make_env: EnvFactory) 
     assert "Смотрю страницы кабинета" in stages
     assert "Разбираю: расписание" in stages
     assert {b.state for b in ls.blocks_of(env.ctx, "thinking")} == {"ok"}
-    (summary,) = ls.blocks_of(env.ctx, "summary")
-    titles = [g.title for g in summary.groups]
-    assert titles == ["Расписание", "Дедлайны", "Источник"]
-    schedule_items = {i.label: i.value for i in summary.groups[0].items}
-    assert schedule_items["Найдено записей"] == "4"
-    # the sample shows what is still ahead, in the student's own time zone
-    assert schedule_items["Базы данных"] == "ср, 28 окт, 13:00–14:20, В-310"
-    assert [type(b) for b in env.asked] == [ConfirmBlock]
-    assert "Подключено: расписание: 4, дедлайны: 2" in ls.blocks_of(env.ctx, "text")[-1].markdown
+    # one confirmation says what was found in words and shows the nearest classes
+    assert ls.blocks_of(env.ctx, "summary") == []
+    (confirm,) = env.asked
+    assert isinstance(confirm, ConfirmBlock)
+    assert confirm.question.startswith("Всё верно?")
+    details = confirm.details or ""
+    assert details.startswith("Нашла в «")
+    assert "- **Расписание:** 4 занятия с 26 октября по 30 октября — 1 неделя" in details
+    assert "- **Дедлайны:** 2 задания со сроками" in details
+    # now is Tuesday 27 October: the past Monday is not shown, the two nearest days with classes are,
+    # in the student's own time zone and with the room
+    assert "Ближайшие пары:" in details
+    assert "**Среда, 28 октября**\n- 13:00–14:20 · Базы данных · В-310" in details
+    assert "**Пятница, 30 октября**\n- 15:10–16:30 · Английский язык · online" in details
+    assert "Понедельник" not in details
+    assert "записей" not in details
+    # the stages count in the words of the kind
+    notes = {b.stage: b.detail for b in ls.blocks_of(env.ctx, "thinking") if b.detail}
+    assert notes["Разбираю: расписание"] == "Найдено занятий: 4"
+    assert notes["Разбираю: дедлайны"] == "Найдено заданий со сроками: 2"
+    # and the end is a friendly line: what is connected, how often it refreshes, what to ask
+    closing = ls.blocks_of(env.ctx, "text")[-1].markdown
+    assert closing == (
+        "Готово! Данные Фейкуни подключены: расписание — 4 занятия на 1 неделю вперёд; "
+        "дедлайны — 2 задания со сроками. Обновляю само каждые 3 часа — "
+        "спросите, например, «что у меня завтра?»"
+    )
 
 
 async def test_the_model_sees_structure_not_the_student(make_env: EnvFactory) -> None:
@@ -157,7 +175,10 @@ async def test_two_sources_with_different_data_make_the_student_choose(
     result = await env.run(choices=["1"])
     assert result["status"] == "ok"
     choice = next(b for b in env.asked if isinstance(b, ChoiceBlock))
-    assert [o.label for o in choice.options] == ["Вариант 1: 2 записей", "Вариант 2: 2 записей"]
+    assert [o.label for o in choice.options] == [
+        "Вариант 1: 2 задания со сроками",
+        "Вариант 2: 2 задания со сроками",
+    ]
     spec = (await env.db.execute(select(m.AdapterSpecRow.spec))).scalars().one()
     deadlines = next(e for e in spec["recipe"]["endpoints"] if e["kind"] == "deadlines")
     assert deadlines["response"]["fields"]["externalId"] == {"path": "/name"}
@@ -446,16 +467,13 @@ async def test_the_registry_gets_the_origin_and_the_third_party_warning(
         if isinstance(block, TextBlock)
         and "Пока не удалось полностью проверить источник" in block.markdown
     ]
-    summaries = [
-        index for index, block in enumerate(env.ctx.blocks) if isinstance(block, SummaryBlock)
-    ]
     confirmations = [
         index for index, block in enumerate(env.ctx.blocks) if isinstance(block, ConfirmBlock)
     ]
-    assert len(warnings) == len(incomplete) == len(summaries) == len(confirmations) == 1
+    assert len(warnings) == len(incomplete) == len(confirmations) == 1
     # Partial discovery remains visible; the user sees the source warning and verified
     # summary before deciding whether these specific collected data should be imported.
-    assert incomplete[0] < warnings[0] < summaries[0] < confirmations[0]
+    assert incomplete[0] < warnings[0] < confirmations[0]
     assert (await env.conn()).status == "active"
 
 

@@ -618,6 +618,7 @@ async def test_runtime_shows_tasks_pending_and_receipts_while_waiting_and_after_
     }
     await worker.drain_dialogue()
     await worker.checkpoint_learning(INTENT)
+    told = len((await client.get(f"/api/v1/chat/threads/{thread}/messages")).json())
     await finish(env, job_id)
     done = await runtime_of(client, thread)
     assert done["activeJob"] is None  # a finished task is history, not the active job
@@ -628,8 +629,9 @@ async def test_runtime_shows_tasks_pending_and_receipts_while_waiting_and_after_
         (None, question.id, "applied"),
     }
     history = (await client.get(f"/api/v1/chat/threads/{thread}/messages")).json()
-    assert history[-1]["blocks"][0]["markdown"] == "Источник подключён."
-    assert history[-1]["jobId"] == job_id
+    # A connection ends with its own closing message, so no generic "connected" line is added.
+    assert len(history) == told
+    assert history[-1]["blocks"][0]["markdown"] == "Только расписание"
     turn = await post(client, thread, "Что дальше?")
     assert turn.status_code == 202
     chatting = await runtime_of(client, thread)

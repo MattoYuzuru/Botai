@@ -44,6 +44,7 @@ from botai.learn.explorer import TOKEN_BUDGET, Chosen, Explorer, kinds_text
 from botai.learn.intent import LearningIntent
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.policies import bind_parts
+from botai.learn.summary import confirm_details
 from botai.sources import schedule
 from botai.sources.adapter import AdapterResult, SessionExpired
 from botai.sources.factory import AdapterFactory
@@ -258,7 +259,7 @@ class Repairer(Explorer):
         )
         counts = kinds_text(outcome.kinds)
         if outcome.status == "ok":
-            tail = f" Сейчас в данных — {counts}." if counts else " Записей сейчас нет."
+            tail = f" Сейчас в данных: {counts}." if counts else " Записей сейчас нет."
             await self.ui.say(
                 "Проверено: сайт отвечает так же, как раньше, ничего чинить не нужно." + tail
             )
@@ -355,18 +356,23 @@ class Repairer(Explorer):
             )
             return await self._without_new_revision(snap, empty, [*unresolved, *fixed])
 
-        if any(c.comparison is None or c.comparison.verdict != "match" for c in fixed.values()):
-            await self._show_summary(snap, fixed, report, title="Вот что читается теперь")
-            if not await ui.confirm(
-                "Данные изменились по сравнению с прежними. Это ваши данные? "
-                "После подтверждения описание будет обновлено.",
-                "Да, это они",
-                "Нет, не то",
-            ):
-                await ui.say("Хорошо, прежнее описание остаётся, ничего не меняю.")
-                return await self._without_new_revision(
-                    snap, empty, [*unresolved, *fixed], say=False
-                )
+        changed = any(
+            c.comparison is None or c.comparison.verdict != "match" for c in fixed.values()
+        )
+        if changed and not await ui.confirm(
+            "Данные изменились по сравнению с прежними. Это ваши данные? "
+            "После подтверждения описание будет обновлено.",
+            "Да, это они",
+            "Нет, не то",
+            details=confirm_details(
+                {kind: report.valid.get(kind, []) for kind in fixed},
+                svc.clock.now(),
+                snap.tz,
+                heading="Вот что читается теперь:",
+            ),
+        ):
+            await ui.say("Хорошо, прежнее описание остаётся, ничего не меняю.")
+            return await self._without_new_revision(snap, empty, [*unresolved, *fixed], say=False)
         return await self._apply(snap, new_spec, fixed, unresolved, empty, digest, reason)
 
     # --- outcomes ----------------------------------------------------------------------------
@@ -471,7 +477,7 @@ class Repairer(Explorer):
         counts = kinds_text(outcome.kinds, only=set(fixed))
         message = "**Исправлено.** Сайт поменялся, описание обновлено:\n" + "\n".join(lines)
         if counts:
-            message += f"\n\nДанные на месте — {counts}."
+            message += f"\n\nДанные на месте: {counts}."
         if unresolved:
             await self._set(
                 snap.connection_id,
