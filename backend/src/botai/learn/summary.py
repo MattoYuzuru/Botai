@@ -263,7 +263,7 @@ def finished_text(
 
     `counts` are what the first read stored; `weeks` is how far the classes reach (when known).
     """
-    kinds = [kind for kind in ORDER if counts.get(kind)]
+    kinds: list[Kind] = [kind for kind in ORDER if counts.get(kind)]
     if not kinds:
         return (
             "Готово, источник подключён, но данных в нём пока не нашлось. "

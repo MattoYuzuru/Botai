@@ -315,9 +315,11 @@ describe("«Сегодня»: состояния данных", () => {
     const { router } = renderApp("/");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
     expect(within(notices).getByText("Сайт вуза не отвечает уже вторые сутки.")).toBeInTheDocument();
-    await userEvent.click(within(notices).getByRole("link", { name: "Спросить в чате" }));
+    // Заготовку уходит читать чат, и она сразу пропадает из адреса: проверяем ссылку, а не адрес после перехода.
+    const link = within(notices).getByRole("link", { name: "Спросить в чате" });
+    expect(hrefOf(link).draft).toContain("Личный кабинет");
+    await userEvent.click(link);
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.draft).toContain("Личный кабинет");
   });
 
   it("offline: последний снимок и подпись «Нет сети. Показан снимок от …»", async () => {
