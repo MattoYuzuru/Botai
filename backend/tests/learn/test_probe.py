@@ -94,6 +94,17 @@ def test_a_probe_cannot_invent_keys_values_or_credentials(
     assert refused.value.reason == reason
 
 
+def test_a_key_the_request_repeats_is_not_replaced_by_one_value() -> None:
+    repeated = call(url=f"{ORIGIN}/api/tasks?state=open&state=done&begin_date=2026-10-26")
+    with pytest.raises(ProbeRefused) as refused:
+        url_for({"state": "open"}, repeated)
+    assert refused.value.reason == "repeated_query_key"
+    # the other keys of the same request are still the planner's to move
+    assert url_for({"begin_date": "{plusDays:7}"}, repeated).endswith(
+        "state=open&state=done&begin_date=2026-11-03"
+    )
+
+
 @pytest.mark.parametrize(
     "observed",
     [

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from botai.contracts.specs import MAX_REPEATED_VALUES
 from botai.core.browser import ObservedRequest, auth_origin
 from botai.learn.addresses import (
     looks_like_auth_page,
@@ -148,7 +149,7 @@ def _entry_request(
     *,
     now: datetime | None,
     time_zone: ZoneInfo | None,
-) -> tuple[str, dict[str, str]]:
+) -> tuple[str, dict[str, str | list[str]]]:
     if auth_origin(url) is None or auth_origin(url) != auth_origin(origin):
         raise FactoryCompileError("browser_entry_origin_mismatch")
     parts = urlsplit(url)
@@ -158,9 +159,16 @@ def _entry_request(
         pairs = parse_qsl(parts.query, keep_blank_values=True, max_num_fields=12)
     except ValueError:
         raise FactoryCompileError("browser_entry_unrepresentable") from None
-    if len(dict(pairs)) != len(pairs):
+    by_key: dict[str, list[str]] = {}
+    for key, value in pairs:
+        by_key.setdefault(key, []).append(value)
+    if any(len(values) > MAX_REPEATED_VALUES for values in by_key.values()):
         raise FactoryCompileError("browser_entry_unrepresentable")
-    path, query = parts.path or "/", dict(pairs)
+    # A key that the page's own address repeats comes back as the list of its values.
+    path = parts.path or "/"
+    query: dict[str, str | list[str]] = {
+        key: values[0] if len(values) == 1 else values for key, values in by_key.items()
+    }
     if now is not None and time_zone is not None:
         authored_path = request.get("path")
         if isinstance(authored_path, str) and "{" in authored_path:
@@ -173,7 +181,10 @@ def _entry_request(
                 raise FactoryCompileError("browser_entry_template_mismatch")
             for key, value in authored_query.items():
                 if isinstance(value, str) and "{" in value:
-                    query[key] = _certified_template(value, query[key], now=now, tz=time_zone)
+                    observed = query[key]
+                    if not isinstance(observed, str):  # a template stands for one value
+                        raise FactoryCompileError("browser_entry_template_mismatch")
+                    query[key] = _certified_template(value, observed, now=now, tz=time_zone)
     return path, query
 
 
