@@ -4,7 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataVariant } from "@/mocks/data-handlers";
 import type { Scenario } from "@/mocks/db";
-import { hrefOf } from "@/test/data-fixtures";
+import { eventFixture, hrefOf } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -111,6 +111,119 @@ describe("«Сегодня»: пары и сроки", () => {
   });
 });
 
+describe("«Сегодня»: сегодня пар нет", () => {
+  const freeDay = () => useScenario("connected", "freeday");
+
+  it("короткая строка «Сегодня пар нет» и ниже «Ближайшие пары»: ближайший день с парами, день недели и дата", async () => {
+    freeDay();
+    renderApp("/");
+    expect(await screen.findByText("Сегодня пар нет")).toBeInTheDocument();
+    // Пустые состояния — компактной строкой у левого края, а не крупным блоком по центру.
+    expect(screen.getByText("Сегодня пар нет").closest("[data-layout]")).toHaveAttribute(
+      "data-layout",
+      "inline",
+    );
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(
+      within(upcoming).getByRole("heading", { level: 3, name: "среда, 28 октября" }),
+    ).toBeInTheDocument();
+    const rows = await within(upcoming).findAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector("time")?.textContent)).toEqual(["10:30", "13:00", "18:30"]);
+    // Карточки того же вида, что в ленте дня: тип занятия, аудитория, преподаватель, вуз.
+    expect(within(rows[0] as HTMLElement).getByText("Дискретная математика")).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText("Лекция")).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText("ауд. 218")).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText("ВШЭ")).toBeInTheDocument();
+    // Ленты «Пары» с карточками сегодня нет: в ней только строка о том, что пар нет.
+    const today = screen.getByRole("region", { name: "Пары" });
+    expect(within(today).queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  it("карточка ближайшей пары открывается шитом, как у пары сегодня", async () => {
+    freeDay();
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    await userEvent.click(await within(upcoming).findByRole("button", { name: /Теория вероятностей/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Теория вероятностей" });
+    expect(within(sheet).getByText("ауд. 305")).toBeInTheDocument();
+  });
+
+  it("дни без пар пропускаются: берётся ближайший день, где они есть, и только он", async () => {
+    freeDay();
+    const eventsOn = (offsetDays: number, id: string, title: string) => ({
+      ...eventFixture(),
+      id,
+      title,
+      startsAt: new Date(NOW + offsetDays * 86_400_000).toISOString(),
+      endsAt: new Date(NOW + offsetDays * 86_400_000 + 80 * 60_000).toISOString(),
+    });
+    current.server.use(
+      http.get("*/api/v1/schedule", () =>
+        HttpResponse.json([
+          eventsOn(4, "e-later", "Позже на неделе"),
+          eventsOn(3, "e-near", "Ближайшая пара"),
+          eventsOn(3.1, "e-near-2", "Вторая в тот же день"),
+        ]),
+      ),
+    );
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(
+      await within(upcoming).findByRole("heading", { level: 3, name: "пятница, 30 октября" }),
+    ).toBeInTheDocument();
+    const titles = (await within(upcoming).findAllByRole("listitem")).map((row) => row.textContent ?? "");
+    expect(titles).toHaveLength(2);
+    expect(titles[0]).toContain("Ближайшая пара");
+    expect(titles[1]).toContain("Вторая в тот же день");
+    expect(within(upcoming).queryByText("Позже на неделе")).toBeNull();
+  });
+
+  it("пока ближайшие пары ищутся — скелетон с aria-busy, а не пустой раздел", async () => {
+    freeDay();
+    current.server.use(http.get("*/api/v1/schedule", () => new Promise(() => {})));
+    renderApp("/");
+    const upcoming = await screen.findByRole("region", { name: "Ближайшие пары" });
+    expect(within(upcoming).getByRole("status")).toHaveAttribute("aria-busy", "true");
+    expect(within(upcoming).queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  it("устаревшие данные без пар «Сегодня пар нет» не объявляют и ближайшие не ищут: данные могут быть неполными", async () => {
+    const asked: string[] = [];
+    const snapshotAt = new Date(NOW - 3 * 3_600_000).toISOString();
+    current.server.use(
+      http.get("*/api/v1/today", () =>
+        HttpResponse.json(
+          { date: "2026-10-27", events: [], deadlines: [], attention: [] },
+          { headers: { "x-botai-snapshot-at": snapshotAt } },
+        ),
+      ),
+      http.get("*/api/v1/schedule", ({ request }) => {
+        asked.push(request.url);
+        return HttpResponse.json([]);
+      }),
+    );
+    renderApp("/");
+    expect(await screen.findByText("Пар в этих данных нет")).toBeInTheDocument();
+    expect(screen.queryByText("Сегодня пар нет")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Ближайшие пары" })).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
+  it("пары сегодня есть — «Ближайших пар» нет и лишнего запроса расписания тоже", async () => {
+    const asked: string[] = [];
+    current.server.use(
+      http.get("*/api/v1/schedule", ({ request }) => {
+        asked.push(request.url);
+        return HttpResponse.json([]);
+      }),
+    );
+    renderApp("/");
+    await within(await screen.findByRole("region", { name: "Пары" })).findAllByRole("listitem");
+    expect(screen.queryByRole("region", { name: "Ближайшие пары" })).toBeNull();
+    expect(asked).toEqual([]);
+  });
+});
+
 describe("«Сегодня»: состояния данных", () => {
   it("нет вузов — приглашение подключить, и это не «всё сдано»", async () => {
     useScenario("empty");
@@ -130,11 +243,14 @@ describe("«Сегодня»: состояния данных", () => {
     expect(document.querySelector("[aria-busy=true]")).not.toBeNull();
   });
 
-  it("empty: вузы подключены и свежи, но данных нет — «Пар нет» и «Ближайших сроков нет»", async () => {
+  it("empty: вузы подключены и свежи, но данных нет — «Сегодня пар нет» и «Ближайших сроков нет»", async () => {
     useScenario("connected", "quiet");
     renderApp("/");
-    expect(await screen.findByText("Пар нет")).toBeInTheDocument();
+    expect(await screen.findByText("Сегодня пар нет")).toBeInTheDocument();
     expect(screen.getByText("Ближайших сроков нет")).toBeInTheDocument();
+    // Ближайших пар тоже не нашлось: об этом одна фраза, а не ещё один пустой раздел.
+    expect(await screen.findByText(/на ближайшие три недели пар тоже нет/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Ближайшие пары" })).toBeNull();
     await waitFor(() => expect(screenState()).toBe("empty"));
     expect(screen.queryByText(/всё сдано/i)).toBeNull();
   });

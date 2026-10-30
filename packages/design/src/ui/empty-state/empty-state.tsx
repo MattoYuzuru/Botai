@@ -10,6 +10,11 @@ export interface EmptyStateProps {
   /** Одно действие: «Подключить вуз». */
   action?: ReactNode;
   size?: "sm" | "md";
+  /**
+   * `stacked` — по центру, значок над текстом (пустой экран). `inline` — компактная строка у левого края: значок
+   * слева, текст справа; для пустой части экрана с другим содержимым рядом, чтобы не оставлять пустую зону.
+   */
+  layout?: "stacked" | "inline";
   className?: string;
   /** Уровень заголовка в структуре страницы. */
   as?: "h2" | "h3" | "p";
@@ -22,25 +27,36 @@ export function EmptyState({
   description,
   action,
   size = "md",
+  layout = "stacked",
   className,
   as: Title = "h2",
 }: EmptyStateProps) {
+  const inline = layout === "inline";
   return (
     <div
+      data-layout={layout}
       className={cn(
-        "mx-auto flex max-w-reading flex-col items-center text-center",
-        size === "md" ? "gap-3 px-4 py-10" : "gap-2 px-4 py-6",
+        inline
+          ? "flex items-start gap-3 px-1 py-2"
+          : "mx-auto flex max-w-reading flex-col items-center text-center",
+        !inline && (size === "md" ? "gap-3 px-4 py-10" : "gap-2 px-4 py-6"),
         className,
       )}
     >
-      <span className="grid size-12 place-items-center rounded-lg bg-bg-subtle text-fg-muted">
+      <span
+        className={cn(
+          "grid shrink-0 place-items-center rounded-lg bg-bg-subtle text-fg-muted",
+          inline ? "size-10" : "size-12",
+        )}
+      >
         <Icon name={icon} size={24} />
       </span>
-      <div className="flex flex-col gap-1">
-        <Title className="type-heading text-fg">{title}</Title>
+      <div className={cn("flex min-w-0 flex-col gap-1", inline && "pt-1.5")}>
+        <Title className={inline ? "type-subheading text-fg" : "type-heading text-fg"}>{title}</Title>
         {description && <p className="type-ui text-fg-muted">{description}</p>}
+        {inline && action && <div className="pt-1">{action}</div>}
       </div>
-      {action && <div className="pt-2">{action}</div>}
+      {!inline && action && <div className="pt-2">{action}</div>}
     </div>
   );
 }
