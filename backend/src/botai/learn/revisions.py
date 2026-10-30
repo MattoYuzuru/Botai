@@ -18,12 +18,13 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.db import models as m
+from botai.sources.scope import covered_kinds
 
 STATES = ("draft", "canary", "active", "deprecated", "rolled_back")
 AUDIT_DRIFT = "spec_drift"
@@ -118,6 +119,43 @@ async def activate(
     if now is not None:
         await record(session, AUDIT_CANARY, row, now, ok=True, via="activation")
     return previous
+
+
+async def pin_readers(
+    session: AsyncSession,
+    previous: m.AdapterSpecRow | None,
+    row: m.AdapterSpecRow,
+    *,
+    keep: str,
+) -> int:
+    """Pin the connections that read «every kind of the recipe» when `row` adds kinds to it.
+
+    A connection without a durable scope reads whatever the active revision has. A revision that
+    one student extends would make everybody else start reading the new kinds unasked, and a
+    failure of such a kind would send their sources to repair and, three drifts later, roll the
+    revision back for the student who asked. So in the same transaction, under the lock of the
+    site, each of them gets the kinds the previous revision had as its explicit scope. `keep` is
+    the connection that is being saved. Returns how many connections were pinned.
+    """
+    if previous is None or row.adapter != "recipe":
+        return 0
+    before = covered_kinds(previous.spec, None)
+    if not set(covered_kinds(row.spec, None)) - set(before):
+        return 0
+    result = await session.execute(
+        update(m.Connection)
+        .where(
+            m.Connection.origin == row.origin,
+            m.Connection.adapter == row.adapter,
+            m.Connection.id != keep,
+            or_(
+                m.Connection.data_scope.is_(None),
+                func.jsonb_typeof(m.Connection.data_scope) == "null",
+            ),
+        )
+        .values(data_scope=[str(kind) for kind in before])
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def rollback(

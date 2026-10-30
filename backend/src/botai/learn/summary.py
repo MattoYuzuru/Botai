@@ -241,14 +241,20 @@ def confirm_details(
     tz: ZoneInfo,
     *,
     heading: str = "Нашла в кабинете:",
+    unconnected: str = "",
 ) -> str:
-    """The body of the confirmation: what is connected in words and the nearest classes."""
+    """The body of the confirmation: what is connected in words and the nearest classes.
+
+    `unconnected` is what the research tried on its own and could not read (`аудитории — причина`):
+    it is told here, and it does not stand in the way of what was found."""
     lines = [plain(heading, 120), ""]
     lines += [
         f"- **{KIND_LABELS[kind]}:** {kind_line(kind, records[kind], tz)}"
         for kind in ORDER
         if kind in records
     ]
+    if unconnected:
+        lines += ["", f"Заодно пробовала, но не вышло (это не мешает остальному): {unconnected}."]
     if "scheduleEvents" in records:
         lines += ["", *preview_lines(records["scheduleEvents"], now, tz)]
     return fit_text("\n".join(lines), DETAILS_MAX)

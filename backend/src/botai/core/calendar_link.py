@@ -8,6 +8,11 @@ kind has two traits: it looks like an export of a calendar (`webcal://`, an `.ic
 part, `private-…`, a parameter named `token` or `key`). A public `.ics` without a key (a holiday
 calendar, a page about subscribing) is an ordinary link.
 
+A page of the calendar *application* of such a service (the week view of Yandex Calendar, Google
+Calendar in the browser) is a different thing: an ordinary link, which carries no key, but also no
+cabinet of a university to log in to. `is_calendar_service_page` recognises it, so that nothing makes
+it a source that is read through a browser and a login of the service.
+
 The same rules are written in TypeScript (`apps/web/src/features/chat/calendar-link.ts`) so that
 the client keeps such a link out of its queue; `contracts/calendar-link-vectors.json` holds the cases
 both implementations must agree on. Nothing here knows a university.
@@ -35,6 +40,12 @@ _KEY_PREFIX = re.compile(r"(?i)^(?:private|secret|token|key|auth)[-_.]\S{2,}")
 _SEPARATORS = re.compile(r"[-_.]")
 _ICLOUD = re.compile(r"(?i)^(?:p\d+-)?caldav\.icloud\.com$")
 _OUTLOOK = re.compile(r"(?i)^outlook\.(?:live|office|office365)\.com$|^[\w-]+\.outlook\.com$")
+# Hosts that are a calendar application and nothing else, whatever the path.
+_CALENDAR_APP = re.compile(
+    r"(?i)^calendar\.(?:yandex\.(?:[a-z]{2,3}|com\.[a-z]{2})|google\.com|proton\.me|mail\.ru|live\.com)$"
+)
+# Hosts of a larger service, where only the calendar part of the path is the calendar.
+_SUITE = re.compile(r"(?i)^(?:www\.)?(?:google|icloud)\.com$")
 
 
 def _clean(text: str) -> str:
@@ -118,6 +129,24 @@ def is_calendar_link(url: str) -> bool:
     if parts is None:
         return False
     return _published(parts) or (_export_shape(parts) and _has_key(parts))
+
+
+def is_calendar_service_page(url: str) -> bool:
+    """Whether one address is a page of a calendar service's own application: calendar.yandex.ru,
+    calendar.google.com, the calendar of Outlook or iCloud in the browser."""
+    parts = _parts(unicodedata.normalize("NFKC", url).translate(_ZERO_WIDTH))
+    if parts is None:
+        return False
+    # (`normalize_host` of the proxy does the same, but this module is imported by the logging
+    # that the proxy imports.) A trailing dot is the same name: `calendar.yandex.ru.`
+    host, path = (parts.hostname or "").lower().rstrip("."), unquote(parts.path).lower()
+    in_calendar = path == "/calendar" or path.startswith(("/calendar/", "/owa/calendar"))
+    return (
+        bool(_CALENDAR_APP.match(host))
+        or bool(_ICLOUD.match(host))
+        or (bool(_OUTLOOK.match(host)) and in_calendar)
+        or (bool(_SUITE.match(host)) and in_calendar)
+    )
 
 
 def calendar_link_in(text: str) -> bool:

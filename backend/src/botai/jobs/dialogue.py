@@ -334,22 +334,37 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
         "",  # a document reports its own summary
     ),
 }
+# A connect task that adds kinds to a source that works: the source keeps working whatever happens.
+_EXTENSION_TEXT = (
+    "Добавление остановлено. Подключённые данные работают как раньше.",
+    "Добавить данные не удалось. Подключённые данные работают как раньше.",
+    "",  # it ends with its own closing message
+)
 _UNSETTLED = {"unresolved", "rolled_back", "skipped"}
 
 
 def terminal_text(job: Job) -> str | None:
     """None: the task already told its outcome itself (a connection and a document both do)."""
-    cancelled, failed_text, done = _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
+    extension = job.kind == "connect" and job.payload.get("extend") is True
+    cancelled, failed_text, done = (
+        _EXTENSION_TEXT if extension else _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
+    )
     status = (job.result or {}).get("status")
     failed = job.state == "failed" or status == "error"
     if job.state == "cancelled":
         return cancelled
+    if extension and (job.result or {}).get("extension") is True and status in {"error", "skipped"}:
+        return None  # the task told it in its own words (the source works as before)
+    if status == "skipped" and (job.result or {}).get("detail") == "calendar":
+        return None  # the thread already holds the question about the calendar
     if failed:
         detail = (job.error or {}).get("detail")
         return failed_text + (" " + detail[:500] if isinstance(detail, str) and detail else "")
     if status == "continued":
         return "Продолжаю подключение по новой ссылке в этом разговоре."
     if status in _UNSETTLED:
+        if extension:
+            return "Добавление не выполнено. Подключённые данные работают как раньше."
         return "Автоматическая настройка не завершена. Можно уточнить источник или продолжить."
     if status == "healthy":
         return "Источник работает, чинить нечего."

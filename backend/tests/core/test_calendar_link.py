@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from botai.core.calendar_link import calendar_link_in, hide_calendar_links, is_calendar_link
+from botai.core.calendar_link import (
+    calendar_link_in,
+    hide_calendar_links,
+    is_calendar_link,
+    is_calendar_service_page,
+)
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.calendar_url import normalize_calendar_link, origin_of_link
 
@@ -135,3 +140,44 @@ def test_what_is_not_a_public_calendar_link_is_refused_without_repeating_it(raw:
     assert refused.value.code == ErrorCode.VALIDATION
     assert KEY not in refused.value.detail
     assert "example.org" not in refused.value.detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://calendar.yandex.ru/week?uid=123",
+        "https://calendar.yandex.com/event?event_id=123",
+        "calendar.yandex.ru/",
+        "https://calendar.google.com/calendar/u/0/r",
+        "https://calendar.google.com/calendar/embed?src=uni%40group.calendar.google.com",
+        "https://www.google.com/calendar",
+        "https://outlook.office365.com/calendar/view/week",
+        "https://outlook.office.com/calendar/view/month?topics=1",
+        "https://outlook.live.com/owa/calendar/abc/reachcalendar.html",
+        "https://www.icloud.com/calendar/",
+        "https://calendar.proton.me/u/0",
+        "https://calendar.yandex.ru./week",  # a trailing dot is the same name
+        "https://CALENDAR.GOOGLE.COM./calendar/u/0/r",
+    ],
+)
+def test_a_page_of_a_calendar_service_is_recognised_as_one(url: str) -> None:
+    assert is_calendar_service_page(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://lk.fakeuni.test/calendar",  # the calendar of a cabinet of a university is its own page
+        "https://calendar.fakeuni.test/week",
+        "https://outlook.office.com/mail/deeplink/compose?subject=logistics",
+        "https://outlook.office365.com/book/PhysicsDept@uni.edu/",
+        "https://www.google.com/search?q=calendar",
+        "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit",
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0",
+        "https://uni.edu/events?format=ics",
+        "not an address",
+        "",
+    ],
+)
+def test_the_calendar_of_a_university_and_other_pages_are_not_a_calendar_service(url: str) -> None:
+    assert not is_calendar_service_page(url)

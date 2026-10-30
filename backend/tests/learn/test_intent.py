@@ -7,7 +7,13 @@ import json
 import pytest
 
 from botai.learn.addresses import navigation_url
-from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
+from botai.learn.intent import (
+    LearningIntent,
+    apply_intent,
+    intent_request,
+    merge_intent,
+    prepare_turn,
+)
 
 ENTRY = "https://fakeuni.test/schedule?begin_date=2026-10-26&view=week"
 
@@ -207,3 +213,93 @@ def test_only_requested_kinds_replace_an_earlier_explicit_choice() -> None:
     assert result.requested_kinds == ("scheduleEvents",)
     assert result.discovery_mode == "requested"
     assert LearningIntent.restore(result.checkpoint()) == result
+
+
+# --- a source that is asked for again: what is asked now wins, what was said survives ------------
+
+OLD_PAGE = "https://fakeuni.test/learn/timetable"
+NEW_PAGE = "https://fakeuni.test/learn/tasks"
+
+
+def test_a_new_ask_adds_its_kinds_note_and_page_to_the_old_one() -> None:
+    stale = LearningIntent(
+        (OLD_PAGE,), ("scheduleEvents",), (), "Подключение по ссылке на расписание", "requested"
+    )
+    fresh = LearningIntent(
+        (NEW_PAGE,),
+        ("scheduleEvents", "deadlines"),
+        (),
+        "Прочитай расписание и задания заново",
+        "requested",
+    )
+    merged = merge_intent(stale, fresh)
+    assert merged.requested_kinds == ("scheduleEvents", "deadlines")
+    assert merged.user_note == "Прочитай расписание и задания заново"
+    assert merged.entry_urls == (NEW_PAGE, OLD_PAGE)  # the page asked now first, the old one kept
+    assert merged.discovery_mode == "requested"
+
+
+def test_an_ask_without_kinds_keeps_what_the_student_named_before() -> None:
+    stale = LearningIntent(
+        (OLD_PAGE,), ("deadlines",), ("locations",), "только задания", "requested"
+    )
+    fresh = LearningIntent((OLD_PAGE,), ("scheduleEvents",), (), "", "auto")  # the bare default
+    merged = merge_intent(stale, fresh)
+    assert merged.requested_kinds == ("deadlines",)
+    assert merged.absent_kinds == ("locations",)  # an exclusion survives
+    assert merged.user_note == "только задания"  # the old note stands in for an empty one
+    assert merged.discovery_mode == "requested"
+    assert merged.entry_urls == (OLD_PAGE,)
+
+
+def test_kinds_an_auto_research_found_are_findings_not_wishes() -> None:
+    stale = LearningIntent(
+        (OLD_PAGE,), ("scheduleEvents", "people", "courses", "locations"), (), "", "auto"
+    )
+    fresh = LearningIntent((OLD_PAGE,), ("scheduleEvents", "deadlines"), (), "", "requested")
+    merged = merge_intent(stale, fresh)
+    assert merged.requested_kinds == ("scheduleEvents", "deadlines")
+    nothing_named = merge_intent(
+        stale, LearningIntent((OLD_PAGE,), ("scheduleEvents",), (), "", "auto")
+    )
+    assert nothing_named.discovery_mode == "auto"
+    assert nothing_named.requested_kinds == ("scheduleEvents",)
+
+
+def test_naming_an_excluded_kind_again_lifts_the_exclusion() -> None:
+    stale = LearningIntent((), ("scheduleEvents",), ("deadlines",), "", "requested")
+    fresh = LearningIntent((), ("deadlines",), (), "", "requested")
+    merged = merge_intent(stale, fresh)
+    assert merged.absent_kinds == ()
+    assert merged.requested_kinds == ("scheduleEvents", "deadlines")
+    swapped = merge_intent(
+        LearningIntent((), ("scheduleEvents",), (), "", "requested"),
+        LearningIntent(
+            (), ("deadlines",), ("scheduleEvents",), "вместо расписания задания", "requested"
+        ),
+    )
+    assert (swapped.requested_kinds, swapped.absent_kinds) == (("deadlines",), ("scheduleEvents",))
+    gone = merge_intent(
+        LearningIntent((), ("scheduleEvents",), (), "", "requested"),
+        LearningIntent((), ("scheduleEvents",), ("scheduleEvents",), "", "auto"),
+    )
+    assert gone.discovery_mode == "auto"  # nothing left to name: back to looking around
+
+
+def test_an_old_note_does_not_outlive_an_ask_that_names_kinds() -> None:
+    stale = LearningIntent((OLD_PAGE,), ("scheduleEvents",), (), "только расписание", "requested")
+    fresh = LearningIntent((OLD_PAGE,), ("scheduleEvents", "deadlines"), (), "", "requested")
+    merged = merge_intent(stale, fresh)
+    assert merged.requested_kinds == ("scheduleEvents", "deadlines")
+    assert merged.user_note == ""  # «only the schedule» was said before this ask, not with it
+
+
+def test_naming_only_these_kinds_replaces_the_earlier_ones() -> None:
+    stale = LearningIntent((), ("scheduleEvents", "courses"), ("locations",), "", "requested")
+    fresh = LearningIntent((), ("deadlines",), (), "только задания", "requested")
+    added = merge_intent(stale, fresh)
+    assert added.requested_kinds == ("scheduleEvents", "courses", "deadlines")
+    replaced = merge_intent(stale, fresh, replace=True)
+    assert replaced.requested_kinds == ("deadlines",)
+    assert replaced.absent_kinds == ("locations",)  # an exclusion is not a kind that was asked
+    assert replaced.user_note == "только задания"

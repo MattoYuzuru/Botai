@@ -9,8 +9,9 @@ password, code or cookie; those are entered in the protected fields of the app.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.env import (
@@ -27,17 +28,22 @@ from botai.agent.env import (
 )
 from botai.agent.tasks import TaskView, active_tasks
 from botai.contracts.agent_ui import TaskBlock
+from botai.contracts.specs import Kind
+from botai.core.calendar_link import is_calendar_service_page
 from botai.core.errors import BotaiError
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
-from botai.db.models import Connection, Document, Job, Space, University
+from botai.db.models import AdapterSpecRow, Connection, Document, Job, Space, University
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.tasks import task_title
+from botai.learn.intent import LearningIntent, merge_intent
 from botai.sources import calendar
 from botai.sources import service as documents_service
 from botai.sources.ingest import check_url
 from botai.sources.schemas import DocumentFromUrl
+from botai.sources.scope import covered_kinds, read_scope
+from botai.sources.vocab import KIND_LABELS
 from botai.spaces import repo, service, universities, views
 from botai.spaces.conversations import (
     intent_of,
@@ -50,6 +56,16 @@ from botai.spaces.views import SourceView
 NO_REPAIR_STATUSES = {"needs_reauth": "нужен повторный вход человеком", "disabled": "отключено"}
 EXACT = 1.0  # universities.search: the name or a known short name matched whole
 TITLE_CHARS = 120
+_CALENDAR_SERVICE = (
+    "Результат: не запущено. Это страница календаря в браузере (Яндекс, Google, Outlook, iCloud), "
+    "а не кабинет вуза: входить в неё через браузер нельзя, источник из неё не делается. Календарь "
+    "подключается личной ссылкой экспорта (iCal): без пароля и входа на сайт, ссылку студент вводит "
+    "в защищённое поле. Скажите студенту, где её взять:\n"
+    + calendar.GUIDE_STEPS
+    + "\nЗатем, когда студент согласится, вызовите connect_calendar (не connect_source): поле "
+    "для ссылки откроется в этом чате. Саму ссылку просить в чат нельзя."
+)
+_DEFAULT_TITLES = frozenset(title.lower() for title in views.KIND_TITLES.values())
 _NEEDS_TITLE = (
     "Результат: не запущено. Укажите человеческое название источника в title "
     "(например «Единый личный кабинет», «Smart LMS», «Список группы»), а не адрес сайта."
@@ -247,17 +263,104 @@ async def _university(
 _UNFINISHED = frozenset({"draft", "learning", "error"})
 
 
+async def _previous_intent(session: AsyncSession, conn: Connection) -> LearningIntent | None:
+    """What the newest connect task of this source was asked to learn, as the student and the
+    research left it (the pages and kinds named in the dialogue, what the student excluded)."""
+    previous = await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == conn.user_id,
+            Job.connection_id == conn.id,
+            Job.kind == JobKind.CONNECT.value,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    try:
+        stored = service.same_origin_intent(
+            previous.payload.get("learning_intent") if previous else None, conn.origin
+        )
+    except BotaiError:
+        return None  # an earlier intent that no longer passes the checks is not worth keeping
+    return LearningIntent.restore(stored) if stored is not None else None
+
+
+def _wanted_text(intent: LearningIntent) -> str:
+    """What is being connected, in the words of the student."""
+    if intent.discovery_mode != "requested":
+        return "то, что найдётся в кабинете"
+    return ", ".join(KIND_LABELS[kind].lower() for kind in intent.requested_kinds)
+
+
+async def _extension(
+    session: AsyncSession, conn: Connection, fresh: LearningIntent, merged: LearningIntent
+) -> tuple[LearningIntent | None, tuple[Kind, ...]]:
+    """What a source that works lacks of what the student named now.
+
+    Returns the intent of a task that learns only that (the pages and exclusions of the dialogue
+    kept), or None when the source already reads everything named; and the kinds it reads now.
+    Only kinds the student named in this ask count: without them there is nothing to add."""
+    row = await session.get(AdapterSpecRow, conn.spec_id) if conn.spec_id else None
+    if row is None or fresh.discovery_mode != "requested":
+        return None, ()
+    have = covered_kinds(row.spec, read_scope(conn.data_scope))
+    missing: list[Kind] = []
+    for kind in fresh.requested_kinds:
+        if kind not in have and kind not in merged.absent_kinds:
+            missing.append(kind)
+    if not missing:
+        return None, have
+    intent = LearningIntent(
+        merged.entry_urls, tuple(missing), merged.absent_kinds, merged.user_note, "requested"
+    )
+    return intent, have
+
+
+def _kinds_text(kinds: tuple[Kind, ...]) -> str:
+    return ", ".join(KIND_LABELS[kind].lower() for kind in kinds)
+
+
 async def _exists_or_resume(
     env: ChatEnv,
     session: AsyncSession,
     conn: Connection,
     intent: dict[str, Any],
     url: str | None,
+    *,
+    replace: bool = False,
 ) -> str:
+    if conn.adapter == calendar.ADAPTER:
+        return _by_link(views.display_title(conn))  # a calendar has its own way: the export link
     busy = any(t.connection_id == conn.id for t in await active_tasks(session, env.user_id))
-    if busy or conn.spec_id is not None or conn.status not in _UNFINISHED:
+    if busy or conn.status == "disabled":
         return await _exists(env, session, conn)
-    payload: dict[str, Any] = {"learning_intent": intent, "source": "chat"}
+    # The task continues what the student wants NOW: this ask is merged into what the earlier
+    # attempt was told, so a new wish (tasks as well as the timetable) is never lost to an old note
+    # and a page or an exclusion from the earlier dialogue is not forgotten either.
+    fresh = LearningIntent.restore(intent)
+    stale = await _previous_intent(session, conn)
+    merged = merge_intent(stale, fresh, replace=replace) if stale is not None else fresh
+    working = conn.status == "active" and conn.adapter == "recipe" and conn.spec_id is not None
+    extension, have = await _extension(session, conn, fresh, merged) if working else (None, ())
+    if conn.spec_id is not None and extension is None:
+        text = await _exists(env, session, conn)
+        if have and fresh.discovery_mode == "requested":
+            text += (
+                f" Всё названное студентом уже читается этим источником ({_kinds_text(have)}): "
+                "добавлять нечего."
+            )
+        return text
+    if conn.spec_id is None and conn.status not in _UNFINISHED:
+        return await _exists(env, session, conn)
+    wanted = extension or merged
+    payload: dict[str, Any] = {
+        "learning_intent": {**wanted.checkpoint(), "discovery_mode": wanted.discovery_mode},
+        "source": "chat",
+    }
+    if extension is not None:
+        payload["extend"] = True  # learn only the missing kinds; the recipe stays as it is
+    if merged.user_note and not fresh.user_note:
+        payload["note_applied"] = True  # a note kept from the dialogue was classified back then
     if url is not None:
         payload["url"] = url
     job = await enqueue_in_session(
@@ -274,10 +377,19 @@ async def _exists_or_resume(
     title = views.display_title(conn)
     env.forget_meta()
     _task_card(env, job, "connect", task_title("connect", title), conn.id)
+    if extension is not None:
+        return (
+            f"Результат: запущено. «{data_text(title)}» уже подключён (читается: "
+            f"{_kinds_text(have)}); добавляю то, чего в нём ещё нет: {_kinds_text(extension.requested_kinds)} "
+            f"{_where(env, job)} {connection_link(conn.id)}. Подключённые данные работают и "
+            "обновляются как раньше, что бы ни вышло; вход и вопросы появятся в чате. Скажите "
+            "студенту, что дополняете подключение."
+        )
     return (
         f"Результат: продолжено. Источник «{data_text(title)}» уже был добавлен, но подключение "
         f"не завершилось — оно запущено снова {_where(env, job)} {connection_link(conn.id)}. "
-        "Скажите студенту, что продолжаете прежнее подключение; вход и вопросы появятся в чате."
+        f"Читается: {_wanted_text(merged)}. Скажите студенту, что продолжаете прежнее "
+        "подключение и что именно читается; вход и вопросы появятся в чате."
     )
 
 
@@ -322,31 +434,90 @@ async def _exists(env: ChatEnv, session: AsyncSession, conn: Connection) -> str:
     return "\n".join(lines)
 
 
+def _kinds_arg(raw: object) -> list[Kind] | str:
+    """The kinds of data the agent says the student asked for, or a message for the model."""
+    if raw is None or raw == "":
+        return []
+    values = raw if isinstance(raw, list) else [raw]
+    kinds: list[Kind] = []
+    for value in values:  # pyright: ignore[reportUnknownVariableType]
+        if not isinstance(value, str) or value not in KIND_LABELS:
+            return (
+                "Результат: не запущено. kinds — список видов данных из: "
+                + ", ".join(KIND_LABELS)
+                + "."
+            )
+        if value not in kinds:
+            kinds.append(value)  # type: ignore[arg-type]  # a key of KIND_LABELS
+    return kinds
+
+
+def _ask_intent(url: str | None, note: str, kinds: list[Kind]) -> dict[str, Any]:
+    """The learning intent of one ask of the agent. What the student named is a request, not a
+    hint: discovery does not widen it."""
+    context: dict[str, Any] = {"entry_urls": [url] if url else [], "user_note": note}
+    if kinds:
+        context.update(requested_kinds=kinds, discovery_mode="requested")
+    return intent_of(normalize_context(context))
+
+
 async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
     raw_url = args.get("url")
     url: str | None = None
+    if raw_url and is_calendar_service_page(str(raw_url)):
+        return _CALENDAR_SERVICE
     if raw_url:
         try:
             url = safe_url(raw_url)
         except BotaiError as exc:
             return f"Результат: не запущено. {exc.detail}."
+    connection_id = clean(str(args.get("connection_id") or ""), 40)
+    replace = args.get("replace_kinds") is True
     title = _human_title(args.get("title"))
-    if title is None:
+    if title is None and not connection_id:
         return _NEEDS_TITLE
     kind = views.normalize_kind(args.get("kind_hint"))
     note = clean(str(args.get("note") or ""), 500)
+    kinds = _kinds_arg(args.get("kinds"))
+    if isinstance(kinds, str):
+        return kinds
     try:
-        context = {"entry_urls": [url] if url else [], "user_note": note}
-        intent = intent_of(normalize_context(context))
+        intent = _ask_intent(url, note, kinds)
     except BotaiError as exc:
         return f"Результат: не запущено. {exc.detail}."
     origin = universities.origin_of(url) if url else None
+
+    if connection_id:
+        # The agent names a source it sees in the context: continue it or add to it, make no new one.
+        async with env.services.db() as session:
+            named = await session.scalar(
+                select(Connection).where(
+                    Connection.id == connection_id, Connection.user_id == env.user_id
+                )
+            )
+            if named is None:
+                return (
+                    "Результат: не запущено. Такого подключения у студента нет: возьмите "
+                    "connection_id из контекста или list_universities."
+                )
+            other_site = url is not None and origin != named.origin
+            if other_site:
+                url, intent = None, _ask_intent(None, note, kinds)
+            text = await _exists_or_resume(env, session, named, intent, url, replace=replace)
+            if other_site:
+                text += (
+                    " Адрес из вызова указывает на другой сайт, поэтому для этого источника он не "
+                    "использован. Страница другого сайта подключается отдельным источником: "
+                    "connect_source с этим адресом, без connection_id."
+                )
+            return text
+    assert title is not None
 
     async with env.services.db() as session:
         if origin is not None:
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists_or_resume(env, session, existing, intent, url)
+                return await _exists_or_resume(env, session, existing, intent, url, replace=replace)
         chosen = await _university(
             session,
             env,
@@ -362,23 +533,47 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
             # Two turns asking for one site at once end with one source: the second finds the first.
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists_or_resume(env, session, existing, intent, url)
+                return await _exists_or_resume(env, session, existing, intent, url, replace=replace)
             conn, _ = await service.ensure_source(
                 session, env.user_id, space.id, url=url, kind=kind, title=title
             )
         else:
             # No address yet: the connection finds the entry page itself (public search, then the
             # student chooses) and fills the address in. A second ask for the same name waits for it.
-            conn = await session.scalar(
-                select(Connection).where(
-                    Connection.user_id == env.user_id,
-                    Connection.space_id == space.id,
-                    Connection.origin == "",
-                    Connection.title == title,
+            named = list(
+                await session.scalars(
+                    select(Connection)
+                    .where(
+                        Connection.user_id == env.user_id,
+                        Connection.space_id == space.id,
+                        func.lower(Connection.title) == title.lower(),
+                    )
+                    .order_by(Connection.created_at, Connection.id)
                 )
             )
-            if conn is not None:
-                return await _exists(env, session, conn)
+            # Waiting for an address (no origin yet) is the same ask repeated. A title that a kind
+            # gives to any source («Расписание») names nothing in particular: such a source is
+            # found by its id, and a new one with that name is a new one.
+            waiting = [c for c in named if c.origin == ""]
+            specific = [c for c in named if title.lower() not in _DEFAULT_TITLES]
+            found = waiting or specific
+            if len(found) > 1:
+                return (
+                    "Результат: нужно уточнение. В этом вузе несколько источников называются "
+                    f"«{data_text(title)}»: "
+                    + "; ".join(
+                        f"{data_text(views.display_title(c))} connection_id={c.id} "
+                        f"(сайт {data_text(urlsplit(c.origin).hostname or 'не определён')})"
+                        for c in found
+                    )
+                    + ". Повторите вызов с connection_id нужного источника или спросите студента."
+                )
+            if found:
+                # The source the agent names by its title is the one that is there, whatever its
+                # address: asked again it is continued or added to, not made a second time.
+                return await _exists_or_resume(
+                    env, session, found[0], intent, None, replace=replace
+                )
             conn = Connection(
                 user_id=env.user_id,
                 space_id=space.id,
@@ -803,19 +998,52 @@ SPECS = {
         "вопросы и результат появятся здесь. Сам находит или создаёт пространство вуза. "
         "Если такой адрес уже подключён, ничего не запускает и возвращает статус и ссылки. "
         "Нужен человеческий title источника; url — если адрес известен (без него подключение само "
-        "поищет входную страницу и спросит студента); вуз — university_id или university_query.",
+        "поищет входную страницу и спросит студента); вуз — university_id или university_query. "
+        "Источник, который уже есть в контексте, называйте его connection_id, не создавайте второй. "
+        "Что именно читать, передавайте в kinds, если студент это назвал. Источник, подключение "
+        "которого не завершилось, этот вызов продолжает с новой просьбой: она дополняет прежнюю, "
+        "а не теряется. Работающий источник дополняется тем из kinds, чего он ещё не читает "
+        "(«добавь задания»): уже подключённое не меняется; если всё названное уже читается, "
+        "ничего не запускается.",
         {
             "url": {
                 **_TEXT,
                 "description": "HTTPS-адрес; по возможности глубокая ссылка на раздел",
             },
             "title": {**_TEXT, "description": "Человеческое название источника, не адрес"},
+            "connection_id": {
+                **_TEXT,
+                "description": (
+                    "Источник, который уже есть у студента (id из контекста или list_universities): "
+                    "продолжить его или добавить к нему данные; тогда url не нужен"
+                ),
+            },
             "university_id": {**_TEXT, "description": "id из find_university / list_universities"},
             "university_query": {**_TEXT, "description": "Название вуза, если id неизвестен"},
             "kind_hint": {
                 **_TEXT,
                 "enum": list(views.CONNECTION_KINDS),
                 "description": "Вид источника, если ясен из слов студента",
+            },
+            "kinds": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(KIND_LABELS)},
+                "description": (
+                    "Что студент просит читать из источника, если он это назвал: scheduleEvents — "
+                    "расписание, deadlines — задания со сроками (дедлайны; на просто «задания» достаточно "
+                    "его), assignments — только условия и описания заданий, courses — курсы, grades — оценки, news — новости, "
+                    "people — преподаватели, locations — аудитории. «Расписание и задания» — "
+                    "scheduleEvents и deadlines. Не называл — не передавайте: подключение само "
+                    "найдёт, что есть в кабинете"
+                ),
+            },
+            "replace_kinds": {
+                "type": "boolean",
+                "description": (
+                    "true, если студент просит ТОЛЬКО названное («только задания», «вместо "
+                    "расписания — задания»): прежние виды заменяются, а не дополняются. У "
+                    "работающего источника ничего не убирается"
+                ),
             },
             "note": {**_TEXT, "description": "Пожелание студента: что именно нужно из источника"},
         },

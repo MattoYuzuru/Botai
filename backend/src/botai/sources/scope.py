@@ -17,6 +17,16 @@ def read_scope(raw: list[str] | None) -> tuple[Kind, ...] | None:
     return tuple(dict.fromkeys(value for value in raw if value in KIND_LABELS))
 
 
+def covered_kinds(spec: dict[str, Any], scope: tuple[Kind, ...] | None) -> tuple[Kind, ...]:
+    """The kinds a connection reads now: those of its recipe that its durable scope lets through."""
+    if spec.get("adapter") != "recipe":
+        return ()
+    kinds: tuple[Kind, ...] = tuple(
+        dict[Kind, None].fromkeys(entry["kind"] for entry in spec["recipe"]["endpoints"])
+    )
+    return tuple(kind for kind in kinds if scope is None or kind in scope)
+
+
 def scoped_spec(spec: dict[str, Any], scope: tuple[Kind, ...] | None) -> dict[str, Any]:
     if scope is None or spec.get("adapter") != "recipe":
         return spec

@@ -149,6 +149,24 @@ def test_the_confirmation_names_what_was_found_and_shows_the_nearest_classes() -
     )
 
 
+def test_what_the_research_tried_on_its_own_and_could_not_read_is_told_after_what_was_found() -> (
+    None
+):
+    records: dict[Kind, list[Record]] = {
+        "scheduleEvents": [event(1, "2026-10-28", "09:30", "10:50", "Алгоритмы")]
+    }
+    text = confirm_details(
+        records, NOW, MSK, unconnected="аудитории — в записях ответа нет обязательных полей"
+    )
+    lines = text.split("\n")
+    assert lines[2] == "- **Расписание:** 1 занятие на 28 октября"
+    assert lines[4] == (
+        "Заодно пробовала, но не вышло (это не мешает остальному): "
+        "аудитории — в записях ответа нет обязательных полей."
+    )
+    assert "Заодно" not in confirm_details(records, NOW, MSK)
+
+
 def test_without_classes_ahead_the_confirmation_says_so_instead_of_inventing_a_preview() -> None:
     text = confirm_details({"scheduleEvents": schedule("2026-10-20")}, NOW, MSK)
     assert "Ближайших пар в этих данных нет" in text
