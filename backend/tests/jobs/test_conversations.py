@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -297,6 +297,30 @@ async def test_running_task_does_not_block_a_new_agent_turn(env: Env) -> None:
     assert runtime["activeJob"]["id"] == job_id  # the task needs attention before the turn
     assert [t["id"] for t in runtime["tasks"]] == [job_id]
     assert runtime["pending"] == []
+
+
+async def test_an_agent_turn_is_due_by_the_clock_even_after_a_message_from_the_future(
+    env: Env,
+) -> None:
+    client, user, thread, _ = await start(env)
+    ahead = env.clock.now() + timedelta(days=3)  # e.g. a block stamped by another clock
+    async with env.sm() as session:
+        session.add(
+            ChatMessage(
+                user_id=user,
+                thread_id=thread,
+                role="agent",
+                blocks=[{"type": "text", "id": new_id(), "at": ahead.isoformat(), "markdown": "x"}],
+                created_at=ahead,
+            )
+        )
+        await session.commit()
+    response = await post(client, thread, "Что у меня завтра?")
+    assert response.status_code == 202
+    chat = await env.job(response.json()["jobId"])
+    assert chat.run_after == env.clock.now()  # the worker can claim it now
+    created = datetime.fromisoformat(response.json()["message"]["createdAt"])
+    assert created > ahead  # the order of the thread stays
 
 
 async def test_dialogue_question_receives_the_message_without_a_new_turn(env: Env) -> None:

@@ -305,8 +305,9 @@ async def post_message(
         if credential_like(text) and any(_waiting_secret(job) for job in jobs):
             raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
     # Appends to a thread are serialized: even two events in one clock tick keep their order.
-    now = await dialogue.message_time(session, user_id, thread.id, services.clock.now())
-    block = TextBlock(id=new_id(), at=now, markdown=text)
+    now = services.clock.now()
+    at = await dialogue.message_time(session, user_id, thread.id, now)
+    block = TextBlock(id=new_id(), at=at, markdown=text)
     message = ChatMessage(
         id=new_id(),
         user_id=user_id,
@@ -314,7 +315,7 @@ async def post_message(
         role="user",
         blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
         client_message_id=body.client_message_id,
-        created_at=now,
+        created_at=at,
     )
     session.add(message)
     if target is not None:
@@ -333,7 +334,7 @@ async def post_message(
         state["inbox"] = inbox
         dialogue.save_state(target, state)
         dialogue.advance_input(target)
-        dialogue.receipt(target, now=now, status="accepted", message_id=message.id)
+        dialogue.receipt(target, now=at, status="accepted", message_id=message.id)
         await session.execute(select(func.pg_notify(CHANNEL_ANSWERS, target.id)))
         job_id = target.id
     else:
