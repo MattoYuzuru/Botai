@@ -75,6 +75,7 @@ REASONS: dict[str, str] = {
     # the model
     "no_answer": "модель не вернула пригодный разбор",
     "not_found": "в просмотренных страницах и ответах эти данные не видны",
+    "not_reached": "просмотр закончился раньше, чем дошла до этого вида данных",
     "token_budget": "закончился лимит на разбор",
 }
 # A family of codes with one meaning for the student.

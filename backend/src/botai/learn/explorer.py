@@ -1620,8 +1620,8 @@ class Explorer:
         for kind in pending:
             codes = self._gaps.get(kind)
             if not codes and self._observation_limited:
-                codes = ["not_found"]  # never reached it: the look around ended before
-            lines.append(f"{words.label(kind)} — {words.why(codes or ['not_found'])}")
+                codes = ["not_reached"]  # the look around ended before this kind was tried
+            lines.append(f"{words.label(kind)} — {words.why(codes or [])}")
         return "; ".join(lines)
 
     def _nothing_connected(self, pending: list[Kind]) -> str:
