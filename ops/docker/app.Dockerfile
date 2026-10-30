@@ -21,7 +21,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+RUN playwright install --with-deps chromium \
+    && apt-get update && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
 COPY backend/alembic.ini ./
 COPY backend/src src
 RUN uv sync --frozen --no-dev

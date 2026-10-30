@@ -499,3 +499,59 @@ async def test_cli_serves_and_demands_credentials() -> None:
     finally:
         proc.terminate()
         await proc.wait()
+
+
+# ----------------------------------------------------------------------------------- relays
+
+
+async def test_a_relayed_host_goes_through_the_relay_and_others_do_not(lab: Lab) -> None:
+    """Groq refuses the server's country: the operator routes that one granted host through a
+    relay inside the stack. The relay name may resolve privately; other hosts keep the policy."""
+    proxy = EgressProxy(
+        SECRET,
+        resolver=lab.proxy._resolver,  # pyright: ignore[reportPrivateUsage]
+        connector=lab.proxy._connector,  # pyright: ignore[reportPrivateUsage]
+        relays={"api.groq.com": ("relay", 18443)},
+    )
+    await proxy.start()
+    try:
+        lab.answers["relay"] = [["172.18.0.9"]]
+        status, _, reader, writer = await connect(
+            proxy, "api.groq.com:443", lab.token(["api.groq.com"])
+        )
+        assert status == 200
+        writer.write(b"tls hello")
+        assert await asyncio.wait_for(reader.read(100), 5) == b"tls hello"
+        writer.close()
+        assert lab.connected == [("172.18.0.9", 18443)]
+        assert "api.groq.com" not in lab.resolved  # the relay resolves the real host, abroad
+
+        # the relay serves only its granted host: anything else is still refused by the policy
+        lab.answers["fakeuni.test"] = [["10.0.0.5"]]
+        assert await status_of(proxy, "fakeuni.test:443", lab.token(["fakeuni.test"])) == 403
+        # and a relayed host still needs a grant
+        assert await status_of(proxy, "api.groq.com:443", lab.token(["fakeuni.test"])) == 403
+    finally:
+        await proxy.close()
+
+
+async def test_an_unreachable_relay_is_a_bad_gateway(lab: Lab) -> None:
+    proxy = EgressProxy(
+        SECRET,
+        resolver=lab.proxy._resolver,  # pyright: ignore[reportPrivateUsage]
+        connector=lab.proxy._connector,  # pyright: ignore[reportPrivateUsage]
+        relays={"api.groq.com": ("relay", 18443)},
+    )
+    await proxy.start()
+    try:
+        assert await status_of(proxy, "api.groq.com:443", lab.token(["api.groq.com"])) == 502
+        assert lab.connected == []
+    finally:
+        await proxy.close()
+
+
+def test_relay_configuration_is_checked() -> None:
+    with pytest.raises(ValueError, match="relay"):
+        EgressProxy(SECRET, relays={"api.groq.com": ("", 18443)})
+    with pytest.raises(ValueError, match="relay"):
+        EgressProxy(SECRET, relays={"api.groq.com": ("relay", 0)})
