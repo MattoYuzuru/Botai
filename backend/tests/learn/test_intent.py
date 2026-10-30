@@ -284,3 +284,22 @@ def test_naming_an_excluded_kind_again_lifts_the_exclusion() -> None:
         LearningIntent((), ("scheduleEvents",), ("scheduleEvents",), "", "auto"),
     )
     assert gone.discovery_mode == "auto"  # nothing left to name: back to looking around
+
+
+def test_an_old_note_does_not_outlive_an_ask_that_names_kinds() -> None:
+    stale = LearningIntent((OLD_PAGE,), ("scheduleEvents",), (), "только расписание", "requested")
+    fresh = LearningIntent((OLD_PAGE,), ("scheduleEvents", "deadlines"), (), "", "requested")
+    merged = merge_intent(stale, fresh)
+    assert merged.requested_kinds == ("scheduleEvents", "deadlines")
+    assert merged.user_note == ""  # «only the schedule» was said before this ask, not with it
+
+
+def test_naming_only_these_kinds_replaces_the_earlier_ones() -> None:
+    stale = LearningIntent((), ("scheduleEvents", "courses"), ("locations",), "", "requested")
+    fresh = LearningIntent((), ("deadlines",), (), "только задания", "requested")
+    added = merge_intent(stale, fresh)
+    assert added.requested_kinds == ("scheduleEvents", "courses", "deadlines")
+    replaced = merge_intent(stale, fresh, replace=True)
+    assert replaced.requested_kinds == ("deadlines",)
+    assert replaced.absent_kinds == ("locations",)  # an exclusion is not a kind that was asked
+    assert replaced.user_note == "только задания"

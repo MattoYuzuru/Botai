@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -24,6 +23,8 @@ from botai.agent.tools_sources import (
 from botai.contracts.agent_ui import TaskBlock
 from botai.core.ids import new_id
 from botai.db.models import AdapterSpecRow, Connection, Job, Space, University
+from botai.jobs.dialogue import terminal_text
+from botai.learn import revisions
 from tests.jobs.env import Env
 from tests.sources import recipes
 
@@ -779,17 +780,17 @@ async def make_working(
     """The only source of the user, as a connection that works: a recipe with the given endpoints,
     status `active`, its first task done."""
     endpoints = {"timetable": recipes.timetable_endpoint, "deadlines": recipes.deadlines_endpoint}
-    revision = int.from_bytes(os.urandom(3))  # the table keeps one row per (origin, revision)
-    spec = recipes.recipe_spec(
-        [endpoints[name]() for name in kinds],
-        revision=revision,
-        require=tuple("scheduleEvents" if name == "timetable" else name for name in kinds),
-    )
     async with env.sm() as session:
         (job,) = list(await session.scalars(select(Job).where(Job.user_id == user)))
         job.state = "done"
         conn = await session.get(Connection, job.connection_id)
         assert conn is not None
+        revision = await revisions.latest_revision(session, conn.origin, "recipe") + 1
+        spec = recipes.recipe_spec(
+            [endpoints[name]() for name in kinds],
+            revision=revision,
+            require=tuple("scheduleEvents" if name == "timetable" else name for name in kinds),
+        )
         row = AdapterSpecRow(
             origin=conn.origin, adapter="recipe", revision=revision, state="active", spec=spec
         )
@@ -995,3 +996,159 @@ async def test_a_calendar_is_never_continued_or_extended_through_the_site_tool(e
     )
     assert "connect_calendar" in result
     assert len(await jobs_of(env, user, "connect")) == 1
+
+
+# --- review round: the ask of now, the title of a source, an address of another site ---------------
+
+
+async def set_note_of_first_task(env: Env, user: str, note: str) -> None:
+    """The dialogue of the first task left a note in its intent, as a student's «только …» does."""
+    async with env.sm() as session:
+        (first,) = list(await session.scalars(select(Job).where(Job.user_id == user)))
+        first.payload = {
+            **first.payload,
+            "learning_intent": {**first.payload["learning_intent"], "user_note": note},
+        }
+        await session.commit()
+
+
+async def test_a_note_of_the_earlier_dialogue_does_not_outlive_an_ask_with_kinds(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(
+        tools(env, user, first), {**ASK, "kinds": ["scheduleEvents"], "note": "только расписание"}
+    )
+    await cancel_first_attempt(env, user)
+
+    await connect_source(
+        tools(env, user, again), {**ASK, "kinds": ["scheduleEvents", "deadlines"]}
+    )  # no note: the old one said «only the schedule»
+
+    (_, resumed) = await jobs_of(env, user, "connect")
+    intent = resumed.payload["learning_intent"]
+    assert intent["requested_kinds"] == ["scheduleEvents", "deadlines"]
+    assert intent["user_note"] == ""
+    assert "note_applied" not in resumed.payload
+
+
+async def test_a_note_of_the_earlier_dialogue_does_not_outlive_an_extension_either(
+    env: Env,
+) -> None:
+    chat, user, _ = await working_schedule(env)
+    await set_note_of_first_task(env, user, "только расписание")
+
+    await connect_source(chat, {**ASK, "kinds": ["scheduleEvents", "deadlines"]})
+
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.payload["extend"] is True
+    assert extension.payload["learning_intent"]["requested_kinds"] == ["deadlines"]
+    assert extension.payload["learning_intent"]["user_note"] == ""
+
+
+async def test_an_ask_without_kinds_keeps_the_note_but_it_is_not_classified_again(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(tools(env, user, first), {**ASK, "note": "Расписание на этой странице"})
+    await cancel_first_attempt(env, user)
+
+    await connect_source(tools(env, user, again), ASK)  # «переподключи», nothing more
+
+    (_, resumed) = await jobs_of(env, user, "connect")
+    assert resumed.payload["learning_intent"]["user_note"] == "Расписание на этой странице"
+    assert resumed.payload["note_applied"] is True  # it was classified when it was said
+
+
+async def test_the_student_who_asks_for_only_this_replaces_the_kinds_not_adds(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(tools(env, user, first), {**ASK, "kinds": ["scheduleEvents"]})
+    await cancel_first_attempt(env, user)
+
+    await connect_source(
+        tools(env, user, again), {**ASK, "kinds": ["deadlines"], "replace_kinds": True}
+    )
+
+    (_, resumed) = await jobs_of(env, user, "connect")
+    assert resumed.payload["learning_intent"]["requested_kinds"] == ["deadlines"]
+
+
+async def test_two_sources_with_one_title_are_not_chosen_between_but_listed(env: Env) -> None:
+    chat, user, conn = await working_schedule(env)
+    async with env.sm() as session:
+        twin = Connection(
+            user_id=user,
+            space_id=conn.space_id,
+            origin="https://other.fakeuni.test",
+            kind="lms",
+            title="Единый кабинет",
+            status="draft",
+            allow_hosts=["other.fakeuni.test"],
+        )
+        session.add(twin)
+        await session.commit()
+        twin_id = twin.id
+
+    result = await connect_source(
+        chat,
+        {"title": "Единый кабинет", "university_query": "Вышка", "kinds": ["deadlines"]},
+    )
+
+    assert result.startswith("Результат: нужно уточнение")
+    assert f"connection_id={conn.id}" in result
+    assert f"connection_id={twin_id}" in result
+    assert "other.fakeuni.test" in result
+    assert len(await jobs_of(env, user, "connect")) == 1  # nothing was started
+
+
+async def test_a_title_that_a_kind_gives_to_any_source_does_not_find_a_source_of_another_site(
+    env: Env,
+) -> None:
+    client, user = await student(env)
+    chat = tools(env, user, await thread_of(client))
+    await connect_source(chat, {**ASK, "title": "Расписание"})  # a schedule source of one site
+    result = await connect_source(
+        chat, {"title": "Расписание", "university_query": "Вышка", "kind_hint": "schedule"}
+    )  # no address: a new source of whichever site the student will name
+    assert result.startswith("Результат: запущено")
+    assert await count(env, Connection, Connection.user_id == user) == 2
+
+
+async def test_an_address_of_another_site_beside_a_connection_id_is_dropped_and_said(
+    env: Env,
+) -> None:
+    chat, user, conn = await working_schedule(env)
+    result = await connect_source(
+        chat,
+        {
+            "connection_id": conn.id,
+            "url": "https://other.fakeuni.test/week",
+            "title": "Единый кабинет",
+            "kinds": ["deadlines"],
+        },
+    )
+    assert result.startswith("Результат: запущено")
+    assert "указывает на другой сайт" in result
+    assert "без connection_id" in result
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.payload["learning_intent"]["entry_urls"] == [PORTAL]
+    assert "url" not in extension.payload
+
+
+def test_what_an_extension_task_has_told_in_its_own_words_is_not_told_again_by_the_end() -> None:
+    def ended(**result: Any) -> str | None:
+        job = Job(kind="connect", state="done", payload={"extend": True}, result=result)
+        return terminal_text(job)
+
+    assert ended(status="error", detail="not_found", extension=True) is None
+    assert ended(status="skipped", detail="active", extension=True) is None
+    assert ended(status="ok", kinds=["deadlines"]) is None  # a connection ends with its own line
+    # a task that failed without a word of its own still gets the sentence
+    failed = Job(kind="connect", state="failed", payload={"extend": True}, error={}, result=None)
+    assert "Подключённые данные работают как раньше" in (terminal_text(failed) or "")
+    skipped = Job(
+        kind="connect",
+        state="done",
+        payload={},
+        result={"status": "skipped", "detail": "calendar"},
+    )
+    assert terminal_text(skipped) is None  # the thread holds the question about the calendar

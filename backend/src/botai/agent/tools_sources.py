@@ -9,6 +9,7 @@ password, code or cookie; those are entered in the protected fields of the app.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +65,7 @@ _CALENDAR_SERVICE = (
     + "\nЗатем, когда студент согласится, вызовите connect_calendar (не connect_source): поле "
     "для ссылки откроется в этом чате. Саму ссылку просить в чат нельзя."
 )
+_DEFAULT_TITLES = frozenset(title.lower() for title in views.KIND_TITLES.values())
 _NEEDS_TITLE = (
     "Результат: не запущено. Укажите человеческое название источника в title "
     "(например «Единый личный кабинет», «Smart LMS», «Список группы»), а не адрес сайта."
@@ -324,6 +326,8 @@ async def _exists_or_resume(
     conn: Connection,
     intent: dict[str, Any],
     url: str | None,
+    *,
+    replace: bool = False,
 ) -> str:
     if conn.adapter == calendar.ADAPTER:
         return _by_link(views.display_title(conn))  # a calendar has its own way: the export link
@@ -335,7 +339,7 @@ async def _exists_or_resume(
     # and a page or an exclusion from the earlier dialogue is not forgotten either.
     fresh = LearningIntent.restore(intent)
     stale = await _previous_intent(session, conn)
-    merged = merge_intent(stale, fresh) if stale is not None else fresh
+    merged = merge_intent(stale, fresh, replace=replace) if stale is not None else fresh
     working = conn.status == "active" and conn.adapter == "recipe" and conn.spec_id is not None
     extension, have = await _extension(session, conn, fresh, merged) if working else (None, ())
     if conn.spec_id is not None and extension is None:
@@ -355,6 +359,8 @@ async def _exists_or_resume(
     }
     if extension is not None:
         payload["extend"] = True  # learn only the missing kinds; the recipe stays as it is
+    if merged.user_note and not fresh.user_note:
+        payload["note_applied"] = True  # a note kept from the dialogue was classified back then
     if url is not None:
         payload["url"] = url
     job = await enqueue_in_session(
@@ -466,6 +472,7 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
         except BotaiError as exc:
             return f"Результат: не запущено. {exc.detail}."
     connection_id = clean(str(args.get("connection_id") or ""), 40)
+    replace = args.get("replace_kinds") is True
     title = _human_title(args.get("title"))
     if title is None and not connection_id:
         return _NEEDS_TITLE
@@ -493,19 +500,24 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
                     "Результат: не запущено. Такого подключения у студента нет: возьмите "
                     "connection_id из контекста или list_universities."
                 )
-            if url is not None and origin != named.origin:
-                url, intent = (
-                    None,
-                    _ask_intent(None, note, kinds),
-                )  # a page of another site is not it
-            return await _exists_or_resume(env, session, named, intent, url)
+            other_site = url is not None and origin != named.origin
+            if other_site:
+                url, intent = None, _ask_intent(None, note, kinds)
+            text = await _exists_or_resume(env, session, named, intent, url, replace=replace)
+            if other_site:
+                text += (
+                    " Адрес из вызова указывает на другой сайт, поэтому для этого источника он не "
+                    "использован. Страница другого сайта подключается отдельным источником: "
+                    "connect_source с этим адресом, без connection_id."
+                )
+            return text
     assert title is not None
 
     async with env.services.db() as session:
         if origin is not None:
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists_or_resume(env, session, existing, intent, url)
+                return await _exists_or_resume(env, session, existing, intent, url, replace=replace)
         chosen = await _university(
             session,
             env,
@@ -521,24 +533,47 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
             # Two turns asking for one site at once end with one source: the second finds the first.
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists_or_resume(env, session, existing, intent, url)
+                return await _exists_or_resume(env, session, existing, intent, url, replace=replace)
             conn, _ = await service.ensure_source(
                 session, env.user_id, space.id, url=url, kind=kind, title=title
             )
         else:
             # No address yet: the connection finds the entry page itself (public search, then the
             # student chooses) and fills the address in. A second ask for the same name waits for it.
-            conn = await session.scalar(
-                select(Connection).where(
-                    Connection.user_id == env.user_id,
-                    Connection.space_id == space.id,
-                    func.lower(Connection.title) == title.lower(),
+            named = list(
+                await session.scalars(
+                    select(Connection)
+                    .where(
+                        Connection.user_id == env.user_id,
+                        Connection.space_id == space.id,
+                        func.lower(Connection.title) == title.lower(),
+                    )
+                    .order_by(Connection.created_at, Connection.id)
                 )
             )
-            if conn is not None:
+            # Waiting for an address (no origin yet) is the same ask repeated. A title that a kind
+            # gives to any source («Расписание») names nothing in particular: such a source is
+            # found by its id, and a new one with that name is a new one.
+            waiting = [c for c in named if c.origin == ""]
+            specific = [c for c in named if title.lower() not in _DEFAULT_TITLES]
+            found = waiting or specific
+            if len(found) > 1:
+                return (
+                    "Результат: нужно уточнение. В этом вузе несколько источников называются "
+                    f"«{data_text(title)}»: "
+                    + "; ".join(
+                        f"{data_text(views.display_title(c))} connection_id={c.id} "
+                        f"(сайт {data_text(urlsplit(c.origin).hostname or 'не определён')})"
+                        for c in found
+                    )
+                    + ". Повторите вызов с connection_id нужного источника или спросите студента."
+                )
+            if found:
                 # The source the agent names by its title is the one that is there, whatever its
                 # address: asked again it is continued or added to, not made a second time.
-                return await _exists_or_resume(env, session, conn, intent, None)
+                return await _exists_or_resume(
+                    env, session, found[0], intent, None, replace=replace
+                )
             conn = Connection(
                 user_id=env.user_id,
                 space_id=space.id,
@@ -1000,6 +1035,14 @@ SPECS = {
                     "people — преподаватели, locations — аудитории. «Расписание и задания» — "
                     "scheduleEvents и deadlines. Не называл — не передавайте: подключение само "
                     "найдёт, что есть в кабинете"
+                ),
+            },
+            "replace_kinds": {
+                "type": "boolean",
+                "description": (
+                    "true, если студент просит ТОЛЬКО названное («только задания», «вместо "
+                    "расписания — задания»): прежние виды заменяются, а не дополняются. У "
+                    "работающего источника ничего не убирается"
                 ),
             },
             "note": {**_TEXT, "description": "Пожелание студента: что именно нужно из источника"},

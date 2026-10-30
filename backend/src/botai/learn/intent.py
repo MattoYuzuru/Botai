@@ -84,36 +84,40 @@ class LearningIntent:
         )
 
 
-def merge_intent(stale: LearningIntent, fresh: LearningIntent) -> LearningIntent:
+def merge_intent(
+    stale: LearningIntent, fresh: LearningIntent, *, replace: bool = False
+) -> LearningIntent:
     """The intent of a source that the student asks for again.
 
     What is asked now wins and what was said before survives where it does not contradict it:
 
-    - the note is the new one (the old one only stands in for an empty one);
+    - the note is the new one; the old one stands in for an empty one only when this ask names no
+      kinds (a note «только расписание» must not outlive an ask for the schedule and the tasks);
     - the entry pages are the new ones first, then the old ones (never more than `MAX_LINKS`);
     - kinds the student named are joined, so a second ask adds to the first and does not erase it;
+      with `replace` («только задания») the kinds named now are all there is, as `replaceKinds` of
+      the classifier says;
     - a kind the student excluded stays excluded unless this ask names it again.
 
     Kinds an auto-mode research found on its own are findings, not wishes: they are not carried over.
     """
-    asked_now: tuple[Kind, ...] = (
-        fresh.requested_kinds if fresh.discovery_mode == "requested" else ()
-    )
+    explicit = fresh.discovery_mode == "requested"
+    asked_now: tuple[Kind, ...] = fresh.requested_kinds if explicit else ()
     absent: tuple[Kind, ...] = tuple(
         k
         for k in dict[Kind, None].fromkeys((*stale.absent_kinds, *fresh.absent_kinds))
         if k not in asked_now
     )
-    named: tuple[Kind, ...] = (
-        *(stale.requested_kinds if stale.discovery_mode == "requested" else ()),
-        *asked_now,
+    before: tuple[Kind, ...] = (
+        stale.requested_kinds if stale.discovery_mode == "requested" and not replace else ()
     )
+    named: tuple[Kind, ...] = (*before, *asked_now)
     kinds: tuple[Kind, ...] = tuple(k for k in dict[Kind, None].fromkeys(named) if k not in absent)
     return LearningIntent(
         tuple(dict.fromkeys((*fresh.entry_urls, *stale.entry_urls)))[:MAX_LINKS],
         kinds or DEFAULT_KINDS,
         absent,
-        fresh.user_note or stale.user_note,
+        fresh.user_note or ("" if explicit else stale.user_note),
         "requested" if kinds else "auto",
     )
 
