@@ -2,7 +2,7 @@ import type { IconName } from "@botai/design";
 import type { Section } from "@/api/types";
 import type { SectionKind } from "@/features/data/types";
 
-/** Вид раздела «Учёбы»: ключ экрана. Это не всегда `kind` API: «Подключения» есть у любого пространства. */
+/** Вид раздела «Учёбы»: ключ экрана. Это не всегда `kind` API: «Источники» есть у любого пространства. */
 export type StudyKind = "courses" | "grades" | "people" | "locations" | "news" | "documents" | "connections";
 
 export interface SectionDef {
@@ -11,7 +11,10 @@ export interface SectionDef {
   icon: IconName;
   /** Адрес экрана-списка; пространство передаётся в `?space=`. */
   route: `/study/${StudyKind}`;
-  /** Вид раздела в ответе `/spaces/{id}/sections`; `null` — раздел есть всегда. */
+  /**
+   * Вид раздела в ответе `/spaces/{id}/sections`. `null` — у раздела нет данных такого вида (Источники): в списке
+   * разделов вуза его строки нет, источники показаны на самом экране «Учёба», а адрес остаётся для управления.
+   */
   source: SectionKind | null;
   /** Что здесь лежит — для пустого состояния. */
   empty: { title: string; description: string };
@@ -19,8 +22,8 @@ export interface SectionDef {
 
 /**
  * Реестр разделов «Учёбы» (styleguide §7.1): `{ kind, title, icon, route }`. Порядок фиксирован — Предметы,
- * Оценки, Преподаватели, Аудитории, Новости, Документы, Подключения. Раздел появляется, только если у
- * подключений есть данные этого вида; новый вид добавляет строку сюда, а не новую вкладку.
+ * Оценки, Преподаватели, Аудитории, Новости, Документы и вложения, Источники (управление). Раздел появляется,
+ * только если у источников есть данные этого вида; новый вид добавляет строку сюда, а не новую вкладку.
  */
 export const SECTION_REGISTRY: readonly SectionDef[] = [
   {
@@ -71,22 +74,22 @@ export const SECTION_REGISTRY: readonly SectionDef[] = [
   },
   {
     kind: "documents",
-    title: "Документы",
+    title: "Документы и вложения",
     icon: "document",
     route: "/study/documents",
     source: "documents",
     empty: {
       title: "Документов пока нет",
-      description: "Добавьте ссылку или файл на экране «Подключения» — BotAI прочитает их.",
+      description: "Добавьте ссылку или файл здесь или пришлите их в чат — BotAI прочитает их.",
     },
   },
   {
     kind: "connections",
-    title: "Подключения",
+    title: "Источники",
     icon: "connection",
     route: "/study/connections",
     source: null,
-    empty: { title: "Подключений пока нет", description: "Подключите вуз — источники появятся здесь." },
+    empty: { title: "Источников пока нет", description: "Добавьте источник через чат — он появится здесь." },
   },
 ];
 
@@ -98,18 +101,18 @@ export const isStudyKind = (value: string): value is StudyKind => SECTION_BY_KIN
 
 export interface VisibleSection {
   def: SectionDef;
-  /** Сколько записей; у «Подключений» — число подключений, переданное снаружи. */
+  /** Сколько записей этого вида в вузе. */
   count: number;
 }
 
 /**
- * Какие разделы показать в пространстве: виды из ответа сервера в порядке реестра, у которых есть данные,
- * и «Подключения» всегда. Виды, которых нет в реестре (расписание, задания — у них свои вкладки), пропускаются.
+ * Какие разделы показать в списке вуза: виды из ответа сервера в порядке реестра, у которых есть данные.
+ * Виды, которых нет в реестре (расписание, задания — у них свои вкладки), и «Источники» пропускаются.
  */
-export function visibleSections(sections: readonly Section[], connectionCount: number): VisibleSection[] {
+export function visibleSections(sections: readonly Section[]): VisibleSection[] {
   const counts = new Map(sections.map((section) => [section.kind, section.count]));
   return SECTION_REGISTRY.flatMap((def): VisibleSection[] => {
-    if (def.source === null) return [{ def, count: connectionCount }];
+    if (def.source === null) return [];
     const count = counts.get(def.source) ?? 0;
     return count > 0 ? [{ def, count }] : [];
   });

@@ -8,8 +8,9 @@ import { ChatScreen } from "@/features/chat/chat-screen";
 export const Route = createFileRoute("/_app/chat")({
   validateSearch: (
     search: Record<string, unknown>,
-  ): { thread?: string; connect?: string; space?: string; university?: string } => ({
+  ): { thread?: string; draft?: string; connect?: string; space?: string; university?: string } => ({
     thread: typeof search.thread === "string" && search.thread !== "" ? search.thread : undefined,
+    draft: typeof search.draft === "string" && search.draft !== "" ? search.draft : undefined,
     connect:
       typeof search.connect === "string" && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(search.connect)
         ? search.connect

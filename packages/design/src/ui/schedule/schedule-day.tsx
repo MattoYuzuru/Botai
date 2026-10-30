@@ -3,8 +3,8 @@ import { cn } from "../../lib/cn";
 import { countRu, DEFAULT_TIME_ZONE, formatDayWithWeekday, formatTime } from "../../lib/format";
 import { Badge } from "../badge/badge";
 import { EmptyState } from "../empty-state/empty-state";
-import { Icon } from "../icon";
 import { Skeleton } from "../skeleton/skeleton";
+import { KIND_BADGE, type ScheduleFact, ScheduleFacts } from "./schedule-facts";
 
 export interface ScheduleItem {
   id: string;
@@ -12,8 +12,10 @@ export interface ScheduleItem {
   start: number;
   end: number;
   title: string;
-  room?: string | null;
-  teacher?: string | null;
+  /** Тип занятия бейджем: «Лекция» или слова источника («Текущий рубежный контроль»). */
+  badge?: string | null;
+  /** Детали в порядке показа (аудитория, преподаватель, адрес, группа…): их готовит пресет `eventDetails`. */
+  facts?: readonly ScheduleFact[];
   spaceId: string;
   spaceTitle?: string;
   /** Занятие изменилось по сравнению с прошлым снимком. */
@@ -21,6 +23,8 @@ export interface ScheduleItem {
   /** Пересекается по времени с другим занятием. */
   conflict?: boolean;
 }
+
+export type { ScheduleFact };
 
 export type ScheduleDayState = "loading" | "empty" | "ok" | "stale";
 
@@ -115,23 +119,15 @@ export function ScheduleDay({
                     </time>
                   </span>
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="type-subheading text-fg">{item.title}</span>
-                    {(item.room || item.teacher) && (
-                      <span className="flex flex-wrap items-center gap-x-3 gap-y-1 type-caption text-fg-muted">
-                        {item.room && (
-                          <span className="inline-flex items-center gap-1">
-                            <Icon name="room" size={16} />
-                            {item.room}
-                          </span>
-                        )}
-                        {item.teacher && (
-                          <span className="inline-flex items-center gap-1">
-                            <Icon name="person" size={16} />
-                            {item.teacher}
-                          </span>
-                        )}
-                      </span>
-                    )}
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="type-subheading text-fg">{item.title}</span>
+                      {item.badge && (
+                        <Badge tone="info" className={KIND_BADGE}>
+                          {item.badge}
+                        </Badge>
+                      )}
+                    </span>
+                    <ScheduleFacts facts={item.facts} layout="inline" />
                     <span className="flex flex-wrap gap-1.5 empty:hidden">
                       {live && <Badge tone="accent">Идёт сейчас</Badge>}
                       {item.changed && (

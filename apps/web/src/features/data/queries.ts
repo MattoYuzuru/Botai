@@ -2,6 +2,8 @@ import { ALL_SPACES_ID } from "@botai/design";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { queryKeys } from "@/api/queries";
+import type { Deadline, ScheduleEvent, Today } from "@/api/types";
+import { asV3, type Course, type Grade, type NewsItem, type Person } from "@/api/v3-data";
 import { callMeta } from "./fetch";
 
 /**
@@ -47,7 +49,7 @@ const live = { staleTime: staleAfter, refetchInterval: backgroundInterval } as c
 export const todayQuery = () =>
   queryOptions({
     queryKey: dataKeys.today,
-    queryFn: () => callMeta(api.GET("/api/v1/today")),
+    queryFn: () => callMeta(asV3<Today>(api.GET("/api/v1/today"))),
     ...live,
   });
 
@@ -57,15 +59,17 @@ export const scheduleQuery = (spaceId: string | undefined, start: number, end: n
     queryKey: dataKeys.schedule(spaceId, start, end),
     queryFn: () =>
       callMeta(
-        api.GET("/api/v1/schedule", {
-          params: {
-            query: {
-              start: new Date(start).toISOString(),
-              end: new Date(end).toISOString(),
-              space_id: spaceParam(spaceId),
+        asV3<ScheduleEvent[]>(
+          api.GET("/api/v1/schedule", {
+            params: {
+              query: {
+                start: new Date(start).toISOString(),
+                end: new Date(end).toISOString(),
+                space_id: spaceParam(spaceId),
+              },
             },
-          },
-        }),
+          }),
+        ),
       ),
     ...live,
   });
@@ -75,9 +79,11 @@ export const deadlinesQuery = (spaceId: string | undefined, includeDone = true) 
     queryKey: dataKeys.deadlines(spaceId, includeDone),
     queryFn: () =>
       callMeta(
-        api.GET("/api/v1/deadlines", {
-          params: { query: { space_id: spaceParam(spaceId), include_done: includeDone } },
-        }),
+        asV3<Deadline[]>(
+          api.GET("/api/v1/deadlines", {
+            params: { query: { space_id: spaceParam(spaceId), include_done: includeDone } },
+          }),
+        ),
       ),
     ...live,
   });
@@ -86,7 +92,9 @@ export const coursesQuery = (spaceId: string | undefined) =>
   queryOptions({
     queryKey: dataKeys.courses(spaceId),
     queryFn: () =>
-      callMeta(api.GET("/api/v1/courses", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      callMeta(
+        asV3<Course[]>(api.GET("/api/v1/courses", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      ),
     ...live,
   });
 
@@ -94,7 +102,9 @@ export const gradesQuery = (spaceId: string | undefined) =>
   queryOptions({
     queryKey: dataKeys.grades(spaceId),
     queryFn: () =>
-      callMeta(api.GET("/api/v1/grades", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      callMeta(
+        asV3<Grade[]>(api.GET("/api/v1/grades", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      ),
     ...live,
   });
 
@@ -102,7 +112,9 @@ export const peopleQuery = (spaceId: string | undefined) =>
   queryOptions({
     queryKey: dataKeys.people(spaceId),
     queryFn: () =>
-      callMeta(api.GET("/api/v1/people", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      callMeta(
+        asV3<Person[]>(api.GET("/api/v1/people", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      ),
     ...live,
   });
 
@@ -110,7 +122,9 @@ export const newsQuery = (spaceId: string | undefined) =>
   queryOptions({
     queryKey: dataKeys.news(spaceId),
     queryFn: () =>
-      callMeta(api.GET("/api/v1/news", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      callMeta(
+        asV3<NewsItem[]>(api.GET("/api/v1/news", { params: { query: { space_id: spaceParam(spaceId) } } })),
+      ),
     ...live,
   });
 

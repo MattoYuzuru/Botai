@@ -1,23 +1,7 @@
 import type { ScheduleItem } from "@botai/design";
 import type { ScheduleEvent } from "@/api/types";
-import type { EventFormat, EventKind } from "@/features/data/types";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
-
-export const EVENT_KIND_LABEL: Record<EventKind, string | null> = {
-  lecture: "Лекция",
-  seminar: "Семинар",
-  lab: "Лабораторная",
-  exam: "Экзамен",
-  consultation: "Консультация",
-  other: null,
-};
-
-export const EVENT_FORMAT_LABEL: Record<EventFormat, string | null> = {
-  offline: "Очно",
-  online: "Онлайн",
-  hybrid: "Смешанный формат",
-  unknown: null,
-};
+import { compactFacts, eventDetails } from "./event-details";
 
 export const startMs = (event: ScheduleEvent): number => Date.parse(event.startsAt);
 export const endMs = (event: ScheduleEvent): number => Date.parse(event.endsAt);
@@ -29,15 +13,19 @@ export function sortEvents(events: readonly ScheduleEvent[]): ScheduleEvent[] {
   );
 }
 
-/** Строка `ScheduleDay`: вуз подписан коротким именем, пересечение с другим вузом — флагом. */
+/**
+ * Строка `ScheduleDay` и карточка недели: вуз подписан коротким именем, пересечение с другим вузом — флагом, а
+ * тип занятия и детали (аудитория, адрес, преподаватель, группа) идут компактной частью пресета `eventDetails`.
+ */
 export function toScheduleItem(event: ScheduleEvent, spaces: ReadonlyMap<string, SpaceInfo>): ScheduleItem {
+  const details = eventDetails(event);
   return {
     id: event.id,
     start: startMs(event),
     end: endMs(event),
     title: event.title,
-    room: event.location,
-    teacher: event.teacher,
+    badge: details.badge,
+    facts: compactFacts(details),
     spaceId: event.provenance.spaceId,
     spaceTitle: spaces.get(event.provenance.spaceId)?.shortTitle,
     changed: event.changed,

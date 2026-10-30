@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { DEFAULT_TIME_ZONE, formatDay, formatTime, formatUpdated } from "../../lib/format";
 import { Banner } from "../banner/banner";
@@ -20,8 +20,8 @@ export interface SourceStatusProps {
   timeZone?: string;
   /** «Войти снова» — единственное действие, и только для `reauth`. */
   onReauth?: () => void;
-  /** `inline` — иконка и подпись; `banner` — полоса; `compact` — вуз и раскрываемое пояснение. */
-  variant?: "inline" | "banner" | "compact";
+  /** `inline` — иконка и подпись; `banner` — полоса. Чипы в шапке — `SourceStatusBar`. */
+  variant?: "inline" | "banner";
   className?: string;
 }
 
@@ -85,7 +85,6 @@ const inlineTone = {
  */
 export function SourceStatus(props: SourceStatusProps): ReactNode {
   const { state, spaceId, onReauth, variant = "inline", className } = props;
-  const [expanded, setExpanded] = useState(false);
   const view = describeSource(props);
   const reauthAction =
     state === "reauth" && onReauth ? (
@@ -93,32 +92,6 @@ export function SourceStatus(props: SourceStatusProps): ReactNode {
         Войти снова
       </Button>
     ) : undefined;
-
-  if (variant === "compact") {
-    const detail =
-      state === "stale" && props.updatedAt !== null ? `Данные устарели. ${view.text}` : view.text;
-    return (
-      <Button
-        variant="ghost"
-        aria-label={`${props.spaceTitle ?? "Вуз"}: ${detail}`}
-        aria-expanded={expanded}
-        data-expanded={expanded || undefined}
-        data-source-state={state}
-        data-space-id={spaceId}
-        onClick={() => setExpanded((value) => !value)}
-        className={cn(
-          "group max-w-full min-w-0 gap-1.5 px-2 type-caption text-fg-muted [&>span]:max-w-full [&>span]:min-w-0",
-          className,
-        )}
-      >
-        <span className="min-w-0 truncate">{props.spaceTitle}</span>
-        <Icon name={view.icon} size={16} className={inlineTone[view.tone]} />
-        <span className="max-w-0 overflow-hidden opacity-0 transition-[max-width,opacity] duration-slow ease-soft group-hover:max-w-panel group-hover:opacity-100 group-focus-visible:max-w-panel group-focus-visible:opacity-100 group-data-[expanded]:max-w-panel group-data-[expanded]:opacity-100">
-          <span className="block truncate">{detail}</span>
-        </span>
-      </Button>
-    );
-  }
 
   if (variant === "banner") {
     return (

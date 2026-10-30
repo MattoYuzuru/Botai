@@ -2,6 +2,8 @@ import { type SwitcherSpace, UniversitySpaceSwitcher, useNow, useOnline } from "
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { connectionsQuery, spacesQuery, universitiesQuery } from "@/api/queries";
+import { connectUniversityLink } from "@/features/data/chat-links";
+import { spaceShortTitle } from "@/features/data/use-space-directory";
 import { useActiveSpaceId, useActiveSpaceStore } from "./active-space";
 import { summarizeConnections } from "./space-status";
 
@@ -17,7 +19,7 @@ export function useSwitcherSpaces(): { spaces: SwitcherSpace[]; ready: boolean }
     return {
       id: space.id,
       title: space.title,
-      shortTitle: universities?.find((university) => university.id === space.universityId)?.shortTitle,
+      shortTitle: spaceShortTitle(space, universities),
       hue: space.accentHue,
       status: health.state,
       updatedAt: health.updatedAt,
@@ -41,7 +43,7 @@ export function ConnectedSpaceSwitcher() {
       activeId={activeId}
       onChange={select}
       allowAll={spaces.length > 1}
-      onAdd={() => navigate({ to: "/connect" })}
+      onAdd={() => navigate(connectUniversityLink())}
       nowMs={nowMs}
     />
   );

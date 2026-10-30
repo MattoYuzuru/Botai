@@ -9,26 +9,60 @@ test.describe("«Учёба»: разделы", () => {
   test("у каждого вуза свои разделы в фиксированном порядке; настройки внизу", async ({ page }) => {
     await open(page, "/study", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
-    await expect(hse.getByRole("link")).toHaveCount(7);
-    expect(await hse.getByRole("link").locator("span.type-subheading").allTextContents()).toEqual([
+    const sections = hse.getByRole("list", { name: /^Разделы/ }).getByRole("link");
+    await expect(sections).toHaveCount(6);
+    expect(await sections.locator("span.type-subheading").allTextContents()).toEqual([
       "Предметы",
       "Оценки",
       "Преподаватели",
       "Аудитории",
       "Новости",
-      "Документы",
-      "Подключения",
+      "Документы и вложения",
     ]);
     const cu = page.getByRole("region", { name: /^Центральный университет/ });
-    await expect(cu.getByRole("link")).toHaveCount(5);
+    await expect(cu.getByRole("list", { name: /^Разделы/ }).getByRole("link")).toHaveCount(4);
     await expect(cu.getByRole("link", { name: /Аудитории|Документы/ })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Выйти из BotAI" })).toBeVisible();
+  });
+
+  test("вуз — единица со многими источниками: название, сокращение, источники со статусом и сайтом", async ({
+    page,
+  }) => {
+    await open(page, "/study", "connected");
+    const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
+    await expect(hse.getByText("ВШЭ", { exact: true })).toBeVisible();
+    const sources = hse.getByRole("list", { name: "Источники: ВШЭ" });
+    await expect(sources.getByRole("listitem")).toHaveCount(2);
+    await expect(sources.getByRole("listitem").first()).toContainText("Личный кабинет");
+    await expect(sources.getByRole("listitem").first()).toContainText("Работает");
+    await expect(sources.getByRole("listitem").nth(1)).toContainText("Расписание (календарь)");
+    const site = sources.getByRole("link", { name: "Открыть сайт: Личный кабинет" });
+    await expect(site).toHaveAttribute("href", "https://lk.fakeuni.test/");
+    await expect(site).toHaveAttribute("target", "_blank");
+    // Хост не подменяет название источника.
+    await expect(sources).not.toContainText("fakeuni.test");
+  });
+
+  test("«Добавить источник» и «Подключить ещё вуз» ведут в чат с готовой просьбой; /connect нет", async ({
+    page,
+  }) => {
+    await open(page, "/study", "connected");
+    const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
+    await expect(page.locator('a[href^="/connect"]')).toHaveCount(0);
+    await hse.getByRole("link", { name: "Добавить источник" }).click();
+    await expect(page).toHaveURL(/\/chat\?draft=/);
+    expect(new URL(page.url()).searchParams.get("draft")).toContain("Высшая школа экономики");
+    await open(page, "/study", "connected");
+    await page.getByRole("link", { name: "Подключить ещё вуз" }).click();
+    await expect(page).toHaveURL(/\/chat\?draft=/);
+    expect(new URL(page.url()).searchParams.get("draft")).toBeTruthy();
   });
 
   test("раздел открывается из панели, «Назад» возвращает на «Учёбу»", async ({ page }) => {
     await open(page, "/study", "connected");
     await page
       .getByRole("region", { name: /^Высшая школа экономики/ })
+      .getByRole("list", { name: /^Разделы/ })
       .getByRole("link", { name: /Оценки/ })
       .click();
     await expect(page).toHaveURL(/\/study\/grades\?space=/);
@@ -36,7 +70,7 @@ test.describe("«Учёба»: разделы", () => {
     await expect(
       page.getByRole("region", { name: "Математический анализ" }).getByText("8", { exact: true }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Назад" }).click();
+    await page.getByRole("button", { name: "Назад", exact: true }).click();
     await expect(page).toHaveURL(/\/study(\?[^/]*)?$/);
   });
 
@@ -96,10 +130,15 @@ test.describe("«Учёба»: разделы", () => {
     await expect(state(page, "study-courses")).toHaveAttribute("data-state", "empty");
   });
 
-  test("нужен вход: на «Учёбе» полоса «Войти снова» и пометка у «Подключений»", async ({ page }) => {
+  test("нужен вход: на «Учёбе» полоса «Войти снова» и статус у источника", async ({ page }) => {
     await open(page, "/study", "reauth");
-    await expect(page.getByRole("button", { name: "Войти снова" })).toBeVisible();
-    await expect(page.getByText(/Нужно внимание: 1/)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: /^Центральный университет/ })
+        .getByRole("list", { name: "Источники: ЦУ" })
+        .getByText("Нужно снова войти", { exact: true }),
+    ).toBeVisible();
     await expect(state(page, "study")).toHaveAttribute("data-state", "reauth");
   });
 

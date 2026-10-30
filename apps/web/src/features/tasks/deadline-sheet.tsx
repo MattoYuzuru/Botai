@@ -10,6 +10,7 @@ import {
 } from "@botai/design";
 import { useRef } from "react";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
+import { openUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { DEADLINE_STATE_LABEL, type DeadlineView } from "./deadlines";
 
@@ -107,7 +108,7 @@ function DeadlineDetails({
 
       <SourceCitation
         title={connection?.title ?? "Задания"}
-        url={deadline.provenance.sourceUrl}
+        url={openUrlOf(deadline.provenance, connection)}
         fetchedAt={Date.parse(deadline.provenance.fetchedAt)}
         nowMs={nowMs}
         timeZone={timeZone}

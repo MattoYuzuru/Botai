@@ -1,7 +1,11 @@
 import { Button, EmptyState } from "@botai/design";
 import { Link } from "@tanstack/react-router";
+import { connectUniversityLink } from "@/features/data/chat-links";
 
-/** Пустое состояние до первого вуза: что здесь будет и одно действие. Это не «всё сдано». */
+/**
+ * Пустое состояние до первого вуза: что здесь будет и одно действие — чат с готовой просьбой «Давай подключим
+ * вуз …». Это не «всё сдано».
+ */
 export function ConnectPrompt() {
   return (
     <EmptyState
@@ -11,7 +15,7 @@ export function ConnectPrompt() {
       action={
         <div className="flex flex-col items-center gap-1">
           <Button variant="primary" asChild>
-            <Link to="/connect">Подключить вуз</Link>
+            <Link {...connectUniversityLink()}>Подключить вуз</Link>
           </Button>
           <Button variant="ghost" asChild>
             <Link to="/welcome">Как это работает</Link>

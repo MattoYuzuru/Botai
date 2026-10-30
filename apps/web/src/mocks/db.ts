@@ -3,10 +3,19 @@
  * OpenAPI, вуз вымышленный (`fakeuni.test`): ничего реального и ничего под конкретный вуз.
  */
 import type { components } from "@/api/schema.gen";
+import type { Connection, Space } from "@/api/types";
 import type { JobVariant } from "./connect-script";
 import type { JobSim } from "./job-sim";
 
 type S = components["schemas"];
+
+/**
+ * Пространство и подключение мока: сгенерированная форма плюс поля v3, которые отдают экраны данных. Поля
+ * необязательны, потому что часть обработчиков (подключение в чате) ещё создаёт записи по прежней форме.
+ */
+export type MockSpace = S["SpaceOut"] & Partial<Pick<Space, "shortTitle" | "aliases">>;
+export type MockConnection = S["ConnectionOut"] &
+  Partial<Pick<Connection, "entryUrl" | "threadId" | "activeTask">>;
 
 export type Scenario = "fresh" | "empty" | "connected" | "reauth" | "stale";
 
@@ -47,8 +56,8 @@ export interface MockDb {
   invites: string[];
   /** Идентификатор вошедшего пользователя; сессия живёт в памяти, в браузере — в sessionStorage. */
   sessionUserId: string | null;
-  spaces: S["SpaceOut"][];
-  connections: S["ConnectionOut"][];
+  spaces: MockSpace[];
+  connections: MockConnection[];
   universities: S["UniversityOut"][];
   /** Задания подключения (живут только в памяти вкладки). */
   sims: Map<string, JobSim>;
@@ -80,23 +89,42 @@ export function seedUniversities(): S["UniversityOut"][] {
   ];
 }
 
-function space(title: string, universityId: string | null, hue: number, createdAt: string): S["SpaceOut"] {
-  return { id: ulid(), title, universityId, accentHue: hue, timeZone: "Europe/Moscow", createdAt };
+function space(
+  title: string,
+  shortTitle: string,
+  universityId: string | null,
+  hue: number,
+  createdAt: string,
+): MockSpace {
+  return {
+    id: ulid(),
+    title,
+    shortTitle,
+    aliases: [],
+    universityId,
+    accentHue: hue,
+    timeZone: "Europe/Moscow",
+    createdAt,
+  };
 }
 
 function connection(
   spaceId: string,
   title: string,
-  status: S["ConnectionOut"]["status"],
+  status: MockConnection["status"],
   lastSyncAt: string | null,
-  extra: Partial<S["ConnectionOut"]> = {},
-): S["ConnectionOut"] {
+  extra: Partial<MockConnection> = {},
+): MockConnection {
+  const origin = extra.origin ?? HSE_ORIGIN;
   return {
     id: ulid(),
     spaceId,
     adapter: "recipe",
     kind: "portal",
-    origin: HSE_ORIGIN,
+    origin,
+    entryUrl: `${origin}/`,
+    threadId: null,
+    activeTask: null,
     title,
     status,
     hasPassword: true,
@@ -131,12 +159,16 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
   if (scenario === "fresh" || scenario === "empty") return db;
 
   const iso = (minutesAgo: number) => new Date(now() - minutesAgo * 60_000).toISOString();
-  const hse = space("Высшая школа экономики", "u-hse", 262.2, iso(60 * 24 * 40));
-  const cu = space("Центральный университет", "u-cu", 292, iso(60 * 24 * 12));
+  const hse = space("Высшая школа экономики", "ВШЭ", "u-hse", 262.2, iso(60 * 24 * 40));
+  const cu = space("Центральный университет", "ЦУ", "u-cu", 292, iso(60 * 24 * 12));
   db.spaces = [hse, cu];
   db.connections = [
     connection(hse.id, "Личный кабинет", "active", iso(5), { kind: "portal" }),
-    connection(hse.id, "Расписание (календарь)", "active", iso(12), { kind: "schedule", hasPassword: false }),
+    connection(hse.id, "Расписание (календарь)", "active", iso(12), {
+      kind: "schedule",
+      hasPassword: false,
+      entryUrl: `${HSE_ORIGIN}/schedule`,
+    }),
     connection(
       cu.id,
       "LMS",
@@ -145,6 +177,7 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
       {
         kind: "lms",
         origin: "https://my.fakeuni.test",
+        entryUrl: "https://my.fakeuni.test/learn",
         errorCode: scenario === "reauth" ? "source_auth_required" : null,
       },
     ),

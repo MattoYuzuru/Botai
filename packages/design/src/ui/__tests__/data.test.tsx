@@ -8,6 +8,7 @@ import { ScheduleDay, type ScheduleItem } from "../schedule/schedule-day";
 import { ScheduleWeek, type WeekDay } from "../schedule/schedule-week";
 import { SourceCitation } from "../source-citation/source-citation";
 import { type SourceState, SourceStatus } from "../source-status/source-status";
+import { SourceStatusBar, type SourceStatusBarItem } from "../source-status/source-status-bar";
 import { SyncIndicator } from "../sync-indicator/sync-indicator";
 import { TabBar, type TabItem } from "../tab-bar/tab-bar";
 import { UniversitySpaceSwitcher } from "../university-space-switcher/university-space-switcher";
@@ -19,27 +20,6 @@ const at = (day: number, h: number, m = 0) => Date.UTC(2026, 9, day, h - 3, m);
 const plain = (text: string) => text.replaceAll(NBSP, " ");
 
 describe("SourceStatus: шесть видимо разных состояний, кнопки повтора нет", () => {
-  it("компактный статус раскрывает пояснение, не запускает обновление и доступен скринридеру", async () => {
-    const reauth = vi.fn();
-    render(
-      <SourceStatus
-        variant="compact"
-        state="stale"
-        spaceId="fakeuni"
-        spaceTitle="Учебный вуз"
-        updatedAt={null}
-        nowMs={NOW}
-        onReauth={reauth}
-      />,
-    );
-    const status = screen.getByRole("button", { name: "Учебный вуз: Данные устарели" });
-    expect(status).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(status);
-    expect(status).toHaveAttribute("aria-expanded", "true");
-    await userEvent.click(status);
-    expect(status).toHaveAttribute("aria-expanded", "false");
-    expect(reauth).not.toHaveBeenCalled();
-  });
   const states: [SourceState, RegExp][] = [
     ["ok", /^Обновлено 5\sминут назад$/],
     ["syncing", /^Обновляется$/],
@@ -212,6 +192,126 @@ describe("DeadlineItem: срочность", () => {
   });
 });
 
+describe("SourceStatusBar: статусы вузов одной полосой", () => {
+  const items: SourceStatusBarItem[] = [
+    { id: "hse", title: "ВШЭ", state: "ok", updatedAt: NOW - 20 * 60_000, timeZone: MSK },
+    { id: "cu", title: "ЦУ", state: "stale", updatedAt: at(24, 9), timeZone: MSK },
+  ];
+
+  it("по чипу на вуз: подпись — короткое название, иконка состояния, пояснение читается скринридером", () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    const list = screen.getByRole("list", { name: "Статусы вузов" });
+    const chips = within(list).getAllByRole("button");
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      `ВШЭ: Обновлено 20${NBSP}минут назад`,
+      "ЦУ: Данные устарели. Данные от 24 октября",
+    ]);
+    expect(chips[0]?.querySelector("svg")?.getAttribute("data-icon")).toBe("ok");
+    expect(chips[1]?.querySelector("svg")?.getAttribute("data-icon")).toBe("stale");
+  });
+
+  it("пояснение раскрывается шириной через grid-template-columns, а не max-width: нет дёрганья", () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    const detail = screen.getAllByRole("button")[0]?.querySelector("[data-source-detail]");
+    const cls = detail?.className ?? "";
+    // Закрыто: колонка 0fr; наведение, фокус клавиатуры и закрепление — 1fr; тот же переход в обе стороны.
+    expect(cls).toContain("grid-cols-[0fr]");
+    expect(cls).toContain("group-hover/chip:grid-cols-[1fr]");
+    expect(cls).toContain("group-has-[:focus-visible]/chip:grid-cols-[1fr]");
+    expect(cls).toContain("group-data-[expanded]/chip:grid-cols-[1fr]");
+    expect(cls).toContain("transition-[grid-template-columns,opacity]");
+    expect(cls).toContain("duration-slow");
+    expect(cls).toContain("ease-soft");
+    expect(cls).not.toMatch(/max-w|transition-\[max/);
+  });
+
+  it("чипы стоят в одной строке без переноса и раскрытый не сжимается — сжимаются соседи", () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    const list = screen.getByRole("list", { name: "Статусы вузов" });
+    expect(list.className).toContain("flex");
+    expect(list.className).not.toContain("flex-wrap");
+    const first = screen.getAllByRole("listitem")[0] as HTMLElement;
+    expect(first.className).toContain("shrink");
+    expect(first.className).toContain("hover:shrink-0");
+    expect(first.className).toContain("data-[expanded]:shrink-0");
+  });
+
+  it("касание закрепляет пояснение, повторное — снимает; обновление не запускается", async () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    const [first, second] = screen.getAllByRole("button");
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(first as HTMLElement);
+    expect(first).toHaveAttribute("aria-pressed", "true");
+    expect(first?.closest("li")).toHaveAttribute("data-expanded");
+    // Раскрыт один чип: касание другого переносит пояснение, а не копит их.
+    await userEvent.click(second as HTMLElement);
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    expect(second).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(second as HTMLElement);
+    expect(second).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("пока открыт шит или диалог, Escape принадлежит ему, а закреплённый чип остаётся", async () => {
+    render(
+      <>
+        <SourceStatusBar items={items} nowMs={NOW} />
+        <div role="dialog" aria-label="Шит" />
+      </>,
+    );
+    const first = screen.getAllByRole("button")[0] as HTMLElement;
+    await userEvent.click(first);
+    await userEvent.keyboard("{Escape}");
+    expect(first).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("чип не выходит за ширину полосы, а соседям остаётся место на зону нажатия (320 px)", () => {
+    render(
+      <SourceStatusBar
+        items={[...items, { ...items[0], id: "su", title: "СУ" } as SourceStatusBarItem]}
+        nowMs={NOW}
+      />,
+    );
+    for (const li of screen.getAllByRole("listitem")) {
+      expect(li.className).toContain("max-w-full");
+      expect(li.className).toContain("min-w-11");
+      // Три вуза: раскрытому чипу доступно всё, кроме двух зон нажатия соседей по 3 rem.
+      expect(li.style.maxWidth).toBe("calc(100% - 6rem)");
+    }
+  });
+
+  it("кнопка-переключатель сообщает «закреплено» (aria-pressed), а не раскрытие несуществующей области", () => {
+    render(<SourceStatusBar items={items} nowMs={NOW} />);
+    for (const button of screen.getAllByRole("button")) {
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      expect(button).not.toHaveAttribute("aria-expanded");
+    }
+  });
+
+  it("Escape и касание вне полосы сворачивают пояснение", async () => {
+    render(
+      <>
+        <SourceStatusBar items={items} nowMs={NOW} />
+        <p>Снаружи</p>
+      </>,
+    );
+    const first = screen.getAllByRole("button")[0] as HTMLElement;
+    await userEvent.click(first);
+    expect(first).toHaveAttribute("aria-pressed", "true");
+    await userEvent.keyboard("{Escape}");
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(first);
+    await userEvent.click(screen.getByText("Снаружи"));
+    expect(first).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("зона нажатия не меньше 44 px, без вузов полоса не рисуется", () => {
+    const { container, rerender } = render(<SourceStatusBar items={items} nowMs={NOW} />);
+    expect(screen.getAllByRole("button")[0]).toHaveClass("h-11", "min-w-11");
+    rerender(<SourceStatusBar items={[]} nowMs={NOW} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
 describe("ScheduleDay", () => {
   const items: ScheduleItem[] = [
     {
@@ -219,7 +319,7 @@ describe("ScheduleDay", () => {
       start: at(27, 15, 0),
       end: at(27, 16, 20),
       title: "Базы данных",
-      room: "Ауд. 305",
+      facts: [{ key: "room", icon: "room", label: "Аудитория", text: "Ауд. 305" }],
       spaceId: "cu",
       spaceTitle: "ЦУ",
       changed: true,
@@ -229,8 +329,13 @@ describe("ScheduleDay", () => {
       start: at(27, 9, 30),
       end: at(27, 10, 50),
       title: "Алгоритмы",
-      room: "Ауд. 214",
-      teacher: "Иванов",
+      badge: "Текущий рубежный контроль",
+      facts: [
+        { key: "room", icon: "room", label: "Аудитория", text: "Ауд. 214" },
+        { key: "address", icon: "address", label: "Адрес", text: "Покровский б-р, д.11" },
+        { key: "teacher", icon: "teacher", label: "Преподаватель", text: "Иванов" },
+        { key: "group", icon: "group", label: "Группа", text: "ДРИП 3 курс 26/27" },
+      ],
       spaceId: "hse",
       spaceTitle: "ВШЭ",
     },
@@ -259,6 +364,27 @@ describe("ScheduleDay", () => {
     expect(screen.getByText("Идёт сейчас")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "вторник, 27 октября" })).toBeInTheDocument();
     expect(screen.getByText(plain(`3${NBSP}пары`))).toBeInTheDocument();
+  });
+
+  it("карточка пары: тип занятия бейджем и детали с иконками по смыслу, только те, что переданы", () => {
+    render(<ScheduleDay date={NOW} items={items} state="ok" nowMs={NOW} timeZone={MSK} />);
+    const rich = screen.getAllByRole("listitem")[0] as HTMLElement;
+    expect(within(rich).getByText("Текущий рубежный контроль")).toBeInTheDocument();
+    const icons = [...rich.querySelectorAll("[data-fact]")].map((fact) => [
+      fact.getAttribute("data-fact"),
+      fact.querySelector("svg")?.getAttribute("data-icon"),
+      fact.textContent,
+    ]);
+    expect(icons).toEqual([
+      ["room", "room", "Аудитория: Ауд. 214"],
+      ["address", "address", "Адрес: Покровский б-р, д.11"],
+      ["teacher", "teacher", "Преподаватель: Иванов"],
+      ["group", "group", "Группа: ДРИП 3 курс 26/27"],
+    ]);
+    // У пары без деталей нет ни бейджа типа, ни пустых строк-заглушек.
+    const bare = screen.getAllByRole("listitem")[1] as HTMLElement;
+    expect(bare.querySelector("[data-fact]")).toBeNull();
+    expect(bare.textContent).not.toMatch(/—/);
   });
 
   it("empty: «Пар нет» — и это не «всё сдано»", () => {
