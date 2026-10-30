@@ -206,9 +206,11 @@ class ChatEnv:
 
     async def cite(self, prov: Provenance) -> str:
         conn = (await self.titles()).get(prov.connection_id)
+        # The page the student opens (FR-042), never the API address the record was read from;
+        # without one the citation leads to the source inside the app.
         return self.sources.add(
             title=conn.title if conn else "Источник данных",
-            url=prov.source_url,
+            url=prov.open_url or f"botai://connections/{prov.connection_id}",
             kind="data",
             fetched_at=prov.fetched_at,
             stale=prov.stale,
