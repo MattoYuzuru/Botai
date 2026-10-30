@@ -79,6 +79,15 @@ def test_nested_sources_and_weekly_generated_required_fields_pass(
     assert result.ok, result.reasons()
 
 
+def test_the_interval_pointer_is_checked_like_every_other_operand() -> None:
+    spec = nested(weekly=True)
+    expansion = response(spec)["expand"]
+    expansion["intervalWeeks"] = {"from": "day", "path": "/interval"}
+    assert lint_spec(spec, CTX).ok
+    expansion["intervalWeeks"] = {"from": "day", "path": "/apiKey"}
+    assert "pointer.secret" in lint_spec(spec, CTX).codes()
+
+
 @pytest.mark.parametrize("change", ["alias", "source", "zone", "weekly_source", "weekly_zone"])
 def test_typed_cross_field_errors_are_static_and_never_include_input(change: str) -> None:
     spec = nested(weekly=change.startswith("weekly"))
@@ -210,3 +219,60 @@ def test_v1_does_not_accept_v2_fields_and_existing_fixture_still_passes() -> Non
     spec["recipe"]["version"] = 1
     assert lint_spec(spec, CTX).codes() == {"schema"}
     assert lint_spec(recipes.full_recipe(), CTX).ok
+
+
+# --- repeated query keys and the constants of the source's own vocabulary ---------------------
+
+STATES = ["backlog", "inProgress", "review", "failed", "evaluated"]
+
+
+def tasks_spec(states: list[str]) -> dict[str, Any]:
+    endpoint = {
+        "id": "deadlines",
+        "kind": "deadlines",
+        "request": {"method": "GET", "path": "/api/tasks", "query": {"state": states}},
+        "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+                "externalId": {"path": "/id", "required": True},
+                "title": {"path": "/exercise/name", "required": True},
+                "dueAt": {"path": "/deadline", "transform": "iso", "required": True},
+            },
+        },
+    }
+    spec = recipes.recipe_spec([endpoint], require=("deadlines",))
+    spec["recipe"]["version"] = 2
+    return spec
+
+
+def test_a_repeated_key_of_filter_values_passes_lint() -> None:
+    assert lint_spec(tasks_spec(STATES), CTX).ok
+
+
+def test_status_constants_seen_in_the_responses_are_not_personal() -> None:
+    seen = LintContext(
+        allowed_hosts=CTX.allowed_hosts,
+        expected_origin=CTX.expected_origin,
+        observed=[*STATES, "IN_PROGRESS"],
+    )
+    assert lint_spec(tasks_spec(STATES), seen).ok
+    assert lint_spec(tasks_spec(["IN_PROGRESS", "backlog"]), seen).ok
+
+
+@pytest.mark.parametrize("value", ["Ivanov", "ГРП-26", "ABC12", "Evaluated", "group7", "IVANOV"])
+def test_a_name_or_a_code_of_the_student_is_still_refused_in_a_list(value: str) -> None:
+    seen = LintContext(
+        allowed_hosts=CTX.allowed_hosts, expected_origin=CTX.expected_origin, observed=[value]
+    )
+    result = lint_spec(tasks_spec(["backlog", value]), seen)
+    assert "observed.value" in result.codes()
+    assert value not in str(result.reasons())
+
+
+def test_lint_checks_every_value_of_a_repeated_key() -> None:
+    spec = tasks_spec(["backlog", "{missing}"])
+    assert "template.unknown" in lint_spec(spec, CTX).codes()
+    spec = tasks_spec(["backlog", "inProgress"])
+    spec["recipe"]["endpoints"][0]["request"]["query"] = {"password": ["a", "b"]}
+    assert "param.secret_name" in lint_spec(spec, CTX).codes()

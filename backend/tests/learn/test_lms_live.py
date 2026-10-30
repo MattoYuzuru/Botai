@@ -19,6 +19,7 @@ import pytest
 
 from botai.agent.bench import NullGate
 from botai.agent.llm import DeepSeekProvider, MeteredLlm
+from botai.core.jobs import JobCancelled
 from botai.core.llm import LlmRequest, LlmResponse
 from botai.db import models as m
 from botai.learn import explorer
@@ -108,8 +109,11 @@ async def test_the_real_model_researches_the_rules_cabinet(
     await env.login()
     env.services.browser = lms_site.gateway
     env.services.llm = live  # type: ignore[assignment]
+    result: Any = None
     try:
-        result = await env.run(payload={"url": ENTRY})
+        result = await env.run(payload={"url": ENTRY}, choices=["skip"])
+    except JobCancelled as exc:  # the scripted student never answers a question
+        result = f"asked the student: {exc}"
     finally:
         print(f"\n[L2] spent=${live.spent:.4f} calls={len(live.meter.calls)}")
         for line in trace:
@@ -123,5 +127,7 @@ async def test_the_real_model_researches_the_rules_cabinet(
             )
     print("[result]", result)
     print("[specs]", await env.specs())
+    for _revision, _state in await env.specs():
+        print("[stored spec]", json.dumps(await env.spec(_revision), ensure_ascii=False))
     for model in (m.ScheduleEvent, m.Deadline, m.Course):
         print(f"[rows] {model.__tablename__}={await env.count(model)}")

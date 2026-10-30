@@ -1,0 +1,909 @@
+[
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 1,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/interval"
+              }
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "backlog",
+                "inProgress",
+                "review",
+                "failed",
+                "evaluated"
+              ]
+            }
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/interval"
+              }
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "backlog"
+              ]
+            }
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/interval"
+              }
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "v0",
+                "v1",
+                "v2",
+                "v3",
+                "v4",
+                "v5",
+                "v6",
+                "v7",
+                "v8"
+              ]
+            }
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/interval"
+              }
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "POST",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "backlog",
+                "inProgress",
+                "review",
+                "failed",
+                "evaluated"
+              ]
+            },
+            "readOnlyPost": true
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": 5
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "backlog",
+                "inProgress",
+                "review",
+                "failed",
+                "evaluated"
+              ]
+            }
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  },
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "timetable",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/students/me/timetables"
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "course",
+                "path": ""
+              },
+              {
+                "as": "row",
+                "path": "/eventRows"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "course",
+                "path": "/courseName",
+                "required": true
+              },
+              "courseId": {
+                "from": "course",
+                "path": "/courseId"
+              },
+              "externalId": {
+                "from": "row",
+                "path": "/calendarEvent/calendarEventId",
+                "required": true
+              },
+              "kind": {
+                "from": "row",
+                "path": "/calendarEvent/eventType"
+              },
+              "location": {
+                "from": "row",
+                "path": "/calendarEvent/location/title"
+              },
+              "teacher": {
+                "from": "row",
+                "path": "/calendarEvent/hosts",
+                "transform": "joinNames"
+              }
+            },
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "row",
+                "path": "/calendarEvent/location/building"
+              }
+            ],
+            "expand": {
+              "type": "weekly",
+              "timeZone": "Europe/Moscow",
+              "horizon": {
+                "from": "{weekStart}",
+                "days": 90
+              },
+              "startDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startDate"
+              },
+              "untilDate": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endDate"
+              },
+              "weekdays": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/dayOfWeek"
+              },
+              "startTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/startTime"
+              },
+              "endTime": {
+                "from": "row",
+                "path": "/calendarEvent/schedule/endTime"
+              },
+              "intervalWeeks": 2
+            }
+          }
+        },
+        {
+          "id": "deadlines",
+          "kind": "deadlines",
+          "request": {
+            "method": "GET",
+            "path": "/api/lms/tasks/student",
+            "query": {
+              "state": [
+                "backlog",
+                "inProgress",
+                "review",
+                "failed",
+                "evaluated"
+              ]
+            }
+          },
+          "response": {
+            "format": "json",
+            "itemsPath": "",
+            "fields": {
+              "externalId": {
+                "path": "/id",
+                "required": true
+              },
+              "title": {
+                "path": "/exercise/name",
+                "required": true
+              },
+              "dueAt": {
+                "path": "/deadline",
+                "transform": "iso",
+                "required": true
+              },
+              "state": {
+                "path": "/state"
+              },
+              "courseId": {
+                "path": "/course/id"
+              }
+            }
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "deadlines",
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      }
+    }
+  }
+]

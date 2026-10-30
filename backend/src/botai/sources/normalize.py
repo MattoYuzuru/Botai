@@ -8,7 +8,10 @@ Rules (docs/architecture/lld.md §3):
   and `seen_at`, the last sync that saw it;
 * rows that a complete run did not see are never deleted. They keep an old `seen_at`, so
   "missing" means `seen_at < connection.last_sync_at`. Besides that, a class that was due in the
-  future and vanished gets `changed = true`, a vanished course is `archived`;
+  future and vanished gets `changed = true`, a vanished course is `archived`. The exception is an
+  occurrence of a repeating rule (`OCCURRENCE_PREFIX`): the source never listed it, the rule
+  produced it, so when the rule stops saying it, a future occurrence is removed, while a past one
+  stays as it happened;
 * only kinds whose every endpoint finished may mark rows missing: a partial failure never
   touches the previous snapshot of a kind.
 """
@@ -27,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.specs import Kind
 from botai.db import models as m
-from botai.sources.adapter import AdapterResult, ExtractedDocument, Record
+from botai.sources.adapter import OCCURRENCE_PREFIX, AdapterResult, ExtractedDocument, Record
 from botai.sources.extract import clean_text, parse_datetime
 from botai.sources.vocab import REQUIRED
 
@@ -87,10 +90,26 @@ _FORMATS = (
     ("offline", ("offline", "очно", "очная", "очный")),
 )
 _STATES = (
-    ("graded", ("graded", "оценен", "проверен")),
-    ("missed", ("missed", "overdue", "просроч")),
-    ("open", ("open", "new", "pending", "todo", "assigned", "не сдан", "назначен", "активн")),
-    ("submitted", ("submitted", "done", "completed", "сдан", "выполнен")),
+    ("graded", ("graded", "evaluat", "оценен", "проверен")),
+    ("missed", ("missed", "overdue", "failed", "просроч", "провал")),
+    (
+        "open",
+        (
+            "open",
+            "new",
+            "pending",
+            "todo",
+            "assigned",
+            "backlog",
+            "inprogress",
+            "in progress",
+            "in_progress",
+            "не сдан",
+            "назначен",
+            "активн",
+        ),
+    ),
+    ("submitted", ("submitted", "done", "completed", "review", "сдан", "выполнен", "на проверке")),
 )
 _ROLES = (
     ("assistant", ("assistant", "ассистент", "ta")),
@@ -443,7 +462,10 @@ async def _mark_missing(
         if kind == "courses":
             obj.archived = True
         elif kind == "scheduleEvents" and obj.starts_at >= now:
-            obj.changed = True  # was still ahead and is gone: moved or cancelled
+            if obj.external_id.startswith(OCCURRENCE_PREFIX):
+                await session.delete(obj)  # the rule no longer produces it
+            else:
+                obj.changed = True  # was still ahead and is gone: moved or cancelled
     return len(rows)
 
 

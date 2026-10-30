@@ -2236,6 +2236,27 @@
                   ]
                 }
               }
+            },
+            {
+              "if": {
+                "properties": {
+                  "method": {
+                    "const": "POST"
+                  }
+                },
+                "required": [
+                  "method"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "query": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/template"
+                    }
+                  }
+                }
+              }
             }
           ]
         },

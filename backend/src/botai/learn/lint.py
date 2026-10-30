@@ -135,9 +135,15 @@ class LintResult:
             raise self.to_error()
 
 
+# A constant of the source's own vocabulary, such as a status of a task (`inProgress`,
+# `IN_PROGRESS`): words joined by case or an underscore, no digit. It names a state, not a person,
+# and the author sees it unmasked in the observation, so copying it into a filter is not a leak.
+ENUM_TOKEN = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+|[A-Z]+(?:_[A-Z]+)+")
+
+
 def sensitive(value: str) -> bool:
     """Would this observed value be personal or identifying if it ended up in a shared spec?"""
-    if len(value) < 4:
+    if len(value) < 4 or ENUM_TOKEN.fullmatch(value):
         return False
     return any(c.isdigit() for c in value) or any(c.isupper() for c in value)
 
@@ -344,14 +350,6 @@ def _endpoint(
                 )
             for item in value if isinstance(value, list) else [value]:
                 _check_template(item, known, where, issues)
-    if request["method"] != "GET" and any(
-        isinstance(value, list) for value in (request.get("query") or {}).values()
-    ):
-        issues.append(
-            LintIssue(
-                "query.repeated_method", _p(*req_base, "query"), "повтор ключа query — только у GET"
-            )
-        )
     if request["method"] == "POST" and not (
         request.get("readOnlyPost") and is_read_only_post(request["path"], _query_literals(request))
     ):

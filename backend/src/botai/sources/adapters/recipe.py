@@ -29,6 +29,7 @@ from botai.contracts.specs import (
 )
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import (
+    OCCURRENCE_PREFIX,
     AdapterKind,
     AdapterResult,
     EndpointOutcome,
@@ -555,7 +556,7 @@ class RecipeAdapter:
                         now=ctx.now,
                         remaining_instances=remaining_instances - len(records),
                     ):
-                        instance_id = hashlib.sha256(
+                        digest = hashlib.sha256(
                             json.dumps(
                                 [
                                     "weekly-v1",
@@ -571,7 +572,7 @@ class RecipeAdapter:
                         records.append(
                             Record(
                                 kind=endpoint.kind,
-                                external_id=instance_id,
+                                external_id=OCCURRENCE_PREFIX + digest,
                                 fields={
                                     **record.fields,
                                     "startsAt": occurrence.starts_at,
