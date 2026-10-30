@@ -48,8 +48,19 @@ describe("один тред: подключение, вход, вопросы а
     await user.click(screen.getByRole("checkbox", { name: /Алгоритмы и структуры данных/ }));
     await user.click(within(pendingQuestion() as HTMLElement).getByRole("button", { name: "Ответить" }));
 
-    // Итог подключения — в той же ленте; вопросов больше нет, поле свободно.
-    expect(await screen.findByText("Что подключено", undefined, wait)).toBeInTheDocument();
+    // Одно сообщение-подтверждение: что найдено словами, ближайшие пары и вопрос с кнопками — вместе.
+    const verify = await screen.findByText(/^Всё верно\?/, undefined, wait);
+    const confirmation = within(pendingQuestion() as HTMLElement);
+    expect(pendingQuestion()?.contains(verify)).toBe(true);
+    expect(
+      confirmation.getByText("42 занятия с 26 октября по 20 декабря — 8 недель", { exact: false }),
+    ).toBeVisible();
+    expect(confirmation.getByText("Ближайшие пары:")).toBeVisible();
+    expect(confirmation.getByText(/Алгоритмы и структуры данных · А-101/)).toBeVisible();
+    await user.click(confirmation.getByRole("button", { name: "Да, всё верно" }));
+
+    // Итог подключения — дружелюбная фраза в той же ленте; вопросов больше нет, поле свободно.
+    expect(await screen.findByText(/^Готово! Расписание Фейкуни подключено/, undefined, wait)).toBeVisible();
     await waitFor(() => expect(pendingQuestion()).toBeNull(), wait);
     await waitFor(() => expect(composer()).toBeEnabled(), wait);
     // Ответы человека остались в истории словами: что выбрано, а пароль и логин только названы переданными,
@@ -65,6 +76,7 @@ describe("один тред: подключение, вход, вопросы а
     expect(said("Алгоритмы и структуры данных")?.querySelector("[data-message-quote]")).toHaveTextContent(
       "Это ваши предметы в этом семестре?",
     );
+    expect(said("Да, всё верно")?.querySelector("[data-message-quote]")).toHaveTextContent("Всё верно?");
     expect(screen.queryByText("Введено")).toBeNull();
     expect(document.body.textContent).not.toContain("correct-horse-battery");
     expect(router.state.location.pathname).toBe("/chat");

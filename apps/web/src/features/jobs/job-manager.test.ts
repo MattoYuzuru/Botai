@@ -144,11 +144,22 @@ describe("поток задания подключения на MSW", () => {
     );
     await manager.answer(jobId, choice.id, ["algo", "db"], "Алгоритмы, Базы данных");
 
+    // Одно сообщение-подтверждение: сводка, ближайшие пары и вопрос.
+    const confirm = await until(
+      () => pendingQuestions(manager.get(jobId) ?? ({} as never)).find((block) => block.type === "confirm"),
+      "подтверждение",
+    );
+    expect(confirm).toMatchObject({ question: expect.stringMatching(/^Всё верно\?/) });
+    expect(confirm.type === "confirm" && confirm.details).toContain("Ближайшие пары:");
+    await manager.answer(jobId, confirm.id, true, "Да, всё верно");
+
     const done = await until(() => {
       const job = manager.get(jobId);
       return job?.result ? job : undefined;
     }, "завершение");
-    expect(done.blocks.some((block) => block.type === "summary")).toBe(true);
+    expect(
+      done.blocks.some((block) => block.type === "text" && block.markdown.startsWith("Готово! Расписание")),
+    ).toBe(true);
     expect(done.link).toBe("closed");
     expect(done.result).toMatchObject({ connectionId: expect.any(String) });
 

@@ -281,7 +281,7 @@ describe("мышление: идёт — внизу, закончилось — 
     state,
   });
   const say = (id: number, at: number, markdown: string) => textBlock(ULID(id), markdown, { at: iso(at) });
-  const agent = (n: number, jobId: string, at: number, ...blocks: object[]) =>
+  const agent = (n: number, jobId: string, at: number, ...blocks: Message["blocks"]) =>
     message({ id: ULID(n), role: "agent", jobId, blocks, createdAt: iso(at) });
   const history: Message[] = [
     message({
