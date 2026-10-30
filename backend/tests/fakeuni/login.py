@@ -17,6 +17,7 @@ ends with the `FAKEUNI_SESSION` cookie on fakeuni.test. Nothing here resembles a
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import secrets
@@ -54,8 +55,17 @@ def is_logged_in(request: Request) -> bool:
     return request.cookies.get(COOKIE) in SESSIONS
 
 
+# A cabinet whose analytics never stop: every page polls forever, so the network is never quiet.
+BUSY_PAGES = False
+_BUSY = "<script>setInterval(() => fetch('/cu/api/ping').catch(() => {}), 150);</script>"
+
+
 def _page(title: str, body: str) -> str:
-    return f"<!doctype html><html><head><title>{escape(title)}</title></head><body>{body}</body></html>"
+    busy = _BUSY if BUSY_PAGES else ""
+    return (
+        f"<!doctype html><html><head><title>{escape(title)}</title></head>"
+        f"<body>{body}{busy}</body></html>"
+    )
 
 
 def _error(text: str) -> str:
@@ -451,6 +461,12 @@ async def cu_check_password_preflight() -> Response:
 async def cu_check_password() -> JSONResponse:
     CU.password_checks += 1
     return JSONResponse({"ok": True}, headers=_CU_CORS)
+
+
+@router.get("/cu/api/ping")
+async def cu_ping() -> Response:
+    await asyncio.sleep(0.12)
+    return Response(status_code=204)
 
 
 @router.post("/cu/api/telemetry")

@@ -116,6 +116,20 @@ POST_JS = "u => fetch(u, {method: 'POST'}).then(() => true).catch(() => false)"
 # ------------------------------------------------------------------ a whole login, by steps
 
 
+async def test_a_page_that_is_never_quiet_does_not_fail_the_login(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cabinets keep analytics busy forever: waiting for silence after a step must not end the
+    login as «the page did not finish loading» (seen on two real sites)."""
+    monkeypatch.setattr(login, "BUSY_PAGES", True)
+    rig = new_rig()
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
+    assert await works(state)
+    assert login.CU.submissions == ["email", "password", "otp"]
+
+
 async def test_a_landing_with_only_a_login_button_is_clicked_through_to_native_fields(
     new_rig: Callable[..., Rig],
 ) -> None:
