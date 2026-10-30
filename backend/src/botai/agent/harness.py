@@ -462,9 +462,22 @@ async def run(
                 )
             result.content = response.content  # kept if the budget ends the loop right here
             result.stopped = "budget"  # overwritten by the next iteration's outcome
+            if (
+                response.content.strip()
+                and FINISHING_TOOLS
+                and all(c.name in FINISHING_TOOLS for c in response.tool_calls)
+            ):
+                # The model wrote its answer and only dressed it (buttons, a chat title): that
+                # text is the answer. Another round would replace it with a bare question.
+                result.stopped = "answer"
+                break
 
     _log_summary(result, purpose, services, user_id)
     return result
+
+
+# Tools that only dress the answer being written; a step calling nothing else ends the turn.
+FINISHING_TOOLS = frozenset({"offer_choices", "rename_thread"})
 
 
 def _log_summary(result: HarnessResult, purpose: str, services: Services, user_id: str) -> None:
