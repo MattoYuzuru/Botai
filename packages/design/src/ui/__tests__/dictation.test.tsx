@@ -11,6 +11,8 @@ const plain = (text: string | null) => (text ?? "").replaceAll(NBSP, " ");
 
 class FakeRecorder {
   static isTypeSupported = (type: string) => type === "audio/webm;codecs=opus";
+  /** Рекордер, который не сообщает об остановке: `onstop` не приходит никогда. */
+  static mute = false;
   state: "inactive" | "recording" = "inactive";
   mimeType: string;
   ondataavailable: ((event: { data: Blob }) => void) | null = null;
@@ -27,12 +29,13 @@ class FakeRecorder {
   stop() {
     this.state = "inactive";
     this.ondataavailable?.({ data: new Blob(["voice"], { type: this.mimeType }) });
-    queueMicrotask(() => this.onstop?.());
+    if (!FakeRecorder.mute) queueMicrotask(() => this.onstop?.());
   }
 }
 
 /** Громкость, которую «слышит» анализатор: тест меняет `volume.value` (0…255 на каждый бин спектра). */
 const volume = { value: 0 };
+const contextState = { value: "running" };
 const analyser = {
   fftSize: 0,
   frequencyBinCount: 512,
@@ -47,6 +50,7 @@ const sourceNode = { connect: vi.fn(), disconnect: vi.fn() };
 const contexts: FakeAudioContext[] = [];
 class FakeAudioContext {
   sampleRate = 48_000;
+  state = contextState.value;
   close = vi.fn().mockResolvedValue(undefined);
   resume = vi.fn().mockResolvedValue(undefined);
   createMediaStreamSource = vi.fn(() => sourceNode);
@@ -70,16 +74,19 @@ function paint(count = 1, step = 16) {
   }
 }
 
-const track = { stop: vi.fn() };
+const track = { stop: vi.fn(), onended: null as (() => void) | null };
 let getUserMedia: ReturnType<typeof vi.fn>;
 const original = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
 
 beforeEach(() => {
   frames = [];
   clock = 0;
-  volume.value = 0;
+  volume.value = 120; // кто-то говорит; тесты про тишину обнуляют
+  contextState.value = "running";
+  FakeRecorder.mute = false;
   contexts.length = 0;
   track.stop.mockClear();
+  track.onended = null;
   getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track] });
   vi.stubGlobal("MediaRecorder", FakeRecorder);
   vi.stubGlobal("AudioContext", FakeAudioContext);
@@ -175,6 +182,7 @@ describe("диктовка: запись и эквалайзер", () => {
   });
 
   it("высота столбиков следует за громкостью в реальном времени: тишина — точки, голос — высокие, спад плавный", async () => {
+    volume.value = 0;
     render(<Harness onTranscribe={async () => "текст"} />);
     await startRecording();
     paint(3);
@@ -413,5 +421,164 @@ describe("диктовка: ошибки словами, без alert", () => {
     await userEvent.click(screen.getByRole("button", { name: "Готово" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Речь не распознана");
     expect(field()).toHaveValue("а");
+  });
+});
+
+describe("диктовка: тишина не уходит на сервер", () => {
+  it("запись, на которой голос ни разу не поднялся над шумом комнаты, не отправляется", async () => {
+    volume.value = 0;
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("выдумка из тишины");
+    render(<Harness initial="набрано" onTranscribe={transcribe} />);
+    await startRecording();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Ничего не слышно");
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled(); // микрофон отпущен
+    expect(field()).toHaveValue("набрано");
+    expect(mic()).toBeEnabled();
+  });
+
+  it("достаточно одного громкого мгновения за всю запись: потом можно замолчать", async () => {
+    volume.value = 150;
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("сказано");
+    render(<Harness onTranscribe={transcribe} />);
+    await startRecording();
+    volume.value = 0;
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(field()).toHaveValue("сказано"));
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("короткий звук, который увидел один кадр эквалайзера, засчитывается как голос", async () => {
+    volume.value = 0;
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("да");
+    render(<Harness onTranscribe={transcribe} />);
+    await startRecording();
+    volume.value = 200;
+    paint(1); // один кадр: щелчок или короткое «да» длится десятки миллисекунд
+    volume.value = 0;
+    paint(1);
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+  });
+
+  it("слышно только тихо, но выше шума: запись уходит", async () => {
+    volume.value = 45; // около -75 дБ: шёпот издалека
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("шёпотом");
+    render(<Harness onTranscribe={transcribe} />);
+    await startRecording();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(field()).toHaveValue("шёпотом"));
+  });
+
+  it("приостановленный аудиоконтекст молчит из-за политики браузера, а не из-за тишины: запись уходит", async () => {
+    volume.value = 0;
+    contextState.value = "suspended";
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("сказано");
+    render(<Harness onTranscribe={transcribe} />);
+    await startRecording();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+  });
+
+  it("браузер без AudioContext: уровня не знаем, запись уходит", async () => {
+    vi.stubGlobal("AudioContext", undefined);
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("сказано");
+    render(<Harness onTranscribe={transcribe} />);
+    await startRecording();
+    expect(document.querySelector("[data-equalizer='bars']")).not.toBeNull(); // столбики лежат точками
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("диктовка: жест, фокус, зависший рекордер, отключённый микрофон", () => {
+  it("аудиоконтекст запускается синхронно в жесте нажатия, не дожидаясь разрешения на микрофон (iOS)", async () => {
+    let grant: (stream: unknown) => void = () => {};
+    getUserMedia.mockReturnValue(
+      new Promise((resolve) => {
+        grant = resolve;
+      }),
+    );
+    render(<Harness onTranscribe={async () => "текст"} />);
+    fireEvent.click(mic());
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.resume).toHaveBeenCalledTimes(1); // разрешение ещё не получено
+    expect(document.querySelector("[data-recording]")).toBeNull();
+    await act(async () => grant({ getTracks: () => [track] }));
+    await screen.findByRole("button", { name: "Готово" });
+    expect(contexts[0]?.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("фокус: запись началась — на «Готово»; отмена, ошибка и вставка возвращают его в поле", async () => {
+    const transcribe = vi
+      .fn<Transcribe>()
+      .mockRejectedValueOnce(new Error("Сервис недоступен"))
+      .mockResolvedValue("сказано");
+    render(<Harness onTranscribe={transcribe} />);
+
+    await startRecording();
+    expect(screen.getByRole("button", { name: "Готово" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Отменить запись" }));
+    expect(field()).toHaveFocus();
+
+    await startRecording();
+    expect(screen.getByRole("button", { name: "Готово" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await screen.findByRole("alert");
+    expect(field()).toHaveFocus();
+
+    (document.activeElement as HTMLElement).blur();
+    await startRecording();
+    await userEvent.click(screen.getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(field()).toHaveValue("сказано"));
+    expect(field()).toHaveFocus();
+  });
+
+  it("если рекордер не прислал последний кусок, через 3 секунды берётся то, что есть", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      FakeRecorder.mute = true;
+      const transcribe = vi.fn<Transcribe>().mockResolvedValue("сказано");
+      render(<Harness onTranscribe={transcribe} />);
+      fireEvent.click(mic());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Готово" }));
+      await act(async () => {
+        vi.advanceTimersByTime(2_900);
+      });
+      expect(transcribe).not.toHaveBeenCalled(); // ещё ждём
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await vi.waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+      expect(track.stop).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("микрофон отключили посреди записи: запись прервана, понятная ошибка, на сервер ничего не уходит", async () => {
+    const transcribe = vi.fn<Transcribe>().mockResolvedValue("не должно появиться");
+    render(<Harness initial="набрано" onTranscribe={transcribe} />);
+    await startRecording();
+    act(() => track.onended?.());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Микрофон отключился");
+    expect(document.querySelector("[data-recording]")).toBeNull();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled();
+    expect(field()).toHaveValue("набрано");
+  });
+
+  it("эквалайзер с первого кадра точки, а не полная высота", async () => {
+    render(<Harness onTranscribe={async () => "текст"} />);
+    await startRecording();
+    expect(frames.length).toBeGreaterThan(0); // кадр ещё не нарисован
+    expect(bars().length).toBeGreaterThan(0);
+    for (const bar of bars()) expect(bar.style.transform).toBe("scaleY(0.120)");
   });
 });

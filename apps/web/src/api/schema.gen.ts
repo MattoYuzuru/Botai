@@ -828,9 +828,10 @@ export interface paths {
         put?: never;
         /**
          * Transcribe
-         * @description A recording up to 20 MiB and three minutes → the recognised text. The recording is kept
+         * @description A recording up to 5 MiB and three minutes → the recognised text. The recording is kept
          *     nowhere: not in the database, not in a file, not in a log. `language` is an ISO 639-1 code
-         *     (Russian by default); `durationMs` is what the page measured, used for the daily limit.
+         *     (Russian by default); `durationMs` is what the page measured: the daily limit is charged by
+         *     the length the provider measures, so a false claim does not help.
          */
         post: operations["transcribe_api_v1_speech_transcribe_post"];
         delete?: never;

@@ -38,6 +38,20 @@ class _Use:
     seconds: float
 
 
+class Slot:
+    """One reserved request. The reservation is the estimate; `settle` replaces it with the length
+    the provider measured, `refund` gives the seconds back after a plain refusal."""
+
+    def __init__(self, use: _Use) -> None:
+        self._use = use
+
+    def settle(self, seconds: float) -> None:
+        self._use.seconds = max(0.0, seconds)
+
+    def refund(self) -> None:
+        self._use.seconds = 0.0
+
+
 class SpeechQuota:
     def __init__(
         self,
@@ -80,21 +94,19 @@ class SpeechQuota:
         return uses
 
     @contextmanager
-    def slot(self, user_id: str, seconds: float) -> Generator[None]:
+    def slot(self, user_id: str, seconds: float) -> Generator[Slot]:
         """Reserve one request of `seconds` of audio, or raise `QuotaRefused`.
 
-        The request counts against the hour whatever happens. If the block raises, the seconds are
-        given back: a provider that failed did not transcribe them."""
+        The request counts against the hour whatever happens, and so do its seconds: a timeout, a
+        dropped connection or a cancelled request may have been processed by the provider already.
+        Only the caller can give them back (`Slot.refund`), after the provider plainly refused."""
         now = self._now()
         uses = self._check(user_id, seconds, now)
         use = _Use(now, seconds)
         uses.append(use)
         self._running[user_id] += 1
         try:
-            yield
-        except BaseException:
-            use.seconds = 0.0
-            raise
+            yield Slot(use)
         finally:
             self._running[user_id] -= 1
             if self._running[user_id] <= 0:

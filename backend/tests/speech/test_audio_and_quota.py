@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from botai.speech.audio import EXTENSIONS, sniff_audio
@@ -98,15 +100,43 @@ def test_users_are_counted_separately() -> None:
         use(q, "a", 1)
 
 
-def test_a_failed_request_gives_its_seconds_back_but_still_counts_as_a_request() -> None:
+def test_an_error_inside_the_slot_does_not_give_the_seconds_back() -> None:
+    """A timeout, a dropped connection or a cancelled request may have been processed already."""
+    clock = Clock()
+    q = quota(clock, per_hour=10, per_day=100)
+    for failure in (RuntimeError("provider down"), TimeoutError(), asyncio.CancelledError()):
+        with pytest.raises(type(failure)), q.slot("u", 60):
+            raise failure
+        clock.now += 1
+        with pytest.raises(QuotaRefused) as refused:  # the 60 s of the failure are still spent
+            use(q, "u", 60)
+        assert refused.value.scope == "day"
+        clock.now += DAY_S  # the day passes and the account is clear again
+    use(q, "u", 60)
+
+
+def test_a_plain_refusal_is_refunded_by_the_caller_but_still_counts_as_a_request() -> None:
     clock = Clock()
     q = quota(clock, per_hour=2, per_day=100)
-    with pytest.raises(RuntimeError), q.slot("u", 100):
-        raise RuntimeError("provider down")
-    use(q, "u", 100)  # the 100 s of the failed one were returned
+    with q.slot("u", 100) as slot:
+        slot.refund()
+    use(q, "u", 100)  # the 100 s of the refused one were returned
     with pytest.raises(QuotaRefused) as refused:  # but two requests were made in the hour
         use(q, "u", 1)
     assert refused.value.scope == "hour"
+
+
+def test_settle_replaces_the_estimate_with_the_length_the_provider_measured() -> None:
+    clock = Clock()
+    q = quota(clock, per_hour=100, per_day=300)
+    with q.slot("u", 1) as slot:  # the client claimed one second
+        slot.settle(250)  # the provider heard four minutes
+    with pytest.raises(QuotaRefused) as refused:
+        use(q, "u", 100)
+    assert refused.value.scope == "day"
+    with q.slot("v", 200) as slot:  # an over-claim is charged by what was really said
+        slot.settle(20)
+    use(q, "v", 270)
 
 
 def test_parallel_requests_of_one_user_are_limited() -> None:

@@ -52,6 +52,20 @@ export function VoiceEqualizer({ meter, className }: VoiceEqualizerProps) {
   const fill = useRef<HTMLSpanElement>(null);
   const bars = useBarCount(box, !calm);
 
+  // До первой отрисовки столбики уже точки: иначе первый кадр был бы полной высоты. Число столбиков меняет
+  // дерево под `box`, поэтому эффект зависит и от него.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `bars` — повод пройти по новым узлам
+  useLayoutEffect(() => {
+    if (calm) return;
+    for (const node of Array.from(box.current?.children ?? []) as HTMLElement[]) {
+      node.style.transform = `scaleY(${REST.toFixed(3)})`;
+    }
+  }, [calm, bars]);
+
+  useLayoutEffect(() => {
+    if (calm && fill.current) fill.current.style.transform = "scaleX(0)";
+  }, [calm]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: число столбиков меняет дерево под `box`, эффекту нужны новые узлы
   useEffect(() => {
     const element = box.current;
@@ -73,7 +87,6 @@ export function VoiceEqualizer({ meter, className }: VoiceEqualizerProps) {
         if (node) node.style.transform = `scaleY(${(REST + (1 - REST) * level).toFixed(3)})`;
       }
     };
-    paint(0); // до первого кадра столбики уже точки, а не полная высота
     const tick = (now: number) => {
       paint(now);
       frame = window.requestAnimationFrame(tick);

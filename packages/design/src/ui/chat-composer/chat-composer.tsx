@@ -105,14 +105,13 @@ export function ChatComposer({
   // Текст из распознавания дописывается к тому, что в поле на тот момент, а не на момент нажатия микрофона.
   const latestValue = useRef(value);
   latestValue.current = value;
-  const refocus = useRef(false);
+  const doneButton = useRef<HTMLButtonElement>(null);
   const [announcement, setAnnouncement] = useState("");
   const dictation = useDictation({
     transcribe: onTranscribe,
     onText: (spoken) => {
       const current = latestValue.current.replace(/\s+$/, "");
       onValueChange(current ? `${current} ${spoken}` : spoken);
-      refocus.current = true;
       setAnnouncement("Текст добавлен в поле");
     },
   });
@@ -125,14 +124,24 @@ export function ChatComposer({
   }, [resetKey, cancelDictation]);
   const phase = dictation.phase;
   const dictating = phase.status === "recording" || phase.status === "transcribing";
-  // Поле снова видно (запись кончилась): ставим в него курсор после последнего слова.
+  // Фокус идёт за состоянием: запись началась — на «Готово» (кнопка микрофона исчезла, фокус не должен
+  // пропасть); запись или распознавание кончились (текст вставлен, отмена, ошибка) — в поле, курсор после текста.
+  const was = useRef(phase.status);
   useEffect(() => {
+    const before = was.current;
+    was.current = phase.status;
+    if (before === phase.status) return;
+    if (phase.status === "recording") {
+      doneButton.current?.focus();
+      return;
+    }
+    const left = before === "recording" || before === "transcribing";
     const field = ref.current;
-    if (phase.status !== "idle" || !refocus.current || !field) return;
-    refocus.current = false;
-    field.focus();
-    field.setSelectionRange(field.value.length, field.value.length);
-  });
+    if (left && (phase.status === "idle" || phase.status === "error") && field) {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+  }, [phase.status]);
 
   const text = value.trim();
   const uploading = attachments.some((item) => item.status === "uploading");
@@ -303,6 +312,7 @@ export function ChatComposer({
               </div>
             )}
             <IconButton
+              ref={doneButton}
               icon="check"
               label="Готово"
               variant="primary"

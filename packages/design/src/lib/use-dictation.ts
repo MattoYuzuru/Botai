@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type BandRange, bandLevels, bandRanges, type LevelMeter } from "./audio-levels";
+import { type BandRange, bandLevels, bandRanges, type LevelMeter, peakLevel } from "./audio-levels";
 
 /** Предел одной записи: сервер принимает не больше трёх минут, на пределе запись останавливается сама. */
 export const MAX_DICTATION_MS = 180_000;
@@ -28,6 +28,8 @@ export const DICTATION_MESSAGES = {
   failed: "Не удалось записать звук. Проверьте микрофон.",
   empty: "Запись получилась пустой. Попробуйте ещё раз.",
   silent: "Речь не распознана. Говорите ближе к микрофону или напишите текстом.",
+  quiet: "Ничего не слышно. Проверьте микрофон и попробуйте ещё раз.",
+  lost: "Микрофон отключился, запись прервана. Проверьте подключение и запишите ещё раз.",
   unknown: "Не удалось распознать речь. Напишите текстом.",
 } as const;
 
@@ -40,6 +42,12 @@ const MIME_CANDIDATES = [
   "audio/ogg",
 ];
 const TICK_MS = 250;
+/** Как часто слушаем уровень, чтобы отличить тишину от речи: короткая фраза между двумя тиками не пропадёт. */
+const SAMPLE_MS = 50;
+/** Уровень полосы (0…1 после отсечки шума комнаты), ниже которого на записи никто не говорил. */
+export const SILENCE_LEVEL = 0.08;
+/** Рекордер не прислал последний кусок звука за это время: берём то, что есть, а не ждём вечно. */
+const STOP_TIMEOUT_MS = 3000;
 
 /** Есть ли в браузере запись звука: `MediaRecorder` и `getUserMedia` (нужен безопасный контекст). */
 export function isVoiceSupported(): boolean {
@@ -89,6 +97,10 @@ function openAudioContext(): AudioContext | null {
 
 interface Metering {
   meter: LevelMeter;
+  /** Самая громкая полоса за всё время записи, 0…1 (обновляется и при каждом кадре эквалайзера). */
+  sample: () => number;
+  /** Контекст работает: иначе анализатор молчит из-за политики автозапуска, а не из-за тишины. */
+  running: () => boolean;
   disconnect: () => void;
 }
 
@@ -104,6 +116,11 @@ function createMetering(context: AudioContext, stream: MediaStream): Metering | 
     source.connect(analyser);
     const spectrum = new Uint8Array(analyser.frequencyBinCount);
     let layout: { bars: number; ranges: BandRange[] } | null = null;
+    const probe = new Float32Array(16);
+    const probeRanges = bandRanges(context.sampleRate, analyser.frequencyBinCount, probe.length);
+    // Короткий звук (щелчок, «да») держится в окне анализатора около 20 мс: пик копится на каждом чтении,
+    // а не только на редких опросах таймера.
+    let loudest = 0;
     return {
       meter: {
         read(out) {
@@ -115,8 +132,16 @@ function createMetering(context: AudioContext, stream: MediaStream): Metering | 
             };
           }
           bandLevels(spectrum, layout.ranges, out);
+          loudest = Math.max(loudest, peakLevel(out));
         },
       },
+      sample() {
+        analyser.getByteFrequencyData(spectrum);
+        bandLevels(spectrum, probeRanges, probe);
+        loudest = Math.max(loudest, peakLevel(probe));
+        return loudest;
+      },
+      running: () => context.state === "running",
       disconnect: () => {
         source.disconnect();
         analyser.disconnect();
@@ -136,6 +161,9 @@ interface Session {
   mime: string;
   startedAt: number;
   timer: number;
+  sampler: number;
+  /** Самый громкий момент записи, 0…1. */
+  peak: number;
 }
 
 export interface UseDictationOptions {
@@ -184,8 +212,12 @@ export function useDictation({
 
   const release = useCallback((current: Session) => {
     window.clearInterval(current.timer);
+    window.clearInterval(current.sampler);
     current.metering?.disconnect();
-    for (const track of current.stream.getTracks()) track.stop();
+    for (const track of current.stream.getTracks()) {
+      track.onended = null;
+      track.stop();
+    }
     void current.context?.close().catch(() => {});
   }, []);
 
@@ -212,7 +244,11 @@ export function useDictation({
   const collect = useCallback(
     (current: Session): Promise<File | null> =>
       new Promise((resolve) => {
+        let settled = false;
         const done = () => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(waiting);
           const type = current.recorder.mimeType || current.mime || "audio/webm";
           const blob = new Blob(current.chunks, { type });
           release(current);
@@ -222,6 +258,8 @@ export function useDictation({
               : null,
           );
         };
+        // Рекордер, который не сообщил об остановке, не должен подвесить кнопку «Готово».
+        const waiting = window.setTimeout(done, STOP_TIMEOUT_MS);
         current.recorder.onstop = done;
         if (current.recorder.state === "inactive") done();
         else {
@@ -243,11 +281,20 @@ export function useDictation({
     window.clearInterval(current.timer);
     const durationMs = Date.now() - current.startedAt;
     const token = attempt.current;
+    // Последний взгляд на уровень, до того как анализатор отпустят.
+    if (current.metering) current.peak = Math.max(current.peak, current.metering.sample());
+    // Нет анализатора или он не запущен — уровня мы не знаем, и тишину не угадываем.
+    const heard = !current.metering?.running() || current.peak >= SILENCE_LEVEL;
     const file = await collect(current);
     setMeter(null);
     if (token !== attempt.current) return; // отменили, пока дописывался последний кусок звука
     if (!file) {
       setPhase({ status: "error", message: DICTATION_MESSAGES.empty });
+      return;
+    }
+    if (!heard) {
+      // Ни разу выше шума комнаты: на сервер такая запись не уходит (там из тишины выдумывают слова).
+      setPhase({ status: "error", message: DICTATION_MESSAGES.quiet });
       return;
     }
     const controller = new AbortController();
@@ -280,6 +327,7 @@ export function useDictation({
     const token = ++attempt.current;
     // Контекст создаётся сразу, пока длится жест нажатия: Safari иначе оставит его «приостановленным».
     const context = openAudioContext();
+    void context?.resume?.().catch(() => {});
     const closeContext = () => void context?.close().catch(() => {});
     let stream: MediaStream;
     try {
@@ -306,7 +354,6 @@ export function useDictation({
         if (event.data.size > 0) chunks.push(event.data);
       };
       const metering = context ? createMetering(context, stream) : null;
-      void context?.resume?.().catch(() => {});
       recorder.start();
       const startedAt = Date.now();
       const timer = window.setInterval(() => {
@@ -314,7 +361,7 @@ export function useDictation({
         if (elapsedMs >= latest.current.maxMs) void finish();
         else setPhase({ status: "recording", elapsedMs });
       }, TICK_MS);
-      session.current = {
+      const current: Session = {
         recorder,
         stream,
         context,
@@ -323,7 +370,21 @@ export function useDictation({
         mime: recorder.mimeType || mime || "",
         startedAt,
         timer,
+        sampler: window.setInterval(() => {
+          if (current.metering) current.peak = Math.max(current.peak, current.metering.sample());
+        }, SAMPLE_MS),
+        peak: metering?.sample() ?? 0,
       };
+      session.current = current;
+      // Микрофон отключили (вынули гарнитуру, отозвали разрешение): запись прервана, это не «Готово».
+      for (const track of stream.getTracks()) {
+        track.onended = () => {
+          if (session.current !== current) return;
+          discard();
+          setMeter(null);
+          setPhase({ status: "error", message: DICTATION_MESSAGES.lost });
+        };
+      }
       setMeter(metering?.meter ?? null);
       setPhase({ status: "recording", elapsedMs: 0 });
       return true;
@@ -333,7 +394,7 @@ export function useDictation({
       setPhase({ status: "error", message: DICTATION_MESSAGES.failed });
       return false;
     }
-  }, [supported, finish]);
+  }, [supported, finish, discard]);
 
   const cancel = useCallback(() => {
     discard();

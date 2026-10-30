@@ -4,16 +4,20 @@ The request goes through the EgressProxy with a grant for one fixed host, like p
 key is a bearer header of that single request: it is never logged, never put in an error, and a
 redirect is not followed with it. Nothing but the recording leaves: no id, name or chat.
 
-`verbose_json` carries a probability of silence and a log-probability per segment. Whisper is known
-to invent a phrase from silence or noise; a segment that is probably silence and low-confidence, or
-repetitive filler, is dropped by the same rule Whisper itself uses (no_speech > 0.6 and
-avg_logprob < -1, compression ratio > 2.4).
+`verbose_json` carries a probability of silence and a log-probability per segment, and the length
+of the audio the service measured (the quota is charged by it). Whisper is known to invent a phrase
+from silence or noise, so a segment is dropped when it is probably silence (no_speech > 0.6) and
+either low-confidence (avg_logprob < -1) or repetitive (compression ratio > 2.4): the repetition
+alone is not enough, a student may well say "да, да, да". The stock phrases it invents in Russian
+("Продолжение следует…", "Субтитры сделал …", "Спасибо за просмотр") are dropped in a short clip or
+a quiet segment.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -29,7 +33,8 @@ from botai.core.errors import BotaiError
 from botai.core.http import build_client, request_once_capped
 from botai.settings import Settings
 from botai.speech.audio import EXTENSIONS
-from botai.speech.provider import FailureReason, SpeechFailure
+from botai.speech.config import SpeechSettings
+from botai.speech.provider import FailureReason, SpeechFailure, Transcription
 
 HOST = "api.groq.com"
 URL = f"https://{HOST}/openai/v1/audio/transcriptions"
@@ -43,6 +48,14 @@ MAX_RETRY_AFTER_S = 3600.0
 NO_SPEECH_PROB = 0.6
 LOW_LOGPROB = -1.0
 REPETITIVE_RATIO = 2.4
+# A stock phrase is believed in a long clip with clear speech and doubted in a short or quiet one.
+SHORT_CLIP_S = 10.0
+QUIET_SEGMENT = 0.2
+_STOCK_PHRASE = re.compile(
+    r"^(?:продолжение следует|спасибо за (?:просмотр|внимание)|подписывайтесь на (?:мой )?канал"
+    r"|(?:субтитры|субтитр)\s+(?:сделал|создавал|подготовил|добавил)\w*(?:\s.*)?"
+    r"|редактор субтитров(?:\s.*)?|корректор(?:\s.*)?)$"
+)
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -53,23 +66,25 @@ class GroqSpeechToText:
     def __init__(
         self,
         settings: Settings,
+        speech: SpeechSettings,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Sleep = asyncio.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.settings = settings
+        self.settings = settings  # the egress proxy
+        self.speech = speech
         self._transport = transport  # tests only: no proxy, no network
         self._sleep = sleep
         self._now = monotonic
 
     def _key(self) -> str:
-        return self.settings.groq_api_key.get_secret_value().strip()
+        return self.speech.groq_api_key.get_secret_value().strip()
 
-    async def transcribe(self, audio: bytes, *, mime: str, language: str | None) -> str:
+    async def transcribe(self, audio: bytes, *, mime: str, language: str | None) -> Transcription:
         if not self._key():
-            raise SpeechFailure("misconfigured")
-        deadline = self._now() + self.settings.stt_deadline_s
+            raise SpeechFailure("misconfigured", refundable=True)  # nothing was sent
+        deadline = self._now() + self.speech.stt_deadline_s
         failure: SpeechFailure | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             remaining = deadline - self._now()
@@ -94,7 +109,9 @@ class GroqSpeechToText:
             await self._sleep(RETRY_DELAY_S)
         raise failure or SpeechFailure("unavailable")
 
-    async def _once(self, audio: bytes, mime: str, language: str | None, budget_s: float) -> str:
+    async def _once(
+        self, audio: bytes, mime: str, language: str | None, budget_s: float
+    ) -> Transcription:
         try:
             response = await self._send(audio, mime, language, budget_s)
         except (TimeoutError, httpx.TransportError, BotaiError) as exc:
@@ -116,7 +133,7 @@ class GroqSpeechToText:
             else await proxy_url_for(self.settings, [HOST], ttl_s=max(60.0, budget_s + 10))
         )
         data = {
-            "model": self.settings.stt_model,
+            "model": self.speech.stt_model,
             "temperature": "0",
             "response_format": "verbose_json",
         }
@@ -154,14 +171,17 @@ def _failure_of(response: httpx.Response) -> SpeechFailure | None:
     status = response.status_code
     if status == 200:
         return None
+    plain_refusal = 400 <= status < 500 and status not in {408, 425}
     if status == 429:
-        return SpeechFailure("rate_limited", status=status, retry_after_s=_retry_after(response))
+        return SpeechFailure(
+            "rate_limited", status=status, retry_after_s=_retry_after(response), refundable=True
+        )
     if status in {408, 425} or status >= 500:
         return SpeechFailure("unavailable", status=status)
     if status in {400, 413, 415, 422}:
-        return SpeechFailure("rejected", status=status)
+        return SpeechFailure("rejected", status=status, refundable=True)
     # 401/402/403/404 and redirects: a wrong or closed key, a removed model, an access policy.
-    return SpeechFailure("misconfigured", status=status)
+    return SpeechFailure("misconfigured", status=status, refundable=plain_refusal)
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -185,10 +205,10 @@ def _number(value: Any, default: float) -> float:
 
 
 def _is_silence(segment: dict[str, Any]) -> bool:
-    return (
-        _number(segment.get("no_speech_prob"), 0.0) > NO_SPEECH_PROB
-        and _number(segment.get("avg_logprob"), 0.0) < LOW_LOGPROB
-    ) or _number(segment.get("compression_ratio"), 0.0) > REPETITIVE_RATIO
+    return _number(segment.get("no_speech_prob"), 0.0) > NO_SPEECH_PROB and (
+        _number(segment.get("avg_logprob"), 0.0) < LOW_LOGPROB
+        or _number(segment.get("compression_ratio"), 0.0) > REPETITIVE_RATIO
+    )
 
 
 def tidy(text: str) -> str:
@@ -196,18 +216,42 @@ def tidy(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _text_of(payload: Any) -> str:
+def _is_stock_phrase(text: str, *, clip_s: float | None, no_speech: float) -> bool:
+    """A phrase Whisper invents from silence, in a clip where nobody could have said it."""
+    words = re.sub(r"[^\w\s]", " ", text.lower().replace("ё", "е"))
+    if not _STOCK_PHRASE.fullmatch(tidy(words)):
+        return False
+    return (clip_s is not None and clip_s < SHORT_CLIP_S) or no_speech > QUIET_SEGMENT
+
+
+def _text_of(payload: Any) -> Transcription:
     if not isinstance(payload, dict):
         raise ValueError("invalid transcription")
+    measured = payload.get("duration")
+    clip_s = (
+        float(measured)
+        if isinstance(measured, (int, float))
+        and not isinstance(measured, bool)
+        and math.isfinite(measured)
+        and measured >= 0
+        else None
+    )
     segments = payload.get("segments")
     if isinstance(segments, list) and segments:
         kept = [
             seg["text"]
             for seg in segments
-            if isinstance(seg, dict) and isinstance(seg.get("text"), str) and not _is_silence(seg)
+            if isinstance(seg, dict)
+            and isinstance(seg.get("text"), str)
+            and not _is_silence(seg)
+            and not _is_stock_phrase(
+                seg["text"], clip_s=clip_s, no_speech=_number(seg.get("no_speech_prob"), 0.0)
+            )
         ]
-        return tidy(" ".join(kept))
+        return Transcription(tidy(" ".join(kept)), clip_s)
     text = payload.get("text")
     if not isinstance(text, str):
         raise ValueError("invalid transcription")
-    return tidy(text)
+    if _is_stock_phrase(text, clip_s=clip_s, no_speech=0.0):
+        return Transcription("", clip_s)
+    return Transcription(tidy(text), clip_s)

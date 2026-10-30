@@ -35,6 +35,10 @@ const tallestBar = (page: Page, ms: number) =>
     ms,
   );
 
+/** Дождаться, пока поддельный микрофон гудит и столбики это показали: тихая запись на сервер не уходит. */
+const untilHeard = (page: Page) =>
+  expect.poll(() => tallestBar(page, 400), { timeout: 8000 }).toBeGreaterThan(0.2);
+
 test("запись идёт по-настоящему: эквалайзер из столбиков по центру реагирует на звук, таймер идёт", async ({
   page,
 }) => {
@@ -42,6 +46,7 @@ test("запись идёт по-настоящему: эквалайзер из
   await mic(page).click();
   const equalizer = page.locator("[data-equalizer='bars']");
   await expect(equalizer).toBeVisible();
+  await expect(page.getByRole("button", { name: "Готово" })).toBeFocused();
   const count = await page.locator("[data-bar]").count();
   expect(count).toBeGreaterThanOrEqual(12);
   expect(count).toBeLessThanOrEqual(32);
@@ -69,6 +74,7 @@ test("запись идёт по-настоящему: эквалайзер из
   expect(await tallestBar(page, 2600)).toBeGreaterThan(0.35);
 
   await page.getByRole("button", { name: "Отменить запись" }).click();
+  await expect(field(page)).toBeFocused();
 });
 
 test("«Готово»: речь распознаётся, текст встаёт в поле с фокусом, сообщение не отправляется само", async ({
@@ -77,7 +83,7 @@ test("«Готово»: речь распознаётся, текст встаё
   await open(page, "/chat?thread=new&pace=0", "connected");
   await mic(page).click();
   await expect(page.locator("[data-equalizer='bars']")).toBeVisible();
-  await page.waitForTimeout(700);
+  await untilHeard(page);
   await page.getByRole("button", { name: "Готово" }).click();
 
   await expect(field(page)).toHaveValue(PHRASE);
@@ -97,6 +103,7 @@ test("если в поле уже был текст, распознанное д
   await field(page).fill("Привет,");
   await mic(page).click();
   await expect(page.locator("[data-equalizer='bars']")).toBeVisible();
+  await untilHeard(page);
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(field(page)).toHaveValue(`Привет, ${PHRASE}`);
 });

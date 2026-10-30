@@ -14,14 +14,18 @@ from pathlib import Path
 from botai.browser.egress import close_egress
 from botai.settings import get_settings
 from botai.speech.audio import sniff_audio
+from botai.speech.config import load_speech_settings
+from botai.speech.limits import MAX_AUDIO_BYTES
 from botai.speech.provider import SpeechFailure
-from botai.speech.service import MAX_AUDIO_BYTES, build_provider
+from botai.speech.service import build_provider
 
 
 async def smoke(path: Path, language: str) -> int:
-    provider = build_provider(get_settings())
+    provider = build_provider(get_settings(), load_speech_settings())
     if provider is None:
-        print(json.dumps({"status": "off", "reason": "no key or STT_PROVIDER=off"}))
+        print(
+            json.dumps({"status": "off", "reason": "no key, STT_PROVIDER=off or invalid settings"})
+        )
         return 1
     audio = await asyncio.to_thread(path.read_bytes)
     mime = sniff_audio(audio)
@@ -29,7 +33,7 @@ async def smoke(path: Path, language: str) -> int:
         print(json.dumps({"status": "rejected", "reason": "not a recording or too large"}))
         return 1
     try:
-        text = await provider.transcribe(audio, mime=mime, language=language)
+        result = await provider.transcribe(audio, mime=mime, language=language)
     except SpeechFailure as failure:
         print(json.dumps({"provider": provider.name, "status": "failed", "reason": failure.reason}))
         return 1
@@ -37,7 +41,13 @@ async def smoke(path: Path, language: str) -> int:
         await close_egress()
     print(
         json.dumps(
-            {"provider": provider.name, "status": "ok", "chars": len(text), "text": text},
+            {
+                "provider": provider.name,
+                "status": "ok",
+                "chars": len(result.text),
+                "seconds": result.duration_s,
+                "text": result.text,
+            },
             ensure_ascii=False,
         )
     )

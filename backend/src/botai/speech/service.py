@@ -1,8 +1,10 @@
-"""Dictation: a recording in, the words out. The recording is held in memory for the length of one
-request and is never stored, logged or turned into a chat attachment.
+"""Dictation: a recording in, the words out. The recording is held in memory (above a megabyte, in
+a temporary file the web framework deletes when the request ends) for the length of one request;
+it is never stored, logged or turned into a chat attachment.
 
-Order of checks: a service that is off answers first (nothing is read), then the shape of the
-recording, then the user's quota, and only then the provider is called.
+A service that is off is refused by the route before the body is read (`router.DictationRoute`).
+Here: the shape of the recording, then the user's quota, then the provider. The quota is charged
+for an estimate first and for the length the provider measured once it answers.
 """
 
 from __future__ import annotations
@@ -15,42 +17,40 @@ from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.settings import Settings
 from botai.speech.audio import sniff_audio
+from botai.speech.config import SpeechSettings, load_speech_settings
 from botai.speech.groq import GroqSpeechToText
+from botai.speech.limits import DURATION_SLACK_S, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS
 from botai.speech.provider import SpeechFailure, SpeechToText
 from botai.speech.quota import QuotaRefused, SpeechQuota
 
-MAX_AUDIO_BYTES = 20 * 1024 * 1024  # the provider's own limit is higher; this one is ours
-MAX_AUDIO_SECONDS = 180  # three minutes: the client stops there, the server checks the claim
-DURATION_SLACK_S = 10  # a recorder's last chunk and the clock of the page are not exact
 MAX_TEXT_CHARS = 16_000
 # A recording that claims to be shorter than its size allows is charged by its size: 40 kB/s is
 # well above any bitrate a browser writes (Opus ~4-16 kB/s, AAC ~8-16 kB/s, 16 kHz WAV 32 kB/s).
 MAX_PLAUSIBLE_BYTES_PER_S = 40_000
 # Without a claim from the client, a recording is charged at a typical bitrate of 64 kbit/s.
 TYPICAL_BYTES_PER_S = 8_000
+UNAVAILABLE = "Распознавание речи сейчас недоступно. Напишите текстом."
 _LANGUAGE = re.compile(r"^[a-z]{2}$")
 
 
-def build_provider(settings: Settings) -> SpeechToText | None:
-    """The configured provider, or None when dictation is off or has no key."""
-    if settings.stt_provider == "groq" and settings.groq_api_key.get_secret_value().strip():
-        return GroqSpeechToText(settings)
+def build_provider(settings: Settings, speech: SpeechSettings | None) -> SpeechToText | None:
+    """The configured provider, or None when dictation is off, has no key or has wrong settings."""
+    if (
+        speech is not None
+        and speech.stt_provider == "groq"
+        and speech.groq_api_key.get_secret_value().strip()
+    ):
+        return GroqSpeechToText(settings, speech)
     return None
 
 
 class SpeechService:
     def __init__(
-        self,
-        settings: Settings,
-        *,
-        provider: SpeechToText | None = None,
-        quota: SpeechQuota | None = None,
+        self, *, provider: SpeechToText | None, quota: SpeechQuota, language: str = "ru"
     ) -> None:
-        self.settings = settings
-        self.provider = provider if provider is not None else build_provider(settings)
-        self.quota = quota or SpeechQuota(
-            per_hour=settings.stt_requests_per_hour, seconds_per_day=settings.stt_seconds_per_day
-        )
+        self.provider = provider
+        self.quota = quota
+        self.language = language
 
     @property
     def available(self) -> bool:
@@ -67,21 +67,27 @@ class SpeechService:
         provider = self.provider
         if provider is None:
             diagnostic_event("speech.refused", outcome="refused", reason="disabled")
-            raise BotaiError(
-                ErrorCode.STT_UNAVAILABLE,
-                "Распознавание речи сейчас не работает. Напишите текстом.",
-            )
-        mime = self._check(audio, language, duration_ms)
-        language = language or self.settings.stt_language
-        seconds = _charge_seconds(len(audio), duration_ms)
+            raise BotaiError(ErrorCode.STT_UNAVAILABLE, UNAVAILABLE)
+        mime = _check(audio, language, duration_ms)
         started = time.monotonic()
+        measured: float | None = None
         try:
-            with self.quota.slot(user_id, seconds):
-                text = await provider.transcribe(audio, mime=mime, language=language)
+            with self.quota.slot(user_id, _estimate_seconds(len(audio), duration_ms)) as slot:
+                try:
+                    result = await provider.transcribe(
+                        audio, mime=mime, language=language or self.language
+                    )
+                except SpeechFailure as failure:
+                    if failure.refundable:  # a plain refusal of the provider: not spent
+                        slot.refund()
+                    raise
+                measured = result.duration_s
+                if measured is not None:  # what the provider heard, not what the client said
+                    slot.settle(measured)
         except QuotaRefused as exc:
             diagnostic_event("speech.refused", outcome="refused", reason="budget_exceeded")
             raise _quota_error(exc) from None
-        except SpeechFailure as exc:
+        except SpeechFailure as failure:
             diagnostic_event(
                 "speech.transcribed",
                 provider=provider.name,
@@ -89,8 +95,12 @@ class SpeechService:
                 body_bytes=len(audio),
                 latency_ms=_ms_since(started),
             )
-            raise _failure_error(exc) from None
-        text = text.strip()[:MAX_TEXT_CHARS]
+            raise _failure_error(failure) from None
+        if measured is not None and measured > MAX_AUDIO_SECONDS + DURATION_SLACK_S:
+            # The claim was false. The seconds are already on the account; the words are not given.
+            diagnostic_event("speech.refused", outcome="refused", reason="validation")
+            raise BotaiError(ErrorCode.VALIDATION, "Запись длиннее трёх минут.", status=413)
+        text = result.text.strip()[:MAX_TEXT_CHARS]
         diagnostic_event(
             "speech.transcribed",
             provider=provider.name,
@@ -101,22 +111,37 @@ class SpeechService:
         )
         return text
 
-    def _check(self, audio: bytes, language: str | None, duration_ms: int | None) -> str:
-        if not audio:
-            raise BotaiError(ErrorCode.VALIDATION, "Запись пустая. Запишите ещё раз.")
-        if len(audio) > MAX_AUDIO_BYTES:
-            raise BotaiError(ErrorCode.VALIDATION, "Запись больше 20 МБ.", status=413)
-        if duration_ms is not None and duration_ms > (MAX_AUDIO_SECONDS + DURATION_SLACK_S) * 1000:
-            raise BotaiError(ErrorCode.VALIDATION, "Запись длиннее трёх минут.", status=413)
-        if language is not None and not _LANGUAGE.fullmatch(language):
-            raise BotaiError(ErrorCode.VALIDATION, "Неизвестный язык записи.")
-        mime = sniff_audio(audio)
-        if mime is None:
-            raise BotaiError(ErrorCode.VALIDATION, "Не удалось разобрать запись. Запишите ещё раз.")
-        return mime
+
+def build_speech_service(settings: Settings) -> SpeechService:
+    """The service for this process: its quota lives as long as the process."""
+    speech = load_speech_settings()
+    if speech is None:  # wrong settings: dictation is off, the rest of the API starts
+        return SpeechService(provider=None, quota=SpeechQuota(per_hour=1, seconds_per_day=1))
+    return SpeechService(
+        provider=build_provider(settings, speech),
+        quota=SpeechQuota(
+            per_hour=speech.stt_requests_per_hour, seconds_per_day=speech.stt_seconds_per_day
+        ),
+        language=speech.stt_language,
+    )
 
 
-def _charge_seconds(size: int, duration_ms: int | None) -> float:
+def _check(audio: bytes, language: str | None, duration_ms: int | None) -> str:
+    if not audio:
+        raise BotaiError(ErrorCode.VALIDATION, "Запись пустая. Запишите ещё раз.")
+    if len(audio) > MAX_AUDIO_BYTES:
+        raise BotaiError(ErrorCode.VALIDATION, "Запись больше 5 МБ.", status=413)
+    if duration_ms is not None and duration_ms > (MAX_AUDIO_SECONDS + DURATION_SLACK_S) * 1000:
+        raise BotaiError(ErrorCode.VALIDATION, "Запись длиннее трёх минут.", status=413)
+    if language is not None and not _LANGUAGE.fullmatch(language):
+        raise BotaiError(ErrorCode.VALIDATION, "Неизвестный язык записи.")
+    mime = sniff_audio(audio)
+    if mime is None:
+        raise BotaiError(ErrorCode.VALIDATION, "Не удалось разобрать запись. Запишите ещё раз.")
+    return mime
+
+
+def _estimate_seconds(size: int, duration_ms: int | None) -> float:
     floor = size / MAX_PLAUSIBLE_BYTES_PER_S
     claimed = size / TYPICAL_BYTES_PER_S if duration_ms is None else duration_ms / 1000
     return float(min(max(1.0, claimed, floor), 3600))
@@ -153,7 +178,4 @@ def _failure_error(exc: SpeechFailure) -> BotaiError:
         )
     if exc.reason == "rejected":
         return BotaiError(ErrorCode.VALIDATION, "Не удалось разобрать запись. Запишите ещё раз.")
-    return BotaiError(
-        ErrorCode.STT_UNAVAILABLE,
-        "Распознавание речи сейчас недоступно. Напишите текстом.",
-    )
+    return BotaiError(ErrorCode.STT_UNAVAILABLE, UNAVAILABLE)

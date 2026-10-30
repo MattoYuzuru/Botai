@@ -4788,7 +4788,7 @@
     },
     "/api/v1/speech/transcribe": {
       "post": {
-        "description": "A recording up to 20 MiB and three minutes → the recognised text. The recording is kept\nnowhere: not in the database, not in a file, not in a log. `language` is an ISO 639-1 code\n(Russian by default); `durationMs` is what the page measured, used for the daily limit.",
+        "description": "A recording up to 5 MiB and three minutes → the recognised text. The recording is kept\nnowhere: not in the database, not in a file, not in a log. `language` is an ISO 639-1 code\n(Russian by default); `durationMs` is what the page measured: the daily limit is charged by\nthe length the provider measures, so a false claim does not help.",
         "operationId": "transcribe_api_v1_speech_transcribe_post",
         "requestBody": {
           "content": {

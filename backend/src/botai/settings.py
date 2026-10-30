@@ -36,14 +36,6 @@ class Settings(BaseSettings):
     search_max_calls: int = Field(default=4, ge=1, le=8)
     search_max_cost_usd: float = Field(default=0.03, gt=0, le=0.10)
     search_cooldown_s: float = Field(default=60.0, ge=1, le=3600)
-    # Speech to text for dictation (docs/development/speech-to-text.md). The key is server-side only.
-    groq_api_key: SecretStr = SecretStr("")
-    stt_provider: Literal["groq", "off"] = "groq"  # "groq" works only when a key is present
-    stt_model: str = Field(default="whisper-large-v3-turbo", min_length=1, max_length=60)
-    stt_language: str = Field(default="ru", pattern=r"^[a-z]{2}$")
-    stt_deadline_s: float = Field(default=45.0, ge=5, le=120)
-    stt_requests_per_hour: int = Field(default=60, ge=1, le=10_000)
-    stt_seconds_per_day: int = Field(default=7200, ge=180, le=86_400)
     llm_base_url: str = "https://api.deepseek.com"
     llm_model_fast: str = "deepseek-flash"
     llm_model_pro: str = "deepseek-v4-pro"
