@@ -12,6 +12,7 @@ from botai.agent.env import ChatEnv
 from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.agent.tools_web import MAX_BROWSES, question_urls
 from botai.attachments import service as attachments
+from botai.core.browser import FakeBrowserGateway, FakePage, SessionState
 from botai.core.llm import ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.learn.sitemap import save_site_map
@@ -29,6 +30,19 @@ TOKEN = "tok-browse-session-DO-NOT-LEAK"
 ENTRY = "https://fakeuni.test/app"
 # What the saved site map of the fake university says it has.
 ROUTES = ("/api/v2/me", "/api/v2/timetable", "/api/v2/courses", "/news")
+# The entry page of fakeuni is the shell of an application (its menu and a script); this is the page
+# after the script ran, as the read-only browser shows it.
+APP_DRAWN = FakePage(
+    html=(
+        "<!doctype html><title>Личный кабинет</title><div id='root'><h1>Личный кабинет</h1>"
+        "<p>Расписание, задания и новости вашей группы собраны на одной странице: откройте "
+        "нужный раздел в меню, чтобы увидеть подробности и свежие изменения.</p></div>"
+        "<nav><a href='/app'>Главная</a> <a href='/portal/deadlines'>Задания</a> "
+        "<a href='/news'>Новости</a> <a href='/api/docs'>API</a> "
+        "<a href='/auth/logout'>Выйти</a></nav>"
+    ),
+    title="Личный кабинет",
+)
 
 
 class Spy(httpx.AsyncBaseTransport):
@@ -44,8 +58,8 @@ class Spy(httpx.AsyncBaseTransport):
 
 
 class Rig:
-    def __init__(self, env: ChatEnv, spy: Spy, conn_id: str) -> None:
-        self.env, self.spy, self.conn_id = env, spy, conn_id
+    def __init__(self, env: ChatEnv, spy: Spy, conn_id: str, browser: FakeBrowserGateway) -> None:
+        self.env, self.spy, self.conn_id, self.browser = env, spy, conn_id, browser
         self.tools = {t.spec.name: t for t in build_chat_tools(env)}
 
     async def call(self, name: str, **args: Any) -> str:
@@ -59,9 +73,12 @@ async def source_rig(
     *,
     session: bool = True,
     registered: bool = True,
+    stored: SessionState | None = None,
     hosts: list[str] | None = None,
     routes: tuple[str, ...] = ROUTES,
     inner: httpx.AsyncBaseTransport | None = None,
+    pages: dict[str, FakePage] | None = None,
+    browser: FakeBrowserGateway | None = None,
 ) -> Rig:
     space = await add_space(sm, user_id, "Вуз А")
     conn = await add_connection(
@@ -76,8 +93,12 @@ async def source_rig(
         )
         await session.commit()
     services = make_services(ScriptedLlm(), sm=sm)
+    browser = browser or FakeBrowserGateway(
+        {ENTRY: APP_DRAWN} if pages is None else pages, NOW, "https://fakeuni.test"
+    )
+    services.browser = browser
     if session:
-        state = session_state(TOKEN)
+        state = stored or session_state(TOKEN)
         if registered:
             SESSIONS.add(TOKEN)
         else:
@@ -92,7 +113,7 @@ async def source_rig(
         space_id=None,
         transport=spy,
     )
-    return Rig(env, spy, conn)
+    return Rig(env, spy, conn, browser)
 
 
 # --- browse_source ------------------------------------------------------------------------------
@@ -163,6 +184,7 @@ async def test_a_page_of_another_host_is_not_opened(
         text = await r.call("browse_source", connection_id=r.conn_id, url=url)
         assert text.startswith("Результат: не выполнено"), url
     assert r.spy.requests == []
+    assert r.browser.handles == []  # neither the browser nor a plain GET went to a foreign host
 
 
 async def test_actions_that_look_like_a_logout_or_a_delete_are_not_opened(

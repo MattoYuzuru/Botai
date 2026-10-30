@@ -54,6 +54,7 @@ class ObservedRequest(BaseModel):
     # The page whose script issued the request (executor-owned, never shown to a model): the
     # compiler derives the address a student opens to see this data from it.
     initiator_url: str | None = None
+    failed: bool = False  # ended without a response: refused by a guard, blocked, lost
     has_cookie: bool = False
     has_authorization: bool = False
     authorization_scheme: Literal["none", "bearer", "other"] = "none"
@@ -148,6 +149,16 @@ class SessionState(BaseModel):
         return self
 
 
+class BrowserBusy(BotaiError):
+    """The user's one browser is taken (a login, a research, a read of another page): a
+    background reader does not push the running action out, it asks to come back later."""
+
+    def __init__(
+        self, detail: str = "Браузер занят другим действием; чтение продолжится позже"
+    ) -> None:
+        super().__init__(ErrorCode.SOURCE_UNAVAILABLE, detail)
+
+
 class BrowserHandle(Protocol):
     async def goto(self, url: str) -> PageSnapshot: ...
     async def snapshot(self) -> PageSnapshot: ...
@@ -159,6 +170,11 @@ class BrowserHandle(Protocol):
 
 
 class BrowserGateway(Protocol):
+    """`background` never pushes out the user's running browser (`BrowserBusy` instead).
+    `agent_read` is the live read of a page for the chat agent: it gives way to every other
+    background action of the user (the newer one closes it) and refuses navigations and requests
+    to addresses that name an action; it implies `read_only` and `background`."""
+
     async def open(
         self,
         *,
@@ -168,6 +184,7 @@ class BrowserGateway(Protocol):
         session: SessionState | None = None,
         read_only: bool = False,
         background: bool = False,
+        agent_read: bool = False,
     ) -> BrowserHandle: ...
 
 
@@ -199,6 +216,7 @@ class FakeBrowserHandle:
         self._log: list[ObservedRequest] = []
         self.filled: dict[str, str] = {}
         self.closed = False
+        self.agent_read = False
 
     def _snap(self) -> PageSnapshot:
         assert self._url is not None
@@ -256,13 +274,17 @@ class FakeBrowserGateway:
         session: SessionState | None = None,
         read_only: bool = False,
         background: bool = False,
+        agent_read: bool = False,
     ) -> FakeBrowserHandle:
         previous = self._users.get(user_id)
         if background and previous is not None and not previous.closed:
-            raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Браузер занят другим действием")
+            if agent_read or not previous.agent_read:
+                raise BrowserBusy()
+            previous.closed = True  # the reading of the agent gives way to a newer action
         handle = FakeBrowserHandle(
             self._pages, self._now, self._origin, read_only=read_only, session=session
         )
+        handle.agent_read = agent_read
         self._users[user_id] = handle
         self.handles.append(handle)
         return handle

@@ -35,5 +35,7 @@
   (пользователей нет). Флаги research/factory v2 удаляются вместе с выключенными путями.
 - Живое чтение источника чатом (`browse_source`) расширяет поверхность: только GET, только
   allowlist подключения, через EgressProxy, результат — данные `<source_data>`, без секретов.
+  Страница, которую рисует JavaScript, читается серверным Chromium на чтение теми же примитивами,
+  что rendered-рецепты ([security 0.3](../architecture/security.md)).
 - `fetch_public_page` — разовый грант EgressProxy на host публичной HTTPS-страницы, без cookies,
   приватные диапазоны закрыты.

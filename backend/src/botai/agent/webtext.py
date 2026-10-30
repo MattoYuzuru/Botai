@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
 
@@ -16,6 +17,7 @@ TEXT_CHARS = 12_000
 JSON_CHARS = 12_000
 MAX_LINKS = 40
 LABEL_CHARS = 80
+MAX_ROUTE_CHARS = 200
 _JSON_LIST_ITEMS = 8
 _JSON_STRING_CHARS = 300
 _JSON_DEPTH = 6
@@ -65,6 +67,9 @@ def page_links(data: bytes, base_url: str, *, limit: int = MAX_LINKS) -> list[tu
         if has_secret_address(target):
             continue  # a link that carries a session key is neither shown nor opened
         key = normalize_url(target)
+        route = urlsplit(target).fragment
+        if route.startswith("/"):  # the route of a hash-routed application is a page of its own
+            key += "#" + route[:MAX_ROUTE_CHARS]
         if key not in seen:
             seen[key] = collapse(node_text(anchor))[:LABEL_CHARS] or parts.path or "ссылка"
         if len(seen) >= limit:
@@ -117,6 +122,15 @@ def shrink_json(value: Any, depth: int = 0, key: str = "") -> Any:
     return value
 
 
+def _rewrite(value: Any, scrub: Callable[[str], str]) -> Any:
+    """Every string of a parsed answer (keys too) through `scrub`, before anything is cut."""
+    if isinstance(value, dict):
+        return {scrub(str(k)): _rewrite(v, scrub) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rewrite(v, scrub) for v in value]
+    return scrub(value) if isinstance(value, str) else value
+
+
 def _outline(value: Any) -> str:
     text = json.dumps(shrink_json(value), ensure_ascii=False, separators=(",", ":"))
     if len(text) > JSON_CHARS:
@@ -124,16 +138,20 @@ def _outline(value: Any) -> str:
     return text
 
 
-def json_text(raw: bytes | str, *, declared: bool = True) -> str | None:
+def json_text(
+    raw: bytes | str, *, declared: bool = True, scrub: Callable[[str], str] | None = None
+) -> str | None:
     """The outline of a JSON body. A body that merely looks like JSON (served as text/html or
-    text/plain: `declared=False`) counts only if it is an object or a list. None: not JSON."""
+    text/plain: `declared=False`) counts only if it is an object or a list. None: not JSON.
+    `scrub` takes known secret values out of every string first, whole, as they are in the answer
+    (not as the outline cuts and escapes them)."""
     try:
         value = json.loads(raw)
     except ValueError:
         return None
     if not declared and not isinstance(value, (dict, list)):
         return None
-    return _outline(value)
+    return _outline(_rewrite(value, scrub) if scrub is not None else value)
 
 
 def data_body(text: str, *, limit: int = TEXT_CHARS) -> str:
