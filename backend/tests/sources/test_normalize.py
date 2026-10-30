@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.sources import normalize, schedule
-from botai.sources.adapter import AdapterResult, EndpointOutcome, ExtractedDocument, Record
+from botai.sources.adapter import (
+    OCCURRENCE_PREFIX,
+    AdapterResult,
+    EndpointOutcome,
+    ExtractedDocument,
+    Record,
+)
 from botai.sources.runner import assess
 from tests.sources import recipes
 from tests.sources.helpers import NOW
@@ -177,6 +183,61 @@ async def test_a_partial_kind_never_marks_rows_missing(db: AsyncSession) -> None
     db.expire_all()
     archived = (await db.execute(select(normalize.m.Course.archived))).scalar_one()
     assert archived is False
+
+
+def _class(title: str, day: int, ext: str) -> Record:
+    return rec(
+        "scheduleEvents",
+        {
+            "title": title,
+            "startsAt": f"2026-11-{day:02d}T06:30:00+00:00",
+            "endsAt": f"2026-11-{day:02d}T07:50:00+00:00",
+        },
+        ext,
+    )
+
+
+async def test_the_future_of_a_vanished_rule_is_removed_a_listed_class_is_only_flagged(
+    db: AsyncSession,
+) -> None:
+    seeded = await seed_connection(db)
+    kwargs: dict[str, Any] = {
+        "user_id": seeded.user_id,
+        "connection_id": seeded.connection_id,
+        "tz": MSK,
+    }
+    prefix = OCCURRENCE_PREFIX
+    first = AdapterResult(
+        [
+            _class("Лекция", 2, f"{prefix}a-past"),
+            _class("Лекция", 9, f"{prefix}a-future"),
+            _class("Семинар", 10, f"{prefix}b-future"),
+            _class("Консультация", 11, "listed-by-the-source"),
+        ],
+        NOW,
+        [EndpointOutcome("s", "scheduleEvents", ok=True)],
+    )
+    await normalize.apply_result(db, result=first, now=NOW - timedelta(days=30), **kwargs)
+    later = NOW + timedelta(
+        days=6
+    )  # 2026-11-02 12:00 UTC: the first class is behind, the rest ahead
+    again = AdapterResult(
+        [_class("Семинар", 10, f"{prefix}b-future")],
+        later,
+        [EndpointOutcome("s", "scheduleEvents", ok=True)],
+    )
+    stats = await normalize.apply_result(db, result=again, now=later, **kwargs)
+    assert stats["scheduleEvents"].missing == 3
+
+    db.expire_all()
+    rows = await db.execute(
+        select(normalize.m.ScheduleEvent.external_id, normalize.m.ScheduleEvent.changed)
+    )
+    assert {r[0]: r[1] for r in rows.all()} == {
+        f"{prefix}a-past": False,  # it took place: stays as it happened
+        f"{prefix}b-future": False,  # the rule still says it
+        "listed-by-the-source": True,  # moved or cancelled by the source itself: flagged, kept
+    }  # `a-future` is gone: the rule that produced it stopped saying so
 
 
 async def test_documents_are_replaced_when_the_hash_changes(db: AsyncSession) -> None:
