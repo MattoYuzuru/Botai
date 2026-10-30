@@ -59,6 +59,7 @@ from botai.browser.session import (
 )
 from botai.contracts.browser_plan import BrowserPlan
 from botai.core.browser import (
+    BrowserBusy,
     ObservedRequest,
     PageSnapshot,
     SessionBearer,
@@ -1706,19 +1707,14 @@ class PlaywrightGateway:
             raise ValueError("a browser context needs at least one allowed host")
         previous = self._by_user.get(user_id)
         if background and previous is not None and not previous.closed:
-            raise BotaiError(
-                ErrorCode.SOURCE_UNAVAILABLE,
-                "Браузер занят другим действием; чтение продолжится позже",
-            )
+            raise BrowserBusy()
         if previous is not None:
             await previous.close()  # one live context per user
         try:
             async with asyncio.timeout(20):
                 await self._slots.acquire()
         except TimeoutError as exc:
-            raise BotaiError(
-                ErrorCode.SOURCE_UNAVAILABLE, "Браузер сейчас занят, попробуйте через минуту"
-            ) from exc
+            raise BrowserBusy("Браузер сейчас занят, попробуйте через минуту") from exc
         context: BrowserContext | None = None
         try:
             credentials = await self._egress.credentials(

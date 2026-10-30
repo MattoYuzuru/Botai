@@ -148,6 +148,16 @@ class SessionState(BaseModel):
         return self
 
 
+class BrowserBusy(BotaiError):
+    """The user's one browser is taken (a login, a research, a read of another page): a
+    background reader does not push the running action out, it asks to come back later."""
+
+    def __init__(
+        self, detail: str = "Браузер занят другим действием; чтение продолжится позже"
+    ) -> None:
+        super().__init__(ErrorCode.SOURCE_UNAVAILABLE, detail)
+
+
 class BrowserHandle(Protocol):
     async def goto(self, url: str) -> PageSnapshot: ...
     async def snapshot(self) -> PageSnapshot: ...
@@ -259,7 +269,7 @@ class FakeBrowserGateway:
     ) -> FakeBrowserHandle:
         previous = self._users.get(user_id)
         if background and previous is not None and not previous.closed:
-            raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Браузер занят другим действием")
+            raise BrowserBusy()
         handle = FakeBrowserHandle(
             self._pages, self._now, self._origin, read_only=read_only, session=session
         )

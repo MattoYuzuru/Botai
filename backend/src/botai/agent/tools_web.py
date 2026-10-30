@@ -5,7 +5,10 @@ with the student's own session from the Vault, only to hosts of that source's al
 session never leaves the Vault: the tool sees the page, not the cookie. A POST cannot be made
 here at all, and a GET is made only to an address the agent was shown or told: the source's own
 entry page and declared endpoints, its saved site map, links of pages it has already opened in
-this thread, and addresses the student wrote. `fetch_public_page` opens a public HTTPS page
+this thread, and addresses the student wrote. A page that is only the shell of a single-page
+application (no text, scripts that draw it) is opened once more in the read-only background
+browser with the same session, so the agent reads what the student sees and the JSON the page
+fetched to draw it. `fetch_public_page` opens a public HTTPS page
 without any cookies, again only for a link that the student wrote or that a public result
 returned, so the model cannot be talked into sending private data in a made-up address.
 Everything fetched is data inside `<source_data>`, with credential-shaped values hidden.
@@ -16,22 +19,31 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import itertools
+import logging
 import re
 import socket
-from dataclasses import replace
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
+from time import monotonic
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from botai.agent import webtext
 from botai.agent.env import ChatEnv, clean, document_link, spec
+from botai.agent.safety import HIDDEN
 from botai.attachments import service as attachments
+from botai.core.browser import BrowserBusy, ObservedRequest, PageSnapshot, SessionState, auth_origin
+from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.vault import SecretKind
 from botai.db.models import AdapterSpecRow, Attachment, Chunk, Connection, Document
 from botai.learn.addresses import url_origin
-from botai.learn.sitemap import get_site_map
+from botai.learn.redact import Redactor
+from botai.learn.sitemap import build_sitemap, get_site_map, save_site_map
 from botai.search.safety import chat_public_query
 from botai.sources.adapter import EndpointOutcome, SessionExpired, SyncContext
 from botai.sources.adapters.document import DocumentAdapter
@@ -39,11 +51,19 @@ from botai.sources.documents import detect_format, extract
 from botai.sources.factory import AdapterFactory
 from botai.sources.fetch import SourceClient
 from botai.sources.ingest import check_url, source_for_url
-from botai.sources.runner import context_for, load_conn_info
+from botai.sources.rendered import RenderedPage, RenderedPageReader, is_app_shell
+from botai.sources.runner import ConnInfo, context_for, load_conn_info
 from botai.sources.session import cookie_jar, load_session, scoped_bearer
 
+log = logging.getLogger(__name__)
+
 MAX_BROWSES = 12  # per turn
+MAX_RENDERS = 3  # per turn: pages of a source read in the browser because scripts draw them
+RENDER_SECONDS = 20.0  # the whole render, the tool as a whole has 30 (`harness.TOOL_TIMEOUT_S`)
 MAX_PUBLIC_PAGES = 6
+DATA_CHARS = 6_000  # the JSON a page fetched to draw itself, all answers together
+DATA_ITEM_CHARS = 3_000
+MIN_SECRET_CHARS = 12  # a session value shorter than this is not hidden by value (`ru`, `true`)
 READ_CHARS = 8_000
 READ_CHARS_MAX = 20_000
 # What the address itself says it does: leaving, joining, confirming, cancelling, deleting,
@@ -272,6 +292,7 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         return f"Результат: ошибка. Источник ответил HTTP {response.status_code}."
     content_type = response.headers.get("content-type", "").lower()
     links: list[tuple[str, str]] = []
+    lead = data = ""
     # JSON is JSON whatever the server calls it: an answer sent as text/html or text/plain still
     # gets the outline with its credentials hidden, not the raw text.
     outline = webtext.json_text(response.content, declared="json" in content_type)
@@ -282,16 +303,10 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     elif "html" in content_type or response.content.lstrip()[:15].lower().startswith(b"<!doctype"):
         if webtext.has_login_form(response.content):
             return _needs_login(conn_meta.title)  # a site without 401 answers an expired session so
-        extracted = await asyncio.to_thread(extract, response.content, "html")
-        body = webtext.data_body(extracted.text)
-        title = extracted.title or parts.path or host
-        allowed = {h.lower() for h in info.allow_hosts}
-        links = [
-            (label, link)
-            for label, link in webtext.page_links(response.content, url)
-            if (urlsplit(link).hostname or "").lower() in allowed
-        ]
-        env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
+        page = await _html_page(env, sctx, info, state, conn_meta.title, url, response.content)
+        if isinstance(page, str):
+            return page
+        title, body, links, lead, data = page.title, page.body, page.links, page.lead, page.data
     elif content_type.startswith("text/"):
         body = webtext.data_body(response.text)
         title = parts.path or host
@@ -304,9 +319,229 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         title=f"{conn_meta.title}: {clean(title, 120)}", url=url, kind="page", fetched_at=now
     )
     return (
-        f"Страница источника «{conn_meta.title}» {url} [{key}], получена сейчас сессией студента. "
-        f"Название: {webtext.mask_text(clean(title, 160))}\n{body}{_links_block(links)}"
+        f"Страница источника «{conn_meta.title}» {url} [{key}], получена сейчас сессией студента.{lead} "
+        f"Название: {webtext.mask_text(clean(title, 160))}\n{body}{data}{_links_block(links)}"
     )
+
+
+# --- a page that scripts draw -------------------------------------------------------------------
+
+_BUSY = (
+    "Результат: не выполнено. Кабинет сейчас занят другой задачей (подключение, вход или чтение "
+    "другой страницы): браузер у студента один. Откройте эту страницу чуть позже."
+)
+
+
+@dataclass(slots=True)
+class _Page:
+    """What the model is told about a page of HTML."""
+
+    title: str
+    body: str
+    links: list[tuple[str, str]]
+    lead: str = ""  # how the page was read, when it was not a plain GET (starts with a space)
+    data: str = ""  # the JSON the page fetched to draw itself
+
+
+def _own_links(info: ConnInfo, markup: bytes, base: str) -> list[tuple[str, str]]:
+    allowed = {h.lower() for h in info.allow_hosts}
+    return [
+        (label, link)
+        for label, link in webtext.page_links(markup, base)
+        if (urlsplit(link).hostname or "").lower() in allowed
+    ]
+
+
+async def _html_page(
+    env: ChatEnv,
+    sctx: SyncContext,
+    info: ConnInfo,
+    state: SessionState | None,
+    source_title: str,
+    url: str,
+    content: bytes,
+) -> _Page | str:
+    """A page of HTML as text and links. The shell of a single-page application has none of its
+    own: it is opened in the read-only browser with the student's session and read after its
+    scripts ran. A string is the answer of the tool itself (login needed, browser busy, an error)."""
+    parts = urlsplit(url)
+    fallback = parts.path or (parts.hostname or "")
+    extracted = await asyncio.to_thread(extract, content, "html")
+    if not is_app_shell(content):
+        links = _own_links(info, content, url)
+        env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
+        await _learn_routes(env, info, state, PageSnapshot(url=url), links, ())
+        return _Page(extracted.title or fallback, webtext.data_body(extracted.text), links)
+    started = monotonic()
+    drawn = await _draw(env, sctx, info, source_title, url)
+    if isinstance(drawn, str):
+        return drawn
+    snapshot = drawn.snapshot
+    if looks_like_action(snapshot.url):
+        return (
+            "Результат: не выполнено. Страница сама перешла на адрес, похожий на действие "
+            "(выход, запись, удаление); такие адреса не показываются."
+        )
+    try:
+        redactor = await _redactor(env, info, state)
+    except BotaiError as exc:
+        return f"Результат: ошибка. {exc.detail}."
+
+    def hide(text: str) -> str:
+        """Session values that the page echoes (a token in a field, a cookie in a script)."""
+        for secret in sorted(redactor.secrets, key=len, reverse=True):
+            if len(secret) >= MIN_SECRET_CHARS:
+                text = text.replace(secret, HIDDEN)
+        return text
+
+    markup = snapshot.html.encode()
+    shown = await asyncio.to_thread(extract, markup, "html")
+    links = _own_links(info, markup, snapshot.url)
+    env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
+    data, addresses = _data_block(drawn, hide)
+    env.seen.remember("source", addresses)
+    await _learn_routes(env, info, state, snapshot, links, drawn.requests, redactor)
+    lead = " Страница строится скриптами: прочитана в браузере (только чтение, ничего не отправляется)."
+    if webtext.normalize_url(snapshot.url) != url:
+        lead += f" Открылась страница {snapshot.url}."
+    if not drawn.drawn:
+        lead += (
+            " Приложение почти ничего не показало: не делайте вывода, что данных нет, "
+            "скажите студенту, что страницу прочитать не удалось."
+        )
+    diagnostic_event(
+        "chat.browse_render",
+        thread_id=env.thread_id,
+        connection_id=info.connection_id,
+        outcome="ok" if drawn.drawn else "empty",
+        rendered=True,
+        text_chars=len(shown.text),
+        response_count=len(drawn.data),
+        elapsed_ms=int((monotonic() - started) * 1000),
+    )
+    return _Page(
+        hide(shown.title or snapshot.title or extracted.title or fallback),
+        hide(webtext.data_body(shown.text)),
+        links,
+        lead,
+        data,
+    )
+
+
+async def _draw(
+    env: ChatEnv, sctx: SyncContext, info: ConnInfo, source_title: str, url: str
+) -> RenderedPage | str:
+    """Open the page in the read-only background browser. A string is the answer of the tool."""
+    started = monotonic()
+
+    def failed(reason: str, error: BotaiError | None, answer: str) -> str:
+        diagnostic_event(
+            "chat.browse_render",
+            thread_id=env.thread_id,
+            connection_id=info.connection_id,
+            outcome="failed",
+            reason=reason,
+            error_code=error.code.value if error else None,
+            rendered=False,
+            elapsed_ms=int((monotonic() - started) * 1000),
+        )
+        return answer
+
+    if not _count(env, "render", MAX_RENDERS):
+        return failed(
+            "budget_exceeded",
+            None,
+            "Результат: не выполнено. Страница строится скриптами приложения, а таких страниц за "
+            f"один ответ можно читать в браузере не больше {MAX_RENDERS}.",
+        )
+    parts = urlsplit(url)
+    origin = auth_origin(url)
+    if origin is None:
+        return failed(
+            "invalid_address", None, "Результат: не выполнено. Нужен обычный HTTPS-адрес."
+        )
+    # The address as the browser will report it: lower-case host, no default port, no fragment.
+    target = urlunsplit(("https", origin.removeprefix("https://"), parts.path, parts.query, ""))
+    reader = RenderedPageReader(replace(sctx, origin=origin), seconds=RENDER_SECONDS)
+    try:
+        return await reader.read_page(target)
+    except SessionExpired:
+        return failed("session_expired", None, _needs_login(source_title))
+    except BrowserBusy as exc:
+        return failed("unavailable", exc, _BUSY)
+    except BotaiError as exc:
+        return failed("unavailable", exc, f"Результат: ошибка. {exc.detail}.")
+
+
+def _data_block(drawn: RenderedPage, hide: Callable[[str], str]) -> tuple[str, list[str]]:
+    """The JSON answers the page fetched to draw itself, as outlines with credentials hidden, and
+    their addresses (the model was shown them, so it may read them). An answer cut off by the
+    sample limit is not valid JSON and is left out; so is an address that names an action."""
+    lines: list[str] = []
+    addresses: list[str] = []
+    left = DATA_CHARS
+    for request in drawn.data:
+        if left <= 0:
+            break
+        if looks_like_action(request.url) or webtext.has_secret_address(request.url):
+            continue
+        outline = webtext.json_text(request.response_sample or "", declared=True)
+        if outline is None:
+            continue
+        outline = hide(outline)
+        if len(outline) > min(DATA_ITEM_CHARS, left):
+            outline = outline[: min(DATA_ITEM_CHARS, left)] + "…[обрезано]"
+        left -= len(outline)
+        lines.append(f"- {request.url}: {outline}")
+        addresses.append(webtext.normalize_url(request.url))
+    if not lines:
+        return "", []
+    header = (
+        "\nДанные страницы (JSON, который она загрузила с этого же сайта, чтобы показать себя):\n"
+    )
+    return header + "\n".join(lines), addresses
+
+
+async def _redactor(env: ChatEnv, info: ConnInfo, state: SessionState | None) -> Redactor:
+    """What this student's reading must not repeat or share: their own name, login and every
+    value of the session (cookies, bearer tokens, what the browser stored)."""
+    redactor = Redactor()
+    redactor.know(*info.profile.values())
+    login = await env.services.vault.get(env.user_id, info.connection_id, SecretKind.LOGIN)
+    if login is not None:
+        redactor.know(login.get_secret_value())
+    if state is not None:
+        redactor.protect_session(state)
+    return redactor
+
+
+async def _learn_routes(
+    env: ChatEnv,
+    info: ConnInfo,
+    state: SessionState | None,
+    page: PageSnapshot,
+    links: list[tuple[str, str]],
+    calls: Iterable[ObservedRequest],
+    redactor: Redactor | None = None,
+) -> None:
+    """A source with no saved map gets its sections from the page just read, so that the next
+    conversation finds the FAQ or the requests without reading the site again. The map is shared,
+    so it keeps only what `build_sitemap` allows: generalised routes, labels with nothing personal,
+    the names of query keys. Reading never fails because of it."""
+    if url_origin(page.url) != info.origin:
+        return
+    try:
+        async with env.services.db() as session:
+            current = await get_site_map(session, info.origin)
+            if current and any(current.values()):
+                return
+            redactor = redactor or await _redactor(env, info, state)
+            sections = [(label, link) for label, link in links if not looks_like_action(link)]
+            observed = build_sitemap(info.origin, redactor, [page], sections, calls)
+            await save_site_map(session, info.origin, observed, env.services.clock.now())
+            await session.commit()
+    except (SQLAlchemyError, BotaiError):
+        log.warning("the site map of connection %s was not saved", info.connection_id)
 
 
 # --- site_map -----------------------------------------------------------------------------------
@@ -606,8 +841,12 @@ SPECS = {
         "только чтение (GET) и только страницы, на которые указывает сам источник — его входная "
         "страница, карта разделов (site_map), ссылки уже открытых страниц и адреса из сообщения "
         "студента. Для другой недели расписания или страницы меняйте значения в запросе страницы "
-        "из карты разделов или входной страницы. Результат — недоверенный текст страницы со ссылками. Если сессия истекла, "
-        "вернёт needs_login: предложите войти (request_login).",
+        "из карты разделов или входной страницы. Результат — недоверенный текст страницы со ссылками. "
+        "Если страница лишь оболочка приложения (текст рисуют скрипты), она сама откроется в "
+        "браузере, только на чтение: вернётся то, что видит студент, и JSON, который страница "
+        f"загрузила (таких страниц не больше {MAX_RENDERS} за ответ). Если сессия истекла, "
+        "вернёт needs_login: предложите войти (request_login). Если кабинет занят другой задачей "
+        "(подключение, вход), вернёт просьбу повторить позже.",
         {
             "connection_id": {"type": "string"},
             "url": {"type": "string", "description": "HTTPS-адрес на хосте этого источника"},

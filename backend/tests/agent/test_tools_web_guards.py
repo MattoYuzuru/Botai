@@ -68,7 +68,8 @@ async def test_a_page_shows_neither_tokens_nor_links_that_carry_them(
 async def test_only_pages_the_source_points_at_are_opened(
     sm: Sm, user_id: str, fakeuni_app: FastAPI
 ) -> None:
-    r = await source_rig(sm, user_id, fakeuni_app, routes=())  # no saved map
+    # the saved map points at neither the timetable nor the news
+    r = await source_rig(sm, user_id, fakeuni_app, routes=("/api/v2/me",))
     undeclared = "https://fakeuni.test/api/v2/timetable"
     refused = await r.call("browse_source", connection_id=r.conn_id, url=undeclared)
     assert refused.startswith("Результат: не выполнено")
