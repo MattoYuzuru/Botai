@@ -9,7 +9,7 @@ test("шапка, предупреждение и пустые данные на
   const width = phone ? 400 : 1920;
   await page.setViewportSize({ width, height: phone ? 775 : 1080 });
   await open(page, "/", "connected");
-  await page.evaluate(async () => {
+  const stored = await page.evaluate(async () => {
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb } = await import(/* @vite-ignore */ path);
     const db = createDb("connected");
@@ -53,7 +53,7 @@ test("шапка, предупреждение и пустые данные на
 /** Три вуза в базе мока: ВШЭ, ЦУ и «Синтетический университет»; «Сегодня» без данных, подключения устарели. */
 async function openWithThreeSpaces(page: Page) {
   await open(page, "/?data=quiet", "stale");
-  await page.evaluate(async () => {
+  const stored = await page.evaluate(async () => {
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb, ulid } = await import(/* @vite-ignore */ path);
     const db = createDb("stale");
@@ -67,7 +67,13 @@ async function openWithThreeSpaces(page: Page) {
     db.spaces.push(third);
     db.connections.push({ ...db.connections[0], id: ulid(), spaceId: third.id });
     persistDb(db);
+    return window.sessionStorage.getItem("botai.mock.db");
   });
+  // Фоновый запрос открытой страницы (опрос чатов, прочтение) может сохранить свою копию базы после нашей:
+  // кладём базу до запуска скриптов следующей загрузки, а не полагаемся на порядок записей.
+  await page.addInitScript((value) => {
+    if (value) window.sessionStorage.setItem("botai.mock.db", value);
+  }, stored);
   await page.goto("/?data=quiet&latency=0");
 }
 
