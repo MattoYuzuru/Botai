@@ -75,7 +75,7 @@ async def test_schedule_question_is_answered_with_sources_and_stages(sm: Sm, use
     assert block.markdown == "Завтра в 09:30 — Математический анализ, ауд. А-101 [1]."
     assert block.sources is not None
     assert [(s.title, str(s.url)) for s in block.sources] == [
-        ("Расписание ЛК", "https://fakeuni.test/api/timetable")
+        ("Расписание ЛК", "https://fakeuni.test/timetable?week=2026-10-26")
     ]
     assert block.sources[0].fetched_at == NOW
     stages = [(b.stage, b.state) for b in ctx.blocks if isinstance(b, ThinkingBlock)]
@@ -258,7 +258,9 @@ async def test_turn_context_lists_only_own_sources_with_safe_status(sm: Sm, user
     assert foreign not in context
     assert "Чужой источник" not in context
     assert "private-content-must-not-enter-context" not in context
-    assert "fakeuni.test" not in context
+    # only the host of the student's own source, so the agent can tell its sites apart; no address
+    assert "сайт fakeuni.test" in context
+    assert "https://fakeuni.test" not in context
 
 
 # --- data, not commands -------------------------------------------------------------------------

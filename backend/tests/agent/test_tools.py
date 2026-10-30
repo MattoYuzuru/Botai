@@ -127,7 +127,7 @@ async def test_schedule_is_shown_in_the_space_time_zone_with_sources(sm: Sm, use
     ref = r.env.sources.refs["S1"]
     assert (ref.title, ref.url, ref.kind) == (
         "Расписание ЛК",
-        "https://fakeuni.test/api/timetable",
+        "https://fakeuni.test/timetable?week=2026-10-26",  # the page, never the API (FR-042)
         "data",
     )
     assert ref.fetched_at == NOW
@@ -415,3 +415,25 @@ async def test_repair_does_not_start_a_second_job_while_one_runs(sm: Sm, user_id
 async def test_bad_arguments_become_text_not_exceptions(sm: Sm, user_id: str) -> None:
     r = await rig(sm, user_id)
     assert "Ошибка аргументов" in await r.call("get_news", limit="много")
+
+
+async def test_schedule_gives_the_whole_card_and_cites_the_page_not_the_api(
+    sm: Sm, user_id: str
+) -> None:
+    space = await add_space(sm, user_id)
+    conn = await add_connection(sm, user_id, space)
+    prov = provenance(conn, space).model_copy(update={"open_url": None})
+    lesson = event(prov, "Программная инфраструктура", datetime(2026, 10, 29, 13, 20, tzinfo=UTC))
+    lesson = lesson.model_copy(
+        update={
+            "kind_text": "Лекция",
+            "address": "Синтетический пр., 1",
+            "group": "Поток А-21",
+            "lesson_number": 3,
+        }
+    )
+    r = await rig(sm, user_id, reader=FakeReader(events=[lesson]))
+    text = await r.call("get_schedule", from_date="2026-10-29", to_date="2026-10-29")
+    for piece in ("пара 3", "Лекция", "адрес: Синтетический пр., 1", "группа/поток: Поток А-21"):
+        assert piece in text
+    assert r.env.sources.refs["S1"].url == f"botai://connections/{conn}"
