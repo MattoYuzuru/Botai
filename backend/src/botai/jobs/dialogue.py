@@ -353,6 +353,10 @@ def terminal_text(job: Job) -> str | None:
     failed = job.state == "failed" or status == "error"
     if job.state == "cancelled":
         return cancelled
+    if extension and (job.result or {}).get("extension") is True and status in {"error", "skipped"}:
+        return None  # the task told it in its own words (the source works as before)
+    if status == "skipped" and (job.result or {}).get("detail") == "calendar":
+        return None  # the thread already holds the question about the calendar
     if failed:
         detail = (job.error or {}).get("detail")
         return failed_text + (" " + detail[:500] if isinstance(detail, str) and detail else "")
