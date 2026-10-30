@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from botai.agent.env import ChatEnv
 from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.agent.tools_web import MAX_BROWSES, question_urls
+from botai.attachments import service as attachments
 from botai.core.llm import ScriptedLlm
 from botai.core.vault import SecretKind
 from botai.learn.sitemap import save_site_map
@@ -343,3 +344,93 @@ async def test_somebody_elses_document_is_not_readable(sm: Sm, user_id: str) -> 
     text = await tools["read_document"].run({"document_id": theirs})
     assert "Такого документа" in text
     assert "секрет" not in text
+
+
+async def test_a_file_of_a_chat_message_is_read_like_a_document(sm: Sm, user_id: str) -> None:
+    other = await add_user(sm, "other")
+    body = ("Правила пересдачи: заявление до пятницы. " * 40).encode()
+    async with sm() as session:
+        text = await attachments.create(
+            session, user_id, filename="Правила.txt", content_type="text/plain", data=body
+        )
+        picture = await attachments.create(
+            session,
+            user_id,
+            filename="схема.png",
+            content_type=None,
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 24,
+        )
+        theirs = await attachments.create(
+            session, other, filename="чужое.txt", content_type="text/plain", data="секрет".encode()
+        )
+        await session.commit()
+    env = ChatEnv(
+        services=make_services(ScriptedLlm(), sm=sm),
+        user_id=user_id,
+        thread_id=await add_thread(sm, user_id),
+        job_id=None,
+        space_id=None,
+    )
+    tools = {t.spec.name: t for t in build_chat_tools(env)}
+    first = await tools["read_document"].run({"document_id": text.id, "max_chars": 500})
+    assert f"botai://attachments/{text.id}" in first
+    assert "Правила пересдачи" in first
+    assert "offset=500" in first
+    assert env.outside_read  # what a file holds is not the student's own word
+    rest = await tools["read_document"].run({"document_id": text.id, "offset": 500})
+    assert "Правила пересдачи" in rest
+    seen = await tools["read_document"].run({"document_id": picture.id})
+    assert "распознавание пока недоступно" in seen
+    assert "Такого документа" in await tools["read_document"].run({"document_id": theirs.id})
+
+
+# --- site_map -----------------------------------------------------------------------------------
+
+
+async def test_the_site_map_of_a_source_lists_its_sections_and_routes(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI
+) -> None:
+    r = await source_rig(sm, user_id, fakeuni_app)
+    text = await r.call("site_map", connection_id=r.conn_id)
+    assert "Карта разделов «Личный кабинет»" in text
+    assert "/api/v2/timetable" in text
+    assert "Маршруты" in text
+    assert f"Входная страница данных: {ENTRY}" in text
+    assert r.spy.requests == []  # the map is read from the base, not from the university
+    assert r.env.sources.refs  # the map is a source of the answer
+    assert "Такого подключения" in await r.call("site_map", connection_id="01J0000000000000000000NOPE")
+
+
+async def test_a_source_without_a_saved_map_says_so(sm: Sm, user_id: str) -> None:
+    space = await add_space(sm, user_id, "Вуз Б")
+    conn = await add_connection(
+        sm, user_id, space, "Кабинет", entry_url="https://unmapped.test/app"
+    )
+    env = ChatEnv(
+        services=make_services(ScriptedLlm(), sm=sm),
+        user_id=user_id,
+        thread_id=await add_thread(sm, user_id),
+        job_id=None,
+        space_id=None,
+    )
+    tools = {t.spec.name: t for t in build_chat_tools(env)}
+    text = await tools["site_map"].run({"connection_id": conn})
+    assert "Карта пока не собрана" in text
+
+
+async def test_somebody_elses_site_map_is_not_shown(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI
+) -> None:
+    other = await add_user(sm, "other")
+    theirs = await source_rig(sm, other, fakeuni_app)
+    env = ChatEnv(
+        services=make_services(ScriptedLlm(), sm=sm),
+        user_id=user_id,
+        thread_id=await add_thread(sm, user_id),
+        job_id=None,
+        space_id=None,
+    )
+    tools = {t.spec.name: t for t in build_chat_tools(env)}
+    text = await tools["site_map"].run({"connection_id": theirs.conn_id})
+    assert text.startswith("Такого подключения")
+    assert "/api/v2" not in text
