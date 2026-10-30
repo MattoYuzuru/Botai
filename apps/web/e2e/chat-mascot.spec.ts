@@ -29,6 +29,33 @@ const overlaps = (a: Box, b: Box) =>
   a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 test.describe("Варя на насесте и на сцене", () => {
+  test("фокус ввода без внешнего кольца; лапы компактной Вари стоят над границей", async ({ page }) => {
+    await open(page);
+    const scope = frame(page, "390");
+    await scope.getByRole("button", { name: "Первое сообщение" }).click();
+    await page.waitForTimeout(350);
+    const field = scope.getByRole("textbox", { name: "Сообщение агенту" });
+    await field.click();
+    await expect(field).toBeFocused();
+    const outline = await scope.locator("[data-composer-surface]").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { outline: style.outlineStyle, border: style.borderTopWidth };
+    });
+    expect(outline).toEqual({ outline: "none", border: "1px" });
+    const feet = await boxOf(scope.locator(".legsA"));
+    const form = await boxOf(scope.locator("form"));
+    expect(feet.bottom - form.top).toBeLessThanOrEqual(1);
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(field).toBeFocused();
+    const border = await scope.locator("[data-composer-surface]").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { actual: style.borderColor, token: style.getPropertyValue("--color-focus-ring") };
+    });
+    expect(border.actual).not.toBe("transparent");
+    expect(border.token).not.toBe("");
+  });
+
   for (const width of ["320", "390", "430"] as const) {
     test(`насест на ${width} px: на кромке справа, не перекрывает текст ввода и «Отправить»`, async ({
       page,

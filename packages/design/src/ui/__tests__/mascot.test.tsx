@@ -45,6 +45,15 @@ beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
 afterEach(() => vi.useRealTimers());
 
 describe("Mascot", () => {
+  it("маленький слот упрощает детали; переход на сцену сохраняет экземпляр и состояние", () => {
+    const { container, rerender } = render(<Mascot situation="think" size={20} />);
+    const before = svgOf(container);
+    expect(container.querySelector("[data-mascot]")).toHaveAttribute("data-mascot-detail", "compact");
+    rerender(<Mascot situation="think" size={96} />);
+    expect(container.querySelector("[data-mascot]")).toHaveAttribute("data-mascot-detail", "full");
+    expect(svgOf(container)).toBe(before);
+    expect(before).toHaveAttribute("data-sit", "think");
+  });
   it("декоративна: aria-hidden, без фокуса, без данных учёбы в разметке", () => {
     const { container } = render(<Mascot situation="deadline" />);
     const host = container.querySelector("[data-mascot]");

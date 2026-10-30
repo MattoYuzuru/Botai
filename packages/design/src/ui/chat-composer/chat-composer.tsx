@@ -256,10 +256,11 @@ export function ChatComposer({
         {announcement}
       </span>
       <div
+        data-composer-surface=""
         className={cn(
           "flex flex-col gap-1 rounded-xl border border-border-strong bg-surface p-1.5 shadow-sm",
           "transition-colors duration-base ease-soft hover:border-control",
-          "focus-within:border-focus-ring focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus-ring",
+          "focus-within:border-focus-ring",
         )}
       >
         {notice && <div className="px-3 pt-1.5 type-caption text-fg-muted">{notice}</div>}

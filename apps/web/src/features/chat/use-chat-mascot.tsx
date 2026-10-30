@@ -177,7 +177,7 @@ export function useChatMascot(input: ChatMascotInput): DockProps {
     theme: presentation.theme,
     skin: presentation.skin,
     // Движение по тихим режимам, а не по ситуации таблицы §2: «просрочено» статично само по себе, а насест живой.
-    motion: isMascotStatic({ ...quietFlags, keyboardOpen }) ? "static" : "animated",
+    motion: typing || isMascotStatic({ ...quietFlags, keyboardOpen }) ? "static" : "animated",
     seed,
     bubble: node,
     onTap,

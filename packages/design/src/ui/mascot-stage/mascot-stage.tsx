@@ -10,7 +10,7 @@ export const REACTION_MS = 1500;
 
 export interface MascotStageProps {
   presentation: MascotPresentation;
-  /** Сторона картинки, px (кратна 40 для чётких пикселей). */
+  /** Сторона векторной картинки, px. */
   size?: number;
   /** Нажатие кнопки действия. Разрешает намерение frontend; renderer ничего не исполняет. */
   onIntent?: (intent: MascotIntent) => void;

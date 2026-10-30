@@ -14,6 +14,7 @@ export function MascotSyncIndicator({ state, className }: { state: SyncState; cl
       className={className}
       mascot={
         <Mascot
+          detail="compact"
           situation="sync"
           flip
           size="fill"

@@ -14,7 +14,7 @@ export const controlFrame = cva(
     "flex w-full items-center gap-2 rounded-md border border-border-strong bg-bg-subtle px-3 text-fg type-body",
     "transition-[border-color,background-color] duration-base ease-soft",
     "hover:border-control",
-    "focus-within:border-focus-ring focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus-ring focus-within:hover:border-focus-ring",
+    "outline-none focus-within:border-focus-ring focus-within:hover:border-focus-ring",
     "data-[invalid]:border-danger-fg data-[invalid]:hover:border-danger-fg",
     "data-[disabled]:pointer-events-none data-[disabled]:opacity-60",
   ],

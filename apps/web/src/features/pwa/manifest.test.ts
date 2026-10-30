@@ -78,19 +78,19 @@ describe("манифест PWA", () => {
 
   it("index.html ссылается на манифест и иконки, в том числе для iOS", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest"');
-    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/varya-v2-apple-touch-180.png"');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/varya-v3-apple-touch-180.png"');
     expect(html).toContain('<meta name="apple-mobile-web-app-capable" content="yes"');
-    const apple = readFileSync(join(WEB, "public/icons/varya-v2-apple-touch-180.png"));
+    const apple = readFileSync(join(WEB, "public/icons/varya-v3-apple-touch-180.png"));
     expect([apple.readUInt32BE(16), apple.readUInt32BE(20)]).toEqual([180, 180]);
     // Увеличение страницы не запрещено (styleguide §7).
     expect(html).not.toMatch(/user-scalable|maximum-scale/);
   });
 
   it("favicon имеет SVG и PNG, а настоящий корневой ICO содержит 16/32/48 px для браузеров без SVG", () => {
-    expect(html).toContain('href="/favicon-varya-v2.svg" type="image/svg+xml" sizes="any"');
-    expect(html).toContain('href="/favicon-varya-v2-32.png" type="image/png" sizes="32x32"');
-    expect(html).toContain('href="/favicon.ico?v=2" type="image/x-icon"');
-    const png = readFileSync(join(WEB, "public/favicon-varya-v2-32.png"));
+    expect(html).toContain('href="/favicon-varya-v3.svg" type="image/svg+xml" sizes="any"');
+    expect(html).toContain('href="/favicon-varya-v3-32.png" type="image/png" sizes="32x32"');
+    expect(html).toContain('href="/favicon.ico?v=3" type="image/x-icon"');
+    const png = readFileSync(join(WEB, "public/favicon-varya-v3-32.png"));
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([32, 32]);
     const bytes = readFileSync(join(WEB, "public/favicon.ico"));
     expect([bytes.readUInt16LE(0), bytes.readUInt16LE(2), bytes.readUInt16LE(4)]).toEqual([0, 1, 3]);

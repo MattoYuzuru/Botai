@@ -69,6 +69,7 @@ export interface VaryaApi {
   VIEWBOX: string;
   mount: (element: Element, options?: VaryaMountOptions) => VaryaHandle;
   svg: (options?: VaryaSvgOptions) => string;
+  portrait: (options?: { maskable?: boolean; transparent?: boolean }) => string;
 }
 
 /** Renderer, если он загрузился. */

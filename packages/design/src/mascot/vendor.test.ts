@@ -12,7 +12,7 @@ const varya = (): VaryaApi => {
   return api;
 };
 
-describe("вендоренный renderer Вари", () => {
+describe("векторный renderer Вари", () => {
   it("загружается и отдаёт API", () => {
     const api = varya();
     expect(typeof api.mount).toBe("function");
@@ -81,6 +81,15 @@ describe("вендоренный renderer Вари", () => {
     expect(body).not.toMatch(/<image|href=|<script/);
   });
 
+  it("портрет для favicon и PWA использует векторную голову без внешних ресурсов", () => {
+    for (const maskable of [false, true]) {
+      const body = varya().portrait({ maskable });
+      expect(body).toContain('class="head"');
+      expect(body).not.toMatch(/<image|href=|<script/);
+      expect(body).toContain('viewBox="0 0 128 128"');
+    }
+  });
+
   it("сезонный образ рисуется только выбранный; без образа слоёв образов нет", () => {
     const api = varya();
     expect(api.svg({ skin: "new-year" })).toContain('class="santa"');
@@ -105,6 +114,49 @@ describe("mount: режимы живой Вари", () => {
   });
 
   const classes = (svg: SVGSVGElement) => [...svg.classList];
+
+  it("static не держит таймеров: возобновление, остановка во время моргания и destroy освобождают их", () => {
+    const handle = varya().mount(host, { situation: "idle", still: true, idleRange: [100, 100] });
+    expect(vi.getTimerCount()).toBe(0);
+    handle.setStill(false);
+    vi.advanceTimersByTime(100);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    handle.setStill(true);
+    expect(vi.getTimerCount()).toBe(0);
+    handle.setStill(false);
+    vi.advanceTimersByTime(100);
+    handle.destroy();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("системное уменьшение движения останавливает жесты и idle и меняется без перемонтирования", () => {
+    const listeners = new Set<(event: { matches: boolean }) => void>();
+    const media = vi.spyOn(window, "matchMedia").mockReturnValue({
+      matches: true,
+      addEventListener: (_: string, listener: (event: { matches: boolean }) => void) =>
+        listeners.add(listener),
+      removeEventListener: (_: string, listener: (event: { matches: boolean }) => void) =>
+        listeners.delete(listener),
+    } as unknown as MediaQueryList);
+    try {
+      const handle = varya().mount(host, { situation: "sync" });
+      handle.act("wave");
+      expect(handle.still).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      for (const listener of listeners) listener({ matches: false });
+      expect(handle.still).toBe(false);
+      expect(handle.svg.classList.contains("l-run")).toBe(true);
+      handle.setStill(true);
+      for (const listener of listeners) listener({ matches: true });
+      for (const listener of listeners) listener({ matches: false });
+      expect(handle.still).toBe(true);
+      handle.destroy();
+      expect(listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      media.mockRestore();
+    }
+  });
 
   it("animated: ситуация держит петлю и предметы; sync бежит на месте", () => {
     const handle = varya().mount(host, { situation: "sync", idle: false });

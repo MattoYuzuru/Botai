@@ -65,10 +65,12 @@ export interface MascotProps {
   /** `static` — поза без петель (reduced motion, спокойный маскот, скрытая вкладка). */
   motion?: MascotMotion;
   /**
-   * Сторона квадрата, px. Спрайт 32×32 стоит в поле 40×40, поэтому кратные 40 размеры дают целые пиксели.
+   * Сторона квадрата, px. Векторный рисунок остаётся чётким при любом масштабе.
    * `"fill"` — размер задаёт родитель или `className`.
    */
   size?: number | "fill";
+  /** В маленьких слотах остаются силуэт и глаза, без микродеталей и знаков вокруг головы. */
+  detail?: "auto" | "compact" | "full";
   /** Смотреть вправо: бежит по рельсу слева направо. По умолчанию клюв влево. */
   flip?: boolean;
   /** Зерно детерминированного idle (моргание, взгляд по сторонам). */
@@ -91,6 +93,7 @@ export function Mascot({
   skin = null,
   motion: requestedMotion = "animated",
   size = 48,
+  detail = "auto",
   flip = false,
   seed = 1,
   idleRange,
@@ -163,6 +166,9 @@ export function Mascot({
       ref={host}
       aria-hidden="true"
       data-mascot=""
+      data-mascot-detail={
+        detail === "auto" ? (typeof size === "number" && size <= 40 ? "compact" : "full") : detail
+      }
       data-situation={situation}
       data-motion={motion}
       data-skin={skin ?? undefined}

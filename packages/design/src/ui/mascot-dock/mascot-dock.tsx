@@ -216,6 +216,7 @@ export function MascotDock({
                 skin={skin}
                 motion={motion}
                 size="fill"
+                detail={perch ? "compact" : "full"}
                 seed={seed}
                 idleRange={IDLE_RANGE}
                 lookRange={LOOK_RANGE}

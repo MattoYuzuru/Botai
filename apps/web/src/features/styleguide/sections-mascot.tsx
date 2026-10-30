@@ -39,6 +39,7 @@ import {
 import { ProgressWall } from "@/widgets/progress-wall/progress-wall";
 import { DemoJobManager, SHOWCASE_JOBS } from "./fixtures-agent";
 import { Demo, Grid, Section } from "./layout";
+import { MASCOT_LABELS, MascotPlayground } from "./mascot-playground";
 
 const onIntent = (intent: MascotIntent) => toast(`Действие: ${intent.label}`, { description: intent.kind });
 
@@ -320,7 +321,7 @@ function PosesDemo() {
             data-pose={situation}
           >
             <Mascot situation={situation} motion="static" size={80} />
-            <span className="type-caption text-fg-muted">{situation}</span>
+            <span className="text-center type-caption text-fg-muted">{MASCOT_LABELS[situation]}</span>
           </li>
         ))}
         <li className="flex flex-col items-center gap-1 rounded-lg bg-bg-subtle p-3" data-pose="pj">
@@ -385,7 +386,16 @@ function RunnerDemo() {
         <SyncIndicator
           state="syncing"
           size="mascot"
-          mascot={<Mascot situation="sync" flip motion={motion} size="fill" className="size-full" />}
+          mascot={
+            <Mascot
+              situation="sync"
+              flip
+              motion={motion}
+              size="fill"
+              detail="compact"
+              className="size-full"
+            />
+          }
         />
       </Demo>
     </>
@@ -439,8 +449,9 @@ export function MascotSection() {
       <Section
         id="mascot"
         title="Варя"
-        note="Состояние считает чистая функция resolveMascot: одинаковый вход — одинаковая Варя. Картинка декоративна (aria-hidden), каждый смысл есть текстом: бейдж, реплика, действие."
+        note="Векторная Варя: один персонаж от иконки до сцены чата. Состояние приходит из приложения; каждый смысл остаётся текстом, а движение можно отключить."
       >
+        <MascotPlayground />
         <div className="flex flex-col gap-6" data-part="poses">
           <PosesDemo />
           <RunnerDemo />

@@ -79,8 +79,8 @@ test("favicon декодируется, а портрет maskable непроз�
     }
     // The responsive SVG and the ICO's small PNG counterpart must remain real,
     // readable images, including after a static-host fallback would return HTML.
-    const small = await pixels("/favicon-varya-v2.svg", 16);
-    const png = await pixels("/favicon-varya-v2-16.png", 16);
+    const small = await pixels("/favicon-varya-v3.svg", 16);
+    const png = await pixels("/favicon-varya-v3-16.png", 16);
     const manifest = await (await fetch("/manifest.webmanifest")).json();
     const mask = manifest.icons.find((icon: { purpose?: string }) => icon.purpose === "maskable");
     const bitmap = await pixels(mask.src, 512);
@@ -99,12 +99,16 @@ test("favicon декодируется, а портрет maskable непроз�
     }
     return {
       tinyMatches: small.every((channel, index) => channel === png[index]),
+      faviconCornerAlpha: small[3],
+      faviconInk: Array.from(small).filter((channel, index) => index % 4 === 3 && channel > 0).length,
       ink,
       outside,
       transparent,
     };
   });
   expect(icons.tinyMatches).toBe(true);
+  expect(icons.faviconCornerAlpha).toBe(0);
+  expect(icons.faviconInk).toBeGreaterThan(60);
   expect(icons.ink).toBeGreaterThan(30_000);
   expect(icons.outside).toBe(0);
   expect(icons.transparent).toBe(0);

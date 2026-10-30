@@ -1,198 +1,102 @@
-// Ворона Варя — пиксельный маскот Doodle для ВШЭ. Один файл без зависимостей: спрайт 32×32 строится из
-// прямоугольников SVG, реакции — CSS-анимации со steps(), чтобы движение было «спрайтовым».
-//
-// BOTAI: снимок doodle_vibe/mascot/varya.js (d84008e), дальше им владеет Botai. Все правки Botai помечены «BOTAI:» —
-// так копию можно сравнить с источником. Добавлено: ситуации sync, think, overdue, offline, reauth, error, idle, perch,
-// wave; «держащая» поза hold и статичная поза pose; петли l-run/l-calm/l-tilt; режим still (без анимаций);
-// сезонные образы skin (new-year, mug, leaf); одноразовые действия act(); детерминированный idle через opts.random.
-// Подробности и происхождение: docs/design/vendor.md.
-//
-// Подключение: <script src="varya.js"></script> → глобальный объект Varya.
-//   Varya.mount(el, opts)  — живая ворона с реакциями внутри el (браузер);
-//   Varya.svg(opts)        — статичная картинка SVG строкой (браузер, Node, сборка);
-//   Varya.SITUATIONS       — ситуации: подпись, реакция, поза для превью и реплики;
-//   Varya.GUIDE, Varya.PALETTE, Varya.THEMES.
+// Векторная ворона Варя v3 — персонаж BotAI. SVG 128×128 и CSS-анимация отдельных частей.
+// BOTAI: первоначальный контроллер происходит из doodle_vibe/mascot (d84008e), рисунок и движение
+// полностью переработаны для BotAI. Происхождение: docs/design/vendor.md; правила: docs/design/mascot.md.
+// Публичный API сохраняется для React-обёртки, статичных экспортов и генератора иконок.
 (function (root) {
 "use strict";
 
 /* ---------- палитра: синие и серые ВШЭ, жёлтый клюв ---------- */
-const PALETTE = { B:"#234B9B", BD:"#0F2D69", L:"#4E78CF", S:"#9CC3FF", W:"#FFFFFF", K:"#0A1838",
-                  Y:"#F6BC32", YD:"#E8A51C", YL:"#FFE39A", G:"#C6C6C6", P:"#F59AB8", BELLY:"#3A64B8",
-                  RED:"#E5484D", COFFEE:"#5B3A22",
-                  GREEN:"#3FA163", GREEND:"#1F6B3E", REDD:"#B3262B" }; // BOTAI: GREEN/GREEND — листок, REDD — колпак
-// day/orig отличаются только фоном страницы; pj — ночной колпак и звёзды
+// BOTAI: векторная Варя v3. Палитра персонажа — токены рисунка, не цвета интерфейса.
+// Один рисунок для сцены, насеста, экспортов и иконок. Никаких внешних ресурсов и фильтров.
+const PALETTE = {
+  INK:'#142C53', EDGE:'var(--mascot-edge,#142C53)', EDGE_DARK:'#8CA9D9', BODY:'#315DB6', LIGHT:'#6088DA', DARK:'#244783', BELLY:'#83AAEF',
+  PAPER:'#FFF9E9', WHITE:'#FFFFFF', GOLD:'#F4BE60', GOLD_DARK:'#D68A36',
+  RED:'#D86060', GREEN:'#73A98D', NIGHT:'#A8C2EF', BACKGROUND:'#E4EDFF'
+};
 const THEMES = { day:{ pj:false }, orig:{ pj:false }, pj:{ pj:true } };
-const VIEWBOX = "-4 -8 40 40"; // спрайт 32×32 плюс место сверху и слева для пузырей мысли и будильника
-
-/* ---------- сборщик пиксельного спрайта ---------- */
-const N = 32;
-function layer() { const g = []; return {
-  set(x, y, c) { if (x >= -8 && y >= -8 && x < N + 4 && y < N) g.push([x, y, c]); return this; },
-  rect(x, y, w, h, c) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.set(x + i, y + j, c); return this; },
-  pts(a, c) { a.forEach(([x, y]) => this.set(x, y, c)); return this; },
-  fill(fn, c) { for (let y = -8; y < N; y++) for (let x = -8; x < N + 4; x++) if (fn(x, y)) this.set(x, y, c); return this; },
-  // контур: каждый пустой пиксель, касающийся фигуры (8 соседей), если skip() не говорит, что его закрывает другое
-  outline(fn, c, skip = () => false) { for (let y = -9; y <= N; y++) for (let x = -9; x <= N + 4; x++) { if (fn(x, y) || skip(x, y)) continue;
-      let hit = false; for (let j = -1; j <= 1 && !hit; j++) for (let i = -1; i <= 1; i++) if (fn(x + i, y + j)) { hit = true; break; }
-      if (hit) this.set(x, y, c); } return this; },
-  // соседние по строке пиксели одного цвета, нарисованные подряд, склеиваются в одну полосу: порядок наложения тот же
-  svg() { const runs = [];
-    for (const [x, y, c] of g) { const r = runs[runs.length - 1];
-      if (r && r.y === y && r.c === c && r.x + r.w === x) r.w++; else runs.push({ x, y, c, w: 1 }); }
-    return runs.map((r) => `<rect x="${r.x}" y="${r.y}" width="${r.w + .02}" height="1.02" fill="${r.c}"/>`).join(""); }
-}; }
+const VIEWBOX = '0 0 128 128';
 const G = (attrs, inner) => `<g ${attrs}>${inner}</g>`;
-const R = (x, y, w, h) => (px, py) => px >= x && px < x + w && py >= y && py < y + h;
-const OR = (...fs) => (x, y) => fs.some((f) => f(x, y));
+const path = (d, fill, extra='') => `<path d="${d}" fill="${fill}" ${extra}/>`;
+const ellipse = (cx, cy, rx, ry, fill, extra='') => `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fill}" ${extra}/>`;
+const stroke = (d, color=PALETTE.INK, width=2.5) => path(d, 'none', `stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round"`);
+const star = (x,y,r=5,color=PALETTE.GOLD) => path(`M${x} ${y-r}Q${x+1} ${y-1} ${x+r} ${y}Q${x+1} ${y+1} ${x} ${y+r}Q${x-1} ${y+1} ${x-r} ${y}Q${x-1} ${y-1} ${x} ${y-r}Z`,color);
 
-/* ---------- формы ---------- */
-// тело-яйцо, чуть выше, чем круглое
-const inBody = (x, y) => { const px = x + .5, py = y + .5;
-  if (py > 25) return false;
-  const dx = (px - 17) / 8.5, dy = (py - 16) / 10; return dx * dx + dy * dy <= 1; };
-const inBelly = (x, y) => { const dx = (x + .5 - 16) / 4.6, dy = (y + .5 - 20.5) / 3.6; return dx * dx + dy * dy <= 1; };
-// небольшой острый клюв влево: верхняя и нижняя половины
-const inBeakU = (x, y) => (y === 16 && x >= 9 && x <= 13) || (y === 17 && x >= 6 && x <= 13);
-const inBeakL = (x, y) => y === 18 && x >= 8 && x <= 13;
-const inWingR = OR(R(26, 16, 3, 5), R(29, 18, 1, 2));
-const inWingL = OR(R(5, 18, 3, 4), R(4, 19, 1, 2));
-
-/**
- * Разметка вороны внутри <svg>. Без pick — все кадры глаз и все предметы (живой режим, видимость задаёт CSS);
- * с pick = { eyes, props, night } — только выбранный кадр (статичная картинка).
- */
-function drawCrow(theme, pick) {
-const { B, BD, L, S, W, K, Y, YD, YL, G: GR, P } = PALETTE;
-const live = !pick;
-const has = (k) => live || pick.props.includes(k);
-const night = live || !!pick.night || pick.skin === "mug", cap = live || !!pick.night || theme.pj;
-const skinOf = (k) => live || pick.skin === k; // BOTAI: образ рисуется целиком в живом режиме (виден по классу skin-…), по выбору — в статичном
-const santaStatic = !live && pick.skin === "new-year";
-
-const wingL = layer().fill(inWingL, BD).outline(inWingL, K, inBody);
-const wingR = layer().fill(inWingR, BD).outline(inWingR, K, inBody);
-// пара взъерошенных пёрышек на макушке
-const tuft  = layer().pts([[16,4],[16,3],[17,2],[17,3],[18,3],[19,2],[15,4],[14,3]], K);
-const body  = layer().fill(inBody, B)
-  .fill((x, y) => inBody(x, y) && x >= 23, BD)
-  .fill(inBelly, PALETTE.BELLY)
-  .pts([[14,20],[17,22],[15,23]], L)
-  .pts([[10,18],[10,19],[10,20]], L)
-  .outline(inBody, K);
-const blush = layer().rect(10,14,3,1,P).rect(18,14,3,1,P);
-const beakU = layer().fill(inBeakU, Y).rect(10,16,3,1,YL).outline(inBeakU, K, (x, y) => inBeakL(x, y) || inBody(x, y) && x > 14);
-const mouth = layer().rect(7,18,7,1,K);
-const beakL = layer().fill(inBeakL, YD).outline(inBeakL, K, (x, y) => inBeakU(x, y) || y < 18 || inBody(x, y) && x > 14);
-// тонкие ножки, чуть длинноваты, с кривыми коленками
-const legs  = layer().pts([[14,26],[14,27],[13,28],[12,29],[13,29],[14,29]], K)
-                     .pts([[19,26],[19,27],[20,28],[19,29],[20,29],[21,29]], K);
-// BOTAI: кадры бега на месте: B — левая нога поднята, C — правая; A (legs) — обычная стойка
-const legsB = layer().pts([[14,26],[13,27],[12,27],[11,28]], K)
-                     .pts([[19,26],[19,27],[20,28],[19,29],[20,29],[21,29]], K);
-const legsC = layer().pts([[14,26],[14,27],[13,28],[12,29],[13,29],[14,29]], K)
-                     .pts([[19,26],[20,27],[21,27],[22,28]], K);
-// кружка парит рядом сама по себе (только «Учёба ночью»)
-const mug   = layer().rect(27,8,4,5,K).rect(28,9,2,3,B).set(28,10,W).set(29,11,W).rect(31,9,1,3,K).rect(28,8,2,1,PALETTE.COFFEE);
-const steam = layer().pts([[28,6],[29,5],[28,4]], S).pts([[30,5],[29,3]], S);
-// ночной колпак висит над головой: «Учёба ночью» и тёмный вид
-const capL  = layer().rect(13,3,8,1,W).rect(14,2,7,1,S).rect(16,1,6,1,S).set(17,2,W).set(19,1,W).rect(19,0,4,1,S).set(22,1,S).rect(23,1,2,2,W);
-const stars = theme.pj ? layer().pts([[1,2],[0,3],[1,3],[2,3],[1,4]], S).set(4,12,W).pts([[29,24],[28,25],[29,25],[30,25],[29,26]], S).set(2,27,W).set(26,29,S) : layer();
-
-// BOTAI: сезонные образы (docs/design/mascot.md §7). Колпак занимает слот головы, листок — клюв, кружка — слот сбоку.
-const santaBody = OR(R(14,4,7,1), R(15,3,7,1), R(17,2,6,1), R(19,1,4,1), R(21,0,2,1)), santaBrim = R(13,5,9,1), santaPom = R(23,0,2,2);
-const santa = layer().fill(santaBody, PALETTE.RED).pts([[14,4],[15,3],[17,2],[19,1]], PALETTE.REDD).fill(santaBrim, W).fill(santaPom, W)
-  .outline(OR(santaBody, santaBrim, santaPom), K, inBody);
-const glint = layer().pts([[3,3],[2,4],[3,4],[4,4],[3,5]], Y);
-// листок в клюве: наискосок вверх-влево, черенок у кончика клюва
-const leafShape = OR(R(2,11,2,1), R(1,12,4,1), R(1,13,5,1), R(2,14,4,1), R(3,15,3,1), R(5,16,1,1));
-const leaf  = layer().fill(leafShape, PALETTE.GREEN).pts([[2,12],[3,13],[4,14],[5,15],[5,16]], PALETTE.GREEND).outline(leafShape, K);
-
-// кадры глаз: большие мультяшные глаза с бликом; блик смещается туда, куда она смотрит
-const eye = (l, x, y, hx, hy) => l.rect(x,y,4,5,K).pts([[x,y],[x+3,y],[x,y+4],[x+3,y+4]], B)
-  .rect(x+hx,y+hy,2,1,W).set(x+hx,y+hy+1,W).set(x+2,y+3,S);
-const pair = (hx, hy) => eye(eye(layer(), 11, 9, hx, hy), 16, 9, hx, hy);
-const eyes = {
-  open:  () => pair(1,1),
-  up:    () => pair(1,0),
-  left:  () => pair(0,1),
-  right: () => pair(2,1),
-  wide:  () => layer().rect(11,9,4,5,W).pts([[11,9],[14,9],[11,13],[14,13]], B).set(12,11,K)
-                      .rect(16,9,4,5,W).pts([[16,9],[19,9],[16,13],[19,13]], B).set(17,11,K)
-                      .pts([[11,7],[12,6],[13,6],[14,7]], K).pts([[16,7],[17,6],[18,6],[19,7]], K),
-  half:  () => layer().rect(11,11,4,3,K).pts([[11,13],[14,13]], B).set(12,12,W).rect(16,11,4,3,K).pts([[16,13],[19,13]], B).set(17,12,W),
-  closed:() => layer().pts([[11,11],[12,12],[13,12],[14,11]], K).pts([[16,11],[17,12],[18,12],[19,11]], K),
-  happy: () => layer().pts([[11,12],[12,11],[13,11],[14,12]], K).pts([[16,12],[17,11],[18,11],[19,12]], K),
-  // злая: брови падают к клюву и режут глаза в щёлочки
-  stern: () => layer().rect(11,11,4,3,K).pts([[14,11],[11,13],[14,13]], B).set(12,12,W)
-                      .pts([[10,8],[11,8],[12,9],[13,9],[14,10]], K)
-                      .rect(16,11,4,3,K).pts([[16,11],[16,13],[19,13]], B).set(18,12,W)
-                      .pts([[21,8],[20,8],[19,9],[18,9],[17,10]], K)
-};
-// предметы над головой
-const props = {
-  excl:  () => layer().rect(4,1,2,5,Y).outline(R(4,1,2,5), K).rect(4,8,2,2,Y).outline(R(4,8,2,2), K),
-  sweat: () => layer().pts([[24,6],[23,7],[24,7],[23,8],[24,8]], S),
-  zzz:   () => layer().rect(2,2,4,1,S).set(4,3,S).set(3,4,S).rect(2,5,4,1,S).rect(6,7,3,1,S).set(7,8,S).rect(6,9,3,1,S),
-  // пузыри мысли: точка, точка побольше, облачко с тремя точками
-  bubbles: () => { const cloud = OR(R(-1,-7,5,1), R(-2,-6,7,2), R(-1,-4,5,1)), mid = R(3,0,2,2), tiny = R(7,5,1,1);
-    const b1 = layer().fill(tiny, W).outline(tiny, K), b2 = layer().fill(mid, W).outline(mid, K),
-          b3 = layer().fill(cloud, W).outline(cloud, K).pts([[-1,-5],[1,-5],[3,-5]], K);
-    return { svg: () => G('class="b1"', b1.svg()) + G('class="b2"', b2.svg()) + G('class="b3"', b3.svg()) }; },
-  anger: () => layer().pts([[24,0],[26,0],[23,1],[24,1],[26,1],[27,1],[23,3],[24,3],[26,3],[27,3],[24,4],[26,4]], PALETTE.RED),
-  q:     () => layer().pts([[3,2],[4,2],[5,2],[6,3],[6,4],[5,5],[4,6],[4,8]], K),
-  // BOTAI: ключ — «нужно войти снова»
-  key:   () => { const ring = (x, y) => x >= 3 && x <= 5 && y >= 1 && y <= 3 && !(x === 4 && y === 2),
-      shaft = (x, y) => (y === 2 && x >= 6 && x <= 10) || (y === 3 && (x === 8 || x === 10)), all = (x, y) => ring(x, y) || shaft(x, y);
-    return layer().fill(all, Y).outline(all, K); },
-  // BOTAI: облако с крестиком — «нет сети»
-  cloudx: () => { const cloud = OR(R(2,-5,4,1), R(1,-4,7,1), R(0,-3,9,2));
-    return layer().fill(cloud, W).outline(cloud, K).pts([[3,-4],[5,-4],[4,-3],[3,-2],[5,-2]], PALETTE.RED); },
-  spark: () => layer().pts([[3,3],[2,4],[3,4],[4,4],[3,5]], Y).pts([[4,22],[3,23],[4,23],[5,23],[4,24]], S).pts([[27,22],[26,23],[27,23],[28,23],[27,24]], Y).pts([[25,1],[24,2],[25,2],[26,2],[25,3]], Y),
-  // будильник: круглый циферблат, два жёлтых колокольчика, кнопка, ножки, стрелки
-  clock: () => { const ox = -1, oy = -5, face = (x, y) => { const dx = x + .5 - (ox + 5), dy = y + .5 - (oy + 5.5); return dx * dx + dy * dy <= 3.6 * 3.6; };
-    const bells = OR(R(ox,oy,3,1), R(ox-1,oy+1,3,1), R(ox+7,oy,3,1), R(ox+8,oy+1,3,1));
-    return layer().fill(bells, Y).outline(bells, K, face).fill(face, W).outline(face, K)
-      .set(ox+5,oy+2,S).set(ox+8,oy+5,S).set(ox+5,oy+8,S).set(ox+2,oy+5,S)
-      .pts([[ox+5,oy+3],[ox+5,oy+4],[ox+5,oy+5],[ox+4,oy+5],[ox+3,oy+5]], K).set(ox+5,oy+5,PALETTE.RED)
-      .rect(ox+4,oy,2,1,K).pts([[ox+2,oy+10],[ox+8,oy+10]], K)
-      .pts([[ox-2,oy+4],[ox-3,oy+5],[ox+12,oy+4],[ox+13,oy+5]], S); }
-};
-// блестящее, что она тащит в гнездо при подключении учёбы: LMS, расписание, почта, кабинет
-const items = live ? [
-  { dx:11,  dy:16,  d:"0s",   l: layer().rect(1,1,3,3,Y).set(2,2,YL) },
-  { dx:11,  dy:-9,  d:".2s",  l: layer().rect(1,26,3,3,W).rect(2,27,1,1,B) },
-  { dx:-16, dy:-10, d:".4s",  l: layer().rect(28,27,3,3,S).set(29,28,W) },
-  { dx:-12, dy:17,  d:".6s",  l: layer().rect(24,0,3,3,Y).set(25,1,W) }
-] : [];
-
-return G('class="stars"', stars.svg()) +
-  G('filter="url(#RING)"',
-    items.map((it) => G(`class="item" style="--dx:${it.dx}px;--dy:${it.dy}px;--d:${it.d}"`, it.l.svg())).join("") +
-    (night ? G('class="mug"', '<g class="steam">' + steam.svg() + '</g>' + mug.svg()) : "") +
-    G('class="whole"',
-      (live || (pick.legs !== "b" && pick.legs !== "c") ? G('class="legsA"', legs.svg()) : "") +
-      (live || pick.legs === "b" ? G('class="legsB"', legsB.svg()) : "") +
-      (live || pick.legs === "c" ? G('class="legsC"', legsC.svg()) : "") +
-      G('class="rig"',
-        G('class="wingL"', wingL.svg()) + G('class="wingR"', wingR.svg()) +
-        (live || (!cap && !santaStatic) ? G('class="tuft"', tuft.svg()) : "") + body.svg() +
-        Object.entries(eyes).filter(([k]) => live || k === pick.eyes).map(([k, f]) => G(`data-eye="${k}"`, f().svg())).join("") +
-        blush.svg() + mouth.svg() + G('class="beakL"', beakL.svg()) + G('class="beakU"', beakU.svg()) +
-        (skinOf("leaf") ? G('class="leaf"', leaf.svg()) : "") +
-        (cap && !santaStatic ? G('class="capg"', capL.svg()) : "") +
-        (skinOf("new-year") ? G('class="santa"', santa.svg()) + G('class="glint"', glint.svg()) : "")
-      )
-    ) +
-    Object.entries(props).filter(([k]) => has(k)).map(([k, f]) => G(`data-prop="${k}"`, f().svg())).join("")
-  );
+function drawEyes(name) {
+  const {PAPER, INK, WHITE} = PALETTE;
+  if(name==='closed'||name==='happy') {
+    return stroke(name==='happy'?'M39 53Q46 44 53 53M64 52Q71 43 78 52':'M39 54Q46 59 53 54M64 53Q71 58 78 53', PAPER, 3.5);
+  }
+  const wide=name==='wide', half=name==='half', stern=name==='stern';
+  const dx=name==='left'?-3:name==='right'?3:0, dy=name==='up'?-4:half?3:1;
+  return [46,72].map((x,i)=> {
+    const y=i?50:52, rx=wide?12.5:11.5, ry=wide?16:14;
+    return ellipse(x,y,rx,ry,PAPER) +
+      ellipse(x-2+dx,y+dy,wide?4:5,wide?5:7,INK)+
+      ellipse(x-3+dx,y-2+dy,1.5,2,WHITE)+
+      (half?path(`M${x-13} ${y-15}H${x+13}V${y}Q${x} ${y+3} ${x-13} ${y}Z`,PALETTE.BODY):'')+
+      (stern?stroke(`M${x-12} ${y-11}L${x+12} ${y-4}`,INK,4):'');
+  }).join('');
 }
-// белая обводка в один пиксель вокруг всего, как у стикеров с вороной ВШЭ
-const defs = (id) => `<defs><filter id="${id}" x="-10%" y="-10%" width="120%" height="120%">` +
-  `<feMorphology in="SourceAlpha" operator="dilate" radius="1" result="d"/><feFlood flood-color="#FFFFFF"/>` +
-  `<feComposite in2="d" operator="in" result="w"/><feMerge><feMergeNode in="w"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
-let uid = 0;
-const nextId = () => "varya-ring-" + (++uid);
-const markup = (theme, pick, id) => defs(id) + drawCrow(theme, pick).replace(/#RING/g, "#" + id);
+
+function drawHead(theme, pick) {
+  const {INK,BODY,LIGHT,PAPER,GOLD,GOLD_DARK} = PALETTE;
+  const live=!pick, hasSkin=(name)=>live||pick.skin===name;
+  const eyes=live?['open','up','left','right','closed','half','happy','wide','stern'].map(k=>G(`data-eye="${k}"`,drawEyes(k))).join(''):drawEyes(pick.eyes||'open');
+  const tuft=G('class="tuft"',path('M49 30Q42 19 46 16Q50 14 58 23Q59 8 65 9Q70 9 71 23Q82 15 85 19Q88 23 79 32Z',PALETTE.EDGE));
+  const face=path('M32 60C28 40 39 26 57 25C77 20 97 31 101 49C105 63 96 78 80 80L49 81C37 79 32 71 32 60Z',BODY)+
+    path('M36 44C40 30 56 26 70 29C54 30 42 38 39 51Z',LIGHT,'opacity=".65"')+
+    eyes+
+    G('class="detail"',stroke('M34 69L39 71M82 66L88 64',LIGHT,3))+
+    G('class="beakL"',path('M26 74Q36 85 52 75L48 69Z',GOLD_DARK))+
+    G('class="beakU"',path('M51 64Q35 62 22 72Q32 78 52 73Q56 69 51 64Z',GOLD)+stroke('M27 71Q36 67 43 67',PAPER,1.6));
+  const cap=path('M43 29Q47 8 67 11Q78 11 90 19Q82 15 82 27Z',PALETTE.NIGHT)+stroke('M44 30Q62 23 82 28',PAPER,7)+ellipse(90,20,5,5,PAPER);
+  const santa=path('M43 29Q49 4 70 9Q86 11 91 26Q79 20 77 26Z',PALETTE.RED)+stroke('M43 30Q63 22 81 29',PAPER,7)+ellipse(92,27,5,5,PAPER);
+  return G('class="head"',
+    (live||(!theme.pj&&!pick.night&&pick.skin!=='new-year')?tuft:'')+face+
+    (live?G('class="capg"',cap):theme.pj||pick.night?G('class="capg"',cap):'')+
+    (hasSkin('new-year')?G('class="santa"',santa):''));
+}
+
+function drawCrow(theme, pick, id) {
+  const {INK,BODY,LIGHT,DARK,BELLY,PAPER,GOLD,GOLD_DARK,WHITE,GREEN,RED,NIGHT}=PALETTE;
+  const live=!pick, has=(k)=>live||(pick.props||[]).includes(k), skin=(k)=>live||pick.skin===k;
+  const legs={
+    a:stroke('M52 107L51 119M45 120L57 120M73 108L75 119M69 120L81 120',PALETTE.EDGE,3.5),
+    b:stroke('M52 107L45 115L38 115M73 108L80 120L87 120',PALETTE.EDGE,3.5),
+    c:stroke('M52 107L45 120L38 120M73 108L80 115L87 115',PALETTE.EDGE,3.5)
+  };
+  const feet=live?G('class="legsA"',legs.a)+G('class="legsB"',legs.b)+G('class="legsC"',legs.c):legs[pick.legs||'a'];
+  const body=path('M40 64C26 77 25 99 40 108C53 117 81 115 94 103C106 92 104 71 91 62Z',`url(#${id}-body)`)+
+    G('class="detail"',path('M40 82Q46 74 61 79Q77 81 83 96Q69 110 50 105Q38 100 40 82Z',BELLY,'opacity=".46"')+stroke('M44 94Q49 98 53 98',BELLY,2));
+  const wingL=G('class="wingL"',path('M33 67Q19 69 20 86Q21 93 30 92L37 78Z',DARK));
+  const wingR=G('class="wingR"',path('M88 67C105 69 114 83 108 96C105 103 96 106 89 99Q82 92 88 67Z',DARK)+
+    G('class="detail"',stroke('M95 78Q105 86 101 94',LIGHT,2)+star(97,87,4,GOLD)));
+  const tail=G('class="tail"',path('M89 90Q109 92 116 103Q101 109 87 103Z',INK));
+  const mug=G('class="mug"',stroke('M110 78H115Q121 78 120 85Q119 90 113 89',PAPER,3)+path('M99 75H114V91Q107 96 100 91Z',PAPER)+
+    ellipse(106.5,75,7.5,2.5,GOLD_DARK)+star(106,84,3,BODY)+G('class="steam"',stroke('M103 67Q99 63 103 59M111 67Q107 63 111 59',NIGHT,2)));
+  const leaf=G('class="leaf"',path('M10 56Q27 45 31 64Q15 71 10 56Z',GREEN)+stroke('M14 57L35 73',DARK,1.5));
+  const props={
+    excl:()=>ellipse(16,32,11,14,GOLD)+stroke('M16 24V33',INK,3)+ellipse(16,39,1.6,1.6,INK),
+    q:()=>ellipse(15,30,12,14,PAPER)+stroke('M11 25C11 20 21 20 20 26Q20 29 15 31V33',INK,2.5)+ellipse(15,38,1.4,1.4,INK),
+    bubbles:()=>G('class="b2"',ellipse(25,48,2,2,NIGHT))+G('class="b3"',ellipse(20,42,3,3,NIGHT)),
+    sweat:()=>path('M107 41Q118 54 107 54Q97 54 107 41Z',NIGHT),
+    zzz:()=>stroke('M7 25H18L7 36H18M20 12H28L20 20H28',NIGHT,2.5),
+    anger:()=>stroke('M14 23V28H9M20 23V28H25M14 40V35H9M20 40V35H25',RED,2.5),
+    spark:()=>star(15,41,6)+star(109,28,5)+star(109,100,4),
+    clock:()=>ellipse(16,31,12,12,PAPER,`stroke="${INK}" stroke-width="2"`)+stroke('M16 23V32L22 35M5 19L9 16M23 16L27 19',INK,2.5),
+    key:()=>ellipse(13,27,6,6,GOLD)+ellipse(13,27,2.5,2.5,INK)+stroke('M19 27H32V32M27 27V31',GOLD,3.5),
+    cloudx:()=>path('M6 36C0 31 4 23 10 24C12 14 27 16 27 25C36 22 39 36 29 36Z',NIGHT)+stroke('M16 25L23 32M23 25L16 32',INK,2)
+  };
+  const objects=Object.entries(props).filter(([k])=>has(k)).map(([k,draw])=>G(`data-prop="${k}"`,draw())).join('');
+  const defs=`<defs><linearGradient id="${id}-body" x1=".15" y1="0" x2=".9" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="${LIGHT}"/><stop offset=".55" stop-color="${BODY}"/><stop offset="1" stop-color="${DARK}"/></linearGradient></defs>`;
+  return defs+G('class="shadow detail"',ellipse(65,121,30,3,INK,'opacity=".12"'))+
+    G('class="whole"',G('class="anatomy"',feet+G('class="rig"',tail+wingL+body+drawHead(theme,pick)+wingR+
+      (live||pick.night||skin('mug')?mug:'')+(skin('leaf')?leaf:'')+
+      (skin('new-year')?G('class="glint"',star(14,56,5)):''))))+objects;
+}
+let uid=0;
+const nextId=()=>`varya-vector-${++uid}`;
+const markup=(theme,pick,id)=>drawCrow(theme,pick,id);
 
 /* ---------- ситуации ---------- */
 // anim — реакция (класс a-…); prop — предметы по тактам; beat2 — что показать во втором такте вместо prop целиком;
@@ -202,57 +106,25 @@ const markup = (theme, pick, id) => defs(id) + drawCrow(theme, pick).replace(/#R
 const SITUATIONS = [
  { id:"connect", label:"Подключить учёбу", icon:"+", anim:"collect", prop:[], eyes:["up","wide","happy"], rest:"open",
    hold:{ eyes:"up", loop:"run" }, pose:{ eyes:"happy", props:[] },
-   lines:[
-    "Скинь ссылку на LMS, логин и пароль. Я всё перетащу в гнездо: дедлайны, оценки, пары.",
-    "Вороны тащат к себе всё блестящее. Я тащу дедлайны. Они тоже блестят, особенно ночью.",
-    "Пароль я храню зашифрованным и никому не показываю. Даже другим воронам.",
-    "Расписание подключено, LMS подключена. Осталось подключить тебя к учёбе. Это сложнее." ]},
+   lines:[]},
  { id:"tip", label:"Совет", icon:"?", anim:"think", prop:["q","bubbles"], beat2:["bubbles"], eyes:["up","up","open"], rest:"open",
    hold:{ eyes:"up", props:["bubbles"], loop:"calm" }, pose:{ eyes:"up", props:["bubbles"] },
-   lines:[
-    "Накоп копится весь модуль. Экзамен только ставит точку.",
-    "Сначала сделай самое неприятное задание. Остальные испугаются и сделаются сами.",
-    "Объясни тему мне. Если поняла ворона, поймёт и семинарист.",
-    "Закрой лишние вкладки. Я вижу, их 47, и в одной мемы.",
-    "Сфоткай доску после семинара. Через неделю это будет единственный источник.",
-    "Кофе не заменяет сон. Я проверяла, кружка у меня всегда с собой." ]},
+   lines:[]},
  { id:"deadline", label:"Дедлайн", icon:"!", anim:"panic", prop:["excl","sweat"], eyes:["wide","wide","open"], rest:"open",
    hold:{ eyes:"wide", props:["excl"], loop:"calm" }, pose:{ eyes:"wide", props:["excl","sweat"] },
-   lines:[
-    "Дедлайн через 2 часа. Я не паникую. Это перья сами шевелятся.",
-    "23:47. Сдача в 23:59. Кар-р-р. Пальцы к бою.",
-    "Моя тень уже убежала сдавать. Догоняй её.",
-    "Это блокирующий элемент. Потом сдать не получится, только сейчас.",
-    "Говорят, дедлайн лучший мотиватор. Сейчас проверим." ]},
+   lines:[]},
  { id:"skips", label:"Пропуски", icon:"×", anim:"stern", prop:["anger"], eyes:["stern","stern","stern"], rest:"stern",
    pose:{ eyes:"stern", props:["anger"] },
-   lines:[
-    "Четыре пропуска. Ещё один, и я лично прилечу к тебе в общагу.",
-    "Я не злюсь. Я просто записываю. Каждую пару. Каждую.",
-    "На многих курсах посещаемость идёт в накоп. А ты идёшь мимо.",
-    "Завтра первая пара в 9:30. Не придёшь, буду каркать под окном до самой сессии.",
-    "Посещаемость 60%. Мне за тебя стыдно перед другими воронами." ]},
+   lines:[]},
  { id:"night", label:"Учёба ночью", icon:"z", anim:"sleepy", prop:["zzz"], eyes:["half","closed","wide"], rest:"open",
    hold:{ eyes:"half", props:["zzz"], loop:"calm" }, pose:{ eyes:"half", props:["zzz"], night:true },
-   lines:[
-    "Три часа ночи. Даже моя кружка уже спит.",
-    "Вороны ночью не летают. И тебе не советуют.",
-    "Ладно, ещё одна задача и спать. Я засекаю.",
-    "Невыспавшийся мозг запоминает хуже. Это наука, а не я." ]},
+   lines:[]},
  { id:"class", label:"Скоро пара", icon:"◷", anim:"alert", prop:["clock"], eyes:["left","right","open"], rest:"open",
    hold:{ eyes:"left", props:["clock"], loop:"calm" }, pose:{ eyes:"left", props:["clock"] },
-   lines:[
-    "Пара через 15 минут! Ноутбук, зарядка, пропуск: всё на месте?",
-    "Очередь к лифту на Покре длиннее пары. Иди пешком.",
-    "Аудиторию я написала в уведомлении. Не перепутай корпус, как в прошлый раз.",
-    "Выйдешь сейчас, придёшь вовремя. Через 10 минут придёшь эффектно." ]},
+   lines:[]},
  { id:"done", label:"Всё сдано", icon:"✓", anim:"happy", ms:1500, prop:["spark"], eyes:["happy","happy","happy"], rest:"happy",
    hold:{ eyes:"happy", props:["spark"] }, pose:{ eyes:"happy", props:["spark"] },
-   lines:[
-    "Всё сдано! Можно ничего не делать до понедельника.",
-    "Кар! Кто сдал всё вовремя? Мы сдали!",
-    "Ноль долгов. Мои перья гордятся тобой.",
-    "Тень вернулась. Значит, точно всё сдано." ]},
+   lines:[]},
  // BOTAI: ситуации продукта (docs/design/mascot.md §2). Реплики берёт реестр Botai (mascot/lines.ts) из настоящих данных,
  // поэтому lines пусты и react() ничего не говорит.
  { id:"sync", label:"Обновляю", icon:"~", anim:"nod", ms:1200, prop:[], eyes:["open","open","open"], rest:"open",
@@ -311,111 +183,60 @@ function svg(opts = {}) {
   const pose = { eyes:"open", props:[], night:false, skin:null, legs:"a", ...(s ? s.pose : {}), ...pick3(opts) };
   const id = opts.id || nextId();
   const size = opts.size ? ` width="${opts.size}" height="${opts.size}"` : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${VIEWBOX}"${size} shape-rendering="crispEdges" role="img" aria-label="Ворона Варя${s ? ": " + s.label : ""}">` +
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${VIEWBOX}"${size} shape-rendering="geometricPrecision" role="img" aria-label="Ворона Варя${s ? ": " + s.label : ""}">` +
     markup(THEMES[opts.theme] || THEMES.orig, pose, id) + `</svg>`;
 }
 function pick3(o) { const r = {}; for (const k of ["eyes", "props", "night", "skin", "legs"]) if (o[k] !== undefined) r[k] = o[k]; return r; }
 
 /* ---------- живая ворона: стили и проигрыватель ---------- */
 const CSS = `
-.varya g{transform-box:fill-box}
-.varya .rig{transform-origin:50% 100%;animation:varya-idle 1.6s steps(1) infinite}
-@keyframes varya-idle{0%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-.varya .wingL{transform-origin:100% 0%}.varya .wingR{transform-origin:0% 0%}
-.varya .tuft{transform-origin:50% 100%;animation:varya-tuft 2.4s steps(1) infinite}
-@keyframes varya-tuft{50%{transform:translateX(1px)}}
-.varya .mug{animation:varya-float 6s steps(1) infinite;display:none}
-.varya[data-sit="night"] .mug{display:inline}
-.varya .capg{display:none;animation:varya-float 3s steps(1) infinite}
-.varya.pj .capg,.varya[data-sit="night"] .capg{display:inline}
-.varya.pj .tuft,.varya[data-sit="night"] .tuft{display:none}
-@keyframes varya-float{0%,100%{transform:translate(0,0)}25%{transform:translate(0,-1px)}50%{transform:translate(1px,-2px)}75%{transform:translate(1px,-1px)}}
-.varya .steam rect{animation:varya-zz 1.2s steps(3) infinite}
-.varya .steam rect:nth-child(2n){animation-delay:-.6s}
-.varya [data-eye]{display:none}
-.varya[data-eyes="open"] [data-eye="open"],.varya[data-eyes="up"] [data-eye="up"],.varya[data-eyes="left"] [data-eye="left"],
-.varya[data-eyes="right"] [data-eye="right"],.varya[data-eyes="closed"] [data-eye="closed"],.varya[data-eyes="half"] [data-eye="half"],
-.varya[data-eyes="happy"] [data-eye="happy"],.varya[data-eyes="wide"] [data-eye="wide"],.varya[data-eyes="stern"] [data-eye="stern"]{display:inline}
-.varya [data-prop]{display:none}
-.varya.p-excl [data-prop="excl"],.varya.p-sweat [data-prop="sweat"],.varya.p-zzz [data-prop="zzz"],.varya.p-q [data-prop="q"],
-.varya.p-bubbles [data-prop="bubbles"],.varya.p-anger [data-prop="anger"],.varya.p-spark [data-prop="spark"],.varya.p-clock [data-prop="clock"]{display:inline}
-.varya .item{display:none}
-.varya.a-collect .item{display:inline;animation:varya-fly 1.4s steps(7) both;animation-delay:var(--d)}
-@keyframes varya-fly{0%{transform:translate(0,0);opacity:1}90%{opacity:1}100%{transform:translate(var(--dx),var(--dy));opacity:0}}
-.varya.a-think .rig{animation:varya-think 1.4s steps(1) forwards}
-@keyframes varya-think{0%{transform:rotate(0)}20%{transform:rotate(-6deg)}80%{transform:rotate(-6deg)}100%{transform:rotate(0)}}
-.varya.a-panic .rig{animation:varya-panic .12s steps(1) 14}
-@keyframes varya-panic{0%{transform:translateX(-1px)}50%{transform:translateX(1px)}}
-.varya.a-panic .beakL,.varya.a-collect .beakL{animation:varya-chomp .3s steps(1) 6}
-@keyframes varya-chomp{0%{transform:translateY(0)}50%{transform:translateY(1px)}}
-.varya.a-panic .wingL{animation:varya-flapL .16s steps(1) 12}.varya.a-panic .wingR{animation:varya-flapR .16s steps(1) 12}
-@keyframes varya-flapL{0%{transform:rotate(0)}50%{transform:rotate(35deg) translateY(-1px)}}
-@keyframes varya-flapR{0%{transform:rotate(0)}50%{transform:rotate(-35deg) translateY(-1px)}}
-.varya.a-stern .rig{animation:varya-nope .4s steps(1) 6}
-.varya.a-stern .whole{animation:varya-stomp .3s steps(1) 5}
-@keyframes varya-stomp{50%{transform:translateY(-1px)}}
-@keyframes varya-nope{0%,100%{transform:translateX(0)}25%{transform:translateX(-1px)}75%{transform:translateX(1px)}}
-.varya.a-stern .wingR{animation:varya-tap .3s steps(1) 6}
-@keyframes varya-tap{0%{transform:rotate(0)}50%{transform:rotate(-25deg)}}
-.varya.a-sleepy .rig{animation:varya-doze 3s steps(1) forwards}
-@keyframes varya-doze{0%{transform:translateY(0) rotate(0)}30%{transform:translateY(1px) rotate(4deg)}60%{transform:translateY(1px) rotate(7deg)}75%{transform:translateY(-2px) rotate(0)}100%{transform:translateY(0)}}
-.varya.a-happy .whole{animation:varya-hop .5s steps(1) 3}
-@keyframes varya-hop{0%{transform:translateY(0) scale(1.05,.95)}25%{transform:translateY(-2px) scale(.96,1.04)}50%{transform:translateY(-3px)}75%{transform:translateY(-1px)}}
-.varya.a-happy .wingL{animation:varya-flapL .25s steps(1) 6}.varya.a-happy .wingR{animation:varya-flapR .25s steps(1) 6}
-.varya.a-alert .tuft{animation:varya-perk .3s steps(1) 4}
-@keyframes varya-perk{0%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-.varya.a-alert .whole{animation:varya-hop .5s steps(1) 2}
-.varya.a-collect .rig{animation:varya-gulp 1.6s steps(1) 1}
-@keyframes varya-gulp{0%,100%{transform:scale(1,1)}70%{transform:scale(1.05,.96)}85%{transform:scale(.97,1.03)}}
-.varya [data-prop="excl"],.varya [data-prop="q"]{animation:varya-bob .5s steps(1) infinite}
-@keyframes varya-bob{50%{transform:translateY(-1px)}}
-.varya [data-prop="bubbles"] .b2{animation:varya-appear .35s steps(1) both}
-.varya [data-prop="bubbles"] .b3{animation:varya-appear .9s steps(1) both}
-@keyframes varya-appear{0%{opacity:0}100%{opacity:1}}
-.varya [data-prop="clock"]{transform-origin:50% 50%;animation:varya-ring .12s steps(1) infinite}
-@keyframes varya-ring{0%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
-.varya [data-prop="anger"]{transform-origin:50% 50%;animation:varya-throb .3s steps(1) infinite}
-@keyframes varya-throb{50%{transform:scale(1.3)}}
-.varya [data-prop="zzz"] rect{animation:varya-zz 1.2s steps(3) infinite}
-@keyframes varya-zz{0%{opacity:.2}100%{opacity:1}}
-.varya [data-prop="spark"]{animation:varya-tw .4s steps(1) infinite}
-.varya .stars{animation:varya-tw 1.6s steps(1) infinite}
-@keyframes varya-tw{50%{opacity:.3}}
-/* BOTAI: ноги, образы, петли и действия */
-.varya.p-key [data-prop="key"],.varya.p-cloudx [data-prop="cloudx"]{display:inline}
-.varya .legsB,.varya .legsC,.varya .santa,.varya .glint,.varya .leaf{display:none}
-.varya.skin-new-year .santa,.varya.skin-new-year .glint,.varya.skin-leaf .leaf,.varya.skin-mug .mug{display:inline}
-.varya.skin-new-year .capg,.varya.skin-new-year .tuft{display:none}
-.varya.skin-new-year .glint{animation:varya-tw 1.6s steps(1) infinite}
-.varya.l-run .legsA{display:none}
-.varya.l-run .legsB,.varya.l-run .legsC{display:inline}
-.varya.l-run .legsB{animation:varya-leg-b .32s steps(1) infinite}
-.varya.l-run .legsC{animation:varya-leg-c .32s steps(1) infinite}
-@keyframes varya-leg-b{0%{opacity:1}50%{opacity:0}}
-@keyframes varya-leg-c{0%{opacity:0}50%{opacity:1}}
-.varya.l-run .rig{animation:varya-run .32s steps(1) infinite}
-@keyframes varya-run{0%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-.varya.l-run .tuft{animation:varya-tuft .32s steps(1) infinite}
-.varya.l-run .wingL{animation:varya-runwing-l .32s steps(1) infinite}
-.varya.l-run .wingR{animation:varya-runwing-r .32s steps(1) infinite}
-@keyframes varya-runwing-l{0%{transform:rotate(0)}50%{transform:rotate(14deg)}}
-@keyframes varya-runwing-r{0%{transform:rotate(0)}50%{transform:rotate(-14deg)}}
-.varya.l-calm .rig{animation:varya-calm 3.2s steps(1) infinite}
-@keyframes varya-calm{0%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-.varya.l-tilt .rig{animation:none;transform:rotate(-6deg)}
-.varya.a-nod .rig{animation:varya-nod .9s steps(1) 1}
-@keyframes varya-nod{0%,100%{transform:translateY(0) rotate(0)}20%{transform:translateY(1px) rotate(-8deg)}45%{transform:translateY(0) rotate(0)}65%{transform:translateY(1px) rotate(-8deg)}}
-.varya.a-peck .rig{animation:varya-peck .6s steps(1) 3}
-@keyframes varya-peck{0%{transform:rotate(0)}50%{transform:translate(-1px,2px) rotate(-14deg)}}
-.varya.a-shake .rig{animation:varya-nope .26s steps(1) 5}
-.varya.a-wave .wingR{animation:varya-wave .38s steps(1) 5}
-@keyframes varya-wave{0%{transform:rotate(0)}50%{transform:rotate(-55deg) translateY(-2px)}}
-.varya.a-hop .whole{animation:varya-hop .3s steps(1) 1}
-.varya.a-look .rig{animation:none}
+/* BOTAI: токены движения персонажа. Контейнер и ввод никогда не анимируются вместе с рисунком. */
+.varya{--mascot-edge:light-dark(${PALETTE.INK},${PALETTE.EDGE_DARK});--varya-breathe:4s;--varya-run:.56s;--varya-gesture:.9s;--varya-ease:cubic-bezier(.65,0,.35,1);isolation:isolate}
+.varya .rig,.varya .whole{transform-origin:64px 112px}
+.varya .head{transform-origin:65px 75px}
+.varya .wingL{transform-origin:32px 70px}.varya .wingR{transform-origin:91px 71px}
+.varya .legsB,.varya .legsC,.varya .mug,.varya .capg,.varya .santa,.varya .glint,.varya .leaf,.varya [data-eye],.varya [data-prop]{display:none}
+.varya[data-sit="night"] .mug,.varya[data-sit="night"] .capg,.varya.pj .capg,.varya.skin-mug .mug,.varya.skin-new-year .santa,.varya.skin-new-year .glint,.varya.skin-leaf .leaf{display:inline}
+.varya.pj .tuft,.varya[data-sit="night"] .tuft,.varya.skin-new-year .tuft,.varya.skin-new-year .capg{display:none}
+.varya[data-eyes="open"] [data-eye="open"],.varya[data-eyes="up"] [data-eye="up"],.varya[data-eyes="left"] [data-eye="left"],.varya[data-eyes="right"] [data-eye="right"],.varya[data-eyes="closed"] [data-eye="closed"],.varya[data-eyes="half"] [data-eye="half"],.varya[data-eyes="happy"] [data-eye="happy"],.varya[data-eyes="wide"] [data-eye="wide"],.varya[data-eyes="stern"] [data-eye="stern"]{display:inline}
+.varya.p-excl [data-prop="excl"],.varya.p-sweat [data-prop="sweat"],.varya.p-zzz [data-prop="zzz"],.varya.p-q [data-prop="q"],.varya.p-bubbles [data-prop="bubbles"],.varya.p-anger [data-prop="anger"],.varya.p-spark [data-prop="spark"],.varya.p-clock [data-prop="clock"],.varya.p-key [data-prop="key"],.varya.p-cloudx [data-prop="cloudx"]{display:inline}
+.varya.l-calm .rig{animation:varya-breathe var(--varya-breathe) var(--varya-ease) infinite}
+.varya.l-tilt .head{animation:varya-ponder var(--varya-breathe) var(--varya-ease) infinite}
+.varya.l-run .rig{animation:varya-stride var(--varya-run) var(--varya-ease) infinite}
+.varya.l-run .wingR{animation:varya-wingbeat var(--varya-run) var(--varya-ease) infinite}
+.varya.l-run .legsA{display:none}.varya.l-run .legsB,.varya.l-run .legsC{display:inline}
+.varya.l-run .legsB{animation:varya-leg-b var(--varya-run) steps(1) infinite}.varya.l-run .legsC{animation:varya-leg-c var(--varya-run) steps(1) infinite}
+.varya.a-nod .head{animation:varya-nod var(--varya-gesture) var(--varya-ease)}
+.varya.a-wave .wingR,.varya.a-happy .wingR{animation:varya-wave .62s var(--varya-ease) 3}
+.varya.a-hop .whole{animation:varya-hop .28s var(--varya-ease)}
+.varya.a-happy .whole{animation:varya-hop .5s var(--varya-ease) 3}
+.varya.a-peck .rig{animation:varya-peck .6s var(--varya-ease) 3}
+.varya.a-shake .rig,.varya.a-stern .head{animation:varya-shake .26s var(--varya-ease) 5}
+.varya.a-think .head,.varya.a-look .head{animation:varya-ponder 1.6s var(--varya-ease)}
+.varya.a-panic .head{animation:varya-nod var(--varya-gesture) var(--varya-ease) 2}
+.varya.a-sleepy .head{animation:varya-doze 3s var(--varya-ease)}
+.varya.a-alert .whole,.varya.a-collect .whole{animation:varya-hop .5s var(--varya-ease) 2}
+.varya .steam{animation:varya-steam 3s var(--varya-ease) infinite}
+@keyframes varya-breathe{50%{transform:translateY(-1.5px) scale(1.008,1.012)}}
+@keyframes varya-ponder{25%,70%{transform:rotate(-7deg)}85%{transform:rotate(2deg)}}
+@keyframes varya-stride{25%,75%{transform:translateY(-2px)}50%{transform:translateY(0)}}
+@keyframes varya-wingbeat{50%{transform:rotate(-10deg)}}
+@keyframes varya-leg-b{50%{opacity:0}}@keyframes varya-leg-c{0%{opacity:0}50%{opacity:1}}
+@keyframes varya-nod{25%,65%{transform:rotate(-7deg) translateY(2px)}45%,100%{transform:rotate(0)}}
+@keyframes varya-wave{35%,65%{transform:rotate(-65deg)}50%{transform:rotate(-48deg)}}
+@keyframes varya-hop{40%{transform:translateY(-6px) scale(.98,1.02)}75%{transform:translateY(0) scale(1.03,.97)}}
+@keyframes varya-peck{45%{transform:translate(-2px,4px) rotate(-13deg)}}
+@keyframes varya-shake{25%{transform:rotate(-3deg)}75%{transform:rotate(3deg)}}
+@keyframes varya-doze{60%{transform:rotate(-12deg) translateY(3px)}80%{transform:rotate(3deg)}}
+@keyframes varya-steam{50%{transform:translateY(-3px);opacity:.4}}
+.varya[data-legs="b"] .legsA,.varya[data-legs="c"] .legsA{display:none}.varya[data-legs="b"] .legsB,.varya[data-legs="c"] .legsC{display:inline}
+/* Насест и индикатор: крупный силуэт и глаза; микродетали и предметы несут смысл соседним текстом. */
+[data-mascot-detail="compact"] .varya .detail,[data-mascot-detail="compact"] .varya [data-prop],[data-mascot-detail="compact"] .varya .glint{display:none}
+[data-mascot-detail="compact"] .varya .anatomy{transform:translate(-8px,-17px) scale(1.14);transform-origin:0 0}
+[data-mascot-detail="compact"] .varya .mug,[data-mascot-detail="compact"] .varya .leaf{display:none}
 .varya.still *{animation:none!important}
-.varya[data-legs="b"] .legsA{display:none}.varya[data-legs="b"] .legsB{display:inline}
-.varya[data-legs="c"] .legsA{display:none}.varya[data-legs="c"] .legsC{display:inline}
-@media (prefers-reduced-motion: reduce){.varya *{animation:none!important}}`;
+@media(prefers-reduced-motion:reduce){.varya *{animation:none!important}}
+`;
 function injectCSS(doc) {
   if (doc.getElementById("varya-css")) return;
   const st = doc.createElement("style"); st.id = "varya-css"; st.textContent = CSS; doc.head.appendChild(st);
@@ -433,17 +254,18 @@ function injectCSS(doc) {
 function mount(el, opts = {}) {
   const doc = el.ownerDocument; injectCSS(doc);
   const svgEl = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svgEl.setAttribute("viewBox", VIEWBOX); svgEl.setAttribute("shape-rendering", "crispEdges");
+  svgEl.setAttribute("viewBox", VIEWBOX); svgEl.setAttribute("shape-rendering", "geometricPrecision");
   svgEl.setAttribute("aria-hidden", "true"); svgEl.classList.add("varya");
   svgEl.style.overflow = "visible";
   el.appendChild(svgEl);
   const ringId = nextId();
-  const reduce = !!(doc.defaultView && doc.defaultView.matchMedia && doc.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches);
-  const rand = typeof opts.random === "function" ? opts.random : Math.random;
-  let cur = byId(opts.situation), themeName = "orig", skinName = null, loopName = null, still = !!opts.still;
-  let idx = {}, timers = [], busy = false, stopped = false, idleT = null, sinceLook = 0, nextLook = 0;
-  const later = (ms, f) => timers.push(setTimeout(f, ms));
-  const clear = () => { timers.forEach(clearTimeout); timers = []; };
+  const media = doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)");
+  let reduce = !!media?.matches, requestedStill = !!opts.still;
+  const rand = typeof opts.random === "function" ? opts.random : () => .5;
+  let cur = byId(opts.situation), themeName = "orig", skinName = null, loopName = null, still = !!opts.still || reduce;
+  let timers = new Set(), busy = false, stopped = false, idleT = null, sinceLook = 0, nextLook = 0;
+  const later = (ms, f) => { const timer = setTimeout(() => { timers.delete(timer); if (!stopped) f(); }, ms); timers.add(timer); };
+  const clear = () => { timers.forEach(clearTimeout); timers.clear(); };
   const setProps = (list) => { [...svgEl.classList].filter((c) => c.startsWith("p-")).forEach((c) => svgEl.classList.remove(c)); list.forEach((p) => svgEl.classList.add("p-" + p)); };
   const setAnim = (a) => { [...svgEl.classList].filter((c) => c.startsWith("a-")).forEach((c) => svgEl.classList.remove(c)); void svgEl.getBoundingClientRect();
     if (a) svgEl.classList.add("a-" + a); if (opts.onAnim) opts.onAnim(a || null); };
@@ -469,9 +291,10 @@ function mount(el, opts = {}) {
     if (skinName) svgEl.classList.add("skin-" + skinName);
   }
   function setStill(value) {
-    still = !!value; svgEl.classList.toggle("still", still);
-    clear(); if (busy) { busy = false; setAnim(null); }
+    requestedStill = !!value; still = requestedStill || reduce; svgEl.classList.toggle("still", still);
+    clear(); clearTimeout(idleT); if (busy) { busy = false; setAnim(null); }
     settle();
+    if (!still && opts.idle !== false && !stopped) idle();
   }
   function setSituation(id) {
     cur = byId(id); svgEl.dataset.sit = cur.id;
@@ -482,7 +305,6 @@ function mount(el, opts = {}) {
     if (still || stopped) return;
     clear(); busy = true; setLoop(null);
     const s = cur, ms = s.ms || 3200;
-    if (s.lines.length) { idx[s.id] = ((idx[s.id] ?? -1) + 1) % s.lines.length; if (opts.onSay) opts.onSay(s.label, s.lines[idx[s.id]], s); }
     setAnim(s.anim);
     svgEl.dataset.eyes = s.eyes[0]; setProps(s.prop.slice(0, 1));
     if (600 < ms) later(600, () => { svgEl.dataset.eyes = s.eyes[1]; if (s.prop[1]) setProps(s.beat2 || s.prop); });
@@ -504,6 +326,7 @@ function mount(el, opts = {}) {
   function drawLook(range) { return range[0] + rand() * (range[1] - range[0]); }
   function idle() {
     const blink = opts.idleRange || [1800, 4000], delay = drawLook(blink);
+    if (still || stopped) return;
     idleT = setTimeout(() => {
       if (stopped) return;
       sinceLook += delay;
@@ -516,20 +339,30 @@ function mount(el, opts = {}) {
           else look = "closed";
         } else look = r < .5 ? "closed" : r < .7 ? "left" : r < .85 ? "up" : "right";
         svgEl.dataset.eyes = look;
-        setTimeout(() => { if (!busy && !still && !stopped) svgEl.dataset.eyes = holdEyes(); }, look === "closed" ? 140 : 700);
+        later(look === "closed" ? 140 : 700, () => { if (!busy && !still && !stopped) svgEl.dataset.eyes = holdEyes(); });
       }
       idle();
     }, delay);
   }
+  const onMotionChange = (event) => { reduce = event.matches; setStill(requestedStill); };
+  media?.addEventListener?.("change", onMotionChange);
   setTheme(opts.theme); setSkin(opts.skin); svgEl.classList.toggle("still", still); setSituation(cur.id);
-  if (opts.idle !== false) idle();
+  if (opts.idle !== false && !still) idle();
   return {
     svg: svgEl, react, act, setSituation, setTheme, setSkin, setStill, setLoop, settle,
     get situation() { return cur.id; }, get theme() { return themeName; }, get skin() { return skinName; }, get still() { return still; },
     staticSVG: () => svg({ situation: cur.id, theme: themeName, skin: skinName }),
-    destroy() { stopped = true; clear(); clearTimeout(idleT); svgEl.remove(); }
+    destroy() { media?.removeEventListener?.("change", onMotionChange); stopped = true; clear(); clearTimeout(idleT); svgEl.remove(); }
   };
 }
 
-root.Varya = { PALETTE, THEMES, SITUATIONS, ACTS, SKINS, GUIDE, VIEWBOX, CSS, svg, mount };
+function portrait({maskable=false,transparent=false}={}) {
+  const transform=maskable?'translate(23.04 23.04) scale(.64)':'translate(0 0)';
+  const headTransform=transparent?'translate(-22 3) scale(1.4)':'translate(-16 -12) scale(1.32)';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 128 128" role="img" aria-label="Варя — BotAI">${transparent?'':`<rect width="128" height="128" fill="${PALETTE.BACKGROUND}"/>`}`+
+    `<defs><clipPath id="varya-portrait-clip"><rect width="128" height="128"/></clipPath></defs><g class="portrait" transform="${transform}"><g clip-path="url(#varya-portrait-clip)"><g transform="${headTransform}">`+
+    (transparent?'':path('M39 65C24 87 29 114 65 116C100 116 107 84 90 65Z',PALETTE.DARK))+
+    drawHead(THEMES.orig,{eyes:'open',props:[]})+`</g></g></g></svg>`;
+}
+root.Varya = { portrait, PALETTE, THEMES, SITUATIONS, ACTS, SKINS, GUIDE, VIEWBOX, CSS, svg, mount };
 })(typeof window !== "undefined" ? window : globalThis);
