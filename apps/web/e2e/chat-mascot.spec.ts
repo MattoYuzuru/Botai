@@ -39,12 +39,11 @@ test.describe("Варя на насесте и на сцене", () => {
     await page.keyboard.press("Shift+Tab");
     await page.keyboard.press("Tab");
     await expect(invalid).toBeFocused();
-    const focused = await surface.evaluate((element) => ({
-      border: getComputedStyle(element).borderColor,
-      outline: getComputedStyle(element).outlineStyle,
-    }));
-    expect(focused.border).not.toBe(before);
-    expect(focused.outline).toBe("none");
+    await expect
+      .poll(() => surface.evaluate((element) => getComputedStyle(element).borderColor))
+      .not.toBe(before);
+    const outline = await surface.evaluate((element) => getComputedStyle(element).outlineStyle);
+    expect(outline).toBe("none");
     await expect(invalid).toHaveAttribute("aria-invalid", "true");
   });
 
