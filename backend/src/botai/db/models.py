@@ -130,6 +130,15 @@ class Space(Base):
     created_at: Mapped[datetime] = ts_now()
 
 
+class SourceSitemap(Base):
+    """Non-secret map of one origin (navigation, routes, FAQ/search endpoints), shared like a recipe."""
+
+    __tablename__ = "source_sitemaps"
+    origin: Mapped[str] = mapped_column(String(255), primary_key=True)
+    map: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = ts_now()
+
+
 class AdapterSpecRow(Base):
     __tablename__ = "adapter_specs"
     __table_args__ = (UniqueConstraint("origin", "adapter", "revision"),)
@@ -227,7 +236,8 @@ class _Domain:
         String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
     )
     external_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)  # where it was read (may be API)
+    open_url: Mapped[str | None] = mapped_column(Text)  # the page that shows it to the student
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     spec_revision: Mapped[int | None] = mapped_column(Integer)
     seen_at: Mapped[datetime] = mapped_column(
@@ -265,6 +275,16 @@ class ScheduleEvent(_Domain, Base):
     location_text: Mapped[str | None] = mapped_column(String(200))
     teacher_text: Mapped[str | None] = mapped_column(String(300))
     url: Mapped[str | None] = mapped_column(Text)
+    kind_text: Mapped[str | None] = mapped_column(String(120))  # the source's own class type
+    address: Mapped[str | None] = mapped_column(String(300))
+    group_text: Mapped[str | None] = mapped_column(String(200))
+    lesson_number: Mapped[int | None] = mapped_column(Integer)
+    links: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )  # [{url, label}], online rooms and materials
+    attributes: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )  # [{label, value}], extra values under general labels
     changed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 

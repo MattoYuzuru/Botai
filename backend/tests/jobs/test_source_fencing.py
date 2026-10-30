@@ -151,7 +151,6 @@ class Source:
 
 @pytest.fixture
 async def source(env: Env) -> AsyncIterator[Source]:
-    env.settings.botai_research_enabled = True
     client = env.new_client()
     user = (await env.account(client)).id
     origin = f"https://{new_id().lower()}.fakeuni.test"

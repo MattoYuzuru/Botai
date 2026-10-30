@@ -1123,6 +1123,20 @@ export interface components {
             /** Jobid */
             jobId: string;
         };
+        /** EventAttribute */
+        EventAttribute: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /** EventLink */
+        EventLink: {
+            /** Label */
+            label: string;
+            /** Url */
+            url: string;
+        };
         /** GradeOut */
         GradeOut: {
             /** Coursetitle */
@@ -1349,6 +1363,8 @@ export interface components {
              * Format: date-time
              */
             fetchedAt: string;
+            /** Openurl */
+            openUrl?: string | null;
             /** Sourceurl */
             sourceUrl: string;
             /** Spaceid */
@@ -1387,6 +1403,10 @@ export interface components {
         };
         /** ScheduleEventOut */
         ScheduleEventOut: {
+            /** Address */
+            address?: string | null;
+            /** Attributes */
+            attributes?: components["schemas"]["EventAttribute"][];
             /** Changed */
             changed: boolean;
             /** Conflictswith */
@@ -1403,6 +1423,8 @@ export interface components {
              * @enum {string}
              */
             format: "offline" | "online" | "hybrid" | "unknown";
+            /** Group */
+            group?: string | null;
             /** Id */
             id: string;
             /**
@@ -1410,6 +1432,12 @@ export interface components {
              * @enum {string}
              */
             kind: "lecture" | "seminar" | "lab" | "exam" | "consultation" | "other";
+            /** Kindtext */
+            kindText?: string | null;
+            /** Lessonnumber */
+            lessonNumber?: number | null;
+            /** Links */
+            links?: components["schemas"]["EventLink"][];
             /** Location */
             location: string | null;
             provenance: components["schemas"]["Provenance"];

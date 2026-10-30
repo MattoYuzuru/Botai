@@ -20,6 +20,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from botai.contracts.browser_plan import BrowserPlan
+from botai.sources.templates import is_date_template
 
 Kind = Literal[
     "courses", "scheduleEvents", "deadlines", "assignments", "grades", "people", "locations", "news"
@@ -162,6 +163,31 @@ def _validate_weekly(value: JsonWeekly | HtmlWeekly) -> None:
         raise ValueError("endDayOffset requires endTime")
 
 
+LinkLabel = Annotated[str, Field(min_length=1, max_length=40)]
+
+
+class JsonLink(_M):
+    """One online link of an event: where it leads and how the source names it."""
+
+    url: JsonScalar
+    label: JsonScalar | LinkLabel | None = None
+
+
+class HtmlLink(_M):
+    url: HtmlScalar
+    label: HtmlScalar | LinkLabel | None = None
+
+
+class JsonAttribute(JsonScalar):
+    """An extra value of an event under a general label chosen by the author ("Корпус")."""
+
+    label: LinkLabel
+
+
+class HtmlAttribute(HtmlScalar):
+    label: LinkLabel
+
+
 class JsonResponse(_M):
     format: Literal["json"]
     items_path: str | None = None
@@ -169,6 +195,8 @@ class JsonResponse(_M):
     fields: dict[str, JsonField | JsonComposedField]
     identity: list[str] | None = None
     expand: JsonWeekly | None = None
+    links: list[JsonLink] | None = Field(default=None, min_length=1, max_length=4)
+    attributes: list[JsonAttribute] | None = Field(default=None, min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
@@ -183,6 +211,8 @@ class HtmlResponse(_M):
     fields: dict[str, HtmlField | HtmlComposedField]
     identity: list[str] | None = None
     expand: HtmlWeekly | None = None
+    links: list[HtmlLink] | None = Field(default=None, min_length=1, max_length=4)
+    attributes: list[HtmlAttribute] | None = Field(default=None, min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
@@ -218,6 +248,10 @@ def _scalar_sources(value: _M) -> list[JsonScalar | HtmlScalar]:
             for item in child.values():
                 if isinstance(item, _M):
                     found.extend(_scalar_sources(item))
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, _M):
+                    found.extend(_scalar_sources(item))
     return found
 
 
@@ -233,13 +267,50 @@ class RecipeRequest(_M):
 
 
 class Pagination(_M):
-    type: Literal["none", "offset", "page", "cursor"]
+    type: Literal["none", "offset", "page", "cursor", "dateWindow"]
     param: str | None = None
     limit_param: str | None = Field(default=None)
     limit: int | None = None
     max_pages: int = Field(default=5)
     cursor_path: str | None = Field(default=None)
     total_path: str | None = Field(default=None)
+    # dateWindow: `windows` requests, window i moves the date templates of the query by
+    # (startOffset + i) * stepDays days; offset 0 is the window the source's own page showed.
+    step_days: int | None = Field(default=None, ge=1, le=31, strict=True)
+    windows: int | None = Field(default=None, ge=1, le=12, strict=True)
+    start_offset: int | None = Field(default=None, ge=-4, le=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> Self:
+        window = (self.step_days, self.windows, self.start_offset)
+        if self.type != "dateWindow":
+            if any(value is not None for value in window):
+                raise ValueError("stepDays, windows and startOffset belong to dateWindow")
+            return self
+        if self.param is None or self.step_days is None or self.windows is None:
+            raise ValueError("dateWindow requires param, stepDays and windows")
+        if (
+            self.limit is not None
+            or self.limit_param is not None
+            or self.cursor_path is not None
+            or self.total_path is not None
+            or "max_pages" in self.model_fields_set
+        ):
+            raise ValueError("dateWindow does not combine with page, offset or cursor options")
+        if (self.start_offset or 0) + self.windows - 1 < 0:
+            raise ValueError("dateWindow must include the window the source's own page showed")
+        return self
+
+    @property
+    def first_window(self) -> int:
+        return self.start_offset or 0
+
+
+class UiUrl(_M):
+    """Where the source shows a record to the student: the page, not the API (FR-042)."""
+
+    path: str
+    query: dict[str, str] | None = None
 
 
 class Endpoint(_M):
@@ -247,6 +318,7 @@ class Endpoint(_M):
     kind: Kind
     request: RecipeRequest
     pagination: Pagination | None = None
+    ui_url: UiUrl | None = None
     response: Annotated[JsonResponse | HtmlResponse, Field(discriminator="format")]
 
     @model_validator(mode="after")
@@ -262,8 +334,17 @@ class Endpoint(_M):
             or (self.pagination is not None and self.pagination.type != "none")
         ):
             raise ValueError("browser replay requires rendered GET and owns its pagination")
+        window = self.pagination
+        if window is not None and window.type == "dateWindow":
+            if self.request.method != "GET" or self.request.render or self.response.expand:
+                raise ValueError("dateWindow requires a plain GET without weekly expansion")
+            moved = (self.request.query or {}).get(window.param or "")
+            if moved is None or not is_date_template(moved):
+                raise ValueError("dateWindow moves a date template of the request query")
         if self.response.expand is not None and self.kind != "scheduleEvents":
             raise ValueError("weekly expansion only supports scheduleEvents")
+        if (self.response.links or self.response.attributes) and self.kind != "scheduleEvents":
+            raise ValueError("links and attributes only support scheduleEvents")
         if self.response.expand is not None and {
             "startsAt",
             "endsAt",
@@ -345,11 +426,19 @@ class Recipe(_M):
                     request.pop("browser_plan", None)
             # Added defaults must not become explicit v2 syntax in a typed v1 round trip.
             for endpoint in data.get("endpoints", []):
+                endpoint.pop("uiUrl", None)
+                endpoint.pop("ui_url", None)
+                window = endpoint.get("pagination")
+                if isinstance(window, dict):
+                    for key in ("stepDays", "windows", "startOffset"):
+                        window.pop(key, None)
                 response = endpoint.get("response")
                 if not isinstance(response, dict):
                     continue
                 response.pop("collections", None)
                 response.pop("expand", None)
+                response.pop("links", None)
+                response.pop("attributes", None)
                 for field in response.get("fields", {}).values():
                     field.pop("from", None)
                     field.pop("from_", None)
@@ -374,11 +463,19 @@ class Recipe(_M):
                 for endpoint in self.endpoints
             ):
                 raise ValueError("request auth bindings require recipe v2")
+            if any(
+                endpoint.ui_url is not None
+                or (endpoint.pagination is not None and endpoint.pagination.type == "dateWindow")
+                for endpoint in self.endpoints
+            ):
+                raise ValueError("date windows and interface addresses require recipe v2")
             for endpoint in self.endpoints:
                 response = endpoint.response
                 if (
                     response.collections is not None
                     or response.expand is not None
+                    or response.links is not None
+                    or response.attributes is not None
                     or any(
                         isinstance(f, (JsonComposedField, HtmlComposedField))
                         for f in response.fields.values()

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from tests.fakeuni import data, ical, moodle
+from tests.fakeuni import data, ical, moodle, slide
 from tests.fakeuni.login import SESSIONS, is_logged_in
 
 router = APIRouter()
@@ -40,6 +40,7 @@ def reset() -> None:
     STATE.exams_version = "v1"
     STATE.fail_status = None
     ical.reset()
+    slide.reset()
 
 
 def expire_sessions() -> None:

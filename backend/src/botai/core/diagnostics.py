@@ -125,6 +125,9 @@ _NUMBERS = set(
         "tokens",
         "budget_ms",
         "event_count",
+        "top_level",
+        "records",
+        "window_count",
     ]
 )
 _BOOLEANS = set(
@@ -252,6 +255,7 @@ _CODES: dict[str, set[str]] = {
         "queued",
         "retry",
         "answer",
+        "refused",
     },
     "reason": {
         "auth_read_only",
@@ -312,6 +316,17 @@ _CODES: dict[str, set[str]] = {
         "connect_failed",
         "connection_lost",
         "ok",
+        # probe refusals (learn/probe.py): static reasons, never values
+        "not_a_successful_get",
+        "not_an_observed_data_request",
+        "other_origin",
+        "override_count",
+        "unknown_query_key",
+        "value_not_observed",
+        "not_a_date_key",
+        "date_out_of_range",
+        "secret_address",
+        "request_failed",
     },
     "state": {"queued", "running", "waiting_user", "done", "failed", "cancelled"},
     "channel": {"manual", "native", "dialogue", "approval"},

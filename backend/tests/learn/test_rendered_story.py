@@ -195,7 +195,8 @@ async def test_dom_only_spa_canary_and_sync_follow_local_week_without_model(
 async def test_refused_http_candidate_does_not_hide_a_working_rendered_candidate(
     make_env: EnvFactory, dom_site: DomSite
 ) -> None:
-    refused = recipes.timetable_endpoint(path="/api/browser-only-timetable")
+    refused = endpoint()  # the same observed page read over HTTP: the university refuses that
+    refused["request"]["render"] = False
     env = await make_env([ls.answer([refused, endpoint()])])
     await env.login()
     env.services.browser = dom_site.gateway
@@ -210,12 +211,14 @@ async def test_refused_http_candidate_does_not_hide_a_working_rendered_candidate
     result = await env.run(payload={"url": ENTRY, "kinds": ["scheduleEvents"]})
 
     assert result["status"] == "ok"
-    assert http_calls == ["/api/browser-only-timetable"]
+    assert (
+        http_calls == ["/rendered-schedule"] * 2
+    )  # refused, then re-checked after the session probe
     assert await env.count(m.ScheduleEvent) == 1
     stored = await env.spec(1)
     assert stored["recipe"]["endpoints"][0]["request"]["render"] is True
     assert len(env.llm.requests) == 1
-    assert env.sessions.calls == 1
+    assert env.sessions.calls == 2  # the login, then one independent check of the entry
     assert dom_site.writes == []
 
 

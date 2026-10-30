@@ -138,7 +138,10 @@ erDiagram
 
 - есть `user_id`; любое чтение идёт через репозиторий, который принимает `user_id` первым
   обязательным аргументом (тенант-предикат, NFR-001);
-- доменные таблицы: `connection_id`, `external_id`, `source_url`, `fetched_at`, `spec_rev`;
+- доменные таблицы: `connection_id`, `external_id`, `source_url` (откуда прочитано, для API-источника это
+  внутренний адрес), `open_url` (страница, где студент видит запись), `fetched_at`, `spec_rev`;
+  `schedule_events` добавляет карточку: `kind_text`, `address`, `group_text`, `lesson_number`, `links`,
+  `attributes`; `source_sitemaps(origin, map, updated_at)` — общая карта источника;
   уникальность `(connection_id, external_id)`; upsert идемпотентен;
 - `secrets`: `kind ∈ {password, login, session, token, ical_url, api_key, llm_key, transient}`,
   колонки `kek_id`, `wrapped_dek`, `nonce`, `ciphertext`, `aad_version`, `expires_at`;

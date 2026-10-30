@@ -24,6 +24,12 @@ VOCAB: dict[Kind, frozenset[str]] = {
             "location",
             "teacher",
             "url",
+            "kindText",
+            "address",
+            "group",
+            "lessonNumber",
+            "links",
+            "attributes",
         }
     ),
     "assignments": frozenset({"externalId", "title", "courseId", "description", "url", "maxScore"}),
@@ -70,6 +76,10 @@ KEY_FIELDS: dict[Kind, tuple[str, ...]] = {
     "locations": ("title",),
     "news": ("title",),
 }
+
+# Structured values of an event: they come from the response's `links` and `attributes`
+# sections, never from a `fields` entry or a document column.
+STRUCTURED_FIELDS: frozenset[str] = frozenset({"links", "attributes"})
 
 TABLE_KINDS: tuple[Kind, ...] = ("scheduleEvents", "deadlines", "grades")
 # Extra column targets for document tables that keep the date and the time in separate columns.

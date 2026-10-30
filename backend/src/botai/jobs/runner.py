@@ -156,9 +156,10 @@ class Worker:
         skipped_users: set[str] = set()
         async with self.services.db() as session:
             while True:
-                compatible = ~Job.payload.bool_op("?")("_research_engine")
-                if self.services.settings.botai_research_enabled:
-                    compatible = or_(compatible, Job.payload.contains({"_research_engine": 1}))
+                compatible = or_(
+                    ~Job.payload.bool_op("?")("_research_engine"),
+                    Job.payload.contains({"_research_engine": 1}),
+                )
                 active = aliased(Job)
                 busy = exists(
                     select(active.id).where(

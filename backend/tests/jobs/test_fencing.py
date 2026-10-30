@@ -149,7 +149,7 @@ async def test_healthy_slices_do_not_consume_transport_retry_attempts(env: Env) 
     assert done.payload["_retry_failures"] == 1
 
 
-async def test_engine_versions_are_parked_until_compatible_and_enabled(env: Env) -> None:
+async def test_future_engine_versions_are_parked_until_compatible(env: Env) -> None:
     user = (await env.account()).id
     future = await env.services.queue.enqueue(
         JobKind.SYNC, user_id=user, payload={"_research_engine": 2}, dedupe=False
@@ -161,13 +161,12 @@ async def test_engine_versions_are_parked_until_compatible_and_enabled(env: Env)
     worker = env.worker({})
     first = await worker.claim()
     assert first is not None
-    assert first.id == legacy
+    assert first.id == current
     assert await worker.claim() is None
     await worker._finish(first, "done")
-    env.settings.botai_research_enabled = True
     second = await worker.claim()
     assert second is not None
-    assert second.id == current
+    assert second.id == legacy
     assert await worker.claim() is None
     assert (await env.job(future)).state == "queued"
 

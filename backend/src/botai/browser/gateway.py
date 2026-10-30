@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import (
@@ -140,6 +140,15 @@ def _browser_diagnostics(connection_id: str) -> dict[str, object]:
     # Playwright dispatch runs in its launcher's task context. The owner of this browser
     # supplies correlation; absent IDs explicitly suppress any stale dispatcher context.
     return {**_EMPTY_DIAGNOSTIC_CONTEXT, **diagnostic_context(), "connection_id": connection_id}
+
+
+def _initiator_url(request: Request) -> str | None:
+    """The document of the frame that issued the request; a worker has no frame."""
+    try:
+        url = cast("object", request.frame.url)
+    except PlaywrightError:
+        return None
+    return url if isinstance(url, str) and url else None
 
 
 def _method(method: str) -> str:
@@ -605,6 +614,7 @@ class PlaywrightHandle:
             resource_type=request.resource_type,
             request_content_type=request.headers.get("content-type"),
             evidence_id=f"r{serial}",
+            initiator_url=_initiator_url(request),
         )
         self._log.append(entry)
         self._entries[request] = entry

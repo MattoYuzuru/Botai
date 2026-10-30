@@ -18,7 +18,7 @@ from botai.contracts.schemas import validator
 from botai.contracts.specs import Kind
 from botai.core.browser import ObservedRequest
 from botai.core.llm import LlmMessage, LlmRequest
-from botai.sources.vocab import KIND_LABELS, REQUIRED, VOCAB
+from botai.sources.vocab import KIND_LABELS, REQUIRED, STRUCTURED_FIELDS, VOCAB
 
 PROMPTS = Path(__file__).parent / "prompts"
 MAX_CANDIDATES = 3
@@ -44,6 +44,9 @@ FIELD_HELP: dict[str, str] = {
     "format": "очно, онлайн или смешанно",
     "location": "аудитория или «онлайн»",
     "teacher": "преподаватель (`joinNames`, если их несколько)",
+    "kindText": "тип занятия словами источника (например «Зачётное занятие»)",
+    "group": "группа или поток, например «Группа А-21»",
+    "lessonNumber": "номер пары в дне (`number`)",
     "url": "ссылка на запись",
     "code": "код курса",
     "term": "семестр или учебный период",
@@ -62,7 +65,7 @@ FIELD_HELP: dict[str, str] = {
     "role": "роль: преподаватель, ассистент, сотрудник",
     "email": "рабочая почта преподавателя, только если она публична",
     "building": "корпус",
-    "address": "адрес",
+    "address": "адрес: улица и дом здания",
     "body": "текст",
     "publishedAt": "дата публикации",
 }
@@ -78,7 +81,8 @@ def system_prompt() -> str:
 
 
 def _fields_help(kind: Kind) -> str:
-    return "\n".join(f"- `{name}` — {FIELD_HELP.get(name, name)}" for name in sorted(VOCAB[kind]))
+    names = sorted(VOCAB[kind] - STRUCTURED_FIELDS)
+    return "\n".join(f"- `{name}` — {FIELD_HELP.get(name, name)}" for name in names)
 
 
 PROBLEMS: dict[str, str] = {
@@ -89,6 +93,7 @@ PROBLEMS: dict[str, str] = {
     "selector": "по прежним селекторам ничего не находится",
     "bootstrap": "шаг подготовки не получает нужные значения",
     "empty": "по прежнему описанию записей не находится, хотя раньше они были",
+    "horizon": "описание читает одно окно дат, а соседние окна источника дают больше записей",
 }
 
 
@@ -109,7 +114,6 @@ def task_prompt(
     *,
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
-    factory_v2: bool = False,
 ) -> str:
     """The kind-specific task. With `previous` it is a repair of an endpoint that stopped working."""
     required = sorted(REQUIRED[kind])
@@ -124,12 +128,11 @@ def task_prompt(
         .replace("{{required}}", ", ".join(f"`{r}`" for r in required))
         .replace("{{feedback}}", _feedback_note(feedback))
         .replace("{{problem}}", PROBLEMS.get(problem or "", "сайт отвечает не так, как описано"))
-        .replace("{{factory_rules}}", _factory_rules() if factory_v2 else "")
+        .replace("{{factory_rules}}", _factory_rules())
     )
     if previous is not None:
         text = text.replace("{{previous}}", json.dumps(previous, ensure_ascii=False, indent=1))
-        if factory_v2:
-            text += "\n\n" + _factory_rules()
+        text += "\n\n" + _factory_rules()
     return text.strip()
 
 
@@ -153,7 +156,10 @@ def _factory_rules() -> str:
         "с requestEvidenceId наблюдаемого document-запроса той же страницы.\n"
         "Схема также описывает вложенные collections, ссылки from на именованный контекст, "
         "составление даты и времени compose и ограниченное разворачивание недельного расписания "
-        "expand. Применяй их только когда такая структура подтверждена наблюдением."
+        "expand. Применяй их только когда такая структура подтверждена наблюдением.\n"
+        "Адрес страницы для человека (uiUrl) сервер выводит сам из страницы, где браузер сделал "
+        "запрос; не задавай uiUrl. Окна дат (pagination.type=dateWindow) двигают шаблон даты "
+        "из query: окно 0 должно воспроизводить наблюдённый запрос."
     )
 
 
@@ -185,33 +191,34 @@ def _reference_schema(keys: set[str]) -> dict[str, Any]:
 def author_schema(
     kind: Kind,
     *,
-    factory_v2: bool = False,
     request_facts: Mapping[str, ObservedRequest] | None = None,
     browser_plans: Mapping[str, object] | None = None,
     browser_plan_urls: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The model answers with candidates for one kind, shaped by the recipe contract."""
+    """The model answers with candidates for one kind, shaped by the recipe contract (v2).
+
+    Evidence references stand in for everything the executor owns: credentials, replay plans and
+    the interface address.
+    """
     defs = copy.deepcopy(_recipe_defs())
-    endpoint_name = "endpointV2" if factory_v2 else "endpoint"
-    bootstrap_name = "bootstrapStepV2" if factory_v2 else "bootstrapStep"
-    endpoint = defs[endpoint_name]
+    endpoint = defs["endpointV2"]
     endpoint["properties"]["kind"] = {"const": kind}
-    if factory_v2:
-        request_refs = _reference_schema(set(request_facts or {}))
-        plan_refs = _reference_schema(set(browser_plans or {}) & set(browser_plan_urls or {}))
-        request = endpoint["properties"]["request"]
-        request["properties"].pop("authBinding", None)
-        request["properties"].pop("browserPlan", None)
-        request["allOf"] = [
-            rule for rule in request.get("allOf", []) if "browserPlan" not in json.dumps(rule)
-        ]
-        endpoint["properties"]["requestEvidenceId"] = request_refs
-        endpoint["properties"]["browserPlanRef"] = plan_refs
-        endpoint["oneOf"] = [{"required": ["requestEvidenceId"]}, {"required": ["browserPlanRef"]}]
-        bootstrap = defs[bootstrap_name]
-        bootstrap["properties"].pop("authBinding", None)
-        bootstrap["properties"]["requestEvidenceId"] = copy.deepcopy(request_refs)
-        bootstrap["required"].append("requestEvidenceId")
+    request_refs = _reference_schema(set(request_facts or {}))
+    plan_refs = _reference_schema(set(browser_plans or {}) & set(browser_plan_urls or {}))
+    request = endpoint["properties"]["request"]
+    request["properties"].pop("authBinding", None)
+    request["properties"].pop("browserPlan", None)
+    request["allOf"] = [
+        rule for rule in request.get("allOf", []) if "browserPlan" not in json.dumps(rule)
+    ]
+    endpoint["properties"].pop("uiUrl", None)
+    endpoint["properties"]["requestEvidenceId"] = request_refs
+    endpoint["properties"]["browserPlanRef"] = plan_refs
+    endpoint["oneOf"] = [{"required": ["requestEvidenceId"]}, {"required": ["browserPlanRef"]}]
+    bootstrap = defs["bootstrapStepV2"]
+    bootstrap["properties"].pop("authBinding", None)
+    bootstrap["properties"]["requestEvidenceId"] = copy.deepcopy(request_refs)
+    bootstrap["required"].append("requestEvidenceId")
     schema: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -222,12 +229,12 @@ def author_schema(
             "endpoints": {
                 "type": "array",
                 "maxItems": MAX_CANDIDATES,
-                "items": {"$ref": f"#/$defs/{endpoint_name}"},
+                "items": {"$ref": "#/$defs/endpointV2"},
             },
             "bootstrap": {
                 "type": "array",
                 "maxItems": 4,
-                "items": {"$ref": f"#/$defs/{bootstrap_name}"},
+                "items": {"$ref": "#/$defs/bootstrapStepV2"},
             },
             "auth": {
                 "type": "object",
@@ -256,12 +263,11 @@ def author_request(
     *,
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
-    factory_v2: bool = False,
     request_facts: Mapping[str, ObservedRequest] | None = None,
     browser_plans: Mapping[str, object] | None = None,
     browser_plan_urls: Mapping[str, str] | None = None,
 ) -> LlmRequest:
-    task = task_prompt(kind, feedback, previous=previous, problem=problem, factory_v2=factory_v2)
+    task = task_prompt(kind, feedback, previous=previous, problem=problem)
     return LlmRequest(
         messages=[
             LlmMessage(role="system", content=system_prompt()),
@@ -269,7 +275,6 @@ def author_request(
         ],
         json_schema=author_schema(
             kind,
-            factory_v2=factory_v2,
             request_facts=request_facts,
             browser_plans=browser_plans,
             browser_plan_urls=browser_plan_urls,
@@ -329,9 +334,15 @@ def discovery_request(observation: dict[str, Any], intent: object) -> LlmRequest
             "required": ["stateRef", "action", "ref", "discoveries", "evidenceRefs"],
             "properties": {
                 "stateRef": {"type": "integer", "minimum": 0},
-                "action": {"enum": ["navigate", "inspect", "activate", "use", "finish"]},
+                "action": {"enum": ["navigate", "inspect", "activate", "use", "probe", "finish"]},
                 "ref": {"type": ["string", "null"], "maxLength": 12},
                 "valueRef": {"type": ["string", "null"], "maxLength": 40},
+                "overrides": {
+                    "type": ["object", "null"],
+                    "maxProperties": 4,
+                    "propertyNames": {"type": "string", "maxLength": 40},
+                    "additionalProperties": {"type": "string", "maxLength": 60},
+                },
                 "discoveries": {
                     "type": "array",
                     "maxItems": len(KIND_LABELS),

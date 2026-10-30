@@ -108,14 +108,14 @@ async def test_a_rejected_candidate_gets_one_more_attempt_with_findings(
     make_env: EnvFactory,
 ) -> None:
     leaky = recipes.timetable_endpoint()
-    leaky["request"]["query"]["owner"] = "anna@fakeuni.test"
+    leaky["response"]["fields"]["location"] = {"path": "/place/anna@fakeuni.test"}
     env = await make_env([ls.answer([leaky]), ls.timetable_answer(), ls.deadlines_answer()])
     result = await env.run()
     assert result["status"] == "ok"
     assert len(env.llm.requests) == 3
     retry_prompt = env.llm.requests[1].messages[1].content
     assert "Замечания к предыдущему варианту" in retry_prompt
-    assert "personal.email at /recipe/endpoints/0/request/query/owner" in retry_prompt
+    assert "personal.email at /recipe/endpoints/0/response/fields/location" in retry_prompt
     assert "anna@fakeuni.test" not in retry_prompt  # findings carry places, never values
     spec = (await env.db.execute(select(m.AdapterSpecRow.spec))).scalars().one()
     assert "anna@" not in json.dumps(spec)
@@ -126,14 +126,15 @@ async def test_an_observed_identifier_copied_into_a_path_is_caught(make_env: Env
     env = await make_env([ls.answer([copied]), ls.timetable_answer(), ls.deadlines_answer()])
     result = await env.run()
     assert result["status"] == "ok"
-    assert (
-        "observed.value at /recipe/endpoints/0/request/path"
-        in env.llm.requests[1].messages[1].content
-    )
+    # The compiler refuses an address no observed request had, before the lint sees the value.
+    feedback = env.llm.requests[1].messages[1].content
+    assert "evidence_path_mismatch" in feedback
+    assert "u-1001" not in feedback.split("</observation>")[-1]
 
 
 async def test_candidates_that_fail_on_the_live_session_are_dropped(make_env: EnvFactory) -> None:
-    wrong = recipes.timetable_endpoint(path="/api/v9/timetable")  # 404 on the university
+    wrong = recipes.timetable_endpoint()
+    wrong["response"]["itemsPath"] = "/missing"  # the university answers, but not like this
     env = await make_env(
         [ls.answer([wrong]), ls.answer([wrong]), ls.deadlines_answer()],
     )

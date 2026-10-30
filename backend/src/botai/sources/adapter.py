@@ -125,6 +125,7 @@ class Record:
     external_id: str
     fields: Mapping[str, Any]
     source_url: str
+    open_url: str | None = None  # the page of the source that shows this record to the student
 
 
 @dataclass(slots=True)
@@ -149,6 +150,8 @@ class EndpointOutcome:
     transport: Literal["http", "browser"] = "http"
     status: int | None = None
     binding_id: str | None = None
+    windows: int = 0  # date windows answered by a dateWindow endpoint
+    window_items: list[int] = field(default_factory=list[int])  # records of each window
 
     @property
     def structural(self) -> bool:

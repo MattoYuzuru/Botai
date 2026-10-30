@@ -117,10 +117,12 @@ type Provenance = {
 
 V1 остаётся строгим исходным контрактом. V2 добавляет per-request authBinding, compiler-owned
 Cookie/Bearer policy, nested collections/from, dateTime composition, bounded weekly expansion
-и portable browserPlan. Новый reader принимает обе версии; producer включается отдельно
-BOTAI_FACTORY_V2_ENABLED (default false). Значения credentials и временные evidence refs
+и portable browserPlan; с 2026-10-30 также окна дат (`pagination.type=dateWindow`), адрес страницы
+(`endpoint.uiUrl`) и секции карточки занятия (`response.links`, `response.attributes`). Новый reader
+принимает обе версии; автор всегда создаёт v2 (флаги `BOTAI_RESEARCH_ENABLED` и
+`BOTAI_FACTORY_V2_ENABLED` удалены). Значения credentials и временные evidence refs
 в recipe не сохраняются. Подробности — [контракт v2](../../contracts/recipe-v2.md) и
-[реализация/границы](factory-v2.md). REST/SSE и доменные сущности этим этапом не меняются.
+[реализация/границы](factory-v2.md).
 
 ### Жизненный цикл ревизии
 
@@ -280,3 +282,5 @@ type ActionProposal = {
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
+| 2026-10-30 | Рецепт v2: `pagination.type=dateWindow {param, stepDays, windows, startOffset}`, `endpoint.uiUrl {path, query}`, `response.links` (≤4), `response.attributes` (≤8); словарь `scheduleEvents`: `kindText`, `address`, `group`, `lessonNumber`. v1 не меняется | FR-039–FR-042: источник отдаёт окно от даты, карточка занятия и ссылка на страницу, а не на API. Потребители: `learn/*`, `sources/*`, recipe executor; существующие рецепты читаются без изменений |
+| 2026-10-30 | Домен: `provenance.openUrl` (все сущности), `ScheduleEvent.kindText/address/group/lessonNumber/links/attributes`; БД: `open_url` у всех доменных таблиц, новые колонки `schedule_events`, таблица `source_sitemaps`. В OpenAPI поля необязательны (значение по умолчанию), в ответе присутствуют всегда | FR-041, FR-042, FR-049; потребители: API, PWA (экраны данных, карточка занятия), агент (цитаты через провенанс). Миграция `b5d1c8e7a42f` от `e4a91b7c603d` |
