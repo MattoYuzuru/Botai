@@ -401,6 +401,28 @@ describe("ChatMessage v3", () => {
     expect(screen.getByText("Пары сегодня в 9:30")).toBeInTheDocument();
   });
 
+  it("ответ на вопрос несёт цитату вопроса над текстом, внутри плашки", () => {
+    const { container } = render(
+      <ChatMessage role="user" markdown="Да, всё верно" quote="Всё верно? После подтверждения…" />,
+    );
+    const quote = container.querySelector("[data-message-quote]");
+    expect(quote).not.toBeNull();
+    expect(quote).toHaveTextContent("В ответ на: Всё верно? После подтверждения…");
+    const bubble = container.querySelector(".bg-accent-subtle");
+    expect(bubble).toContainElement(quote as HTMLElement);
+    // цитата стоит раньше самого ответа
+    expect(
+      (quote as HTMLElement).compareDocumentPosition(screen.getByText("Да, всё верно")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container.querySelector("[data-message-quote]")).toHaveClass("border-l-2");
+  });
+
+  it("без цитаты блока цитаты нет", () => {
+    const { container } = render(<ChatMessage role="user" markdown="Привет" />);
+    expect(container.querySelector("[data-message-quote]")).toBeNull();
+  });
+
   it("форма вопроса внутри ответа остаётся карточкой", () => {
     const { container } = render(
       <ChatMessage role="agent" markdown="Это ваши предметы?">

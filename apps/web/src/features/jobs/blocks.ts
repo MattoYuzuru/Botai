@@ -70,6 +70,16 @@ const SOURCE_OK = (value: unknown) =>
         optBool(item.stale),
     ));
 
+const QUOTE_MAX = 200;
+const QUOTE_OK = (value: unknown) =>
+  value === undefined ||
+  (isRecord(value) &&
+    isStr(value.text) &&
+    value.text.length >= 1 &&
+    value.text.length <= QUOTE_MAX &&
+    (value.blockId === undefined || isId(value.blockId)) &&
+    Object.keys(value).every((key) => key === "text" || key === "blockId"));
+
 const INPUT_KINDS = ["text", "url", "number", "date", "email", "password", "code"];
 const AUTOCOMPLETE = ["off", "username", "email", "current-password", "one-time-code", "url"];
 
@@ -78,7 +88,7 @@ function isValidKnown(o: Rec): boolean {
   if (!isId(o.id) || !isStr(o.at)) return false;
   switch (o.type) {
     case "text":
-      return isStr(o.markdown) && SOURCE_OK(o.sources);
+      return isStr(o.markdown) && SOURCE_OK(o.sources) && QUOTE_OK(o.quote);
     case "thinking":
       return (
         isStr(o.stage) &&
@@ -106,7 +116,7 @@ function isValidKnown(o: Rec): boolean {
         (o.maxLength === undefined || (typeof o.maxLength === "number" && o.maxLength >= 1))
       );
     case "confirm":
-      return isStr(o.question) && isStr(o.confirmLabel) && isStr(o.cancelLabel);
+      return isStr(o.question) && isStr(o.confirmLabel) && isStr(o.cancelLabel) && optStr(o.details);
     case "summary":
       return (
         isStr(o.title) &&

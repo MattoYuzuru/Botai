@@ -52,8 +52,20 @@ describe("один тред: подключение, вход, вопросы а
     expect(await screen.findByText("Что подключено", undefined, wait)).toBeInTheDocument();
     await waitFor(() => expect(pendingQuestion()).toBeNull(), wait);
     await waitFor(() => expect(composer()).toBeEnabled(), wait);
-    // Ответы человека остались в истории; пароль в тексте страницы нет.
-    expect(screen.getAllByText("Введено").length).toBeGreaterThan(0);
+    // Ответы человека остались в истории словами: что выбрано, а пароль и логин только названы переданными,
+    // и у каждого ответа есть цитата вопроса. Самого пароля в тексте страницы нет.
+    const replies = [...document.querySelectorAll<HTMLElement>("[data-role='user']")];
+    const said = (text: string) => replies.find((reply) => reply.textContent?.includes(text));
+    expect(said("Пароль передан")?.querySelector("[data-message-quote]")).toHaveTextContent(
+      "Вход в lk.fakeuni.test. Пароль",
+    );
+    expect(said("Логин передан")?.querySelector("[data-message-quote]")).toHaveTextContent(
+      "Вход в lk.fakeuni.test. Логин",
+    );
+    expect(said("Алгоритмы и структуры данных")?.querySelector("[data-message-quote]")).toHaveTextContent(
+      "Это ваши предметы в этом семестре?",
+    );
+    expect(screen.queryByText("Введено")).toBeNull();
     expect(document.body.textContent).not.toContain("correct-horse-battery");
     expect(router.state.location.pathname).toBe("/chat");
   });

@@ -214,6 +214,25 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     await waitFor(() => expect(screen.queryByRole("group", { name: "Быстрые ответы" })).toBeNull(), wait);
   });
 
+  it("кнопка быстрого ответа уходит с цитатой: в ленте видно, на какой вопрос отвечено", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Какая следующая пара?");
+    const group = await screen.findByRole("group", { name: "Быстрые ответы" }, wait);
+    await user.click(within(group).getByRole("button", { name: "Что сдавать на неделе?" }));
+    await screen.findByText(/Ближайшие работы/, undefined, wait);
+    const mine = [...document.querySelectorAll<HTMLElement>("[data-role='user']")].find((reply) =>
+      reply.textContent?.includes("Что сдавать на неделе?"),
+    );
+    // Цитата — последняя фраза прежнего ответа, простым текстом; сама кнопка в ней не повторяется.
+    expect(mine?.querySelector("[data-message-quote]")).toHaveTextContent("Подробнее — в кабинете.");
+    expect(mine?.querySelector("[data-message-quote]")?.textContent).not.toContain("**");
+    // История хранит её на сервере: после перечитывания она на месте.
+    const rows = (await (
+      await fetch(new URL(`/api/v1/chat/threads/${await seededThreadId()}/messages`, window.location.origin))
+    ).json()) as { role: string; blocks: { quote?: { text: string } }[] }[];
+    expect(rows.some((row) => row.role === "user" && row.blocks[0]?.quote?.text)).toBe(true);
+  });
+
   it("план ответа: шаги обновляются тем же блоком и доходят до «выполнено 3 из 3»; в ленте один план", async () => {
     const { user } = await openNewChat();
     await ask(user, "Сравни нагрузку и составь план");

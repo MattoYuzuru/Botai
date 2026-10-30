@@ -160,7 +160,8 @@ describe("один таймлайн треда", () => {
       ],
     });
     const { turns } = build({ messages, jobs: [live] });
-    expect(kinds(turns)).toEqual(["user", "block", "thinking", "block"]);
+    // Задача ждёт человека: её «Ждёт ответа» стоит последним, под всем, что появилось за время работы.
+    expect(kinds(turns)).toEqual(["user", "block", "block", "thinking"]);
     const thinking = turns.find((turn) => turn.kind === "thinking");
     expect(thinking?.kind === "thinking" && thinking.steps.map((step) => step.label)).toEqual([
       "Ищу личный кабинет",
@@ -168,7 +169,8 @@ describe("один таймлайн треда", () => {
     ]);
     // Последний бегущий шаг при ожидании человека — «ждёт», это слышно словами.
     expect(thinking?.kind === "thinking" && thinking.steps.at(-1)?.state).toBe("waiting");
-    expect(turns.at(-1)).toMatchObject({ kind: "block", jobId: connect });
+    expect(turns.at(-1)).toMatchObject({ kind: "thinking", jobId: connect });
+    expect(turns.at(-2)).toMatchObject({ kind: "block", jobId: connect });
   });
 
   it("живой блок заменяет сохранённый на месте: план обновляется тем же id, а не дублируется", () => {
@@ -256,12 +258,152 @@ describe("один таймлайн треда", () => {
       blocks: [textBlock(ULID(60), "Готово.", { quickReplies: ["Да", "Нет", "", "x".repeat(80)] })],
     });
     const done = build({ messages: [answer] });
-    expect(done.quickReplies).toEqual({ key: `block:chat-5:${ULID(60)}`, options: ["Да", "Нет"] });
+    // Кнопки несут цитату того, на что отвечают: ответ «Да» без неё в ленте непонятен.
+    expect(done.quickReplies).toEqual({
+      key: `block:chat-5:${ULID(60)}`,
+      options: ["Да", "Нет"],
+      quote: { text: "Готово.", blockId: ULID(60) },
+    });
     // Дальше написал человек (ожидает отправки), идёт ход агента — кнопок нет.
     expect(build({ messages: [answer], pending: [pending()] }).quickReplies).toBeNull();
     expect(build({ messages: [answer], jobs: [job("chat-6", "chat")] }).quickReplies).toBeNull();
     // После ответа агента уже написал человек: кнопки под старым ответом не нужны.
     expect(build({ messages: [answer, message({ id: ULID(7), role: "user" })] }).quickReplies).toBeNull();
+  });
+});
+
+describe("мышление: идёт — внизу, закончилось — над итоговым ответом", () => {
+  const thought = (id: number, at: number, stage: string, state = "ok") => ({
+    type: "thinking",
+    id: ULID(id),
+    at: iso(at),
+    stage,
+    state,
+  });
+  const say = (id: number, at: number, markdown: string) => textBlock(ULID(id), markdown, { at: iso(at) });
+  const agent = (n: number, jobId: string, at: number, ...blocks: object[]) =>
+    message({ id: ULID(n), role: "agent", jobId, blocks, createdAt: iso(at) });
+  const history: Message[] = [
+    message({
+      id: ULID(90),
+      role: "user",
+      blocks: [textBlock(ULID(91), "Какая следующая пара?")],
+      createdAt: iso(NOW - 600_000),
+    }),
+    message({
+      id: ULID(92),
+      role: "agent",
+      jobId: "chat-0",
+      blocks: [textBlock(ULID(93), "Алгоритмы в 9:30.")],
+      createdAt: iso(NOW - 590_000),
+    }),
+  ];
+
+  it("пока задача работает, живое «Думает» последнее: сообщения задачи появляются над ним", () => {
+    const task = "connect-1";
+    const messages = [
+      message({
+        id: ULID(1),
+        role: "user",
+        blocks: [textBlock(ULID(10), "Подключи ЦУ")],
+        createdAt: iso(NOW - 90_000),
+      }),
+      agent(2, task, NOW - 80_000, thought(20, NOW - 80_000, "Ищу личный кабинет")),
+      agent(3, task, NOW - 60_000, say(21, NOW - 60_000, "Нашла вход, захожу.")),
+      agent(4, task, NOW - 40_000, thought(22, NOW - 40_000, "Читаю расписание", "running")),
+      agent(5, task, NOW - 20_000, say(23, NOW - 20_000, "Нужно подтвердить вход в приложении.")),
+    ];
+    const live = job(task, "connect", {
+      state: "running",
+      blocks: [
+        thought(20, NOW - 80_000, "Ищу личный кабинет") as never,
+        thought(22, NOW - 40_000, "Читаю расписание", "running") as never,
+      ],
+    });
+    const { turns } = build({ messages, jobs: [live] });
+    expect(kinds(turns)).toEqual(["user", "block", "block", "thinking"]);
+    const last = turns.at(-1);
+    expect(last).toMatchObject({ kind: "thinking", jobId: task, running: true });
+    expect(last?.kind === "thinking" && last.steps.map((step) => step.label)).toEqual([
+      "Ищу личный кабинет",
+      "Читаю расписание",
+    ]);
+  });
+
+  it("новое сообщение человека не прячет живое «Думает»: оно по-прежнему последнее", () => {
+    const messages = [agent(2, "connect-1", NOW - 60_000, say(21, NOW - 60_000, "Захожу."))];
+    const live = job("connect-1", "connect", {
+      blocks: [thought(20, NOW - 80_000, "Читаю", "running") as never],
+    });
+    const { turns } = build({ messages, jobs: [live], pending: [pending({ status: "sending" })] });
+    expect(kinds(turns)).toEqual(["block", "user", "thinking"]);
+  });
+
+  it("закончилось: свёрнутый «Думал» стоит прямо над итоговым ответом этого задания", () => {
+    const task = "connect-2";
+    const messages = [
+      message({
+        id: ULID(1),
+        role: "user",
+        blocks: [textBlock(ULID(10), "Подключи")],
+        createdAt: iso(NOW - 120_000),
+      }),
+      agent(2, task, NOW - 110_000, thought(20, NOW - 110_000, "Ищу вход")),
+      agent(3, task, NOW - 100_000, say(21, NOW - 100_000, "Нашла вход.")),
+      agent(4, task, NOW - 60_000, thought(22, NOW - 60_000, "Читаю расписание")),
+      message({
+        id: ULID(5),
+        role: "user",
+        blocks: [textBlock(ULID(11), "Да, всё верно")],
+        createdAt: iso(NOW - 50_000),
+      }),
+      agent(6, task, NOW - 10_000, say(23, NOW - 10_000, "Готово! Расписание подключено.")),
+    ];
+    const { turns } = build({ messages });
+    expect(kinds(turns)).toEqual(["user", "block", "user", "thinking", "block"]);
+    expect(turns[3]).toMatchObject({ kind: "thinking", jobId: task, running: false });
+    expect(turns[4]).toMatchObject({ kind: "block", jobId: task });
+    expect(turns[4]?.kind === "block" && turns[4].block.type === "text" && turns[4].block.markdown).toBe(
+      "Готово! Расписание подключено.",
+    );
+  });
+
+  it("закончившееся задание в потоке: «Думал» над последним текстом, замирает на его времени", () => {
+    const done = job("chat-9", "chat", {
+      state: "done",
+      blocks: [thought(20, NOW - 9_000, "Читаю") as never, say(21, NOW - 2_000, "Вот ответ") as never],
+    });
+    const { turns } = build({ messages: history, jobs: [done], nowMs: NOW + 60_000 });
+    expect(kinds(turns).slice(-2)).toEqual(["thinking", "block"]);
+    expect(turns.at(-2)).toMatchObject({ running: false, finishedAt: NOW - 2_000 });
+  });
+
+  it("сбой задания: «Думал» над сообщением о сбое, живое соседнее задание остаётся внизу", () => {
+    const failed = job("c1", "connect", {
+      state: "failed",
+      problem: { code: "source_unavailable", detail: "", extra: {} },
+      blocks: [thought(20, NOW - 9_000, "Захожу", "failed") as never],
+    });
+    const working = job("chat-8", "chat", { blocks: [thought(21, NOW - 3_000, "Ищу", "running") as never] });
+    const { turns } = build({ messages: history, jobs: [failed, working] });
+    expect(kinds(turns)).toEqual(["user", "block", "thinking", "failure", "thinking"]);
+    expect(turns.at(-1)).toMatchObject({ jobId: "chat-8", running: true });
+    expect(turns.at(-3)).toMatchObject({ jobId: "c1", running: false });
+  });
+
+  it("у закончившегося задания нет ни одного своего блока в ленте — «Думал» остаётся на своём месте", () => {
+    const messages = [
+      ...history,
+      agent(8, "connect-3", NOW - 500_000, thought(20, NOW - 500_000, "Смотрю сайт")),
+      message({
+        id: ULID(9),
+        role: "user",
+        blocks: [textBlock(ULID(12), "Ещё вопрос")],
+        createdAt: iso(NOW - 400_000),
+      }),
+    ];
+    const { turns } = build({ messages });
+    expect(kinds(turns)).toEqual(["user", "block", "thinking", "user"]);
   });
 });
 

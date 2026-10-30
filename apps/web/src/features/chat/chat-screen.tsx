@@ -32,6 +32,7 @@ import { EmptyChat } from "./empty-chat";
 import { useOpenThread } from "./open-thread";
 import { isSecretInChat } from "./outbox";
 import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
+import type { MessageQuote } from "./quote";
 import { outbox, useOutbox } from "./runtime";
 import { SourcesPanel } from "./sources-panel";
 import { buildSuggestions } from "./suggestions";
@@ -269,7 +270,7 @@ export function ChatScreen() {
   );
 
   const send = useCallback(
-    (text: string, withAttachments: boolean) => {
+    (text: string, withAttachments: boolean, quote?: MessageQuote | null) => {
       if (!ownerId) return;
       const files = withAttachments ? attachments.take() : [];
       const item = outbox.send(text, {
@@ -278,6 +279,7 @@ export function ChatScreen() {
         spaceId: null,
         attachments: files,
         targetJobId: composer.targetJobId,
+        quote: quote ?? undefined,
       });
       if (activeId === null) {
         setDraftMessages((items) => [...items, { id: item.id, ownerId: item.ownerId, threadId: null }]);
@@ -419,7 +421,7 @@ export function ChatScreen() {
                 nowMs={nowMs}
                 timeZone={timeZone}
                 links={links}
-                onQuickReply={(text) => send(text, false)}
+                onQuickReply={(text) => send(text, false, timeline.quickReplies?.quote)}
                 quickRepliesDisabled={composer.disabled}
                 onRestart={restart}
                 restarting={reconnect.isPending}

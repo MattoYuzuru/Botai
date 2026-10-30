@@ -29,6 +29,8 @@ export class JobSim {
   cancelled = false;
   /** Fixture projection is written before SSE listeners see the event, like durable server turns. */
   onEvent?: (event: SimEvent) => void;
+  /** Принятый ответ на вопрос: сервер пишет его в тред сообщением человека (слова варианта под цитатой вопроса). */
+  onAnswer?: (blockId: string, values: unknown) => void;
 
   constructor(
     readonly jobId: string,
@@ -85,14 +87,18 @@ export class JobSim {
     return values;
   }
 
-  /** Ответ человека. `false` — такого вопроса нет, `"answered"` — уже отвечен (409). */
-  answer(blockId: string, values: unknown, secret: boolean): boolean | "answered" {
+  /**
+   * Ответ человека. `false` — такого вопроса нет, `"answered"` — уже отвечен (409). `announce: false` — ответом уже
+   * стало сообщение человека в чате (ответ в диалоге), второго в тред не пишется.
+   */
+  answer(blockId: string, values: unknown, secret: boolean, announce = true): boolean | "answered" {
     if (this.answered.has(blockId)) return "answered";
     const resolve = this.waiting.get(blockId);
     if (!resolve) return false;
     this.answered.add(blockId);
     this.waiting.delete(blockId);
     if (secret) this.sealed.set(blockId, values);
+    if (announce) this.onAnswer?.(blockId, values);
     resolve(values);
     return true;
   }

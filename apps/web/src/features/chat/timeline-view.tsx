@@ -208,6 +208,7 @@ function TurnView({
         <ChatMessage
           role="user"
           markdown={turn.text || undefined}
+          quote={turn.quote?.text}
           attachments={turn.attachments.map((item) =>
             "attachmentId" in item ? viewerFromBlock(item) : viewerFromAttachment(item),
           )}
@@ -276,22 +277,23 @@ function HistoryBlock({
   receipt: ThreadRuntime["receipts"][number] | undefined;
 }) {
   if (block.type === "input" || block.type === "choice" || block.type === "confirm") {
-    const answer = ctx.answers[block.id];
+    // Ответ человека — следующее сообщение ленты: сервер пишет его словами под цитатой вопроса.
+    const closed = receipt?.status === "superseded" || receipt?.status === "rejected";
     return (
       <div className="flex flex-col gap-3" data-conversation-block={block.id}>
-        <ChatMessage role="agent" markdown={block.question} />
-        {answer?.status === "answered" ? (
-          <ChatMessage role="user" markdown={answer.shown ?? "Введено"} />
-        ) : (
-          receipt && (
-            <p className="type-caption text-fg-muted">
-              {receipt.status === "superseded"
-                ? "Вопрос закрыт"
-                : receipt.status === "rejected"
-                  ? "Ответ не принят"
-                  : "Ответ отправлен"}
-            </p>
-          )
+        <ChatMessage
+          role="agent"
+          markdown={
+            block.type === "confirm" && block.details
+              ? `${block.details}\n\n${block.question}`
+              : block.question
+          }
+          resolveLink={ctx.resolveLink}
+        />
+        {closed && (
+          <p className="type-caption text-fg-muted">
+            {receipt.status === "superseded" ? "Вопрос закрыт" : "Ответ не принят"}
+          </p>
         )}
       </div>
     );
