@@ -64,6 +64,8 @@ _NUMBERS = set(
         "cookie_count",
         "form_count",
         "allow_host_count",
+        "asset_host_cap",
+        "asset_host_count",
         "host_round",
         "request_count",
         "response_count",
@@ -212,7 +214,18 @@ _CODES: dict[str, set[str]] = {
     },
     "decision": {"allow", "deny"},
     "method": {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "OTHER"},
-    "resource_type": {"xhr", "fetch", "document", "other"},
+    "resource_type": {
+        "xhr",
+        "fetch",
+        "document",
+        "other",
+        "stylesheet",
+        "script",
+        "font",
+        "image",
+        "media",
+        "websocket",
+    },
     "capture_from": {"none", "authorizationHeader", "localStorage", "sessionStorage"},
     "kind": {
         "scheduleEvents",
@@ -317,6 +330,13 @@ _CODES: dict[str, set[str]] = {
         "dns_failure",
         "invalid_address",
         "private_address",
+        "asset_armed",  # egress: an asset host was admitted for a browser context
+        "asset_not_allowed",  # egress: a token without an asset allowance asked for one
+        "asset_type",  # browser guard: not a GET of a style sheet, script, font, image, media
+        "asset_method",
+        "asset_credentials",  # the request would carry the source's cookie or authorization
+        "asset_cap",
+        "asset_unavailable",
         "connect_timeout",
         "connect_failed",
         "connection_lost",

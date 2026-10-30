@@ -1,6 +1,10 @@
 """How the rest of the backend obtains a path through the EgressProxy.
 
-* `Egress.credentials(hosts)` mints a short-lived token for one connection's allowlist.
+* `Egress.credentials(hosts)` mints a short-lived token for one connection's allowlist. Only a
+  browser context asks for `assets`: room for a few extra public hosts that its page assets come
+  from. Tokens for `core.http` clients (API fetch, probes, search) never carry it.
+* `Egress.arm_asset_host(token, host)` is how the browser guard spends one of those slots on a host
+  it has just vouched for (a GET of a style sheet, script, font, image or media).
 * With `EGRESS_PROXY_URL` set, the proxy is a separate process (`python -m botai.browser.proxy`)
   and the secret comes from `BOTAI_PROXY_SECRET`, the same value the proxy was started with.
 * Without it, a proxy runs inside this process on a loopback port (development, tests, single-box
@@ -13,17 +17,22 @@ Other modules (the sync Runner) call `proxy_url_for(...)` and hand the result to
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import os
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from botai.browser.proxy import (
+    PROXY_USER,
     EgressProxy,
     derive_key,
+    is_ip_literal,
     mint_token,
+    normalize_host,
     proxy_url_with_token,
     verify_token,
 )
@@ -46,8 +55,17 @@ class ProxyCredentials:
 
 class Egress(Protocol):
     async def credentials(
-        self, hosts: Sequence[str], *, ttl_s: float, suffixes: Sequence[str] = ()
+        self,
+        hosts: Sequence[str],
+        *,
+        ttl_s: float,
+        suffixes: Sequence[str] = (),
+        assets: int = 0,
     ) -> ProxyCredentials: ...
+
+    async def arm_asset_host(self, token: str, host: str) -> bool:
+        """Spend one of the token's asset slots on `host`; False when the proxy refuses."""
+        ...
 
 
 class ProxyEgress:
@@ -64,15 +82,23 @@ class ProxyEgress:
         self._start_lock = asyncio.Lock()
 
     async def credentials(
-        self, hosts: Sequence[str], *, ttl_s: float, suffixes: Sequence[str] = ()
+        self,
+        hosts: Sequence[str],
+        *,
+        ttl_s: float,
+        suffixes: Sequence[str] = (),
+        assets: int = 0,
     ) -> ProxyCredentials:
-        token = mint_token(self._secret, hosts=hosts, ttl_s=ttl_s, suffixes=suffixes)
+        token = mint_token(
+            self._secret, hosts=hosts, ttl_s=ttl_s, suffixes=suffixes, max_asset_hosts=assets
+        )
         grant = verify_token(self._secret, token)
         if grant is not None:
             diagnostic_event(
                 "egress.grant",
                 grant_hash=hashlib.sha256(grant.jti.encode()).hexdigest()[:16],
                 allow_host_count=len(grant.hosts),
+                **({"asset_host_cap": grant.max_asset_hosts} if grant.max_asset_hosts else {}),
             )
         if self._proxy is not None:
             async with self._start_lock:
@@ -81,9 +107,43 @@ class ProxyEgress:
         assert self._server_url is not None
         return ProxyCredentials(self._server_url.rstrip("/"), token)
 
+    async def arm_asset_host(self, token: str, host: str) -> bool:
+        normalized = normalize_host(host)
+        if normalized is None or is_ip_literal(normalized):
+            return False
+        if self._proxy is not None:
+            return self._proxy.arm_asset_host(token, normalized) is None
+        assert self._server_url is not None
+        return await _arm_remote(self._server_url, token, normalized)
+
     async def aclose(self) -> None:
         if self._proxy is not None:
             await self._proxy.close()
+
+
+async def _arm_remote(server_url: str, token: str, host: str, *, timeout_s: float = 3.0) -> bool:
+    """`ARM host:443` against a proxy in another process: the answer is 204 or a refusal."""
+    parts = urlsplit(server_url)
+    if not parts.hostname:
+        return False
+    credentials = base64.b64encode(f"{PROXY_USER}:{token}".encode()).decode()
+    request = (
+        f"ARM {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
+        f"Proxy-Authorization: Basic {credentials}\r\n\r\n"
+    )
+    try:
+        async with asyncio.timeout(timeout_s):
+            reader, writer = await asyncio.open_connection(parts.hostname, parts.port or 3128)
+            try:
+                writer.write(request.encode("ascii"))
+                await writer.drain()
+                head = await reader.readuntil(b"\r\n\r\n")
+            finally:
+                writer.close()
+    except (OSError, TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+        return False
+    status_line = head.split(b"\r\n", 1)[0].split(b" ")
+    return len(status_line) >= 2 and status_line[1] == b"204"
 
 
 _cached: ProxyEgress | None = None
