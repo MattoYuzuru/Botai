@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     login_failures_per_window: int = 10
 
 
+_RENAMED = {"LLM_PROFILE_CHAT": "LLM_PROFILE_AGENT"}  # a removed name must not be lost silently
+
+
 @lru_cache
 def get_settings() -> Settings:
+    for old, new in _RENAMED.items():
+        if os.environ.get(old):
+            raise RuntimeError(f"{old} больше не читается: переименуйте его в {new}")
     return Settings()
