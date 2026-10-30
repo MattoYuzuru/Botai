@@ -70,6 +70,8 @@ test.describe("«Сегодня»", () => {
     const deadlines = page.getByRole("region", { name: "Ближайшие сроки" });
     await expect(classes.getByText("Сегодня пар нет")).toBeVisible();
     await expect(deadlines.getByText("Ближайших сроков нет")).toBeVisible();
+    // Поиск ближайших пар — отдельный запрос: до его завершения между разделами стоит скелетон.
+    await expect(classes.getByText("В расписании на ближайшие три недели пар тоже нет.")).toBeVisible();
     const a = await classes.boundingBox();
     const b = await deadlines.boundingBox();
     expect(a && b).toBeTruthy();
