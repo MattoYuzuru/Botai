@@ -28,6 +28,7 @@ from botai.agent.schemas import (
 from botai.agent.threads import primary_task
 from botai.attachments import service as attachments
 from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, Quote, TextBlock
+from botai.core.calendar_link import calendar_link_in
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -39,6 +40,7 @@ from botai.jobs.events import IN_FLIGHT
 from botai.jobs.notify import CHANNEL_ANSWERS
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.schemas import JobOut
+from botai.sources import calendar
 from botai.spaces import repo, service
 from botai.spaces.conversations import owned_thread, reject_secret_links, safe_text
 
@@ -352,6 +354,10 @@ async def post_message(
         select(func.pg_advisory_xact_lock(func.hashtextextended(f"thread-post:{thread.id}", 0)))
     )
     thread = await owned_thread(session, user_id, thread_id)  # deleted while we waited: not found
+    # Before anything else is looked at: a personal calendar link is kept out of the thread, the
+    # queue and every answer, whatever the message was addressed to (a stale task, a missing file).
+    if calendar_link_in(body.text):
+        raise await calendar.refuse_calendar_link(session, user_id, thread, services.clock.now())
     if body.client_message_id:
         replay = await _replay(session, user_id, thread.id, body)
         if replay is not None:
@@ -475,6 +481,18 @@ async def post_message(
         connection_id=target.connection_id if target else None,
     )
     return MessageAccepted(message=message_out(message), job_id=job_id)
+
+
+async def offer_calendar_link(
+    session: AsyncSession, services: Services, user_id: str, thread_id: str
+) -> None:
+    """The client found a personal calendar link in what the student wrote and never sent it: the
+    thread gets the same question that the server writes when a link arrives."""
+    thread = await owned_thread(session, user_id, thread_id)
+    await session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(f"thread-post:{thread.id}", 0)))
+    )
+    await calendar.offer_calendar(session, user_id, thread, services.clock.now())
 
 
 async def _attach_files(

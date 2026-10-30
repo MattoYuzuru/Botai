@@ -250,6 +250,35 @@ describe("input", () => {
     expect(screen.queryByText(/Сохраним зашифрованным/)).toBeNull();
   });
 
+  it("секретная ссылка (календарь): скрытое поле без автозаполнения паролем, ссылка уходит без подписи", async () => {
+    const ctx = setup(
+      input({
+        question: "Ссылка на экспорт календаря (iCal)",
+        inputKind: "url",
+        secret: true,
+        autocomplete: "url",
+        placeholder: "https://… или webcal://…",
+        maxLength: 2000,
+      }),
+    );
+    const field = screen.getByLabelText("Ответ") as HTMLInputElement;
+    expect(field).toHaveAttribute("type", "password");
+    expect(field).toHaveAttribute("autocomplete", "off");
+    expect(field).toHaveAttribute("maxlength", "2000");
+    expect(field).toHaveAttribute("placeholder", "https://… или webcal://…");
+    expect(screen.queryByText(/Сохраним зашифрованным/)).toBeNull();
+    expect(screen.getByText(/Ссылка хранится зашифрованной/)).toBeInTheDocument();
+    await userEvent.type(field, "https://calendar.example.org/export/ics.xml?private_token=abc123");
+    await userEvent.click(screen.getByRole("button", { name: "Ответить" }));
+    expect(ctx.onAnswer).toHaveBeenCalledWith(
+      ID(2),
+      "https://calendar.example.org/export/ics.xml?private_token=abc123",
+      null,
+    );
+    expect(field.value).toBe("");
+    expect(document.body.innerHTML).not.toContain("private_token=abc123");
+  });
+
   it("отвеченный секрет в истории — «Введено», без значения", () => {
     setup(input({ inputKind: "password", secret: true }), {
       [ID(2)]: { status: "answered", shown: null, error: null },

@@ -13,6 +13,7 @@ from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
 from botai.learn.explorer import Explorer
 from botai.learn.repair import make_repair_handler
+from botai.sources.calendar import CalendarConnector
 
 
 def _connection_id(ctx: JobContext, payload: dict[str, Any]) -> str:
@@ -30,6 +31,10 @@ def make_handlers(
     async def connect(
         ctx: JobContext, services: Services, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        if payload.get("calendar") is True:
+            # A calendar is read by the export link of its owner: no browser, no site to learn.
+            calendar = CalendarConnector(ctx, services, transport=transport, retry=retry)
+            return await calendar.run(_connection_id(ctx, payload))
         explorer = Explorer(ctx, services, transport=transport, retry=retry)
         return await explorer.connect(_connection_id(ctx, payload), payload)
 

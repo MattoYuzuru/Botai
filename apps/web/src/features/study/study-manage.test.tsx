@@ -4,6 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSpaceStore } from "@/app/active-space";
 import type { Scenario } from "@/mocks/db";
+import { addConnection, hrefOf } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -32,7 +33,6 @@ afterAll(() => {
 });
 
 const hseId = () => (current.db.spaces[0] as { id: string }).id;
-const SECRET = "https://my.fakeuni.test/calendar/export.ics?key=very-secret-key-123";
 
 async function openPortal() {
   renderApp(`/study/connections?space=${hseId()}`);
@@ -50,7 +50,53 @@ describe("«Источники»: управление", () => {
     expect(within(sheet).queryByRole("button", { name: /Повторить|Обновить/ })).toBeNull();
   });
 
-  it("ссылка календаря: уходит один раз с нужным видом, значение нигде не показывается после сохранения", async () => {
+  it("в разделе «Источники» у вуза есть «Добавить источник» и его вариант «Календарь (iCal)» — оба в чат", async () => {
+    renderApp(`/study/connections?space=${hseId()}`);
+    const add = await screen.findByRole("link", { name: "Добавить источник" });
+    const calendar = await screen.findByRole("link", { name: "Календарь (iCal)" });
+    for (const link of [add, calendar]) expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(calendar).draft).toContain("Высшая школа экономики");
+    expect(hrefOf(calendar).draft).toMatch(/календар/i);
+  });
+
+  describe("календарь по ссылке (adapter ical)", () => {
+    async function openCalendar(patch: Parameters<typeof addConnection>[2] = {}) {
+      addConnection(current.db, hseId(), {
+        title: "Календарь",
+        kind: "calendar",
+        adapter: "ical",
+        origin: "https://calendar.fakeuni.test",
+        entryUrl: null,
+        hasPassword: false,
+        ...patch,
+      });
+      renderApp(`/study/connections?space=${hseId()}`);
+      await userEvent.click(await screen.findByRole("button", { name: /^Календарь/ }));
+      return screen.findByRole("dialog", { name: "Календарь" });
+    }
+
+    it("новую ссылку принимает защищённое поле чата, а не форма в карточке", async () => {
+      const sheet = await openCalendar();
+      expect(within(sheet).queryByRole("button", { name: /Добавить ключ доступа/ })).toBeNull();
+      expect(within(sheet).queryByLabelText("Ссылка на календарь")).toBeNull();
+      const replace = within(sheet).getByRole("link", { name: "Ввести новую ссылку" });
+      expect(hrefOf(replace).pathname).toBe("/chat");
+      expect(hrefOf(replace).draft).toContain("«Календарь»");
+      expect(hrefOf(replace).draft).toContain("Высшая школа экономики");
+      expect(hrefOf(replace).draft).not.toMatch(/https?:|webcal:|\.ics/);
+    });
+
+    it("ссылка умерла: «Нужна новая ссылка» и кнопка «Новая ссылка» вместо «Войти снова»", async () => {
+      const sheet = await openCalendar({ status: "needs_reauth" });
+      expect(within(sheet).getByText("Нужна новая ссылка")).toBeInTheDocument();
+      expect(within(sheet).getByText(/Ссылка на календарь .* перестала работать/)).toBeInTheDocument();
+      expect(within(sheet).queryByRole("link", { name: "Войти снова" })).toBeNull();
+      const fresh = within(sheet).getByRole("link", { name: "Новая ссылка" });
+      expect(hrefOf(fresh).draft).toContain("новой ссылки календаря");
+    });
+  });
+
+  it("ключ доступа: уходит один раз с нужным видом, значение нигде не показывается после сохранения", async () => {
     const bodies: unknown[] = [];
     current.server.use(
       http.put("*/api/v1/connections/:id/secrets", async ({ request }) => {
@@ -59,46 +105,32 @@ describe("«Источники»: управление", () => {
       }),
     );
     const sheet = await openPortal();
-    await userEvent.click(
-      within(sheet).getByRole("button", { name: /Добавить ссылку на календарь или ключ/ }),
-    );
-    const field = await within(sheet).findByLabelText("Ссылка на календарь");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Добавить ключ доступа" }));
+    const field = await within(sheet).findByLabelText("Ключ доступа");
     expect(field).toHaveAttribute("type", "password");
     expect(field).toHaveAttribute("autocomplete", "off");
-    await userEvent.type(field, SECRET);
+    await userEvent.type(field, "very-secret-key-123");
     await userEvent.click(within(sheet).getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(bodies[0]).toEqual({ kind: "ical_url", value: SECRET });
+    expect(bodies[0]).toEqual({ kind: "token", value: "very-secret-key-123" });
     // Подтверждение — тост без значения; формы со значением больше нет.
-    expect(await screen.findByText("Ссылка на календарь сохранена")).toBeInTheDocument();
-    await waitFor(() => expect(within(sheet).queryByLabelText("Ссылка на календарь")).toBeNull());
+    expect(await screen.findByText("Ключ доступа сохранён")).toBeInTheDocument();
+    await waitFor(() => expect(within(sheet).queryByLabelText("Ключ доступа")).toBeNull());
     expect(document.body.textContent).not.toContain("very-secret-key-123");
     expect(
       [...document.querySelectorAll("input")].every((input) => !input.value.includes("very-secret")),
     ).toBe(true);
   });
 
-  it("ссылка календаря без https:// отклоняется у поля словами, на сервер не уходит", async () => {
-    const calls: string[] = [];
-    current.server.use(
-      http.put("*/api/v1/connections/:id/secrets", () => {
-        calls.push("put");
-        return new HttpResponse(null, { status: 204 });
-      }),
-    );
+  it("в форме ключей ссылки календаря нет: её принимает защищённое поле чата", async () => {
     const sheet = await openPortal();
-    await userEvent.click(
-      within(sheet).getByRole("button", { name: /Добавить ссылку на календарь или ключ/ }),
-    );
-    await userEvent.type(
-      await within(sheet).findByLabelText("Ссылка на календарь"),
-      "calendar.example.test/x.ics",
-    );
-    await userEvent.click(within(sheet).getByRole("button", { name: "Сохранить" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Добавить ключ доступа" }));
+    expect(within(sheet).queryByRole("radio", { name: /Ссылка на календарь/ })).toBeNull();
     expect(
-      await within(sheet).findByText(/Нужна ссылка на календарь: https:\/\/ или webcal:\/\//),
-    ).toBeInTheDocument();
-    expect(calls).toEqual([]);
+      within(sheet)
+        .getAllByRole("radio")
+        .map((radio) => radio.getAttribute("value")),
+    ).toEqual(["token", "api_key"]);
   });
 
   it("ключ доступа: выбор вида меняет подпись поля, ошибка сервера показана у поля человеческим текстом", async () => {
@@ -117,9 +149,7 @@ describe("«Источники»: управление", () => {
       ),
     );
     const sheet = await openPortal();
-    await userEvent.click(
-      within(sheet).getByRole("button", { name: /Добавить ссылку на календарь или ключ/ }),
-    );
+    await userEvent.click(within(sheet).getByRole("button", { name: "Добавить ключ доступа" }));
     await userEvent.click(within(sheet).getByRole("radio", { name: /Ключ доступа/ }));
     await userEvent.type(await within(sheet).findByLabelText("Ключ доступа"), "abc123");
     await userEvent.click(within(sheet).getByRole("button", { name: "Сохранить" }));

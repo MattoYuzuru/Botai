@@ -370,20 +370,22 @@ async def test_put_secret_replaces_the_previous_value(
 @pytest.mark.parametrize(
     "value", ["https://cal.example.org/feed.ics", "webcal://cal.example.org/feed.ics"]
 )
-async def test_ical_url_accepts_calendar_links(
+async def test_a_calendar_link_is_not_a_secret_of_this_endpoint(
     client: httpx.AsyncClient,
     tx_sessionmaker: Sm,
     clock: FrozenClock,
     services: Services,
     value: str,
 ) -> None:
+    """The link of a calendar is taken by the protected field of a chat task, where it is checked and
+    read (contracts/conversation.md): a plain PUT would store a link nobody has tried."""
     acc = await signup(client, tx_sessionmaker, clock)
     conn = await make_connection(tx_sessionmaker, acc.id, await _space(client), kind="schedule")
     r = await client.put(
         f"/api/v1/connections/{conn}/secrets", json={"kind": "ical_url", "value": value}
     )
-    assert r.status_code == 204
-    assert await services.vault.has(acc.id, conn, SecretKind.ICAL_URL)
+    assert r.status_code == 422
+    assert not await services.vault.has(acc.id, conn, SecretKind.ICAL_URL)
 
 
 @pytest.mark.parametrize(

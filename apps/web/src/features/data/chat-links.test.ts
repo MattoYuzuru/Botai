@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { connectionFixture } from "@/test/data-fixtures";
 import {
+  addCalendarDraft,
+  addCalendarLink,
   addSourceDraft,
   CONNECT_UNIVERSITY_DRAFT,
   chatDraftLink,
@@ -20,6 +22,28 @@ describe("переходы в чат (agent-hub-v3 §3.9)", () => {
     expect(CONNECT_UNIVERSITY_DRAFT.endsWith(" ")).toBe(true);
     expect(addSourceDraft("НИУ ВШЭ")).toContain("«НИУ ВШЭ»");
     expect(addSourceDraft("НИУ ВШЭ").endsWith(": ")).toBe(true);
+  });
+
+  it("«Календарь (iCal)» — чат с готовой просьбой подключить календарь вуза; ссылки в просьбе нет", () => {
+    const draft = addCalendarDraft("НИУ ВШЭ");
+    expect(draft).toContain("«НИУ ВШЭ»");
+    expect(draft).toMatch(/календар/i);
+    expect(draft).not.toMatch(/https?:|webcal:|\.ics/);
+    expect(addCalendarLink("НИУ ВШЭ")).toEqual({ to: "/chat", search: { draft } });
+  });
+
+  it("календарь с умершей ссылкой просит новую ссылку, а не вход", () => {
+    const calendar = connectionFixture({
+      kind: "calendar",
+      adapter: "ical",
+      title: "Календарь",
+      status: "needs_reauth",
+    });
+    const draft = connectionChatLink(calendar, "НИУ ВШЭ").search.draft;
+    expect(draft).toContain("«Календарь»");
+    expect(draft).toContain("НИУ ВШЭ");
+    expect(draft).toMatch(/ссылк/i);
+    expect(draft).not.toMatch(/Войди/);
   });
 
   it("плашка источника: есть тред задачи — в него, нет — готовая просьба по состоянию", () => {

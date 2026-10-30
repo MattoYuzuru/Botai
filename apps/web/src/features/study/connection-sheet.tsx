@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { humanMessage } from "@/api/errors";
 import type { Connection } from "@/api/types";
-import { chatThreadLink, connectionChatLink } from "@/features/data/chat-links";
+import { chatThreadLink, connectionChatLink, replaceCalendarLink } from "@/features/data/chat-links";
 import {
   connectionKindTitle,
   describeConnection,
@@ -27,7 +27,7 @@ export interface ConnectionSheetProps {
 
 /**
  * Управление источником: статус человеческим языком, когда обновлялось, что сейчас делает агент, сохранён ли
- * пароль, «Открыть сайт» и чат источника, добавление ссылки календаря или ключа (значение больше не
+ * пароль, «Открыть сайт» и чат источника, добавление ключа доступа (значение больше не
  * показывается), «Забыть пароль» и «Удалить подключение» — оба через подтверждение, потому что необратимы.
  */
 export function ConnectionSheet({ connection, space, nowMs, onClose }: ConnectionSheetProps) {
@@ -93,10 +93,10 @@ function ConnectionDetails({
         tone={view.tone}
         icon={view.icon}
         action={
-          view.action === "reauth" ? (
+          view.action === "reauth" || view.action === "link" ? (
             <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
               <Link to={chat.to} search={chat.search} onClick={onClose}>
-                Войти снова
+                {view.action === "link" ? "Новая ссылка" : "Войти снова"}
               </Link>
             </Button>
           ) : undefined
@@ -148,7 +148,23 @@ function ConnectionDetails({
       )}
 
       <section aria-label="Ссылка или ключ" className="flex flex-col gap-3">
-        {adding ? (
+        {connection.adapter === "ical" ? (
+          // Календарь по ссылке: новую ссылку принимает защищённое поле чата, где её проверят и сразу прочитают.
+          <>
+            <p className="type-caption text-fg-muted">
+              Ссылка календаря введена в защищённом поле чата и больше не показывается. Если она перестала
+              работать, дайте новую: BotAI проверит её и сразу прочитает календарь.
+            </p>
+            <Button variant="secondary" leadingIcon="source" asChild>
+              <Link
+                {...replaceCalendarLink(connection.title, space?.title ?? connection.title)}
+                onClick={onClose}
+              >
+                Ввести новую ссылку
+              </Link>
+            </Button>
+          </>
+        ) : adding ? (
           <SecretForm
             connection={connection}
             onSaved={() => {
@@ -158,7 +174,7 @@ function ConnectionDetails({
           />
         ) : (
           <Button variant="secondary" leadingIcon="plus" onClick={() => setAdding(true)}>
-            Добавить ссылку на календарь или ключ
+            Добавить ключ доступа
           </Button>
         )}
       </section>

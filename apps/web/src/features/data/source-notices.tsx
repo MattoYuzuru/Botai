@@ -61,7 +61,12 @@ export function sourceStatusItems(spaces: readonly SpaceInfo[]): SourceStatusBar
   );
 }
 
-const ACTION_LABEL = { reauth: "Войти снова", answer: "Продолжить", chat: "Спросить в чате" } as const;
+const ACTION_LABEL = {
+  reauth: "Войти снова",
+  link: "Новая ссылка",
+  answer: "Продолжить",
+  chat: "Спросить в чате",
+} as const;
 
 /**
  * Полосы состояния источников над содержимым экрана (styleguide §9): «Нужно снова войти», «Вуз что-то

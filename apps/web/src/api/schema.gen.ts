@@ -229,6 +229,27 @@ export interface paths {
         patch: operations["rename_thread_api_v1_chat_threads__thread_id__patch"];
         trace?: never;
     };
+    "/api/v1/chat/threads/{thread_id}/calendar-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calendar Link Offer
+         * @description The client kept a personal calendar link out of its queue; the thread asks the student whether
+         *     to connect the calendar. No body: the link never travels.
+         */
+        post: operations["calendar_link_offer_api_v1_chat_threads__thread_id__calendar_link_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/threads/{thread_id}/context": {
         parameters: {
             query?: never;
@@ -1600,7 +1621,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "token" | "ical_url" | "api_key";
+            kind: "token" | "api_key";
             /** Value */
             value: string;
         };
@@ -2227,6 +2248,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ThreadOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calendar_link_offer_api_v1_chat_threads__thread_id__calendar_link_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

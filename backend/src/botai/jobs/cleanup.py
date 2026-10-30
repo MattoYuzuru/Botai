@@ -69,5 +69,6 @@ async def restore_source_after_stop(
         .limit(1)
     )
     if another is None:
-        configured = connection.adapter is not None or connection.spec_id is not None
+        # An `ical` source has its adapter from the day it is made: configured is having a spec.
+        configured = connection.spec_id is not None or connection.adapter not in (None, "ical")
         connection.status = "stale" if configured else "draft"

@@ -3,7 +3,7 @@ import { expectFitsWidth, findSmallTapTargets, findTinyText, freezeClock, open }
 
 test.beforeEach(async ({ page }) => freezeClock(page));
 
-const SECRET = "https://my.fakeuni.test/calendar/export.ics?key=very-secret-key-123";
+const SECRET = "very-secret-key-123";
 
 async function openPortalSheet(page: Page) {
   await open(page, "/study/connections", "connected");
@@ -21,20 +21,18 @@ test.describe("«Источники»: управление", () => {
     await expect(sheet.getByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toHaveCount(0);
   });
 
-  test("ссылка календаря: значение скрыто в поле и нигде не показывается после сохранения", async ({
-    page,
-  }) => {
+  test("ключ доступа: значение скрыто в поле и нигде не показывается после сохранения", async ({ page }) => {
     const sheet = await openPortalSheet(page);
-    await sheet.getByRole("button", { name: /Добавить ссылку на календарь или ключ/ }).click();
-    const field = sheet.getByRole("textbox", { name: "Ссылка на календарь" });
+    await sheet.getByRole("button", { name: "Добавить ключ доступа" }).click();
+    const field = sheet.getByRole("textbox", { name: "Ключ доступа" });
     await expect(field).toHaveAttribute("type", "password");
     expect(
       await field.evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize)),
     ).toBeGreaterThanOrEqual(16);
     await field.fill(SECRET);
     await sheet.getByRole("button", { name: "Сохранить" }).click();
-    await expect(page.getByText("Ссылка на календарь сохранена")).toBeVisible();
-    await expect(sheet.getByRole("textbox", { name: "Ссылка на календарь" })).toHaveCount(0);
+    await expect(page.getByText("Ключ доступа сохранён")).toBeVisible();
+    await expect(sheet.getByRole("textbox", { name: "Ключ доступа" })).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText("very-secret-key-123");
     expect(
       await page.evaluate(() => [...document.querySelectorAll("input")].map((input) => input.value).join("")),

@@ -62,6 +62,8 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
 
   if (secret) {
     const kind: SecretKind = block.inputKind === "code" ? "code" : "password";
+    // Секретная ссылка (личная ссылка календаря): это не пароль, менеджер паролей её не предлагает.
+    const link = block.inputKind === "url";
     return (
       <QuestionFrame
         question={block.question}
@@ -73,16 +75,21 @@ export function InputCard({ block, ctx }: { block: InputBlock; ctx: BlockContext
         <SecretField
           label="Ответ"
           kind={kind}
-          autoComplete={secretAutocomplete(block.autocomplete, kind)}
+          autoComplete={link ? "off" : secretAutocomplete(block.autocomplete, kind)}
           maxLength={block.maxLength}
           placeholder={block.placeholder}
           required={block.required}
           disabled={busy}
-          encryptedNote={kind === "password"}
+          encryptedNote={kind === "password" && !link}
           onSubmit={(value) => {
             if (!busy) ctx.onAnswer(block.id, value, null);
           }}
         />
+        {link && (
+          <p className="type-caption text-fg-muted">
+            Ссылка хранится зашифрованной и больше не показывается: ни здесь, ни в чате.
+          </p>
+        )}
         {!block.required && (
           <Button variant="ghost" disabled={busy} onClick={() => ctx.onAnswer(block.id, "", "Пропущено")}>
             Пропустить

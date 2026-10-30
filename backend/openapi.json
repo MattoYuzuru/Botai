@@ -2021,7 +2021,6 @@
           "kind": {
             "enum": [
               "token",
-              "ical_url",
               "api_key"
             ],
             "title": "Kind",
@@ -3151,6 +3150,42 @@
           }
         },
         "summary": "Rename Thread",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/chat/threads/{thread_id}/calendar-link": {
+      "post": {
+        "description": "The client kept a personal calendar link out of its queue; the thread asks the student whether\nto connect the calendar. No body: the link never travels.",
+        "operationId": "calendar_link_offer_api_v1_chat_threads__thread_id__calendar_link_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calendar Link Offer",
         "tags": [
           "agent"
         ]

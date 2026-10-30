@@ -2,7 +2,7 @@ import { Button, Card, EmptyState, Icon, useNow } from "@botai/design";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import type { Connection } from "@/api/types";
-import { addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
+import { addCalendarLink, addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { AddDocumentSheet } from "../add-document-sheet";
 import { ConnectionSheet } from "../connection-sheet";
@@ -12,7 +12,7 @@ import { useSectionState } from "../use-section";
 
 /**
  * «Источники»: все источники выбранных вузов с управлением. Нажатие открывает карточку: ссылка календаря или
- * ключ, «Забыть пароль», удаление. «Добавить источник» и «Подключить ещё вуз» открывают чат с готовой просьбой,
+ * ключ, «Забыть пароль», удаление. «Добавить источник» (и его вариант «Календарь (iCal)») и «Подключить ещё вуз» открывают чат с готовой просьбой,
  * здесь же — «Добавить документ». Обновление и повторы идут сами, кнопки «Обновить» нет.
  */
 export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
@@ -98,12 +98,20 @@ function SpaceSources({
       </h2>
       <Card padding="sm" className="flex flex-col">
         <SourceList space={space} nowMs={nowMs} onOpen={onOpen} />
-        <Button variant="ghost" asChild className="self-start">
-          <Link {...addSourceLink(space.title)}>
-            <Icon name="plus" size={20} />
-            Добавить источник
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-x-2">
+          <Button variant="ghost" asChild>
+            <Link {...addSourceLink(space.title)}>
+              <Icon name="plus" size={20} />
+              Добавить источник
+            </Link>
+          </Button>
+          <Button variant="ghost" asChild>
+            <Link {...addCalendarLink(space.title)}>
+              <Icon name="schedule" size={20} />
+              Календарь (iCal)
+            </Link>
+          </Button>
+        </div>
       </Card>
     </section>
   );

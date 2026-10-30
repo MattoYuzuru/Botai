@@ -8,8 +8,10 @@ pattern); otherwise it is a class. Recurring events are expanded inside the sync
 from __future__ import annotations
 
 import hashlib
+import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from zoneinfo import ZoneInfo
 
 from dateutil.rrule import rrulestr
@@ -66,11 +68,75 @@ def _categories(comp: Any) -> list[str]:
     return out
 
 
+_UNTIL = re.compile(r"UNTIL=(\d{8})(?:T(\d{6})(Z?))?")
+
+
+def _until_in_utc(rule: str, start: datetime) -> str:
+    """The rule with its `UNTIL` as a UTC time, as `dateutil` wants it for an event with a zone.
+
+    Calendars write the end of a series as a date (`UNTIL=20261231`, the whole last day counts) or
+    as a local time (`UNTIL=20261231T093000`, in the zone of `DTSTART`); only the UTC form is
+    accepted for a start with a zone, and the others used to turn a whole series into one class."""
+
+    def fix(found: re.Match[str]) -> str:
+        day, clock, zulu = found.groups()
+        moment = datetime.strptime(day + (clock or "235959"), "%Y%m%d%H%M%S")
+        zone = UTC if zulu else start.tzinfo or UTC
+        return "UNTIL=" + moment.replace(tzinfo=zone).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+    return _UNTIL.sub(fix, rule)
+
+
 def _external_id(uid: str, start: datetime | None = None) -> str:
     base = uid if len(uid) <= 120 else hashlib.sha256(uid.encode()).hexdigest()
     if start is None:
         return base
     return f"{base}#{start.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _outcomes() -> list[EndpointOutcome]:
+    return [
+        EndpointOutcome("events", "scheduleEvents", ok=True),
+        EndpointOutcome("deadlines", "deadlines", ok=True),
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """What a calendar link answered. `problem` is `gone` when the service no longer knows the link
+    (revoked, regenerated, mistyped), `status` for any other HTTP failure, `format` when the
+    answer is not an iCalendar file."""
+
+    calendar: Calendar | None
+    status: int
+    problem: Literal["gone", "status", "format"] | None
+
+
+async def read_link(ctx: SyncContext, url: str) -> Reading:
+    """Fetch a calendar link through the EgressProxy, without cookies, and parse it.
+
+    The caller's `allow_hosts` hold the link's host only: a redirect to any other host is refused
+    by the client (`egress_blocked`), a slow or oversized answer by its time and size caps.
+    """
+    if not host_allowed(url, ctx.allow_hosts):
+        raise BotaiError(
+            ErrorCode.EGRESS_BLOCKED,
+            "Ссылка на календарь ведёт на хост вне разрешённых",
+            extra={"host": origin_host(url)},
+        )
+    async with SourceClient(ctx, auth_type="none", use_session=False) as client:
+        response = await client.request("GET", url, check_session=False)
+    if response.status_code in (401, 403, 404, 410):
+        return Reading(None, response.status_code, "gone")
+    if response.status_code >= 400:
+        return Reading(None, response.status_code, "status")
+    try:
+        calendar = Calendar.from_ical(response.content)
+    except Exception:
+        return Reading(None, response.status_code, "format")
+    if calendar.name != "VCALENDAR":  # a contact card or any other iCalendar-family file
+        return Reading(None, response.status_code, "format")
+    return Reading(calendar, response.status_code, None)
 
 
 class IcalAdapter:
@@ -90,32 +156,20 @@ class IcalAdapter:
         secret = await ctx.vault.get(ctx.user_id, ctx.connection_id, SecretKind.ICAL_URL)
         if secret is None:
             raise SessionExpired("no calendar link stored", reauth="token")
-        url = secret.get_secret_value()
-        if not host_allowed(url, ctx.allow_hosts):
-            raise BotaiError(
-                ErrorCode.EGRESS_BLOCKED,
-                "Ссылка на календарь ведёт на хост вне разрешённых",
-                extra={"host": host},
-            )
-        async with SourceClient(ctx, auth_type="none", use_session=False) as client:
-            response = await client.request("GET", url, check_session=False)
-        outcomes = [
-            EndpointOutcome("events", "scheduleEvents", ok=True),
-            EndpointOutcome("deadlines", "deadlines", ok=True),
-        ]
-        if response.status_code in (401, 403, 404, 410):
+        reading = await read_link(ctx, secret.get_secret_value())
+        if reading.problem == "gone":
             raise SessionExpired("the calendar link no longer works", reauth="token")
-        if response.status_code >= 400:
+        if reading.calendar is None:
+            outcomes = _outcomes()
             for o in outcomes:
-                o.ok, o.problem = False, "status"
+                o.ok, o.problem = False, reading.problem
             return AdapterResult([], ctx.now, outcomes, spec_revision=ctx.spec_revision)
-        try:
-            calendar = Calendar.from_ical(response.content)
-        except Exception:
-            for o in outcomes:
-                o.ok, o.problem = False, "format"
-            return AdapterResult([], ctx.now, outcomes, spec_revision=ctx.spec_revision)
+        return self.result_for(reading.calendar, ctx)
+
+    def result_for(self, calendar: Calendar, ctx: SyncContext) -> AdapterResult:
+        """The records of a calendar that was read already (the link check reads it once)."""
         records = self._records(calendar, ctx)
+        outcomes = _outcomes()
         for o in outcomes:
             o.items_seen = o.items_valid = sum(1 for r in records if r.kind == o.kind)
             if o.items_valid == 0:
@@ -190,7 +244,7 @@ class IcalAdapter:
         self, comp: Any, start: datetime, lo: datetime, hi: datetime, ctx: SyncContext
     ) -> list[datetime]:
         try:
-            text = comp.get("RRULE").to_ical().decode()
+            text = _until_in_utc(comp.get("RRULE").to_ical().decode(), start)
             rule = rrulestr(text, dtstart=start)
             found: list[datetime] = []
             for occ in rule.between(lo, hi, inc=True):
@@ -200,13 +254,16 @@ class IcalAdapter:
         except (ValueError, TypeError, OverflowError):
             return [start] if lo <= start <= hi else []
         excluded: set[datetime] = set()
+        days: set[date] = set()  # `EXDATE;VALUE=DATE`: the whole day of a timed series is skipped
         raw = comp.get("EXDATE")
         for group in raw if isinstance(raw, list) else [raw] if raw is not None else []:
             for dt in getattr(group, "dts", []):
-                value = _as_datetime(dt.dt, ctx.tz)
-                if value is not None:
+                if isinstance(dt.dt, date) and not isinstance(dt.dt, datetime):
+                    days.add(dt.dt)
+                elif (value := _as_datetime(dt.dt, ctx.tz)) is not None:
                     excluded.add(value)
-        return [o for o in found if o not in excluded]
+        zone = start.tzinfo or ctx.tz
+        return [o for o in found if o not in excluded and o.astimezone(zone).date() not in days]
 
     def _record(
         self, comp: Any, ext: str, start: datetime, end: datetime | None, ctx: SyncContext

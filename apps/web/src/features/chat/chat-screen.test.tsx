@@ -299,12 +299,15 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     const { user } = await openNewChat();
     await ask(user, "Мне нужна справка");
     expect(await screen.findByText("Какая справка нужна?", undefined, wait)).toBeInTheDocument();
-    // Пока агент ждёт человека, писать в поле нельзя, и это сказано словами.
-    expect(composer()).toBeDisabled();
-    expect(composer()).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
+    // Пока агент ждёт человека, писать в поле нельзя, и это сказано словами. Состояние поля
+    // приходит отдельным запросом: на загруженном раннере оно может отстать от текста вопроса.
+    await waitFor(() => {
+      expect(composer()).toBeDisabled();
+      expect(composer()).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
+    }, wait);
     // Вопрос с вводом стоит у поля ввода, а не в середине ленты.
     expect(document.querySelector("[data-pending-questions] [data-question='pending']")).not.toBeNull();
-    await user.click(screen.getByRole("radio", { name: "О стипендии" }));
+    await user.click(await screen.findByRole("radio", { name: "О стипендии" }, wait));
     await user.click(screen.getByRole("button", { name: "Ответить" }));
     await screen.findByText("Подать заявку на справку", undefined, wait);
     expect(screen.getByText("lk.fakeuni.test")).toBeInTheDocument();
@@ -321,7 +324,7 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     const { user } = await openNewChat();
     await ask(user, "Хочу записаться на консультацию");
     await screen.findByText("Какая справка нужна?", undefined, wait);
-    await user.click(screen.getByRole("radio", { name: "Об обучении" }));
+    await user.click(await screen.findByRole("radio", { name: "Об обучении" }, wait));
     await user.click(screen.getByRole("button", { name: "Ответить" }));
     await screen.findByText("Подать заявку на справку", undefined, wait);
     await user.click(screen.getByRole("button", { name: "Не делать" }));

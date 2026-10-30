@@ -76,6 +76,7 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "list_universities",
         "find_university",
         "connect_source",
+        "connect_calendar",
         "add_document_url",
         "task_status",
         "sync_source",
@@ -104,6 +105,32 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "connection_id",
         "on_screen",
     }
+    # The link of a calendar never passes through the model: the tool has no place for it.
+    assert set(TOOL_SPECS["connect_calendar"].parameters["properties"]) == {
+        "university_id",
+        "university_query",
+        "title",
+        "replace_link",
+    }
+
+
+def test_the_agent_is_told_to_connect_a_calendar_by_a_protected_field_never_by_a_pasted_link() -> (
+    None
+):
+    from botai.agent.prompts import build_system_text
+
+    text = build_system_text("agent")
+    assert "`connect_calendar`" in text
+    assert "Никогда не просите вставить ссылку в сообщение" in text
+    for service in ("Яндекс", "Google", "Outlook"):
+        assert service in text
+    assert "replace_link=true" in text
+    assert "защищённое поле" in text
+    # the buttons the thread offers are the words the agent is told to act on
+    from botai.sources import calendar
+
+    for answer in (calendar.YES, calendar.YES_REPLACE):
+        assert answer in text
 
 
 async def test_schedule_is_shown_in_the_space_time_zone_with_sources(sm: Sm, user_id: str) -> None:

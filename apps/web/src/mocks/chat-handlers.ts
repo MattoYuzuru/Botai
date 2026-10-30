@@ -14,6 +14,7 @@ import {
   type ThreadCreateIn,
   type ThreadRuntime,
 } from "@/api/v3";
+import { hasCalendarLink } from "@/features/chat/calendar-link";
 import type { KnownBlock } from "@/features/jobs/blocks";
 import { type AgentCtx, observe, runReply } from "./chat-agent";
 import {
@@ -58,6 +59,11 @@ function looksLikeSecret(text: string): boolean {
   if (value.length < 4 || value.length > 128 || /\s/.test(value)) return false;
   return /\d/.test(value) || /\w[^\w\s]\w/u.test(value) || /[a-zа-яё][A-ZА-ЯЁ]/u.test(value);
 }
+
+const CALENDAR_REFUSAL =
+  "Это личная ссылка календаря, в чат её вставлять нельзя: она открывает весь календарь. Подключить календарь можно через защищённое поле: я предложил это ниже, в чате";
+const CALENDAR_OFFER =
+  "Похоже, это личная ссылка календаря, а в чат её присылать нельзя: она открывает весь календарь. Подключить календарь вуза? Ссылку я попрошу ввести в защищённом поле.";
 
 function problem(status: number, code: string, detail: string) {
   return new HttpResponse(
@@ -153,6 +159,31 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
   const save = () => saveState(db, persist);
   const iso = (ms = db.now()) => new Date(ms).toISOString();
   const find = (threadId: string) => state().threads.find((item) => item.id === threadId);
+  /** Вопрос треда про календарь (как на сервере): один раз, пока он последнее слово треда. */
+  const offerCalendar = (threadId: string) => {
+    const now = iso();
+    const history = state().messages[threadId] ?? [];
+    const last = history.at(-1) as { role?: string; blocks?: { markdown?: string }[] } | undefined;
+    if (
+      last?.role === "agent" &&
+      last.blocks?.[0]?.markdown?.startsWith("Похоже, это личная ссылка календаря")
+    )
+      return;
+    const message: Message = {
+      id: ulid(),
+      role: "agent",
+      blocks: [
+        asStored(textBlock(CALENDAR_OFFER, now, undefined, ["Да, подключить календарь", "Нет, это другое"])),
+      ],
+      jobId: null,
+      createdAt: now,
+      clientMessageId: null,
+    };
+    state().messages[threadId] = [...history, message];
+    const thread = find(threadId);
+    if (thread) thread.lastMessageAt = now;
+    save();
+  };
   const ctx: AgentCtx = { db, state, save, iso, jobPace, find };
 
   const simsOf = (threadId: string): JobSim[] =>
@@ -372,6 +403,15 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       return HttpResponse.json(state().messages[id] ?? []);
     }),
 
+    http.post("*/api/v1/chat/threads/:threadId/calendar-link", async ({ params }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      offerCalendar(id);
+      return new HttpResponse(null, { status: 204 });
+    }),
+
     http.post("*/api/v1/chat/threads/:threadId/messages", async ({ params, request }) => {
       await wait();
       if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
@@ -401,6 +441,10 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
           : runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
       if (body.targetJobId && body.targetJobId !== dialogue?.jobId)
         return problem(409, "stale_target", "Этот шаг уже завершён. Откройте текущее состояние разговора");
+      if (hasCalendarLink(text)) {
+        offerCalendar(id);
+        return problem(409, "secret_link_calendar", CALENDAR_REFUSAL);
+      }
       const secretOpen = runtime.pending.some((item) => item.channel === "native" && item.secret);
       if (secretOpen && looksLikeSecret(text))
         return problem(409, "secret_in_chat", "Пароль и код вводятся только в защищённое поле, не в чат");

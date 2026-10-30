@@ -111,14 +111,14 @@ sequenceDiagram
 | Группа | Инструменты |
 |---|---|
 | Данные студента | `get_schedule`, `get_deadlines`, `get_courses`, `get_grades`, `get_people`, `get_news` (через `DomainReader`), `search_documents`, `search_facts`, `read_document` |
-| Вузы и источники | `list_universities`, `find_university`, `connect_source`, `add_document_url`, `sync_source`, `request_repair`, `request_login`, `task_status` |
+| Вузы и источники | `list_universities`, `find_university`, `connect_source`, `connect_calendar`, `add_document_url`, `sync_source`, `request_repair`, `request_login`, `task_status` |
 | Живое чтение | `browse_source`, `site_map`, `fetch_public_page`, `search_public_web` |
 | Разговор | `remember`, `forget`, `update_plan`, `offer_choices`, `rename_thread` |
 
 Инструменты — типизированные функции, а не произвольный код. Результат — текст с метками
 источников `[S1]`, ссылки между сущностями приложения — `botai://threads|connections|documents|attachments/{id}`,
 голые идентификаторы студенту не показываются. Инструменты, меняющие состояние (`connect_source`,
-`add_document_url`, `sync_source`, `request_repair`, `request_login`, `remember`, `forget`),
+`connect_calendar`, `add_document_url`, `sync_source`, `request_repair`, `request_login`, `remember`, `forget`),
 сбрасывают кэш одинаковых вызовов хода: повторное чтение после действия видит результат действия.
 `update_plan` и `rename_thread` читаемого не меняют и кэш не сбрасывают.
 
@@ -135,6 +135,22 @@ origin не подключается дважды: ответ `exists` соде�
 спрашивает студента с быстрыми ответами. Если подключение уже обрабатывает задача в другом треде,
 инструмент даёт ссылку на тот тред и карточку `task`, которая ведёт туда. Пароль, код и cookie ни в
 один инструмент не передаются: вход выполняется защищёнными полями и браузером приложения.
+
+**Календарь по ссылке.** Если расписание студента ведётся в календаре (Яндекс, Google, Outlook), агент
+предлагает подключить его по личной ссылке экспорта iCal и вызывает `connect_calendar(university_id |
+university_query, title?, replace_link?)`: тот находит или создаёт вуз и его единственный календарный источник
+(`kind=calendar`, `adapter=ical`) и ставит `CONNECT` с `payload.calendar` в *текущий* тред. Задача сама показывает, где
+взять ссылку, открывает защищённое поле (`input` с `inputKind=url`, `secret`), проверяет ссылку и читает календарь
+(протокол — [контракт треда](../../contracts/conversation.md#календарь-по-ссылке), безопасность —
+[security.md](security.md) §4.3). Ссылка не передаётся ни в один инструмент и не доходит до модели: у `connect_calendar` нет
+аргумента-адреса, а студент никогда не просит вставить ссылку в сообщение. Если студент всё же вставил её в чат, сообщение
+не сохраняется (клиент узнаёт ссылку до очереди отправки, сервер на всякий случай отвечает `409 secret_link_calendar`), и
+сервер **ничего не создаёт**: он пишет в тред блок с кнопками «Да, подключить календарь» / «Нет, это другое» (при нескольких
+вузах — «Календарь для <вуз>»; если календарь вуза уже есть — «Да, заменить ссылку календаря» / «Нет, оставить как есть»; если
+задача идёт в другом треде — текст со ссылкой `botai://threads/<id>`). Ссылки в этом блоке нет. После кнопки «да» агент вызывает
+`connect_calendar` (при замене — с `replace_link=true`), и защищённое поле открывает уже задача. Для календаря `request_login`
+и `request_repair` не открывают браузер:
+они отвечают, что нужна новая ссылка (`connect_calendar` с `replace_link=true`), `sync_source` без ссылки — то же.
 
 `request_login(connection_id)` продолжает защищённый вход в существующее подключение этого
 пользователя: ставит `CONNECT` с признаком ручного входа в текущий тред (если вход уже идёт, даёт

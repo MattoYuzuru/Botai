@@ -6,13 +6,21 @@ import logging
 import re
 from typing import Any
 
+from botai.core.calendar_link import hide_calendar_links
+
 _SENSITIVE_KEYS = re.compile(
     r"(pass(word)?|secret|token|cookie|authorization|set-cookie|session|otp|code|kek|api[_-]?key)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)bearer\s+[a-z0-9._\-]+")
 _JWT = re.compile(r"eyJ[a-zA-Z0-9_\-]{8,}\.[a-zA-Z0-9_\-]{8,}\.[a-zA-Z0-9_\-]{8,}")
+# A query parameter of an address that holds a key: `?private_token=…`, `&sig=…`, `&access_key=…`.
+_QUERY_SECRET = re.compile(
+    r"(?i)([?&][\w.-]*(?:token|key|secret|sig|pass|auth|code)[\w.-]*=)[^&\s\"'<>]+"
+)
 REDACTED = "[REDACTED]"
+# Libraries that write the whole address of every request (query included) at INFO.
+_QUIET = ("httpx", "httpcore")
 
 
 def redact(value: Any, _depth: int = 0) -> Any:
@@ -31,7 +39,9 @@ def redact(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, (list, tuple)):
         return [redact(v, _depth + 1) for v in value]
     if isinstance(value, str):
-        return _JWT.sub(REDACTED, _BEARER.sub("Bearer " + REDACTED, value))
+        text = _JWT.sub(REDACTED, _BEARER.sub("Bearer " + REDACTED, value))
+        # A personal calendar link opens the whole calendar: it is a secret wherever it appears.
+        return hide_calendar_links(_QUERY_SECRET.sub(r"\1" + REDACTED, text), REDACTED)
     return value
 
 
@@ -56,3 +66,5 @@ def configure_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    for name in _QUIET:
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))

@@ -34,6 +34,7 @@ from botai.db.models import Connection, Document, Job, Space, University
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.tasks import task_title
+from botai.sources import calendar
 from botai.sources import service as documents_service
 from botai.sources.ingest import check_url
 from botai.sources.schemas import DocumentFromUrl
@@ -423,6 +424,84 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def connect_calendar(env: ChatEnv, args: dict[str, Any]) -> str:
+    """The calendar of a university, by the export link of its owner: the task in this thread asks
+    for the link in a protected field. The link never passes through the model."""
+    title = _human_title(args.get("title")) or calendar.CALENDAR_TITLE
+    replace_link = args.get("replace_link") is True
+    async with env.services.db() as session:
+        chosen = await _university(
+            session,
+            env,
+            clean(str(args.get("university_id") or ""), 50),
+            clean(str(args.get("university_query") or ""), 120),
+        )
+        if isinstance(chosen, str):
+            return chosen
+        space = await service.ensure_space(session, env.user_id, chosen.id)
+        started = await calendar.start_calendar_source(
+            session,
+            user_id=env.user_id,
+            thread_id=env.thread_id,
+            space=space,
+            title=title,
+            replace_link=replace_link,
+            now=env.services.clock.now(),
+        )
+        await session.commit()
+        conn, job, space_title = started.connection, started.job, space.title
+        shown = views.display_title(conn)
+        if started.outcome == "exists":
+            return await _calendar_exists(env, conn, shown, space_title)
+    env.forget_meta()
+    _task_card(env, job, "connect", task_title("connect", shown), conn.id)
+    link = connection_link(conn.id)
+    if started.outcome == "running":
+        return (
+            f"Результат: уже идёт, второй раз не запущено. Календарь «{data_text(shown)}» "
+            f"ждёт ссылку {_where(env, job)} {link}. Скажите студенту, что защищённое поле для "
+            "ссылки открыто там."
+        )
+    return (
+        f"Результат: запущено. Календарь «{data_text(shown)}» добавлен в «{data_text(space_title)}» "
+        f"и подключается {_where(env, job)} {link}: там покажут, где взять ссылку на экспорт "
+        "календаря, и откроют защищённое поле для неё. Ссылку студент вводит только в это поле: "
+        "в чат её присылать нельзя, и вам она не передаётся. Скажите студенту одной-двумя "
+        "фразами, что нужна личная ссылка экспорта календаря и что поле откроется в чате."
+    )
+
+
+async def _calendar_exists(env: ChatEnv, conn: Connection, title: str, space_title: str) -> str:
+    key = env.sources.add(
+        title=title,
+        url=connection_link(conn.id),
+        kind="connection",
+        fetched_at=conn.last_sync_at or conn.created_at,
+    )
+    zone = await env.tz_for(conn.space_id)
+    if conn.status == "disabled":
+        return (
+            f"Результат: календарь «{data_text(title)}» в «{data_text(space_title)}» отключён "
+            "студентом, ничего не запущено. Он включается в списке источников приложения."
+        )
+    return (
+        f"Результат: календарь уже подключён, ничего не запущено. «{data_text(title)}» в "
+        f"«{data_text(space_title)}»: статус {STATUS_RU.get(conn.status, conn.status)}, обновлено "
+        f"{fmt_updated(conn.last_sync_at, zone)} {connection_link(conn.id)} [{key}]. Обновить "
+        "данные сейчас — sync_source. Если ссылка перестала работать или студент хочет заменить "
+        "её, вызовите connect_calendar с replace_link=true (спросите студента, offer_choices)."
+    )
+
+
+def _by_link(title: str) -> str:
+    return (
+        f"«{data_text(title)}» — календарь: он читается по личной ссылке экспорта, вход на сайт "
+        "не нужен. Новая ссылка (старая не работает или её нужно заменить) — connect_calendar с "
+        "replace_link=true: студент введёт её в защищённом поле. Обновить данные сейчас — "
+        "sync_source."
+    )
+
+
 async def add_document_url(env: ChatEnv, args: dict[str, Any]) -> str:
     url = str(args.get("url", "")).strip()
     try:
@@ -548,6 +627,11 @@ async def sync_source(env: ChatEnv, args: dict[str, Any]) -> str:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     async with env.services.db() as session:
         row = await repo.get_connection(session, env.user_id, connection_id)
+        if row.adapter == calendar.ADAPTER and row.spec_id is None:
+            return (
+                f"Обновление «{conn.title}» не запущено: ссылка на календарь ещё не передана. "
+                "Откройте поле для неё: connect_calendar."
+            )
         if row.adapter is None and row.spec_id is None:
             return (
                 f"Обновление «{conn.title}» не запущено: источник ещё не настроен. Продолжить "
@@ -588,6 +672,8 @@ async def request_repair(env: ChatEnv, args: dict[str, Any]) -> str:
         )
     async with env.services.db() as session:
         row = await repo.get_connection(session, env.user_id, connection_id)
+        if row.adapter == calendar.ADAPTER:
+            return _by_link(conn.title)
         setup = (
             row.adapter is None
             and row.spec_id is None
@@ -645,6 +731,9 @@ async def request_login(env: ChatEnv, args: dict[str, Any]) -> str:
     if on_screen:
         payload["manual_login"] = True
     async with env.services.db() as session:
+        row = await repo.get_connection(session, env.user_id, connection_id)
+        if row.adapter == calendar.ADAPTER:
+            return _by_link(conn.title)
         running = {
             t.job_id for t in await active_tasks(session, env.user_id) if t.connection_id == conn.id
         }
@@ -732,6 +821,26 @@ SPECS = {
         },
         ["title"],
     ),
+    "connect_calendar": spec(
+        "connect_calendar",
+        "Подключить календарь вуза (Яндекс, Google, Outlook, любой iCal) по личной ссылке "
+        "экспорта: расписание, где у вуза пары и разовые события живут в календаре. Запускает "
+        "задачу в ЭТОМ чате: она покажет, где взять ссылку, и откроет защищённое поле для неё. "
+        "Ссылка в чат не приходит и до вас не доходит. Календарь вуза один: если он уже "
+        "подключён, ничего не запускает и возвращает статус; replace_link=true — спросить "
+        "новую ссылку (старая не работает или студент хочет заменить). Вуз — university_id "
+        "или university_query; без них берётся вуз этого чата или единственный вуз студента.",
+        {
+            "university_id": {**_TEXT, "description": "id из find_university / list_universities"},
+            "university_query": {**_TEXT, "description": "Название вуза, если id неизвестен"},
+            "title": {**_TEXT, "description": "Название источника; по умолчанию «Календарь»"},
+            "replace_link": {
+                "type": "boolean",
+                "description": "Спросить новую ссылку у уже подключённого календаря",
+            },
+        },
+        [],
+    ),
     "add_document_url": spec(
         "add_document_url",
         "Добавить публичный документ, таблицу или страницу (Google Таблицы/Документы, PDF, "
@@ -782,6 +891,7 @@ STAGES = {
     "list_universities": "Смотрю вузы и источники",
     "find_university": "Ищу вуз",
     "connect_source": "Подключаю источник",
+    "connect_calendar": "Подключаю календарь",
     "add_document_url": "Добавляю документ",
     "task_status": "Проверяю задачи",
     "sync_source": "Обновляю источник",
@@ -792,6 +902,7 @@ IMPLS = {
     "list_universities": list_universities,
     "find_university": find_university,
     "connect_source": connect_source,
+    "connect_calendar": connect_calendar,
     "add_document_url": add_document_url,
     "task_status": task_status,
     "sync_source": sync_source,

@@ -1,4 +1,11 @@
-"""Owner: W3. iCal export of the synthetic LMS (`/calendar/export.ics?token=...`)."""
+"""Owner: W3. iCal exports of the synthetic university.
+
+Two shapes of a personal export link, as the big calendar services make them: the key in the query
+of an `.ics` file (`/calendar/export.ics?token=...`) and the key in the query of a service address
+(`/export/ics.xml?private_token=...`, on a host of its own), and one with the key in the path
+(`/ical/<key>/basic.ics`). All serve the same feed: a weekly lecture with a skipped week and a
+moved one, one-off seminars, a deadline, a holiday, a cancelled event and a task.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,14 @@ from fastapi import APIRouter, Request, Response
 router = APIRouter()
 TOKEN = "ICAL-FIXTURE-TOKEN-91bc"  # marker grepped by security check C1
 URL = f"https://lms.fakeuni.test/calendar/export.ics?token={TOKEN}"
+# The calendar service of the university: a host of its own, a personal key in the query.
+SERVICE_TOKEN = "CALENDAR-FIXTURE-TOKEN-6e9d"  # marker grepped by security check C1
+SERVICE_URL = f"https://calendar.fakeuni.test/export/ics.xml?private_token={SERVICE_TOKEN}"
+SERVICE_WEBCAL = f"webcal://calendar.fakeuni.test/export/ics.xml?private_token={SERVICE_TOKEN}"
+PATH_TOKEN = "CALENDAR-PATH-TOKEN-b41f"  # marker grepped by security check C1
+PATH_URL = f"https://calendar.fakeuni.test/ical/{PATH_TOKEN}/basic.ics"
+EMPTY_URL = "https://calendar.fakeuni.test/ical/CALENDAR-EMPTY-TOKEN-0c7a/basic.ics"  # no events
+PAGE_URL = "https://calendar.fakeuni.test/week"  # the calendar in the browser: HTML, not iCal
 
 _state = {"revoked": False}
 
@@ -85,10 +100,39 @@ def revoke_link() -> None:
     _state["revoked"] = True
 
 
+def _feed() -> Response:
+    return Response(FEED.replace("\n", "\r\n"), media_type="text/calendar; charset=utf-8")
+
+
 @router.get("/calendar/export.ics", response_model=None)
 async def export(request: Request) -> Response:
     if _state["revoked"]:
         return Response(status_code=404)
     if request.query_params.get("token") != TOKEN:
         return Response(status_code=403)
-    return Response(FEED.replace("\n", "\r\n"), media_type="text/calendar; charset=utf-8")
+    return _feed()
+
+
+@router.get("/export/ics.xml", response_model=None)
+async def export_service(request: Request) -> Response:
+    if _state["revoked"]:
+        return Response(status_code=404)
+    if request.query_params.get("private_token") != SERVICE_TOKEN:
+        return Response(status_code=403)
+    return _feed()
+
+
+@router.get("/ical/{key}/basic.ics", response_model=None)
+async def export_by_path(key: str) -> Response:
+    if _state["revoked"]:
+        return Response(status_code=404)
+    if key == EMPTY_URL.split("/")[4]:
+        empty = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//fakeuni//EN\nEND:VCALENDAR\n"
+        return Response(empty.replace("\n", "\r\n"), media_type="text/calendar; charset=utf-8")
+    return _feed() if key == PATH_TOKEN else Response(status_code=404)
+
+
+@router.get("/week", response_model=None)
+async def calendar_page() -> Response:
+    """The calendar as the browser shows it: a page, not an export."""
+    return Response("<html><body><h1>Календарь</h1></body></html>", media_type="text/html")

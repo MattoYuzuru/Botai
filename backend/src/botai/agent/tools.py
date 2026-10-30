@@ -511,6 +511,7 @@ _IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
 MUTATING = frozenset(
     {
         "connect_source",
+        "connect_calendar",
         "add_document_url",
         "sync_source",
         "request_repair",

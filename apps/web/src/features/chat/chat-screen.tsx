@@ -23,14 +23,17 @@ import { useReconnect } from "@/features/data/use-reconnect";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { isTerminal as isJobTerminal } from "@/features/jobs/job-state";
 import { toDeadlineView } from "@/features/tasks/deadlines";
+import { clientId } from "@/lib/client-id";
+import { chatApi } from "./api";
 import { AttachmentViewerHost, useAttachmentViewer } from "./attachment-viewer-host";
+import { hasCalendarLink, withoutCalendarLinks } from "./calendar-link";
 import { useChatLinks } from "./chat-links";
 import { ChatTopBar } from "./chat-top-bar";
 import { composerState } from "./composer-state";
 import { ContextButton } from "./context-meter-view";
 import { EmptyChat } from "./empty-chat";
 import { useOpenThread } from "./open-thread";
-import { isSecretInChat } from "./outbox";
+import { isCalendarLink, isSecretInChat } from "./outbox";
 import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
 import type { MessageQuote } from "./quote";
 import { outbox, useOutbox } from "./runtime";
@@ -242,6 +245,34 @@ export function ChatScreen() {
             });
             return;
           }
+          // Личная ссылка календаря (клиент её до очереди не пускает, это защита на случай расхождения): сообщение
+          // стёрто, в поле возвращается остальной текст без ссылки, а тред уже задал вопрос про календарь.
+          if (isCalendarLink(error)) {
+            toast("Ссылку календаря в чат не отправили", {
+              tone: "info",
+              description: humanMessage(error),
+            });
+            if (item.threadId) {
+              void queryClient.invalidateQueries({ queryKey: chatKeys.messages(item.threadId) });
+              void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(item.threadId) });
+            }
+            void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
+            const rest = withoutCalendarLinks(item.text);
+            const current = latest.current;
+            if (
+              rest &&
+              item.ownerId === current.ownerId &&
+              (current.activeId === null
+                ? current.draftMessages.some((message) => message.id === item.id)
+                : item.threadId === current.activeId)
+            ) {
+              setDrafts((all) => {
+                const key = current.activeId ?? NEW_THREAD;
+                return all[key] ? all : { ...all, [key]: rest };
+              });
+            }
+            return;
+          }
           // Сервер не принял вложения: они уже загружены и возвращаются чипами для повторной отправки.
           const refused =
             item.attachments.length > 0 &&
@@ -269,9 +300,53 @@ export function ChatScreen() {
     [queryClient, latest],
   );
 
+  const keepCalendarLinkOut = useCallback(
+    (text: string) => {
+      const rest = withoutCalendarLinks(text);
+      setDraft(rest);
+      toast("Ссылку календаря в чат не отправили", {
+        tone: "info",
+        description:
+          "Это личная ссылка: она открывает весь календарь. Остальной текст остался в поле, а подключить календарь можно через защищённое поле: я предложил это в чате.",
+      });
+      void (async () => {
+        try {
+          let target = activeId;
+          if (target === null) {
+            const created = await chatApi.createThread({
+              spaceId: null,
+              title: null,
+              clientRequestId: clientId(),
+            });
+            target = created.id;
+            const key = created.id;
+            setDrafts((all) => ({ ...all, [NEW_THREAD]: "", [key]: rest }));
+          }
+          await chatApi.offerCalendar(target);
+          void queryClient.invalidateQueries({ queryKey: chatKeys.messages(target) });
+          void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(target) });
+          void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
+          if (activeId === null) void navigate({ to: "/chat", search: { thread: target } });
+        } catch (error) {
+          toast("Не получилось предложить подключить календарь", {
+            tone: "warning",
+            description: humanMessage(error),
+          });
+        }
+      })();
+    },
+    [activeId, navigate, queryClient, setDraft],
+  );
+
   const send = useCallback(
     (text: string, withAttachments: boolean, quote?: MessageQuote | null) => {
       if (!ownerId) return;
+      // Личная ссылка календаря не попадает ни в очередь, ни в `localStorage`, ни на сервер: остальной текст
+      // возвращается в поле, а тред спрашивает, подключать ли календарь (ссылку тогда вводят в защищённое поле).
+      if (hasCalendarLink(text)) {
+        keepCalendarLinkOut(text);
+        return;
+      }
       const files = withAttachments ? attachments.take() : [];
       const item = outbox.send(text, {
         ownerId,
@@ -286,7 +361,7 @@ export function ChatScreen() {
       }
       if (withAttachments) setDraft("");
     },
-    [ownerId, attachments, activeId, composer.targetJobId, setDraft],
+    [ownerId, attachments, activeId, composer.targetJobId, setDraft, keepCalendarLinkOut],
   );
 
   const startNewChat = () => {

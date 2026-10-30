@@ -24,12 +24,31 @@ export const addSourceDraft = (university: string): string =>
 
 export const addSourceLink = (university: string): ChatLink => chatDraftLink(addSourceDraft(university));
 
+/**
+ * «Календарь (iCal)» вуза: готовая просьба подключить календарь по личной ссылке экспорта (Яндекс, Google, Outlook).
+ * Ссылку в чат не вставляют: агент откроет для неё защищённое поле и подскажет, где её взять.
+ */
+export const addCalendarDraft = (university: string): string =>
+  `Подключи календарь вуза «${university}»: расписание у меня ведётся в календаре`;
+
+export const addCalendarLink = (university: string): ChatLink => chatDraftLink(addCalendarDraft(university));
+
+/** Новая ссылка для календаря, который уже подключён (или ждёт ссылку): агент снова откроет защищённое поле. */
+export const replaceCalendarDraft = (title: string, university: string): string =>
+  `Открой поле для новой ссылки календаря «${title}» (${university})`;
+
+export const replaceCalendarLink = (title: string, university: string): ChatLink =>
+  chatDraftLink(replaceCalendarDraft(title, university));
+
 /** Просьба по состоянию источника, когда у него нет своего треда задачи. */
 function attentionDraft(connection: Connection, university: string): string {
   const source = `«${connection.title}» (${university})`;
   switch (connection.status) {
     case "needs_reauth":
-      return `Войди снова в ${source}`;
+      // К календарю не входят: у него перестала работать ссылка, нужна новая (вводится в защищённое поле).
+      return connection.adapter === "ical"
+        ? replaceCalendarDraft(connection.title, university)
+        : `Войди снова в ${source}`;
     case "waiting_user":
       return `Продолжим подключение ${source}`;
     case "error":
