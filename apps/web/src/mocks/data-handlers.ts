@@ -412,8 +412,6 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const body = (await request.json()) as S["SecretIn"];
       const value = (body.value ?? "").trim();
       if (!value) return problem(422, "validation", "Значение не может быть пустым");
-      if (body.kind === "ical_url" && !/^(https?|webcal):\/\//i.test(value))
-        return problem(422, "validation", "Нужна ссылка на календарь (https:// или webcal://)");
       return new HttpResponse(null, { status: 204 });
     }),
 

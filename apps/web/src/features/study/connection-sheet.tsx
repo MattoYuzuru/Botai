@@ -27,7 +27,7 @@ export interface ConnectionSheetProps {
 
 /**
  * Управление источником: статус человеческим языком, когда обновлялось, что сейчас делает агент, сохранён ли
- * пароль, «Открыть сайт» и чат источника, добавление ссылки календаря или ключа (значение больше не
+ * пароль, «Открыть сайт» и чат источника, добавление ключа доступа (значение больше не
  * показывается), «Забыть пароль» и «Удалить подключение» — оба через подтверждение, потому что необратимы.
  */
 export function ConnectionSheet({ connection, space, nowMs, onClose }: ConnectionSheetProps) {
@@ -174,7 +174,7 @@ function ConnectionDetails({
           />
         ) : (
           <Button variant="secondary" leadingIcon="plus" onClick={() => setAdding(true)}>
-            Добавить ссылку на календарь или ключ
+            Добавить ключ доступа
           </Button>
         )}
       </section>

@@ -126,6 +126,11 @@ def test_the_agent_is_told_to_connect_a_calendar_by_a_protected_field_never_by_a
         assert service in text
     assert "replace_link=true" in text
     assert "защищённое поле" in text
+    # the buttons the thread offers are the words the agent is told to act on
+    from botai.sources import calendar
+
+    for answer in (calendar.YES, calendar.YES_REPLACE):
+        assert answer in text
 
 
 async def test_schedule_is_shown_in_the_space_time_zone_with_sources(sm: Sm, user_id: str) -> None:

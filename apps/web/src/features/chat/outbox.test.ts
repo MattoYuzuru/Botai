@@ -308,7 +308,7 @@ describe("очередь исходящих сообщений", () => {
         new ApiError(
           409,
           "secret_link_calendar",
-          "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
+          "Это личная ссылка календаря — подключить календарь можно через защищённое поле: я предложил это ниже",
         ),
       );
     const { outbox, advance, events, storage } = setup({ postMessage: post });
@@ -329,7 +329,7 @@ describe("очередь исходящих сообщений", () => {
   });
 
   it("conflictKind различает коды 409; текст отказа календаря не принимается за пароль", () => {
-    const detail = "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже";
+    const detail = "Это личная ссылка календаря — подключить календарь можно через защищённое поле: я предложил это ниже";
     expect(conflictKind(new ApiError(409, "secret_link_calendar", detail))).toBe("calendar_link");
     expect(conflictKind(new ApiError(409, "secret_in_chat", detail))).toBe("secret_in_chat");
     expect(conflictKind(new ApiError(409, "agent_busy", ""))).toBe("agent_busy");

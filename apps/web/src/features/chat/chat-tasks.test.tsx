@@ -130,8 +130,36 @@ describe("один тред: подключение, вход, вопросы а
     expect(composer()).toHaveValue("");
   });
 
-  it("личная ссылка календаря (409 secret_link_calendar): стёрта из очереди и хранилища, в поле не вернулась, подсказка ведёт к защищённому полю", async () => {
-    const link = "https://calendar.example.org/export/ics.xml?private_token=k9Xq2LmZp7Vb";
+  it("личная ссылка календаря: клиент не пускает её в очередь, остальной текст возвращается в поле, тред спрашивает про календарь", async () => {
+    const link = "https://calendar.yandex.ru/export/ics.xml?private_token=k9Xq2LmZp7Vb4NwR8sTd";
+    const sent: string[] = [];
+    harness.server.events.on("request:start", ({ request }) => {
+      if (request.method === "POST") sent.push(new URL(request.url).pathname);
+    });
+    const { user } = await openNewChat();
+    await ask(user, `Подключи календарь, вот ссылка ${link} — спасибо`);
+    // Ни в очереди, ни в localStorage, ни на сервере: ссылка открывает весь календарь.
+    expect(
+      await screen.findByText(/Похоже, это личная ссылка календаря/, undefined, wait),
+    ).toBeInTheDocument();
+    expect(outbox.snapshot).toHaveLength(0);
+    expect(window.localStorage.getItem("botai.chat.outbox")).toBeNull();
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain("private_token");
+    expect(document.body.textContent).not.toContain("private_token");
+    expect(sent.some((path) => path.endsWith("/messages"))).toBe(false);
+    expect(sent.some((path) => path.endsWith("/calendar-link"))).toBe(true);
+    // В поле — остальной текст без ссылки; вопрос треда с кнопками, а не окрик про пароль.
+    await waitFor(() => expect(composer()).toHaveValue("Подключи календарь, вот ссылка — спасибо"), wait);
+    const replies = await screen.findByRole("group", { name: "Быстрые ответы" }, wait);
+    expect(
+      within(replies)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Да, подключить календарь", "Нет, это другое"]);
+    expect(screen.queryByText("Пароль и коды вводите только в защищённое поле")).toBeNull();
+  });
+
+  it("сервер отказал (409 secret_link_calendar) — защита на случай расхождения: стёрто из очереди и хранилища, в поле остальной текст", async () => {
     harness.server.use(
       http.post("*/api/v1/chat/threads/:threadId/messages", () =>
         HttpResponse.json(
@@ -140,29 +168,23 @@ describe("один тред: подключение, вход, вопросы а
             title: "secret_link_calendar",
             status: 409,
             code: "secret_link_calendar",
-            detail: "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
+            detail: "Это личная ссылка календаря, в чат её вставлять нельзя",
           },
           { status: 409, headers: { "content-type": "application/problem+json" } },
         ),
       ),
     );
     const { user } = await openNewChat();
-    await ask(user, `Вот моя ссылка: ${link}`);
+    // Клиент и сервер узнают ссылки одинаково, поэтому расхождение изображено ответом сервера на обычный текст.
+    await ask(user, "Привет, это обычный текст");
     expect(
-      await screen.findByText(
-        "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже",
-        undefined,
-        wait,
-      ),
+      await screen.findByText("Ссылку календаря в чат не отправили", undefined, wait),
     ).toBeInTheDocument();
     await waitFor(() => expect(outbox.snapshot).toHaveLength(0), wait);
-    // Ни в очереди, ни в localStorage, ни в поле ввода, ни в ленте: ссылка открывает весь календарь.
     expect(window.localStorage.getItem("botai.chat.outbox")).toBeNull();
-    expect(JSON.stringify({ ...window.localStorage })).not.toContain("private_token");
-    expect(document.body.textContent).not.toContain("private_token");
-    expect(composer()).toHaveValue("");
-    // Это не окрик про пароль: у такого отказа свой заголовок.
+    // Не окрик про пароль, и остальной текст вернулся в поле: возвращается всё, кроме ссылки.
     expect(screen.queryByText("Пароль и коды вводите только в защищённое поле")).toBeNull();
+    await waitFor(() => expect(composer()).toHaveValue("Привет, это обычный текст"), wait);
   });
 
   it("повторная просьба подключить уже подключённое: «уже подключено» с быстрыми ответами, задача не запускается", async () => {

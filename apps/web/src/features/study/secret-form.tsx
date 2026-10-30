@@ -5,24 +5,18 @@ import type { Connection } from "@/api/types";
 import type { SecretKind } from "@/features/data/types";
 import { putSecret, SECRET_KINDS } from "./connection-actions";
 
-const ICAL = /^(https?|webcal):\/\//i;
-
 /**
- * Ссылка на календарь, ключ доступа или ключ сервиса. Значение вводится в секретное поле, уходит один раз и
+ * Ключ доступа или ключ сервиса. Значение вводится в секретное поле, уходит один раз и
  * больше не показывается: после сохранения экран говорит только «сохранено». Ошибка — у поля, словами сервера.
  */
 export function SecretForm({ connection, onSaved }: { connection: Connection; onSaved: () => void }) {
-  const [kind, setKind] = useState<SecretKind>("ical_url");
+  const [kind, setKind] = useState<SecretKind>("token");
   const [error, setError] = useState<string | undefined>();
   const current = SECRET_KINDS.find((row) => row.value === kind) ?? SECRET_KINDS[0];
 
   const save = async (value: string) => {
     setError(undefined);
     const trimmed = value.trim();
-    if (kind === "ical_url" && !ICAL.test(trimmed)) {
-      setError("Нужна ссылка на календарь: https:// или webcal://. Вставьте её ещё раз.");
-      return;
-    }
     try {
       await putSecret(connection.id, kind, trimmed);
     } catch (cause) {

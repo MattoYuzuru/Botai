@@ -24,6 +24,8 @@ export const chatApi = {
     v3<Message[]>("GET", `${thread(id)}/messages`, { signal, cache: "no-store" }),
   postMessage: (id: string, body: MessageIn) =>
     v3<MessageAccepted>("POST", `${thread(id)}/messages`, { body }),
+  /** Клиент не пустил в очередь личную ссылку календаря: тред спрашивает, подключать ли календарь. Тела нет. */
+  offerCalendar: (id: string) => v3<void>("POST", `${thread(id)}/calendar-link`),
   runtime: (id: string, signal?: AbortSignal) =>
     v3<ThreadRuntime>("GET", `${thread(id)}/runtime`, { signal, cache: "no-store" }),
 };
