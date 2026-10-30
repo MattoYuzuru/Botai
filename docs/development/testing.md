@@ -236,7 +236,12 @@ PR и отчёте выпуска. [Текущие запуски CI](https://gi
 Подключение начинается в любом треде: агент вызывает `connect_source`, задача CONNECT получает
 `thread_id` этого треда (`tests/jobs/test_connect_source.py`). Проверки `tests/jobs/test_conversations.py` покрывают durable inbox,
 идемпотентность, восстановление истории, защищённые ответы и переход к отдельному источнику другого
-origin. `tests/learn/test_conversation.py` проверяет свободные уточнения и отсутствие необязательных
+origin. Повторная просьба к незавершённому источнику («расписание и задания»), `kinds` и слияние со
+словами прошлой попытки — `tests/jobs/test_connect_source.py`, `tests/learn/test_intent.py`.
+Инцидент «вопрос про аудитории, ссылка на веб-календарь, потерянное расписание» — на стенде L1:
+вопрос только по запрошенному, принятое сохраняется до ссылки на другой сайт, страница сервиса
+календаря не становится источником (`tests/learn/test_lms_story.py`, `tests/jobs/test_calendar_chat.py`,
+`tests/core/test_calendar_link.py`). `tests/learn/test_conversation.py` проверяет свободные уточнения и отсутствие необязательных
 видов данных. `tests/learn/test_rendered_story.py` использует настоящий Chromium и синтетическую
 SPA: исходный query, глубокий DOM, canary и повторный sync без модели. Серверный запрет POST/WS и
 сохранение активного ручного входа проверяются в `tests/browser/test_gateway.py`.
