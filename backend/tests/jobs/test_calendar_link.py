@@ -564,6 +564,22 @@ async def test_the_student_hands_the_link_over_and_the_calendar_is_read(
         "Математический анализ",
         "День народного единства",
     }
+    # recurrence rules, the skipped week (EXDATE), the moved class, one-off events and deadlines
+    lectures = sorted(
+        e["startsAt"] for e in schedule.json() if e["title"] == "Математический анализ"
+    )
+    assert [s[:16] for s in lectures] == [
+        "2026-11-02T08:00",  # moved by the calendar (RECURRENCE-ID), not 06:30
+        "2026-11-16T06:30",  # 9 November is skipped (EXDATE)
+        "2026-11-23T06:30",
+        "2026-11-30T06:30",
+    ]
+    assert "Отменённая консультация" not in {e["title"] for e in schedule.json()}
+    deadlines = await who.client.get("/api/v1/deadlines", params={"include_done": "true"})
+    assert {(d["title"], d["state"]) for d in deadlines.json()} == {
+        ("ДЗ 4: графы", "open"),  # an event of zero length is a deadline
+        ("Прочитать главу 5", "submitted"),  # a finished task of the calendar
+    }
     sync = (await who.client.post(f"/api/v1/connections/{conn.id}/sync")).json()["jobId"]
     assert (await env.wait_for(sync, {"done"})).result["status"] == "ok"  # type: ignore[index]
 
