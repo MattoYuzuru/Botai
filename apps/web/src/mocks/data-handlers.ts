@@ -138,18 +138,23 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       return HttpResponse.json(spaceId ? all.filter((row) => row.provenance.spaceId === spaceId) : all);
     });
 
+  /** Статус, который был у источника до отключения: включение возвращает его, как сервер. */
+  const before = new Map<string, S["ConnectionOut"]["status"]>();
   const switchHandler = (action: "disable" | "enable") =>
     http.post(`*/api/v1/connections/:connectionId/${action}`, async ({ params }) => {
       await wait();
       if (!signedIn()) return unauthorized();
       const connection = db.connections.find((c) => c.id === String(params.connectionId));
       if (!connection) return problem(404, "not_found", "Подключение не найдено");
-      if (action === "disable") {
+      if (action === "disable" && connection.status !== "disabled") {
+        before.set(connection.id, connection.status);
         connection.status = "disabled";
         connection.nextSyncAt = null;
         connection.scheduleRole = null;
-      } else if (connection.status === "disabled") {
-        connection.status = connection.adapter ? "active" : "draft";
+        connection.activeTask = null;
+      } else if (action === "enable" && connection.status === "disabled") {
+        connection.status = before.get(connection.id) ?? (connection.adapter ? "active" : "draft");
+        before.delete(connection.id);
       }
       save();
       return HttpResponse.json(connection);

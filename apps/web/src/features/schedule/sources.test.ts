@@ -19,6 +19,15 @@ describe("склейка источников: подписи пары (FR-054)"
     expect(disagreementNote(event)).toBe("Источники расходятся: «Календарь» — ауд. 305");
   });
 
+  it("слова названия, которых нет у основного, — тоже расхождение источников", () => {
+    const event = eventFixture({
+      disagreement: { kind: "title", detail: "«Календарь» — название «Матанализ (подгруппа Б)»" },
+    });
+    expect(disagreementNote(event)).toBe(
+      "Источники расходятся: «Календарь» — название «Матанализ (подгруппа Б)»",
+    );
+  });
+
   it("пары нет в основном источнике — слова сервера без приставки «расходятся»", () => {
     const detail = "Нет в основном источнике «Кабинет»: возможно, пару перенесли или отменили";
     expect(disagreementNote(eventFixture({ disagreement: { kind: "not_in_primary", detail } }))).toBe(detail);

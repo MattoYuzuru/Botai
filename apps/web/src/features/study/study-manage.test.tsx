@@ -63,6 +63,9 @@ describe("«Источники»: управление", () => {
       await userEvent.click(within(sheet).getByRole("button", { name: "Отключить источник" }));
       const dialog = await screen.findByRole("alertdialog", { name: "Отключить «Личный кабинет»?" });
       expect(dialog).toHaveTextContent("Ничего не удаляется");
+      // что именно скрывается: не только расписание
+      expect(dialog).toHaveTextContent(/документы/);
+      expect(dialog).toHaveTextContent(/остановит его задачи/);
       expect(portal().status).toBe("active"); // пока не подтвердили — ничего не изменилось
       await userEvent.click(within(dialog).getByRole("button", { name: "Отключить" }));
       await waitFor(() => expect(portal().status).toBe("disabled"));

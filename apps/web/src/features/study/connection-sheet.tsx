@@ -280,7 +280,7 @@ function ConnectionDetails({
         open={confirm === "disable"}
         onOpenChange={(open) => !open && setConfirm(null)}
         title={`Отключить «${connection.title}»?`}
-        description="BotAI перестанет обновлять источник, а его данные исчезнут из расписания, заданий и ответов чата. Ничего не удаляется: включить источник обратно можно здесь же."
+        description="BotAI перестанет обновлять источник и остановит его задачи, а его пары, сроки, предметы, оценки, документы и новости исчезнут из расписания, заданий и ответов чата. Ничего не удаляется: включить источник обратно можно здесь же."
         confirmLabel="Отключить"
         tone="default"
         onConfirm={() => run("disable", () => setSourceEnabled(connection.id, false))}
