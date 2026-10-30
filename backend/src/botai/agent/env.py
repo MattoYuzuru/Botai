@@ -129,6 +129,7 @@ class ChatEnv:
     used: set[str] = field(default_factory=set)
     repairs: list[str] = field(default_factory=list)  # titles of connections sent to repair
     public_question: str = ""  # only the current typed question; never history or private tool data
+    question_id: str | None = None  # the message of the student this turn answers
     search_budget: SearchBudget | None = None
     ctx: JobContext | None = None  # to publish the plan while the turn is still running
     blocks: list[AgentUiBlock] = field(default_factory=list)  # task cards appended to the reply

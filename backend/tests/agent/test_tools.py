@@ -90,6 +90,7 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "offer_choices",
         "rename_thread",
         "set_primary_source",
+        "ask_primary_source",
         "disable_source",
         "compare_sources",
     }

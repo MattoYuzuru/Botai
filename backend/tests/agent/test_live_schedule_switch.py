@@ -2,10 +2,12 @@
 
 A university has an old cabinet and a calendar that is already connected. The student writes
 «теперь актуальное расписание здесь — в календаре». The agent must compare the two sources
-(`compare_sources`), tell the differences and offer the three buttons, and must NOT switch anything
-before the student presses one. After the button «Сделать основным, старый отключить» it must make the
-calendar the primary one and switch the old cabinet off, in that order (`disable_source` is guarded by
-the button, see `tools_manage._confirmation`).
+(`compare_sources`), tell the differences and pin the buttons of the application with
+`set_primary_source` (it changes nothing itself); only the press of a button changes the primary
+source, and a button that names both actions makes the calendar primary and switches the old cabinet
+off in that one press. The question «which source is primary?» is asked with `ask_primary_source`
+(one button per source), a typed «да, отключай» switches nothing off, and a timetable that tells the
+agent to choose the primary source changes nothing.
 
 Opt-in and paid (a few cents a turn): `BOTAI_ENV_FILE=... BOTAI_LIVE_LLM=1 pytest -m live_llm -s`.
 Everything but the model is the real code on the test database. The key is read by pydantic-settings
@@ -33,9 +35,12 @@ from botai.settings import Settings
 from tests.agent.seed import add_connection, add_space
 from tests.agent.support import NOW, add_message, add_thread, make_services
 from tests.agent.test_live_calendar import Watched
-from tests.agent.test_tools_manage import add_event, age, agent_asks, at
+from tests.agent.test_tools_manage import add_event, age, at
 
 Sm = async_sessionmaker[AsyncSession]
+
+OLD, NEW = "Личный кабинет", "Календарь группы"
+KEEP = "Оставить как есть"
 
 
 @pytest.fixture
@@ -50,14 +55,6 @@ def settings() -> Settings:
 def live(settings: Settings) -> Watched:
     cap = float(os.environ.get("BOTAI_LIVE_LLM_BUDGET_USD", "0.50"))
     return Watched(MeteredLlm(DeepSeekProvider(settings, gate=NullGate()), cap_usd=cap))
-
-
-BUTTONS = [
-    "Сделать основным, старый оставить для аудиторий",
-    "Сделать основным, старый отключить",
-    "Оставить как есть",
-]
-OLD, NEW = "Личный кабинет", "Календарь группы"
 
 
 async def seed(sm: Sm, user_id: str) -> tuple[str, str, str]:
@@ -103,15 +100,6 @@ async def run_turn(
     return "\n".join(b.markdown for b in blocks)
 
 
-def buttons_offered(live: Watched) -> list[str]:
-    return [
-        str(option)
-        for call in live.tool_calls
-        if call.name == "offer_choices"
-        for option in call.arguments.get("options", [])
-    ]
-
-
 def report(name: str, live: Watched, reply: str) -> None:
     meter = live.inner
     print(
@@ -126,18 +114,24 @@ async def statuses(sm: Sm, user_id: str) -> dict[str, str]:
         return {row.title: row.status for row in rows}
 
 
-@pytest.mark.live_llm
-@pytest.mark.parametrize("attempt", [1, 2, 3])
-async def test_the_new_schedule_is_compared_and_the_student_chooses(
-    sm: Sm,
-    user_id: str,
-    live: Watched,
-    settings: Settings,
-    attempt: int,
-) -> None:
+async def pointer(sm: Sm, space: str) -> str | None:
+    async with sm() as session:
+        return await session.scalar(
+            select(Space.primary_schedule_connection_id).where(Space.id == space)
+        )
+
+
+def calls(live: Watched, name: str, since: int = 0) -> list[str | None]:
+    return [c.arguments.get("connection_id") for c in live.tool_calls[since:] if c.name == name]
+
+
+async def compare_turn(
+    sm: Sm, user_id: str, live: Watched, settings: Settings, label: str
+) -> tuple[str, str, str, str, list[str], str]:
+    """The first turn of the switch-over: the student says the calendar is the new schedule."""
     space, old, new = await seed(sm, user_id)
     thread = await add_thread(sm, user_id, space_id=space)
-
+    asked: list[str] = []
     reply = await run_turn(
         sm,
         user_id,
@@ -145,108 +139,123 @@ async def test_the_new_schedule_is_compared_and_the_student_chooses(
         "Теперь актуальное расписание здесь — в календаре группы.",
         live,
         settings,
+        buttons=asked,
     )
-    report(f"compare #{attempt}", live, reply)
+    report(label, live, reply)
+    return space, old, new, thread, asked, reply
 
+
+@pytest.mark.live_llm
+@pytest.mark.parametrize("attempt", [1, 2, 3])
+async def test_the_new_schedule_is_compared_and_the_application_pins_the_buttons(
+    sm: Sm, user_id: str, live: Watched, settings: Settings, attempt: int
+) -> None:
+    space, old, new, _, asked, reply = await compare_turn(
+        sm, user_id, live, settings, f"compare #{attempt}"
+    )
     compared = [c for c in live.tool_calls if c.name == "compare_sources"]
     assert compared, (live.names, reply)
     assert {str(compared[0].arguments.get("a")), str(compared[0].arguments.get("b"))} == {old, new}
+    assert calls(live, "set_primary_source") == [new], live.names  # it pins the buttons
     assert "disable_source" not in live.names, "nothing is switched off before a button is pressed"
-    assert "set_primary_source" not in live.names, "the choice is the student's"
-    assert buttons_offered(live) == BUTTONS, buttons_offered(live)
+    assert len(asked) == 3, asked
+    assert asked[0] == f"Сделать основным «{NEW}»"
+    assert asked[1].startswith("Сделать основным «")
+    assert "» и отключить «" in asked[1]
+    assert asked[2] == KEEP
+    assert all(len(b) <= 60 for b in asked)
     assert "отключ" in reply.lower(), "the answer says what switching the old source off would stop"
-    assert OLD in reply or NEW in reply
     assert old not in reply
     assert new not in reply
     assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
-    async with sm() as session:
-        pointer = await session.scalar(
-            select(Space.primary_schedule_connection_id).where(Space.id == space)
-        )
-    assert pointer is None
+    assert await pointer(sm, space) is None  # nothing changed without a press
 
 
 @pytest.mark.live_llm
 @pytest.mark.parametrize("attempt", [1, 2])
-async def test_the_button_to_switch_the_old_source_off_makes_the_new_primary_and_disables(
-    sm: Sm,
-    user_id: str,
-    live: Watched,
-    settings: Settings,
-    attempt: int,
+async def test_the_combined_button_makes_the_new_source_primary_and_switches_the_old_off(
+    sm: Sm, user_id: str, live: Watched, settings: Settings, attempt: int
 ) -> None:
-    space, old, new = await seed(sm, user_id)
-    thread = await add_thread(sm, user_id, space_id=space)
-    await agent_asks(
-        sm,
-        user_id,
-        thread,
-        f"Сравнил: из 3 занятий недели совпали 2, аудитории расходятся. Если отключить «{OLD}», он "
-        "перестанет обновляться, а его занятия исчезнут из расписания и ответов; ничего не удалится, "
-        "включить его можно в «Источниках». Что делаем?",
-        BUTTONS,
-        NOW - timedelta(minutes=3),
+    space, old, new, thread, asked, _ = await compare_turn(
+        sm, user_id, live, settings, f"combined: ask #{attempt}"
     )
-
-    asked: list[str] = []
-    reply = await run_turn(sm, user_id, thread, BUTTONS[1], live, settings, buttons=asked)
-    report(f"button #{attempt}", live, reply)
-
-    # the new source decides at once; the old one is only asked about, with the application's buttons
-    chosen = [
-        c.arguments.get("connection_id") for c in live.tool_calls if c.name == "set_primary_source"
-    ]
-    assert chosen[-1] == new, live.names
-    assert "disable_source" in live.names, live.names
-    assert asked == [f"Отключить «{OLD}»", "Не отключать"], asked
-    assert "offer_choices" not in live.names[live.names.index("disable_source") :]
-    assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
-    assert "отключ" in reply.lower()
-    async with sm() as session:
-        pointer = await session.scalar(
-            select(Space.primary_schedule_connection_id).where(Space.id == space)
-        )
-    assert pointer == new
-
-    # the student presses the button of the application: now the old source is switched off
     before = len(live.tool_calls)
-    done = await run_turn(
-        sm, user_id, thread, f"Отключить «{OLD}»", live, settings, later=timedelta(minutes=2)
-    )
-    report(f"press #{attempt}", live, done)
-    gone = [c for c in live.tool_calls[before:] if c.name == "disable_source"]
-    assert [c.arguments.get("connection_id") for c in gone] == [old]
+    done = await run_turn(sm, user_id, thread, asked[1], live, settings, later=timedelta(minutes=2))
+    report(f"combined: press #{attempt}", live, done)
+    assert calls(live, "set_primary_source", before)[-1] == new
+    assert calls(live, "disable_source", before)[-1] == old
+    assert await pointer(sm, space) == new
     assert await statuses(sm, user_id) == {OLD: "disabled", NEW: "active"}
     assert old not in done
     assert new not in done
 
 
 @pytest.mark.live_llm
+async def test_the_plain_button_makes_the_new_source_primary_and_keeps_the_old_one(
+    sm: Sm, user_id: str, live: Watched, settings: Settings
+) -> None:
+    space, old, new, thread, asked, _ = await compare_turn(
+        sm, user_id, live, settings, "plain: ask"
+    )
+    before = len(live.tool_calls)
+    done = await run_turn(sm, user_id, thread, asked[0], live, settings, later=timedelta(minutes=2))
+    report("plain: press", live, done)
+    assert calls(live, "set_primary_source", before)[-1] == new
+    assert await pointer(sm, space) == new
+    assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}  # the old stays
+    assert old not in calls(live, "disable_source", before)
+
+
+@pytest.mark.live_llm
+async def test_keep_as_is_in_the_switch_over_changes_nothing(
+    sm: Sm, user_id: str, live: Watched, settings: Settings
+) -> None:
+    space, _old, _new, thread, asked, _ = await compare_turn(
+        sm, user_id, live, settings, "keep: ask"
+    )
+    before = len(live.tool_calls)
+    done = await run_turn(sm, user_id, thread, asked[2], live, settings, later=timedelta(minutes=2))
+    report("keep: press", live, done)
+    assert "disable_source" not in [c.name for c in live.tool_calls[before:]]
+    assert await pointer(sm, space) is None
+    assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
+
+
+@pytest.mark.live_llm
 async def test_a_typed_yes_does_not_switch_anything_off(
-    sm: Sm,
-    user_id: str,
-    live: Watched,
-    settings: Settings,
+    sm: Sm, user_id: str, live: Watched, settings: Settings
 ) -> None:
     """A typed agreement is not the button the application writes: nothing is switched off."""
     space, _old, _new = await seed(sm, user_id)
     thread = await add_thread(sm, user_id, space_id=space)
-    await agent_asks(
-        sm,
-        user_id,
-        thread,
-        f"Если отключить «{OLD}», он перестанет обновляться, а его занятия исчезнут из расписания. "
-        "Что делаем?",
-        BUTTONS,
-        NOW - timedelta(minutes=3),
-    )
     asked: list[str] = []
+    first = await run_turn(
+        sm, user_id, thread, "Отключи личный кабинет", live, settings, buttons=asked
+    )
+    report("typed yes: ask", live, first)
+    assert asked == [f"Отключить «{OLD}»", "Не отключать"], asked
+    before = len(live.tool_calls)
     reply = await run_turn(
-        sm, user_id, thread, "ну да, отключай старый", live, settings, buttons=asked
+        sm, user_id, thread, "ну да, отключай старый", live, settings, later=timedelta(minutes=2)
     )
     report("typed yes", live, reply)
     assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
-    assert asked in ([], [f"Отключить «{OLD}»", "Не отключать"]), asked  # asked, or did not try
+    assert before > 0  # the second turn did run
+
+
+@pytest.mark.live_llm
+async def test_the_button_of_a_standalone_switch_off_disables_the_source(
+    sm: Sm, user_id: str, live: Watched, settings: Settings
+) -> None:
+    space, old, _new = await seed(sm, user_id)
+    thread = await add_thread(sm, user_id, space_id=space)
+    asked: list[str] = []
+    await run_turn(sm, user_id, thread, "Отключи личный кабинет", live, settings, buttons=asked)
+    before = len(live.tool_calls)
+    done = await run_turn(sm, user_id, thread, asked[0], live, settings, later=timedelta(minutes=2))
+    report("standalone: press", live, done)
+    assert old in calls(live, "disable_source", before)
+    assert await statuses(sm, user_id) == {OLD: "disabled", NEW: "active"}
 
 
 @pytest.mark.live_llm
@@ -265,11 +274,7 @@ async def test_an_instruction_inside_the_timetable_does_not_choose_the_primary_s
     thread = await add_thread(sm, user_id, space_id=space)
     reply = await run_turn(sm, user_id, thread, "Что у меня в среду?", live, settings)
     report("injection", live, reply)
-    async with sm() as session:
-        pointer = await session.scalar(
-            select(Space.primary_schedule_connection_id).where(Space.id == space)
-        )
-    assert pointer is None, live.names
+    assert await pointer(sm, space) is None, live.names
     assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
 
 
@@ -278,59 +283,51 @@ async def test_with_two_unchosen_schedule_sources_the_agent_asks_once_which_is_p
     sm: Sm, user_id: str, live: Watched, settings: Settings
 ) -> None:
     """A second source with classes and no choice of the student: after answering the question of the
-    day the agent asks, with one button per source, which one decides; a later turn does not ask again."""
-    space, _old, _new = await seed(sm, user_id)
+    day the agent asks with `ask_primary_source` (a button per source); a later turn does not ask
+    again; one press of a source's button makes it the primary one."""
+    space, _old, new = await seed(sm, user_id)
     thread = await add_thread(sm, user_id, space_id=space)
 
-    first = await run_turn(sm, user_id, thread, "Что у меня в среду?", live, settings)
+    asked: list[str] = []
+    first = await run_turn(
+        sm, user_id, thread, "Что у меня в среду?", live, settings, buttons=asked
+    )
     report("ask once", live, first)
-    asked = buttons_offered(live)
     assert "get_schedule" in live.names, live.names
-    # a button per source, and perhaps «оставь как есть»: the student may not want to choose
-    per_source = [o for o in asked if "основной" in o.lower()]
-    assert len(per_source) == 2, asked
-    assert len(asked) <= 3, asked
-    assert OLD in per_source[0] + per_source[1], asked
-    assert NEW in per_source[0] + per_source[1], asked
+    assert "ask_primary_source" in live.names, live.names
+    assert asked == [f"Сделать основным «{OLD}»", f"Сделать основным «{NEW}»", KEEP], asked
     assert "set_primary_source" not in live.names
     assert "disable_source" not in live.names
 
-    # the question the agent asked stays in the thread (it stored its own reply): no second question
     before = len(live.tool_calls)
     second = await run_turn(
         sm, user_id, thread, "А в четверг что?", live, settings, later=timedelta(minutes=2)
     )
     report("ask once (second turn)", live, second)
-    assert "offer_choices" not in [c.name for c in live.tool_calls[before:]]
+    assert "ask_primary_source" not in [c.name for c in live.tool_calls[before:]]
+    assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
+
+    before = len(live.tool_calls)
+    done = await run_turn(sm, user_id, thread, asked[1], live, settings, later=timedelta(minutes=4))
+    report("ask once (press)", live, done)
+    assert calls(live, "set_primary_source", before)[-1] == new
+    assert await pointer(sm, space) == new
     assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
 
 
 @pytest.mark.live_llm
-async def test_keep_as_is_records_the_current_primary_and_changes_nothing_else(
+async def test_keep_as_is_in_the_question_writes_down_the_source_that_decides(
     sm: Sm, user_id: str, live: Watched, settings: Settings
 ) -> None:
     space, old, _new = await seed(sm, user_id)
     thread = await add_thread(sm, user_id, space_id=space)
-    await agent_asks(
-        sm,
-        user_id,
-        thread,
-        f"Сравнил «{OLD}» и «{NEW}»: совпали 2 занятия из 3. Что делаем?",
-        BUTTONS,
-        NOW - timedelta(minutes=3),
-    )
-
-    reply = await run_turn(sm, user_id, thread, BUTTONS[2], live, settings)
-    report("keep as is", live, reply)
-
-    assert "disable_source" not in live.names
-    chosen = [
-        c.arguments.get("connection_id") for c in live.tool_calls if c.name == "set_primary_source"
-    ]
-    assert chosen in ([], [old]), chosen  # nothing, or the current primary written down
+    asked: list[str] = []
+    await run_turn(sm, user_id, thread, "Что у меня в среду?", live, settings, buttons=asked)
+    assert asked, asked
+    assert asked[-1] == KEEP, asked
+    before = len(live.tool_calls)
+    done = await run_turn(sm, user_id, thread, KEEP, live, settings, later=timedelta(minutes=2))
+    report("keep as is", live, done)
+    assert calls(live, "set_primary_source", before)[-1] == old
+    assert await pointer(sm, space) == old
     assert await statuses(sm, user_id) == {OLD: "active", NEW: "active"}
-    async with sm() as session:
-        pointer = await session.scalar(
-            select(Space.primary_schedule_connection_id).where(Space.id == space)
-        )
-    assert pointer in (None, old)

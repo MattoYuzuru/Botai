@@ -28,6 +28,7 @@ from botai.agent.env import (
     ChatEnv,
     clean,
     data_text,
+    document_link,
     fmt_day,
     fmt_dt,
     fmt_updated,
@@ -406,17 +407,18 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
     now = env.services.clock.now()
     async with env.services.db() as session:
         # A saved answer that cites a document of a source the student switched off goes with it.
-        hidden = set(
-            await session.scalars(
-                select(Document.url)
+        # A document is cited by its address, or, when it was uploaded and has none, by its link
+        # inside the application: both forms of a switched-off source's document are hidden.
+        switched_off = (
+            await session.execute(
+                select(Document.id, Document.url)
                 .join(Connection, Connection.id == Document.connection_id)
-                .where(
-                    Document.user_id == env.user_id,
-                    Connection.status == "disabled",
-                    Document.url.is_not(None),
-                )
+                .where(Document.user_id == env.user_id, Connection.status == "disabled")
             )
-        )
+        ).all()
+        hidden = {document_link(doc_id) for doc_id, _ in switched_off} | {
+            url for _, url in switched_off if url
+        }
         rows: list[Fact] = []
         for tsquery in _tsqueries(query):
             doc = func.to_tsvector("russian", Fact.question + " " + Fact.answer)
@@ -579,6 +581,7 @@ MUTATING = frozenset(
         "request_repair",
         "request_login",
         "set_primary_source",
+        "ask_primary_source",
         "disable_source",
         "remember",
         "forget",
