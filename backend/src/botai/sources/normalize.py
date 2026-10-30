@@ -32,6 +32,7 @@ from botai.contracts.specs import Kind
 from botai.db import models as m
 from botai.sources.adapter import OCCURRENCE_PREFIX, AdapterResult, ExtractedDocument, Record
 from botai.sources.extract import clean_text, parse_datetime
+from botai.sources.states import task_state
 from botai.sources.vocab import REQUIRED
 
 MODELS: dict[Kind, type[Any]] = {
@@ -88,28 +89,6 @@ _FORMATS = (
     ("hybrid", ("hybrid", "гибрид", "смешан")),
     ("online", ("online", "онлайн", "дистанц", "remote")),
     ("offline", ("offline", "очно", "очная", "очный")),
-)
-_STATES = (
-    ("graded", ("graded", "evaluat", "оценен", "проверен")),
-    ("missed", ("missed", "overdue", "failed", "просроч", "провал")),
-    (
-        "open",
-        (
-            "open",
-            "new",
-            "pending",
-            "todo",
-            "assigned",
-            "backlog",
-            "inprogress",
-            "in progress",
-            "in_progress",
-            "не сдан",
-            "назначен",
-            "активн",
-        ),
-    ),
-    ("submitted", ("submitted", "done", "completed", "review", "сдан", "выполнен", "на проверке")),
 )
 _ROLES = (
     ("assistant", ("assistant", "ассистент", "ta")),
@@ -269,7 +248,7 @@ def _deadline(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | 
         "assignment_external_id": _text(f.get("assignmentId"), 200),
         "due_at": due,
         "effective_due_at": _dt(f.get("effectiveDueAt"), tz),
-        "state": _pick(f.get("state"), _STATES, "unknown"),
+        "state": task_state(f.get("state")),
         "url": _url(f.get("url"), src),
     }
 
@@ -440,13 +419,28 @@ async def apply_result(
             st.updated += 1 if changed else 0
             st.unchanged += 0 if changed else 1
         if kind in missing_kinds:
-            st.missing = await _mark_missing(session, kind, connection_id, now)
+            st.missing = await _mark_missing(
+                session, kind, connection_id, now, _expansion_window(result, kind)
+            )
     await session.flush()
     return stats
 
 
+def _expansion_window(result: AdapterResult, kind: Kind) -> tuple[datetime, datetime] | None:
+    """Where the weekly rules of this kind spoke in this read: the days all of them looked at."""
+    windows = [o.expanded for o in result.outcomes if o.kind == kind and o.expanded is not None]
+    if not windows:
+        return None
+    start, end = max(w[0] for w in windows), min(w[1] for w in windows)
+    return (start, end) if start < end else None
+
+
 async def _mark_missing(
-    session: AsyncSession, kind: Kind, connection_id: str, now: datetime
+    session: AsyncSession,
+    kind: Kind,
+    connection_id: str,
+    now: datetime,
+    window: tuple[datetime, datetime] | None = None,
 ) -> int:
     model = MODELS[kind]
     rows = (
@@ -458,15 +452,21 @@ async def _mark_missing(
         .scalars()
         .all()
     )
+    missing = 0
     for obj in rows:
-        if kind == "courses":
+        ahead = kind == "scheduleEvents" and obj.starts_at >= now
+        if ahead and obj.external_id.startswith(OCCURRENCE_PREFIX):
+            # The rules are silent beyond the days they looked at (the horizon slides forward,
+            # a repair may shorten it): only what lies inside this read's horizon is gone.
+            if window is None or not window[0] <= obj.starts_at < window[1]:
+                continue
+            await session.delete(obj)  # the rules no longer produce it
+        elif ahead:
+            obj.changed = True  # was still ahead and is gone: moved or cancelled
+        elif kind == "courses":
             obj.archived = True
-        elif kind == "scheduleEvents" and obj.starts_at >= now:
-            if obj.external_id.startswith(OCCURRENCE_PREFIX):
-                await session.delete(obj)  # the rule no longer produces it
-            else:
-                obj.changed = True  # was still ahead and is gone: moved or cancelled
-    return len(rows)
+        missing += 1
+    return missing
 
 
 # --- documents ------------------------------------------------------------------------------

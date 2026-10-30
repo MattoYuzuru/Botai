@@ -239,6 +239,8 @@ class LmsState:
     segments: list[str] = field(default_factory=lambda: list[str]())
     state_reads: list[list[str]] = field(default_factory=lambda: list[list[str]]())
     account_reads: int = 0
+    # When set, the timetables endpoint answers with this status (404 after a move, 503 down).
+    timetables_status: int | None = None
 
     def rows(self) -> list[dict[str, Any]]:
         return [row for course in self.timetables for row in course["eventRows"]]
@@ -253,6 +255,7 @@ def reset() -> None:
     STATE.segments.clear()
     STATE.state_reads.clear()
     STATE.account_reads = 0
+    STATE.timetables_status = None
 
 
 def remove_rule(calendar_event_id: str) -> None:
@@ -302,6 +305,8 @@ async def timetables(request: Request, who: str) -> JSONResponse:
     STATE.segments.append(who)
     if who != "me":
         return _not_found()
+    if STATE.timetables_status is not None:
+        return JSONResponse({"title": "unavailable"}, status_code=STATE.timetables_status)
     return JSONResponse(STATE.timetables)
 
 

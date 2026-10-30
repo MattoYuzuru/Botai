@@ -265,7 +265,7 @@ async def test_rules_become_dated_classes_and_tasks_keep_every_status(
         "Домашнее задание 4": "open",
         "Лабораторная работа 2": "open",
         "Контрольная 1": "submitted",
-        "Домашнее задание 3": "missed",
+        "Домашнее задание 3": "graded",  # handed in and marked 2 of 10: checked, not overdue
         "Домашнее задание 2": "graded",
     }
     assert by_title["Домашнее задание 4"].course_title == "Линейная алгебра"
@@ -273,11 +273,7 @@ async def test_rules_become_dated_classes_and_tasks_keep_every_status(
     assert by_title["Домашнее задание 4"].due_at is not None
     assert by_title["Домашнее задание 4"].due_at.isoformat() == "2026-11-02T20:59:00+00:00"
     pending = await repo.list_deadlines(env.db, env.seeded.user_id, now=NOW)
-    assert {d.title for d in pending} == {
-        "Домашнее задание 4",
-        "Лабораторная работа 2",
-        "Домашнее задание 3",
-    }
+    assert {d.title for d in pending} == {"Домашнее задание 4", "Лабораторная работа 2"}
     assert await env.count(m.Course) == 3
 
     # 6. the model is not asked again
@@ -513,3 +509,29 @@ async def test_an_incomplete_look_says_why_it_stopped_and_what_it_saw(
     assert text.count("Это не значит, что данных нет.") == 1
     assert "план просмотра не сработал" not in text
     assert "исследование достигло ограничения" not in text
+
+
+@pytest.mark.parametrize("breakage", ["every rule gone", "address not found"])
+async def test_an_empty_or_failing_answer_takes_no_class_off(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch, breakage: str
+) -> None:
+    study = await connect(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        [author(schedule_endpoint()), author(courses_endpoint())],
+    )
+    await study.run(payload={"url": ENTRY, "kinds": ["scheduleEvents", "courses"]})
+    before = {(r.title, *moscow(r)) for r in await events(study)}
+    assert len(before) == 36
+
+    # every rule gone at once is a cabinet that broke, not a student with no classes; an address
+    # that no longer answers is not an answer at all: the sync keeps the calendar and sends the
+    # recipe to repair
+    if breakage == "every rule gone":
+        lms.STATE.timetables = []
+    else:
+        lms.STATE.timetables_status = 404
+    study.services.clock.advance(timedelta(hours=3))  # type: ignore[attr-defined]
+    assert (await study.sync())["status"] == "repairing"
+    assert {(r.title, *moscow(r)) for r in await events(study)} == before

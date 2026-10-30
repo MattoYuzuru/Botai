@@ -46,6 +46,7 @@ from botai.sources.expressions import (
     collect,
     expand_weekly,
     field_value,
+    horizon_instants,
     structured_fields,
 )
 from botai.sources.extract import (
@@ -176,7 +177,12 @@ class RecipeAdapter:
         bootstrap_failed: set[str],
         reader: RenderedPageReader,
     ) -> tuple[EndpointOutcome, list[Record]]:
-        outcome = EndpointOutcome(endpoint_id=endpoint.id, kind=endpoint.kind, ok=True)
+        outcome = EndpointOutcome(
+            endpoint_id=endpoint.id,
+            kind=endpoint.kind,
+            ok=True,
+            expanded=_expanded(endpoint, ctx.now),
+        )
 
         def fail(problem: Problem, url: str = "") -> tuple[EndpointOutcome, list[Record]]:
             outcome.ok = False
@@ -394,7 +400,12 @@ class RecipeAdapter:
                 or "body"
             )
         outcome = EndpointOutcome(
-            endpoint.id, endpoint.kind, True, source_url=url, transport="browser"
+            endpoint.id,
+            endpoint.kind,
+            True,
+            source_url=url,
+            transport="browser",
+            expanded=_expanded(endpoint, ctx.now),
         )
         request = httpx.Request("GET", url, params=query)
         try:
@@ -635,6 +646,16 @@ class RecipeAdapter:
             if ok and (rec := _make_record(endpoint, spec.identity, fields, source_url)):
                 records.append(rec)
         return len(nodes), records, None, len(nodes), len(nodes)
+
+
+def _expanded(endpoint: Endpoint, now: datetime) -> tuple[datetime, datetime] | None:
+    expansion = endpoint.response.expand
+    if expansion is None:
+        return None
+    try:
+        return horizon_instants(expansion, now)
+    except ExpressionError:
+        return None
 
 
 def _has_password(tree: Any) -> bool:

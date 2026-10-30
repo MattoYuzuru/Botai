@@ -155,6 +155,9 @@ class EndpointOutcome:
     status: int | None = None
     binding_id: str | None = None
     windows: int = 0  # date windows answered by a dateWindow endpoint
+    # `[start, end)` of the days a weekly expansion looked at in this read. What the rules do not
+    # produce inside it is gone; outside it they said nothing.
+    expanded: tuple[datetime, datetime] | None = None
     window_items: list[int] = field(default_factory=list[int])  # records of each window
 
     @property

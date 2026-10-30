@@ -362,6 +362,31 @@ def _interval(value: Any) -> int:
     return value
 
 
+def horizon_days(expression: Weekly, now: datetime) -> tuple[date, date]:
+    """First and last local day the expansion looks at (inclusive), whatever the rules say."""
+    zone = ZoneInfo(expression.time_zone)
+    first = calendar_date(render(expression.horizon.from_, now=now, tz=zone, params={}))
+    try:
+        return first, first + timedelta(days=expression.horizon.days - 1)
+    except OverflowError:
+        raise ExpressionError("fields") from None
+
+
+def horizon_instants(expression: Weekly, now: datetime) -> tuple[datetime, datetime]:
+    """The same horizon as a half-open range of instants `[start, end)`: from the first local
+    midnight to the one after the last day. A rule is silent about what lies outside it."""
+    zone = ZoneInfo(expression.time_zone)
+    first, last = horizon_days(expression, now)
+    try:
+        after = last + timedelta(days=1)
+    except OverflowError:
+        raise ExpressionError("fields") from None
+    return (
+        datetime.combine(first, time.min, tzinfo=zone).astimezone(UTC),
+        datetime.combine(after, time.min, tzinfo=zone).astimezone(UTC),
+    )
+
+
 def expand_weekly(
     expression: Weekly,
     bindings: Mapping[str, Any],
@@ -374,11 +399,7 @@ def expand_weekly(
     last = calendar_date(scalar_value(expression.until_date, bindings, zone))
     if last < first:
         raise ExpressionError("fields")
-    horizon = calendar_date(render(expression.horizon.from_, now=now, tz=zone, params={}))
-    try:
-        horizon_end = horizon + timedelta(days=expression.horizon.days - 1)
-    except OverflowError:
-        raise ExpressionError("fields") from None
+    horizon, horizon_end = horizon_days(expression, now)
     weekdays = _weekdays(scalar_value(expression.weekdays, bindings, zone))
     clock = clock_time(scalar_value(expression.start_time, bindings, zone))
     end_clock = (
