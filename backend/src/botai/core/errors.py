@@ -16,6 +16,8 @@ class ErrorCode(StrEnum):
     SOURCE_RATE_LIMITED = "source_rate_limited"
     SOURCE_BOT_PROTECTION = "source_bot_protection"
     LOGIN_FAILED = "login_failed"
+    # Our own guard stopped a request of the login: the site is not down.
+    LOGIN_GUARD_REFUSED = "login_guard_refused"
     RECIPE_DRIFT = "recipe_drift"
     RECIPE_REJECTED = "recipe_rejected"
     EGRESS_BLOCKED = "egress_blocked"

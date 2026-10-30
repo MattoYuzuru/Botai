@@ -262,6 +262,7 @@ type ActionProposal = {
 | `source_auth_required` | Сессия протухла | Кнопка «войти снова», старые данные с меткой |
 | `source_unavailable` | 5xx/таймаут источника | Повтор позже, данные устарели |
 | `source_rate_limited` | 429 | Пауза, видимый срок |
+| `login_guard_refused` | Наш guard остановил запрос входа (сайт при этом работает) | Честный текст, запасной экран или повтор шага; не «сайт не отвечает» |
 | `recipe_drift` | Ответ не сошёлся со схемой | Пометка рецепта, задача автору |
 | `recipe_rejected` | Lint нашёл личные данные | Рецепт не сохраняется |
 | `egress_blocked` | Хост вне allowlist | Показать хост и спросить пользователя |
@@ -280,6 +281,7 @@ type ActionProposal = {
 | 2026-10-26 | Первая редакция | Основание для параллельной работы |
 | 2026-10-29 | Optional `X-Botai-Data-Reset` на `/me`, без изменения JSON | FR-023: после очистки очередь и offline snapshots не восстанавливают удалённые попытки; потребители API auth/PWA/chat/offline |
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
+| 2026-10-30 | Новый код ошибки `login_guard_refused` (§7) | Блокировка нашего guard входа больше не выдаётся за `source_unavailable`; потребители: UI заданий, агент |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
 | 2026-10-30 | Рецепт v2: `pagination.type=dateWindow {param, stepDays, windows, startOffset}`, `endpoint.uiUrl {path, query}`, `response.links` (≤4), `response.attributes` (≤8); словарь `scheduleEvents`: `kindText`, `address`, `group`, `lessonNumber`. v1 не меняется | FR-039–FR-042: источник отдаёт окно от даты, карточка занятия и ссылка на страницу, а не на API. Потребители: `learn/*`, `sources/*`, recipe executor; существующие рецепты читаются без изменений |

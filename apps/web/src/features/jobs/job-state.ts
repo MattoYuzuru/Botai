@@ -50,6 +50,7 @@ const RESULT_ERROR_CODES = new Set([
   "source_rate_limited",
   "source_bot_protection",
   "login_failed",
+  "login_guard_refused",
   "recipe_drift",
   "recipe_rejected",
   "egress_blocked",

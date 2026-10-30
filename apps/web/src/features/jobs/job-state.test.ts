@@ -168,6 +168,7 @@ describe("вопросы и ожидание человека", () => {
     "source_unavailable",
     "source_rate_limited",
     "source_bot_protection",
+    "login_guard_refused",
     "recipe_drift",
     "egress_blocked",
     "quota_exceeded",
