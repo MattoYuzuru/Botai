@@ -9,6 +9,7 @@ asked for. Every value the student gives opens one window for that step; nothing
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -411,10 +412,62 @@ async def test_the_window_closes_after_its_time(
         await handle.close()
 
 
-async def test_a_window_allows_a_few_posts_not_a_stream(
+async def test_what_the_page_posts_while_typing_cannot_spend_the_budget_of_the_submission(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig)
+    record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        await handle.page.evaluate(
+            "window.__posts = []; document.addEventListener('input', () => window.__posts.push("
+            f"fetch('{ORIGIN}/cu/api/telemetry', {{method: 'POST'}})))"
+        )
+        typed = gateway.AUTH_WINDOW_POSTS + 3
+        async with handle.auth_step(fields=["#u", "#p"]):
+            # a page that reports every keystroke: more posts than the submission's budget
+            for _ in range(typed):
+                await handle.page.evaluate(
+                    "document.getElementById('u').dispatchEvent(new Event('input', {bubbles: true}))"
+                )
+            await handle.page.evaluate("Promise.allSettled(window.__posts)")
+            assert login.CU.telemetry == typed
+            await handle.fill("#u", data.USERNAME)
+            await handle.fill("#p", data.PASSWORD)
+            await handle.click("button")
+        assert "/plain/login" not in handle.page.url  # and the submission still went through
+    finally:
+        await handle.close()
+
+
+async def test_a_window_allows_a_few_posts_once_the_step_is_sent_not_a_stream(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gateway, "AUTH_WINDOW_POSTS", 2)
+    rig = new_rig()
+    handle = await open_entry(rig)
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        async with handle.auth_step(fields=["#u", "#p"]):
+            await handle.click("#u")  # the click that sends the step (this form does not submit)
+            sent = [
+                await handle.page.evaluate(POST_JS, f"{ORIGIN}/cu/api/telemetry") for _ in range(3)
+            ]
+        assert sent == [True, True, False]
+        assert login.CU.telemetry == 2
+        assert refusals(events) == ["auth_window_exhausted"]
+    finally:
+        await handle.close()
+
+
+async def test_typing_has_a_budget_too(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gateway, "AUTH_TYPING_POSTS", 2)
     rig = new_rig()
     handle = await open_entry(rig)
     events = record_guard(handle, monkeypatch)
@@ -426,10 +479,14 @@ async def test_a_window_allows_a_few_posts_not_a_stream(
                 await handle.page.evaluate(POST_JS, f"{ORIGIN}/cu/api/telemetry") for _ in range(3)
             ]
         assert sent == [True, True, False]
-        assert login.CU.telemetry == 2
         assert refusals(events) == ["auth_window_exhausted"]
     finally:
         await handle.close()
+
+
+SUBMIT_JS = """u => { document.body.innerHTML = '<h1>Мои занятия</h1>';
+  const f = document.createElement('form'); f.method = 'post'; f.action = u;
+  document.body.appendChild(f); f.submit(); }"""
 
 
 async def test_a_page_that_no_longer_asks_for_a_login_gets_no_post_in_its_window(
@@ -450,29 +507,94 @@ async def test_a_page_that_no_longer_asks_for_a_login_gets_no_post_in_its_window
         await handle.close()
 
 
-async def test_a_submission_to_a_foreign_host_is_login_guard_refused_not_an_outage(
+async def test_a_refused_xhr_closes_the_window_so_a_following_document_post_is_refused_too(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    rig = new_rig()
+    handle = await open_entry(rig)
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        with contextlib.suppress(BotaiError, PlaywrightError):
+            async with handle.auth_step(fields=["#u", "#p"]):
+                await handle.page.evaluate("document.body.innerHTML = '<h1>Мои занятия</h1>'")
+                assert await handle.page.evaluate(POST_JS, f"{ORIGIN}/cu/api/telemetry") is False
+                with contextlib.suppress(PlaywrightError):
+                    await handle.page.evaluate(SUBMIT_JS, f"{ORIGIN}/cu/api/telemetry")
+                await asyncio.sleep(0.5)
+        assert login.CU.telemetry == 0  # neither the script's fetch nor its form got through
+        assert refusals(events)[:2] == ["auth_ui_missing", "auth_no_permit"]
+    finally:
+        await handle.close()
+
+
+async def test_a_form_that_is_hidden_asks_for_nothing_and_keeps_no_window(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig)
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        async with handle.auth_step(fields=["#u", "#p"]):
+            await handle.page.evaluate(
+                "document.getElementById('plain').style.display = 'none';"
+                "document.body.insertAdjacentHTML('beforeend', '<h1>Мои занятия</h1>')"
+            )
+            assert await handle.page.evaluate(POST_JS, f"{ORIGIN}/cu/api/telemetry") is False
+        assert login.CU.telemetry == 0
+        assert refusals(events) == ["auth_ui_missing"]
+    finally:
+        await handle.close()
+
+
+async def test_a_submission_to_a_foreign_host_is_put_to_the_student_as_a_host(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://api.fakeuni.test")
     rig = new_rig()
     handle = await open_entry(rig, hosts=CU_HOSTS)
     events = record_guard(handle, monkeypatch)
     try:
         async with handle.read_only_entry():
             await handle.goto(CU_ENTRY)
-
-        async def email_step() -> None:
-            async with handle.auth_step(fields=["#cu-login"]):
-                await handle.fill("#cu-login", data.USERNAME)
-                await handle.click("#cu-next")
-
         with pytest.raises(BotaiError) as raised:
-            await email_step()
+            await email_step(handle)
+        # the guard answers before the proxy would, so it names the host the way the proxy does
+        assert raised.value.code == ErrorCode.EGRESS_BLOCKED
+        assert raised.value.extra == {"host": "api.fakeuni.test", "post": True}
+        assert login.CU.submissions == []  # the refused form never reached the site
+        assert "auth_host_not_allowed" in refusals(events)
+        assert handle.navigation_failure() is raised.value
+    finally:
+        await handle.close()
+
+
+async def email_step(handle: PlaywrightHandle) -> None:
+    async with handle.auth_step(fields=["#cu-login"]):
+        await handle.fill("#cu-login", data.USERNAME)
+        await handle.click("#cu-next")
+
+
+async def test_a_page_that_posts_too_much_is_login_guard_refused_not_an_outage(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
+    rig = new_rig()
+    handle = await open_entry(rig, hosts=CU_HOSTS)
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(CU_ENTRY)
+        with pytest.raises(BotaiError) as raised:
+            await email_step(handle)
         assert raised.value.code == ErrorCode.LOGIN_GUARD_REFUSED
         assert "не отвечает" not in raised.value.detail
         assert "запасном экране" in raised.value.detail
-        assert login.CU.submissions == []  # the refused form never reached the site
-        assert "auth_host_not_allowed" in refusals(events)
+        assert login.CU.submissions == []
+        assert "auth_window_exhausted" in refusals(events)
         assert handle.navigation_failure() is raised.value
     finally:
         await handle.close()
@@ -494,6 +616,33 @@ def test_a_navigation_blocked_by_the_client_is_a_guard_refusal_only_behind_the_g
     assert down.code == ErrorCode.SOURCE_UNAVAILABLE  # a site that is down still is
 
 
+async def test_new_windows_replace_the_old_ones_without_a_gap_and_scrolling_opens_none(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(f"{ORIGIN}/plain/login")
+        await handle.arm_human_auth()
+        (first,) = handle._auth_windows.values()
+        scan = handle._scan_auth_window
+        seen: list[int] = []
+
+        async def watching(*args: Any, **kwargs: Any) -> Any:
+            seen.append(len(handle._auth_windows))  # what a POST would meet during the re-arm
+            return await scan(*args, **kwargs)
+
+        monkeypatch.setattr(handle, "_scan_auth_window", watching)
+        await handle.arm_human_auth()
+        assert seen == [1]
+        (second,) = handle._auth_windows.values()
+        assert second is not first
+        assert second.expires >= first.expires
+    finally:
+        await handle.close()
+
+
 # ----------------------------------------------------------- the flow when the guard refuses
 
 
@@ -511,7 +660,7 @@ def flow_without_screen(rig: Rig, egress: ProxyEgress) -> LoginFlow:
 async def test_flow_reports_guard_refusal_as_such_without_a_fallback_screen(
     new_rig: Callable[..., Rig], egress_access: ProxyEgress, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
     rig = new_rig()
     know_cu_hosts(rig)
     flow = flow_without_screen(rig, egress_access)
@@ -532,7 +681,7 @@ async def test_flow_reports_guard_refusal_as_such_without_a_fallback_screen(
 async def test_guard_refusal_does_not_cost_the_stored_password(
     new_rig: Callable[..., Rig], egress_access: ProxyEgress, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
     rig = new_rig()
     know_cu_hosts(rig)
     await rig.vault.put(rig.user, rig.conn, SecretKind.LOGIN, data.USERNAME)
@@ -550,7 +699,7 @@ async def test_guard_refusal_does_not_cost_the_stored_password(
 async def test_guard_refusal_opens_the_fallback_screen_and_says_the_site_works(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
 
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
         await link.close("synthetic: the student leaves")
@@ -573,11 +722,11 @@ async def test_guard_refusal_opens_the_fallback_screen_and_says_the_site_works(
 async def test_after_the_fallback_screen_the_flow_goes_on_in_native_fields(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://elsewhere.fakeuni.test")
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
 
     async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
-        # the student does the e-mail step on the screen (here the site works properly again)
-        monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "")
+        # the student does the e-mail step on the screen (the page behaves there)
+        monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 0)
         await handle.page.goto(CU_ENTRY)
         await handle.page.fill("#cu-login", data.USERNAME)
         await handle.arm_human_auth()
@@ -593,23 +742,261 @@ async def test_after_the_fallback_screen_the_flow_goes_on_in_native_fields(
     assert await works(state)
     assert [kind for kind, _ in student.asked] == ["login", "password", "code"]
     assert login.CU.submissions == ["email", "password", "otp"]
-    assert login.CU.telemetry == 0
 
 
-async def test_a_login_check_posted_to_a_foreign_host_does_not_pass_either(
+async def test_the_fallback_screen_is_offered_once_then_the_student_is_told_it_did_not_help(
     new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # the page's own login check goes to a host the connection never logs in at: nothing posts it,
-    # the page says it could not check, and the form stays (a refusal like any other, asked again)
-    monkeypatch.setattr(login, "CU_CHECK_ORIGIN", "https://elsewhere.fakeuni.test")
-    rig = new_rig()
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        # the page is as it was: a fresh form comes back, and the flow takes it over again
+        await handle.page.goto(CU_ENTRY)
+
+    rig = new_rig(human=human)
     know_cu_hosts(rig)
     student = Student()
     with pytest.raises(BotaiError) as raised:
         await rig.flow.ensure_for_entry(
             rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
         )
-    assert raised.value.code == ErrorCode.LOGIN_FAILED
-    assert login.CU.checks == 0
+    await rig.screens.settle()
+    assert raised.value.code == ErrorCode.LOGIN_GUARD_REFUSED
+    assert "уже открывали" in raised.value.detail
+    assert len(rig.screens.links) == 1  # not 14 screens in a row
     assert login.CU.submissions == []
+
+
+async def test_a_submission_the_guard_stopped_is_not_counted_as_submitted(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_PRE_SUBMIT_POSTS", 6)
+    submitted: list[int] = []
+
+    async def human(self: LoginFlow, run: Any, snap: Any, **_: Any) -> None:
+        submitted.append(run.submitted)  # what `_try_finish` will weigh as a real login
+        raise JobCancelled("synthetic: the student leaves")
+
+    monkeypatch.setattr(LoginFlow, "_human", human)
+    rig = new_rig()
+    know_cu_hosts(rig)
+    with pytest.raises(JobCancelled):
+        await rig.flow.ensure_for_entry(
+            rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert submitted == [0]
+
+
+async def test_goto_goes_again_only_after_a_navigation_our_guard_refused(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig, hosts=CU_HOSTS)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(CU_ENTRY)
+        calls: list[str] = []
+        real = handle.page.goto
+
+        async def interrupted(url: str, **kwargs: Any) -> Any:
+            calls.append(url)
+            if len(calls) == 1:
+                raise PlaywrightError(
+                    "Navigation is interrupted by another navigation to chrome-error"
+                )
+            return await real(url, **kwargs)
+
+        monkeypatch.setattr(handle.page, "goto", interrupted)
+        with pytest.raises(BotaiError):
+            async with handle.read_only_entry():
+                await handle.goto(CU_ENTRY)  # nobody refused anything: this is a real failure
+        assert len(calls) == 1
+        calls.clear()
+        handle._guard_refused_navigation = True  # our guard refused the submission just before
+        async with handle.read_only_entry():
+            await handle.goto(CU_ENTRY)
+        assert len(calls) == 2
+    finally:
+        await handle.close()
+
+
+# -------------------------------------------------------- hosts the student is asked about
+
+
+async def test_a_form_posted_to_a_new_host_asks_the_student_and_the_login_goes_on_when_allowed(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://api.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    student = Student(approve_hosts=True)
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
+    assert await works(state)
+    (question,) = student.confirmations
+    assert "api.fakeuni.test" in question
+    assert "отправляет данные входа" in question
+    assert "api.fakeuni.test" in (await rig.store.connection(rig.user, rig.conn)).allow_hosts
+    assert not rig.screens.links  # the fallback screen is not what helps here
+    assert login.CU.submissions == ["email", "password", "otp"]
+
+
+async def test_a_declined_host_stops_the_login_without_pausing_the_account(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_ACTION_ORIGIN", "https://api.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    student = Student(approve_hosts=False)
+    with pytest.raises(BotaiError) as raised:
+        await rig.flow.ensure_for_entry(
+            rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert raised.value.code == ErrorCode.EGRESS_BLOCKED
+    assert raised.value.extra["host"] == "api.fakeuni.test"
+    assert len(student.confirmations) == 1
+    assert student.count("login") == 1
+    assert not student.count("password")
+    assert login.CU.submissions == []
+
+
+async def test_a_login_check_refused_for_a_new_host_is_asked_not_counted_as_a_wrong_login(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_CHECK_ORIGIN", "https://api.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    student = Student(approve_hosts=True)
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
+    assert await works(state)
+    assert len(student.confirmations) == 1
+    assert student.count("login") == 2  # once before the question about the host, once after
+    assert login.CU.checks == 1
+
+
+async def test_a_password_step_check_refused_by_the_guard_keeps_the_stored_password(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_PASSWORD_CHECK_ORIGIN", "https://api.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.LOGIN, data.USERNAME)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.PASSWORD, data.PASSWORD)
+    student = Student(approve_hosts=False)
+    with pytest.raises(BotaiError) as raised:
+        await rig.flow.ensure_for_entry(
+            rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert raised.value.code == ErrorCode.EGRESS_BLOCKED  # the guard's refusal, not the site's
+    assert await rig.vault.has(rig.user, rig.conn, SecretKind.PASSWORD)  # still sealed
+    assert not student.asked  # no "the site did not take it" question to answer again
+    assert login.CU.submissions == ["email"]
+    assert login.CU.password_checks == 0
+
+
+async def test_with_the_host_allowed_the_stored_password_walks_the_checked_step(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_PASSWORD_CHECK_ORIGIN", "https://api.fakeuni.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.LOGIN, data.USERNAME)
+    await rig.vault.put(rig.user, rig.conn, SecretKind.PASSWORD, data.PASSWORD)
+    student = Student(approve_hosts=True)
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
+    assert await works(state)
+    assert [kind for kind, _ in student.asked] == ["code"]
+    assert login.CU.password_checks == 1
+    assert await rig.vault.has(rig.user, rig.conn, SecretKind.PASSWORD)
+
+
+async def test_a_refused_beacon_to_a_foreign_site_does_not_turn_a_wrong_login_into_a_question(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_BEACON_ORIGIN", "https://tracker.example.test")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    student = Student(username="nobody@fakeuni.test")
+    with pytest.raises(BotaiError) as raised:
+        await rig.flow.ensure_for_entry(
+            rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert raised.value.code == ErrorCode.LOGIN_FAILED  # the site said no, three times
+    assert not student.confirmations
     assert student.count("login") == FAST.max_attempts
+
+
+# --------------------------------------------------- the document the submission is answered by
+
+
+async def test_an_auto_submitted_form_post_after_the_code_passes_with_the_protocols_fields(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_FORM_POST", True)
+    rig = new_rig()
+    student = Student()
+    state = await rig.flow.ensure_for_entry(
+        rig.ctx(student), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+    )
+    assert await works(state)
+    assert [kind for kind, _ in student.asked] == ["login", "password", "code"]
+    assert login.CU.callbacks == 1
+    assert login.CU.telemetry == 0  # the cabinet it led to still posts nothing
+    assert not rig.screens.links
+
+
+async def test_an_auto_submitted_form_with_a_field_of_its_own_is_not_passed(
+    new_rig: Callable[..., Rig], egress_access: ProxyEgress, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(login, "CU_FORM_POST", True)
+    monkeypatch.setattr(login, "CU_FORM_POST_EXTRA", "title")
+    rig = new_rig()
+    know_cu_hosts(rig)
+    with pytest.raises(BotaiError) as raised:
+        await flow_without_screen(rig, egress_access).ensure_for_entry(
+            rig.ctx(Student()), user_id=rig.user, connection_id=rig.conn, entry_url=CU_ENTRY
+        )
+    assert raised.value.code == ErrorCode.LOGIN_GUARD_REFUSED
+    assert login.CU.callbacks == 0
+
+
+async def test_only_the_first_document_after_a_submission_may_post_on_its_own(
+    new_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = new_rig()
+    handle = await open_entry(rig, hosts=CU_HOSTS)
+    events = record_guard(handle, monkeypatch)
+    try:
+        async with handle.read_only_entry():
+            await handle.goto(CU_ENTRY)
+        await email_step(handle)  # the answer is the password page: a document of its own
+        assert login.CU.submissions == ["email"]
+        # a script of that page posts a form of its own after a pause
+        with contextlib.suppress(PlaywrightError):
+            await handle.page.evaluate(
+                "u => { const f = document.createElement('form'); f.method = 'post'; f.action = u;"
+                "f.innerHTML = '<input name=code value=1><input name=state value=2>';"
+                "document.body.appendChild(f); f.submit(); }",
+                f"{ORIGIN}/cu/callback-post",
+            )
+        await asyncio.sleep(0.5)
+        # it is the first document after the submission, and the fields are the protocol's: allowed
+        assert login.CU.callbacks == 1
+        # but only once: a second document has no such right
+        with contextlib.suppress(PlaywrightError):
+            await handle.page.evaluate(
+                "u => { const f = document.createElement('form'); f.method = 'post'; f.action = u;"
+                "f.innerHTML = '<input name=code value=1>'; document.body.appendChild(f);"
+                "f.submit(); }",
+                f"{ORIGIN}/cu/callback-post",
+            )
+        await asyncio.sleep(0.5)
+        assert login.CU.callbacks == 1
+        assert "auth_no_permit" in refusals(events)
+    finally:
+        await handle.close()

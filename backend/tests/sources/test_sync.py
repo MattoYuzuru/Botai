@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -12,8 +11,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.core.browser import SessionState
 from botai.core.clock import FrozenClock
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import student_is_needed
 from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.core.queue import InMemoryJobQueue
@@ -321,48 +322,87 @@ async def job_thread(env: Env, job_id: str) -> str | None:
     return await env.db.scalar(select(m.Job.thread_id).where(m.Job.id == job_id))
 
 
-async def test_a_login_inside_a_scheduled_sync_moves_the_job_to_its_sources_conversation(
-    env: Env, monkeypatch: pytest.MonkeyPatch
+class AskingSessions(FakeSessions):
+    """A login that needs the student (a code, a push approval) before it succeeds."""
+
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> SessionState:
+        await student_is_needed()
+        return await super().ensure(ctx, user_id=user_id, connection_id=connection_id, force=force)
+
+
+class Threads:
+    """The conversation lookup of the source, injected: it is the conversations' owner's business."""
+
+    def __init__(self, thread_id: str | None) -> None:
+        self.thread_id = thread_id
+        self.asked = 0
+
+    async def __call__(self, db: AsyncSession, user_id: str, connection_id: str) -> str | None:
+        self.asked += 1
+        return self.thread_id
+
+
+async def sync_with(env: Env, ctx: InMemoryJobContext, threads: Threads) -> dict[str, Any]:
+    handler = make_sync_handler(transport=env.transport, retry=FAST, find_thread=threads)
+    return await handler(ctx, env.services, {})
+
+
+async def test_a_login_that_needs_the_student_moves_the_job_to_its_sources_conversation(
+    env: Env,
 ) -> None:
-    """The re-login may ask the student for a code: its blocks must appear where they look."""
-    source_thread = SimpleNamespace(id=new_id())
-
-    async def canonical_thread(*_: object) -> SimpleNamespace:
-        return source_thread
-
-    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+    """The question must appear where the student looks for this source."""
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(new_id())
     job_id, ctx = await bound_sync_job(env, thread_id=None)
     fakeuni_api.expire_sessions()
-    result = await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
-    assert result["status"] == "ok"
-    assert await job_thread(env, job_id) == source_thread.id
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) == threads.thread_id
+    assert threads.asked == 1
 
 
-async def test_a_sync_that_needs_no_login_does_not_borrow_a_conversation(
-    env: Env, monkeypatch: pytest.MonkeyPatch
+async def test_a_silent_login_from_the_stored_password_does_not_borrow_a_conversation(
+    env: Env,
 ) -> None:
-    async def canonical_thread(*_: object) -> SimpleNamespace:
-        raise AssertionError("no login, no conversation")
-
-    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+    threads = Threads(new_id())
     job_id, ctx = await bound_sync_job(env, thread_id=None)
-    result = await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
-    assert result["status"] == "ok"
+    fakeuni_api.expire_sessions()  # logs in again, asking nobody
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
     assert await job_thread(env, job_id) is None
+    assert threads.asked == 0
 
 
-async def test_a_job_that_already_has_a_conversation_keeps_it_through_a_login(
-    env: Env, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def canonical_thread(*_: object) -> SimpleNamespace:
-        raise AssertionError("the job already has its conversation")
+async def test_a_sync_that_needs_no_login_does_not_borrow_a_conversation(env: Env) -> None:
+    threads = Threads(new_id())
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) is None
+    assert threads.asked == 0
 
-    monkeypatch.setattr("botai.spaces.conversations.canonical_thread", canonical_thread)
+
+async def test_a_job_that_already_has_a_conversation_keeps_it_through_a_login(env: Env) -> None:
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(new_id())
     own = new_id()
     job_id, ctx = await bound_sync_job(env, thread_id=own)
     fakeuni_api.expire_sessions()
-    await make_sync_handler(transport=env.transport, retry=FAST)(ctx, env.services, {})
+    await sync_with(env, ctx, threads)
     assert await job_thread(env, job_id) == own
+    assert threads.asked == 0
+
+
+async def test_a_source_without_a_conversation_leaves_the_job_where_it_is(env: Env) -> None:
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(None)
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) is None
 
 
 async def test_session_past_its_expiry_hint_costs_no_request_before_login(env: Env) -> None:

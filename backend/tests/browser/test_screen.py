@@ -470,6 +470,33 @@ async def _field_is(page: Any, expected: str) -> bool:
     return await page.input_value("#t") == expected
 
 
+async def test_scrolling_opens_no_login_window_but_a_click_and_a_key_do(
+    make_local_screen: Callable[..., Awaitable[ScreenRig]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = await make_local_screen()
+    armed: list[str] = []
+    original = rig.handle.arm_human_auth
+
+    async def spy() -> None:
+        armed.append("armed")
+        await original()
+
+    monkeypatch.setattr(rig.handle, "arm_human_auth", spy)
+    client = await rig.connect()
+    await client.first_frame()
+    await client.send(t="scroll", x=100, y=300, dx=0, dy=500)
+    await _until(lambda: _scrolled(rig.handle.page, lambda y: y > 100))
+    assert armed == []  # scrolling sends nothing, so it needs no window to send it
+    await client.send(t="mouse", kind="click", x=100, y=28)
+    await _until(lambda: _armed(armed, 1))
+    await client.send(t="key", kind="char", text="a")
+    await _until(lambda: _armed(armed, 2))
+
+
+async def _armed(armed: list[str], count: int) -> bool:
+    return len(armed) >= count
+
+
 async def _scrolled(page: Any, ok: Callable[[float], bool]) -> bool:
     return ok(await page.evaluate("window.scrollY"))
 

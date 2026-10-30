@@ -262,6 +262,13 @@ async def kc_submit(
 CU_LOGIN_HOST = "https://id.fakeuni.test"
 CU_CHECK_ORIGIN = "https://fakeuni.test"  # where the page's own login check is posted
 CU_ACTION_ORIGIN = ""  # prefix of the action the script sets: "" is the page's own host
+CU_PRE_SUBMIT_POSTS = (
+    0  # how many telemetry posts the script makes after its check, before it submits
+)
+CU_BEACON_ORIGIN = ""  # when set, the e-mail page also posts a beacon there as it submits
+CU_PASSWORD_CHECK_ORIGIN = ""  # when set, the password page checks the step there before it posts
+CU_FORM_POST = False  # the site ends the login with an auto-submitted `form_post` page
+CU_FORM_POST_EXTRA = ""  # a field of its own the auto-submitted form adds (not the protocol's)
 _CU_FLOWS: dict[str, dict[str, str]] = {}
 _CU_CODES: set[str] = set()
 
@@ -272,10 +279,13 @@ class CuStats:
     def __init__(self) -> None:
         self.checks = 0
         self.telemetry = 0
+        self.beacons = 0
+        self.password_checks = 0
+        self.callbacks = 0  # auto-submitted form_post messages that reached the site
         self.submissions: list[str] = []
 
     def reset(self) -> None:
-        self.checks = self.telemetry = 0
+        self.checks = self.telemetry = self.beacons = self.password_checks = self.callbacks = 0
         self.submissions.clear()
 
 
@@ -311,6 +321,7 @@ fetch('{CU_CHECK_ORIGIN}/cu/api/telemetry', {{method: 'POST'}}).catch(() => {{}}
 const form = document.getElementById('cu-form');
 form.addEventListener('submit', async (event) => {{
   event.preventDefault();
+  if ('{CU_BEACON_ORIGIN}') fetch('{CU_BEACON_ORIGIN}/cu/api/beacon', {{method: 'POST', mode: 'no-cors'}}).catch(() => {{}});
   let known = false;
   try {{
     const answer = await fetch('{CU_CHECK_ORIGIN}/cu/api/check-login', {{
@@ -320,6 +331,9 @@ form.addEventListener('submit', async (event) => {{
     known = (await answer.json()).known === true;
   }} catch (_) {{}}
   if (!known) {{ document.getElementById('cu-note').textContent = 'Не удалось проверить почту'; return; }}
+  for (let i = 0; i < {CU_PRE_SUBMIT_POSTS}; i++) {{
+    await fetch('{CU_CHECK_ORIGIN}/cu/api/telemetry', {{method: 'POST'}}).catch(() => {{}});
+  }}
   form.action = {json.dumps(action)};
   form.submit();
 }});
@@ -328,12 +342,33 @@ form.addEventListener('submit', async (event) => {{
 
 
 def _cu_password_page(user: str, error: str = "") -> str:
+    check = (
+        f"""<p id="cu-password-note"></p>
+<script>
+const passwordForm = document.getElementById('cu-password-form');
+passwordForm.addEventListener('submit', async (event) => {{
+  event.preventDefault();
+  let ok = false;
+  try {{
+    const answer = await fetch('{CU_PASSWORD_CHECK_ORIGIN}/cu/api/check-password', {{
+      method: 'POST', headers: {{'content-type': 'application/json'}},
+      body: JSON.stringify({{step: 'password'}}),
+    }});
+    ok = (await answer.json()).ok === true;
+  }} catch (_) {{}}
+  if (!ok) {{ document.getElementById('cu-password-note').textContent = 'Не удалось проверить шаг'; return; }}
+  passwordForm.submit();
+}});
+</script>"""
+        if CU_PASSWORD_CHECK_ORIGIN
+        else ""
+    )
     return _page(
         "Вход — пароль",
         f"""{error}<form id="cu-password-form" method="post" action="{escape(_cu_action("password", user))}">
   <label for="cu-password">Пароль</label><input id="cu-password" name="password" type="password" autocomplete="current-password">
   <button id="cu-login-submit" type="submit">Войти</button>
-</form>""",
+</form>{check}""",
     )
 
 
@@ -371,7 +406,7 @@ async def cu_login_page() -> str:
 
 
 _CU_CORS = {
-    "access-control-allow-origin": CU_LOGIN_HOST,
+    "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",
     "access-control-allow-methods": "POST",
 }
@@ -390,9 +425,26 @@ async def cu_check_login(request: Request) -> JSONResponse:
     return JSONResponse({"known": known}, headers=_CU_CORS)
 
 
+@router.options("/cu/api/check-password")
+async def cu_check_password_preflight() -> Response:
+    return Response(status_code=204, headers=_CU_CORS)
+
+
+@router.post("/cu/api/check-password")
+async def cu_check_password() -> JSONResponse:
+    CU.password_checks += 1
+    return JSONResponse({"ok": True}, headers=_CU_CORS)
+
+
 @router.post("/cu/api/telemetry")
 async def cu_telemetry() -> Response:
     CU.telemetry += 1
+    return Response(status_code=204)
+
+
+@router.post("/cu/api/beacon")
+async def cu_beacon() -> Response:
+    CU.beacons += 1
     return Response(status_code=204)
 
 
@@ -423,7 +475,28 @@ async def cu_authenticate(
         return HTMLResponse(_cu_otp_page(user, _error("Неверный код")), status_code=401)
     code = secrets.token_hex(8)
     _CU_CODES.add(code)
+    if CU_FORM_POST:
+        extra = (
+            f'<input type="hidden" name="{CU_FORM_POST_EXTRA}" value="x">'
+            if CU_FORM_POST_EXTRA
+            else ""
+        )
+        return HTMLResponse(
+            _page(
+                "Вход выполнен",
+                f"""<form id="auto" method="post" action="https://fakeuni.test/cu/callback-post">
+  <input type="hidden" name="code" value="{code}"><input type="hidden" name="state" value="s1">{extra}
+  <noscript><button>Продолжить</button></noscript>
+</form><script>document.getElementById('auto').submit();</script>""",
+            )
+        )
     return RedirectResponse(f"https://fakeuni.test/cu/callback?code={code}", status_code=303)
+
+
+@router.post("/cu/callback-post", response_model=None)
+async def cu_callback_post(code: str = Form(...)) -> RedirectResponse | HTMLResponse:
+    CU.callbacks += 1
+    return await cu_callback(code)
 
 
 @router.get("/cu/callback", response_model=None)

@@ -852,7 +852,7 @@ async def test_auth_submission_preserves_current_navigation_failure_and_ignores_
 async def test_concurrent_auth_requests_share_the_budget_of_one_window(
     guest_stack: GuestStack, trust_fakeuni: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(gateway, "AUTH_WINDOW_POSTS", 2)
+    monkeypatch.setattr(gateway, "AUTH_TYPING_POSTS", 2)
     rig = guest_stack.rig()
     handle = await rig.gateway.open(
         user_id=rig.user, connection_id=rig.conn, allow_hosts=("fakeuni.test",), origin=ORIGIN

@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
@@ -34,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.contracts.specs import Kind
 from botai.core.browser import SessionState
 from botai.core.errors import BotaiError, ErrorCode
-from botai.core.execution import GuardedJobContext, guard_job
+from botai.core.execution import GuardedJobContext, guard_job, when_the_student_is_needed
 from botai.core.handlers import Handler
 from botai.core.http import RetryPolicy
 from botai.core.jobs import JobClaimLost, JobContext, JobDeferred, JobInputChanged, JobKind
@@ -449,16 +450,27 @@ REAUTH_STOPS = frozenset(
 )
 
 
-async def bind_login_to_source_thread(ctx: JobContext, services: Services, snap: Snapshot) -> None:
-    """A dead session logs in again inside this very sync job: from the stored password, with no
-    question, or with a code or a push approval that only the student can give. That job is
-    scheduled and has no conversation, so the question would wait where nobody looks. Moving it to
-    the conversation of the source makes its blocks, and the attention they ask for, appear there.
+ThreadFinder = Callable[[AsyncSession, str, str], Awaitable[str | None]]
 
-    A job that already belongs to a conversation keeps it. Which conversation belongs to a source
-    is decided by `spaces.conversations.canonical_thread`, the conversation owner's function."""
+
+async def source_thread_id(db: AsyncSession, user_id: str, connection_id: str) -> str | None:
+    """The conversation a source belongs to, if it has one. This is the only place sync asks;
+    conversations are owned by `spaces.conversations`, and a change there is adapted here."""
     from botai.spaces.conversations import canonical_thread
 
+    thread = await canonical_thread(db, user_id, connection_id)
+    return thread.id if thread is not None else None
+
+
+async def move_job_to_source_thread(
+    ctx: JobContext, services: Services, snap: Snapshot, find_thread: ThreadFinder
+) -> None:
+    """Put the running sync job into the conversation of its source.
+
+    A sync is scheduled and has no conversation. While a stored password is enough it logs in
+    silently and needs none. When the login turns to the student (a code, a push approval, a
+    screen), the job's blocks must appear where the student looks for this source: in its
+    conversation. A job that already belongs to one keeps it."""
     if not isinstance(ctx, GuardedJobContext):
         return  # a test double is no job row, and there is nothing to move
     try:
@@ -471,11 +483,11 @@ async def bind_login_to_source_thread(ctx: JobContext, services: Services, snap:
             if job is None or job.thread_id is not None:
                 return
             await ctx.assert_current(db)
-            thread = await canonical_thread(db, snap.user_id, snap.connection_id)
-            if thread is not None:
-                job.thread_id = thread.id
+            thread_id = await find_thread(db, snap.user_id, snap.connection_id)
+            if thread_id is not None:
+                job.thread_id = thread_id
     except SQLAlchemyError:
-        log.warning("sync job %s could not be bound to its source conversation", ctx.job_id)
+        log.warning("sync job %s could not be moved to its source conversation", ctx.job_id)
 
 
 async def fetch_with_reauth(
@@ -483,6 +495,8 @@ async def fetch_with_reauth(
     services: Services,
     snap: Snapshot,
     sctx: SyncContext,
+    *,
+    find_thread: ThreadFinder = source_thread_id,
 ) -> AdapterResult | SyncOutcome:
     """Fetch; on a dead session log in again once. Returns an outcome when the user must act."""
     effective = scoped_spec(snap.spec, snap.data_scope)
@@ -525,11 +539,19 @@ async def fetch_with_reauth(
                 services, snap.connection_id, snap.user_id, status="needs_reauth", ctx=ctx
             )
             await ctx.status("Вхожу заново")
-            await bind_login_to_source_thread(ctx, services, snap)
+            moved = False
+
+            async def student_is_needed() -> None:
+                nonlocal moved
+                if not moved:
+                    moved = True
+                    await move_job_to_source_thread(ctx, services, snap, find_thread)
+
             try:
-                sctx.session = await services.sessions.ensure(
-                    ctx, user_id=snap.user_id, connection_id=snap.connection_id, force=True
-                )
+                with when_the_student_is_needed(student_is_needed):
+                    sctx.session = await services.sessions.ensure(
+                        ctx, user_id=snap.user_id, connection_id=snap.connection_id, force=True
+                    )
             except BotaiError as err:
                 if err.code not in REAUTH_STOPS:
                     raise
@@ -581,6 +603,7 @@ async def sync_connection(
     accept_empty: bool = False,
     queue_repair: bool = True,
     expected_spec: SpecPin | None = None,
+    find_thread: ThreadFinder | None = None,
 ) -> SyncOutcome:
     """One sync. `accept_empty` takes an empty answer as the truth (a repair concluded that the
     source really has nothing); `queue_repair=False` is for the repair job itself, which handles
@@ -613,7 +636,9 @@ async def sync_connection(
         if snap.adapter == "document":
             async with services.db() as db:
                 sctx.known_hash = await known_document_hash(db, connection_id)
-        fetched = await fetch_with_reauth(ctx, services, snap, sctx)
+        fetched = await fetch_with_reauth(
+            ctx, services, snap, sctx, **({"find_thread": find_thread} if find_thread else {})
+        )
         if isinstance(fetched, SyncOutcome):
             return fetched
         return await commit_result(
@@ -795,9 +820,12 @@ async def commit_result(
 
 
 def make_sync_handler(
-    *, transport: httpx.AsyncBaseTransport | None = None, retry: RetryPolicy | None = None
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    retry: RetryPolicy | None = None,
+    find_thread: ThreadFinder | None = None,
 ) -> Handler:
-    """The `JobKind.SYNC` handler. `transport` and `retry` exist for tests."""
+    """The `JobKind.SYNC` handler. `transport`, `retry` and `find_thread` exist for tests."""
 
     async def handle(
         ctx: JobContext, services: Services, payload: dict[str, Any]
@@ -806,7 +834,7 @@ def make_sync_handler(
         if not connection_id:
             raise BotaiError(ErrorCode.VALIDATION, "У задания синхронизации нет подключения")
         outcome = await sync_connection(
-            ctx, services, connection_id, transport=transport, retry=retry
+            ctx, services, connection_id, transport=transport, retry=retry, find_thread=find_thread
         )
         await _schedule_canaries(services)
         return outcome.as_dict()

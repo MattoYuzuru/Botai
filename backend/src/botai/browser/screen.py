@@ -746,7 +746,8 @@ class ScreenSession:
             isinstance(message, MouseMsg) and message.kind != "move"
         ):
             self.human_control = True
-            await self.handle.arm_human_auth()
+            if not isinstance(message, ScrollMsg):  # scrolling sends nothing: it needs no window
+                await self.handle.arm_human_auth()
         self._touch()
         self.stats.inputs += 1
         if isinstance(message, MouseMsg) and message.kind == "move":
