@@ -19,6 +19,14 @@ x-app: &app
     SEARCH_MAX_CALLS: "${SEARCH_MAX_CALLS:-4}"
     SEARCH_MAX_COST_USD: "${SEARCH_MAX_COST_USD:-0.03}"
     SEARCH_COOLDOWN_S: "${SEARCH_COOLDOWN_S:-60}"
+    # Dictation (docs/development/speech-to-text.md). Its key is NOT in app.secrets: only the api reads
+    # /srv/botai/speech.secrets (services.api.env_file), not the worker, the proxy or the migration.
+    STT_PROVIDER: "${STT_PROVIDER:-groq}"
+    STT_MODEL: "${STT_MODEL:-whisper-large-v3-turbo}"
+    STT_LANGUAGE: "${STT_LANGUAGE:-ru}"
+    STT_DEADLINE_S: "${STT_DEADLINE_S:-45}"
+    STT_REQUESTS_PER_HOUR: "${STT_REQUESTS_PER_HOUR:-60}"
+    STT_SECONDS_PER_DAY: "${STT_SECONDS_PER_DAY:-7200}"
     BOTAI_DIAGNOSTICS: "${BOTAI_DIAGNOSTICS:-false}"
     BOTAI_DIAGNOSTICS_DIR: /var/log/botai/diagnostics
     BOTAI_DIAGNOSTICS_RETENTION_HOURS: "${BOTAI_DIAGNOSTICS_RETENTION_HOURS:-24}"
@@ -65,9 +73,14 @@ services:
 
   api:
     <<: *app
+    env_file: [/srv/botai/app.secrets, /srv/botai/speech.secrets]
     environment:
       <<: *app-env
       BOTAI_DIAGNOSTICS_SERVICE: api
+    # The framework spools an upload above a megabyte (attachments, dictation) to /tmp: into memory
+    # (counted in mem_limit), never onto the disk layer of the container.
+    tmpfs:
+      - /tmp:size=128m,mode=1777
     ports: ["127.0.0.1:18090:8000"]
     depends_on:
       postgres: { condition: service_healthy }

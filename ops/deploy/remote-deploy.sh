@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs on mnema as botai-deploy, called by .github/workflows/deploy.yml.
-# stdin: GHCR user, GHCR token, DeepSeek key, Exa key (one per line).
+# stdin: GHCR user, GHCR token, DeepSeek key, Exa key, Groq key (one per line). The last two may be
+# missing or empty: a key that is not sent stays as it is on the server (to revoke one, delete its
+# line on the server, docs/plan/deployment.md). The Groq key goes to speech.secrets, read by api only.
 # Touches only the `botai` compose project; Mnema containers, images and volumes are never touched.
 set -euo pipefail
 umask 077
@@ -43,20 +45,35 @@ IFS= read -r GHCR_USER
 IFS= read -r GHCR_TOKEN
 IFS= read -r DEEPSEEK_KEY
 IFS= read -r EXA_KEY || EXA_KEY=''
+IFS= read -r SPEECH_KEY || SPEECH_KEY=''
 
-if [ -n "$DEEPSEEK_KEY" ]; then
-  grep -v '^DEEPSEEK_API_KEY=' app.secrets > app.secrets.tmp || true
-  printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_KEY" >> app.secrets.tmp
+# NAME=value replaces the NAME line of FILE (or adds it); an empty value changes nothing.
+# Values are never printed and never appear in a command line.
+set_secret() {
+  local file="$1" name="$2" value="$3"
+  [ -n "$value" ] || return 0
+  grep -v "^${name}=" "$file" > "$file.tmp" || true
+  printf '%s=%s\n' "$name" "$value" >> "$file.tmp"
+  mv "$file.tmp" "$file"
+}
+set_secret app.secrets DEEPSEEK_API_KEY "$DEEPSEEK_KEY"
+set_secret app.secrets EXA_API_KEY "$EXA_KEY"
+
+# The speech key lives in speech.secrets, which only the api container reads (compose.prod.yaml):
+# the worker runs a browser on foreign pages, the proxy and the migration do not need it. A key an
+# earlier run left in app.secrets is moved here (idempotent), and the file always exists, because
+# Compose refuses a service whose env_file is missing.
+touch speech.secrets
+if grep -q '^GROQ_API_KEY=' app.secrets; then
+  legacy="$(sed -n 's/^GROQ_API_KEY=//p' app.secrets | tail -n 1)"
+  grep -q '^GROQ_API_KEY=' speech.secrets || set_secret speech.secrets GROQ_API_KEY "$legacy"
+  grep -v '^GROQ_API_KEY=' app.secrets > app.secrets.tmp || true
   mv app.secrets.tmp app.secrets
+  unset legacy
 fi
-unset DEEPSEEK_KEY
-if [ -n "$EXA_KEY" ]; then
-  grep -v '^EXA_API_KEY=' app.secrets > app.secrets.tmp || true
-  printf 'EXA_API_KEY=%s\n' "$EXA_KEY" >> app.secrets.tmp
-  mv app.secrets.tmp app.secrets
-fi
-unset EXA_KEY
-chmod 600 app.secrets
+set_secret speech.secrets GROQ_API_KEY "$SPEECH_KEY"
+unset DEEPSEEK_KEY EXA_KEY SPEECH_KEY
+chmod 600 app.secrets speech.secrets
 
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
 registry_logged_in=true

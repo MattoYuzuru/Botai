@@ -15,6 +15,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { humanMessage, isApiError } from "@/api/errors";
 import { meQuery } from "@/api/queries";
+import { transcribeSpeech } from "@/api/speech";
 import type { Message } from "@/api/types";
 import { useComposerKeyboard } from "@/app/keyboard";
 import { documentsQuery, todayQuery } from "@/features/data/queries";
@@ -388,6 +389,7 @@ export function ChatScreen() {
               onAddFiles={(files, source) => attachments.add(files, source, activeId)}
               onRemoveAttachment={attachments.remove}
               onOpenAttachment={openAttachment}
+              onTranscribe={transcribeSpeech}
               resetKey={draftKey}
             />
             <MascotDock {...mascot} />

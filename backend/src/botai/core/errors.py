@@ -28,6 +28,9 @@ class ErrorCode(StrEnum):
     QUOTA_EXCEEDED = "quota_exceeded"
     INJECTION_BLOCKED = "injection_blocked"
     LLM_UNAVAILABLE = "llm_unavailable"
+    # dictation: the speech-to-text service is off, down or asked us to slow down
+    STT_UNAVAILABLE = "stt_unavailable"
+    STT_RATE_LIMITED = "stt_rate_limited"
     # generic API
     NOT_FOUND = "not_found"
     FORBIDDEN = "forbidden"
@@ -57,6 +60,8 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.REQUEST_REUSED: 409,
     ErrorCode.STALE_TARGET: 409,
     ErrorCode.QUOTA_EXCEEDED: 429,
+    ErrorCode.STT_UNAVAILABLE: 503,
+    ErrorCode.STT_RATE_LIMITED: 429,
     ErrorCode.NOT_IMPLEMENTED: 501,
     ErrorCode.TOO_MANY_ATTEMPTS: 429,
     ErrorCode.INTERNAL: 500,

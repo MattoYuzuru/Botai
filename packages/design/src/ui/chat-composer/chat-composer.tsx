@@ -13,13 +13,14 @@ import { cn } from "../../lib/cn";
 import { countRu } from "../../lib/format";
 import { useMediaQuery } from "../../lib/hooks";
 import { useAutoGrow } from "../../lib/use-auto-grow";
-import { formatRecordingTime, useVoiceRecorder } from "../../lib/use-voice-recorder";
+import { formatRecordingTime, type Transcribe, useDictation } from "../../lib/use-dictation";
 import { AttachmentChip } from "../attachment-chip/attachment-chip";
 import type { ComposerAttachment, FileSource } from "../attachments";
 import { Button } from "../button/button";
 import { Icon, type IconName } from "../icon";
 import { IconButton } from "../icon-button/icon-button";
 import { floatingSurface } from "../styles";
+import { VoiceEqualizer } from "../voice-equalizer/voice-equalizer";
 
 export const DEFAULT_MAX_ATTACHMENTS = 10;
 
@@ -46,18 +47,15 @@ export interface ChatComposerProps {
   maxAttachments?: number;
   /** Строка над полем: «Ждёт вашего ответа» и тому подобное. */
   notice?: ReactNode;
-  /** Запись голоса. Кнопка скрыта, если браузер не умеет записывать звук. */
-  voice?: boolean;
-  /** Смена значения (другой чат) бросает идущую запись: голос одного чата не прикрепляется к другому. */
+  /**
+   * Диктовка: запись голоса превращается в текст этой функцией и вставляется в поле (сообщение не отправляется).
+   * Нет функции или браузер не умеет записывать звук — кнопки микрофона нет.
+   */
+  onTranscribe?: Transcribe;
+  /** Смена значения (другой чат) бросает идущую запись: чужой голос не попадёт в поле другого чата. */
   resetKey?: string;
   className?: string;
 }
-
-const VOICE_ERRORS = {
-  denied: "Нет доступа к микрофону. Разрешите его в настройках браузера.",
-  unsupported: "Запись голоса не поддерживается в этом браузере.",
-  failed: "Не удалось записать звук. Проверьте микрофон.",
-} as const;
 
 function pickedFiles(input: HTMLInputElement): File[] {
   const files = Array.from(input.files ?? []);
@@ -71,9 +69,11 @@ const menuItem =
 
 /**
  * Поле ввода чата. Карточка: чипы вложений, затем строка «+» · `Textarea` 16 px с авто-ростом до 6 строк ·
- * микрофон (пока нет ни текста, ни вложений) или «Отправить». «+» открывает выбор файла; на устройствах с касанием
- * это меню «Файл / Фото / Снять фото». Файлы можно вставить из буфера. Голос записывается `MediaRecorder` и
- * прикрепляется чипом, расшифровки нет. Варя сидит на верхней кромке справа (`mascotSlot`) и не перекрывает кнопки.
+ * микрофон · «Отправить» (пока нет ни текста, ни вложений, остаётся один микрофон). «+» открывает выбор файла; на
+ * устройствах с касанием это меню «Файл / Фото / Снять фото». Файлы можно вставить из буфера. Микрофон — диктовка:
+ * вместо поля — эквалайзер, таймер, «Отменить запись» и «Готово»; после «Готово» речь распознаётся (`onTranscribe`),
+ * текст вставляется в конец поля через пробел и поле получает фокус. Сообщение не отправляется само: текст можно
+ * поправить. Звук не становится вложением и нигде не сохраняется. Варя сидит на верхней кромке справа (`mascotSlot`).
  */
 export function ChatComposer({
   value,
@@ -90,7 +90,7 @@ export function ChatComposer({
   onOpenAttachment,
   maxAttachments = DEFAULT_MAX_ATTACHMENTS,
   notice,
-  voice: voiceEnabled = true,
+  onTranscribe,
   resetKey,
   className,
 }: ChatComposerProps) {
@@ -102,29 +102,55 @@ export function ChatComposer({
   const coarse = useMediaQuery("(pointer: coarse)");
   const sendOnEnter = enterToSend ?? finePointer;
   const resize = useAutoGrow(ref, value || placeholder, 6);
-  const recorder = useVoiceRecorder();
-  const cancelVoice = recorder.cancel;
+  // Текст из распознавания дописывается к тому, что в поле на тот момент, а не на момент нажатия микрофона.
+  const latestValue = useRef(value);
+  latestValue.current = value;
+  const doneButton = useRef<HTMLButtonElement>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const dictation = useDictation({
+    transcribe: onTranscribe,
+    onText: (spoken) => {
+      const current = latestValue.current.replace(/\s+$/, "");
+      onValueChange(current ? `${current} ${spoken}` : spoken);
+      setAnnouncement("Текст добавлен в поле");
+    },
+  });
+  const cancelDictation = dictation.cancel;
   const lastReset = useRef(resetKey);
   useEffect(() => {
     if (lastReset.current === resetKey) return;
     lastReset.current = resetKey;
-    cancelVoice();
-  }, [resetKey, cancelVoice]);
-  const [announcement, setAnnouncement] = useState("");
+    cancelDictation();
+  }, [resetKey, cancelDictation]);
+  const phase = dictation.phase;
+  const dictating = phase.status === "recording" || phase.status === "transcribing";
+  // Фокус идёт за состоянием: запись началась — на «Готово» (кнопка микрофона исчезла, фокус не должен
+  // пропасть); запись или распознавание кончились (текст вставлен, отмена, ошибка) — в поле, курсор после текста.
+  const was = useRef(phase.status);
+  useEffect(() => {
+    const before = was.current;
+    was.current = phase.status;
+    if (before === phase.status) return;
+    if (phase.status === "recording") {
+      doneButton.current?.focus();
+      return;
+    }
+    const left = before === "recording" || before === "transcribing";
+    const field = ref.current;
+    if (left && (phase.status === "idle" || phase.status === "error") && field) {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+  }, [phase.status]);
 
   const text = value.trim();
   const uploading = attachments.some((item) => item.status === "uploading");
   const ready = attachments.some((item) => item.status === "ready");
   const canSend = !disabled && !uploading && (text.length > 0 || ready);
   const full = attachments.length >= maxAttachments;
-  const recording = recorder.state.status === "recording";
   const canAttach = Boolean(onAddFiles) && !disabled;
-  const showMic =
-    voiceEnabled &&
-    recorder.supported &&
-    Boolean(onAddFiles) &&
-    text.length === 0 &&
-    attachments.length === 0;
+  // Пока в поле пусто, правая кнопка — один микрофон; с текстом или вложением рядом с ним появляется «Отправить».
+  const micOnly = dictation.supported && text.length === 0 && attachments.length === 0;
 
   const add = (files: File[], source: FileSource) => {
     if (!onAddFiles || files.length === 0) return;
@@ -151,17 +177,16 @@ export function ChatComposer({
   };
 
   const startRecording = async () => {
-    if (await recorder.start()) setAnnouncement("Запись началась");
+    if (await dictation.start()) setAnnouncement("Запись началась");
   };
 
-  const stopRecording = async () => {
-    const file = await recorder.stop();
-    setAnnouncement("Запись остановлена");
-    if (file) add([file], "voice");
+  const finishRecording = async () => {
+    setAnnouncement("Распознаю речь");
+    await dictation.finish();
   };
 
   const cancelRecording = () => {
-    recorder.cancel();
+    dictation.cancel();
     setAnnouncement("Запись отменена");
   };
 
@@ -183,7 +208,7 @@ export function ChatComposer({
     { icon: "camera", label: "Снять фото", input: cameraInput },
   ];
 
-  const voiceError = recorder.state.status === "error" ? VOICE_ERRORS[recorder.state.reason] : null;
+  const voiceError = phase.status === "error" ? phase.message : null;
 
   return (
     <form onSubmit={submit} data-composer="" className={cn("relative z-dock", className)}>
@@ -260,36 +285,45 @@ export function ChatComposer({
           <div role="alert" className="flex items-start gap-2 px-3 py-1 type-caption text-danger-fg">
             <Icon name="warning" size={16} className="mt-0.5" />
             <span className="min-w-0 flex-1">{voiceError}</span>
-            <Button variant="ghost" size="sm" onClick={recorder.clearError}>
+            <Button variant="ghost" size="sm" onClick={dictation.clearError}>
               Закрыть
             </Button>
           </div>
         )}
-        {recording ? (
-          <div data-recording="" className="flex items-center gap-1">
-            <IconButton icon="close" label="Отменить запись" onClick={cancelRecording} className="shrink-0" />
-            <div className="flex min-h-11 min-w-0 flex-1 items-center gap-2 px-2">
-              <span
-                aria-hidden="true"
-                className="size-2 shrink-0 animate-pulse-soft rounded-full bg-danger-fg"
-              />
-              <span className="truncate type-body text-fg" data-numeric="">
-                {`Идёт запись · ${formatRecordingTime(
-                  recorder.state.status === "recording" ? recorder.state.elapsedMs : 0,
-                )}`}
-              </span>
-            </div>
+        {dictating ? (
+          <div data-recording="" data-phase={phase.status} className="flex items-center gap-1">
             <IconButton
+              icon="close"
+              label={phase.status === "recording" ? "Отменить запись" : "Отменить распознавание"}
+              onClick={cancelRecording}
+              className="shrink-0"
+            />
+            {phase.status === "recording" ? (
+              <div className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-3 px-2">
+                <span className="sr-only">Идёт запись</span>
+                <VoiceEqualizer meter={dictation.meter} className="max-w-64" />
+                <span className="shrink-0 type-body text-fg" data-numeric="" data-recording-time="">
+                  {formatRecordingTime(phase.elapsedMs)}
+                </span>
+              </div>
+            ) : (
+              <div className="flex min-h-11 min-w-0 flex-1 items-center px-2">
+                <span className="truncate type-body text-fg-muted">Распознаю…</span>
+              </div>
+            )}
+            <IconButton
+              ref={doneButton}
               icon="check"
-              label="Остановить и прикрепить"
+              label="Готово"
               variant="primary"
               shape="round"
-              onClick={() => void stopRecording()}
+              loading={phase.status === "transcribing"}
+              onClick={() => void finishRecording()}
               className="shrink-0"
             />
           </div>
         ) : null}
-        <div className={cn("flex items-end gap-1", recording && "hidden")}>
+        <div className={cn("flex items-end gap-1", dictating && "hidden")}>
           {onAddFiles &&
             (coarse ? (
               <DropdownMenu.Root>
@@ -331,17 +365,18 @@ export function ChatComposer({
             onPaste={onPaste}
             className="min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 type-body text-fg outline-none placeholder:text-fg-subtle disabled:cursor-not-allowed"
           />
-          {showMic ? (
+          {dictation.supported && (
             <IconButton
               icon="mic"
-              label="Записать голосовое сообщение"
-              variant="secondary"
+              label="Надиктовать текст"
+              variant={micOnly ? "secondary" : "ghost"}
               shape="round"
               disabled={disabled}
               onClick={() => void startRecording()}
               className="shrink-0"
             />
-          ) : (
+          )}
+          {!micOnly && (
             <IconButton
               type="submit"
               icon="send"

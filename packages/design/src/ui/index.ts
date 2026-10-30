@@ -183,5 +183,6 @@ export {
   type UniversitySpaceSwitcherProps,
 } from "./university-space-switcher/university-space-switcher";
 export { UnreadDot, type UnreadDotProps } from "./unread-dot/unread-dot";
+export { VoiceEqualizer, type VoiceEqualizerProps } from "./voice-equalizer/voice-equalizer";
 export { WaitCard, type WaitCardProps } from "./wait-card/wait-card";
 export { Wordmark, type WordmarkProps } from "./wordmark/wordmark";

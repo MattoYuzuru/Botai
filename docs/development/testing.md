@@ -153,6 +153,7 @@ SHA перед merge. Ни одна строка таблицы не заявл�
 | Миграция и откат схемы | `tests/db/test_data_scope_migration.py`: существующие строки, nullable scope, downgrade/re-upgrade только во временной БД |
 | Exa → DeepSeek, 429, кредиты, timeout, оба отказали | `tests/search/test_search.py`: транспорт мокается, ключи не нужны; retries/cooldown/deadline и лимиты проверяются отдельно |
 | Поиск в настоящем цикле и недоверенная выдача | `tests/agent/test_public_search_flow.py`: харнес, цитаты, затраты и injection audit; CONNECT-кандидаты — `tests/learn/test_public_search.py` |
+| Диктовка: провайдер, эндпоинт, квота, ключ и звук не утекают | `backend/tests/speech`: Groq на подменённом HTTP-транспорте (запрос, повтор, 429, 4xx, редирект, тишина), эндпоинт (формат, размер, длина, выключено, квота, отсутствие записи в БД, ключ в ответах и журнале); живых вызовов в CI нет. Frontend: `dictation.test.tsx` (эквалайзер следует за громкостью, «Готово», отмена, ошибки), `chat-attachments.test.tsx` (MSW `/speech/transcribe`), `e2e/chat-voice.spec.ts` (поддельный микрофон Chromium). [speech-to-text.md](speech-to-text.md) |
 | Сброс аккаунта и старая очередь клиента | `tests/auth/test_data_reset.py`, frontend `data-reset.test.ts`, `outbox.test.ts`, `sw/core.test.ts`: owner scope, live identity, in-flight ответы, соседние вкладки |
 | Диагностика и выпуск | `tests/ops/test_deploy_diagnostics.py` и `tests/*/test_diagnostics.py`: keep/on/off, отказ/откат, identity образа и шифрованная точка восстановления |
 

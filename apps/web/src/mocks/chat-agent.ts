@@ -229,7 +229,7 @@ const attachmentReply = (files: readonly MockAttachment[]): string =>
     .map((file) => {
       switch (file.kind) {
         case "audio":
-          return `Голосовое сообщение «${file.name}» сохранено, но расшифровки пока нет: напишите, что нужно, текстом.`;
+          return `Аудиофайл «${file.name}» сохранён, но расшифровки пока нет: напишите, что нужно, текстом.`;
         case "image":
           return `Изображение «${file.name}» получено. Распознавание картинок пока не подключено, поэтому описать его я не могу.`;
         case "document":

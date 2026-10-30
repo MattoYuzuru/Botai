@@ -120,13 +120,18 @@ export interface UploadOptions {
 }
 
 /**
- * Загрузка файла (`POST /api/v1/attachments`, multipart). `fetch` не сообщает прогресс отправки, поэтому здесь
- * `XMLHttpRequest`: чип вложения показывает настоящую долю, а не придуманную.
+ * Отправка формы `multipart/form-data` и разбор JSON-ответа. `fetch` не сообщает прогресс отправки, поэтому здесь
+ * `XMLHttpRequest`: чип вложения показывает настоящую долю, а не придуманную. Ошибка — `ApiError` из problem+json,
+ * обрыв связи — `NetworkError`, отмена — `AbortError`.
  */
-export function uploadAttachment(file: File, options: UploadOptions = {}): Promise<AttachmentOut> {
-  return new Promise<AttachmentOut>((resolve, reject) => {
+export function postForm<T>(
+  path: string,
+  form: FormData,
+  options: Omit<UploadOptions, "threadId"> = {},
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("POST", urlFor("/api/v1/attachments"));
+    request.open("POST", urlFor(path));
     request.withCredentials = true;
     request.responseType = "text";
     request.setRequestHeader("accept", "application/json");
@@ -144,7 +149,7 @@ export function uploadAttachment(file: File, options: UploadOptions = {}): Promi
       } catch {
         /* тело не JSON */
       }
-      if (request.status >= 200 && request.status < 300 && parsed) resolve(parsed as AttachmentOut);
+      if (request.status >= 200 && request.status < 300 && parsed) resolve(parsed as T);
       else reject(parseProblem(request.status, parsed));
     };
     request.onerror = () => {
@@ -155,9 +160,14 @@ export function uploadAttachment(file: File, options: UploadOptions = {}): Promi
       done();
       reject(new DOMException("Загрузка отменена", "AbortError"));
     };
-    const form = new FormData();
-    form.set("file", file, file.name);
-    if (options.threadId) form.set("threadId", options.threadId);
     request.send(form);
   });
+}
+
+/** Загрузка файла (`POST /api/v1/attachments`, multipart). */
+export function uploadAttachment(file: File, options: UploadOptions = {}): Promise<AttachmentOut> {
+  const form = new FormData();
+  form.set("file", file, file.name);
+  if (options.threadId) form.set("threadId", options.threadId);
+  return postForm<AttachmentOut>("/api/v1/attachments", form, options);
 }

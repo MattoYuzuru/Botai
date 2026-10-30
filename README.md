@@ -52,6 +52,7 @@
 | [Адаптивное исследование](docs/research/adaptive-observation.md) | Инструменты браузера, автоматическое обнаружение видов, бюджеты и неполный результат |
 | [Длительное исследование](docs/architecture/source-research.md) · [план рефакторинга](docs/plan/source-research-refactor.md) | Принятая архитектура checkpoint, fencing, восстановления и проверяемые этапы реализации |
 | [Публичный поиск](docs/development/public-search.md) | Exa, DeepSeek Search API, fallback, лимиты, ключи и безопасный smoke |
+| [Голосовой ввод](docs/development/speech-to-text.md) | Диктовка: эквалайзер, Groq Speech-to-Text, заменяемый провайдер, квота, ключ |
 | [Проверки](docs/development/testing.md) · [диагностика](docs/development/diagnostics.md) | Реальный L1 стенд, границы доказательств, keep/on/off и сохранение событий |
 | [Деплой и откат](docs/plan/deployment.md) | Проверенный main, образ по SHA, конфигурация сервера, резервная копия и откат |
 | [Реализуемость](docs/research/feasibility.md) | Рынок, конкуренты, open source, стоимость модели, риски |

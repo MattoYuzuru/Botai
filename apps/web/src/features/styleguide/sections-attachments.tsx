@@ -9,6 +9,7 @@ import {
   PlanCard,
   QuickReplies,
   TaskCard,
+  type Transcribe,
   toast,
   UnreadDot,
   type ViewerAttachment,
@@ -44,8 +45,8 @@ const READY: ComposerAttachment[] = [
   },
   {
     id: "b",
-    name: "Голосовое сообщение 27.10 14-05.webm",
-    mime: "audio/webm",
+    name: "Запись лекции.m4a",
+    mime: "audio/mp4",
     size: 38_400,
     kind: "audio",
     status: "ready",
@@ -103,16 +104,44 @@ function ComposerDemo({ initial }: { initial: ComposerAttachment[] }) {
   );
 }
 
-/** Вложения и голос, быстрые ответы, план, карточка задачи и сгруппированные источники ответа. Данные синтетические. */
+/** Пока «распознавание» длится секунду, а на выходе — фраза-пример: сервера в витрине нет, микрофон настоящий. */
+const demoTranscribe: Transcribe = async (_audio, { signal }) => {
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  signal.throwIfAborted();
+  return "Какие у меня пары завтра";
+};
+
+function DictationDemo() {
+  const [value, setValue] = useState("");
+  return (
+    <ChatComposer
+      value={value}
+      onValueChange={setValue}
+      onSend={() => {
+        toast("Сообщение отправлено", { tone: "success" });
+        setValue("");
+      }}
+      onTranscribe={demoTranscribe}
+    />
+  );
+}
+
+/** Вложения и диктовка, быстрые ответы, план, карточка задачи и сгруппированные источники ответа. Данные синтетические. */
 export function AttachmentsSection() {
   const [openId, setOpenId] = useState<string | null>(null);
   return (
     <Section
       id="attachments"
       title="Вложения и ответ агента"
-      note="Поле ввода с вложениями и записью голоса, вьюер, план, быстрые ответы, карточка задачи и источники по названию. «+» открывает выбор файла, на телефоне — меню; микрофон виден, если браузер умеет записывать звук."
+      note="Поле ввода с вложениями и диктовкой, вьюер, план, быстрые ответы, карточка задачи и источники по названию. «+» открывает выбор файла, на телефоне — меню; микрофон виден, если браузер умеет записывать звук."
     >
       <Grid>
+        <Demo
+          label="ChatComposer — диктовка: эквалайзер и таймер, «Отменить запись» и «Готово», «Распознаю…», текст в поле"
+          wide
+        >
+          <DictationDemo />
+        </Demo>
         <Demo label="ChatComposer — готовые вложения (отправка без текста разрешена)" wide>
           <ComposerDemo initial={READY} />
         </Demo>

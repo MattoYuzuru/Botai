@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NBSP } from "../../lib/format";
 import { AttachmentChip } from "../attachment-chip/attachment-chip";
 import { AttachmentViewer } from "../attachment-viewer/attachment-viewer";
@@ -213,7 +213,7 @@ describe("ChatComposer: вложения", () => {
   it("без onAddFiles композер как раньше: ни «+», ни микрофона", () => {
     render(<Harness />);
     expect(screen.queryByRole("button", { name: "Прикрепить файл" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Записать голосовое сообщение" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Надиктовать текст" })).toBeNull();
     expect(screen.getByRole("button", { name: "Отправить" })).toBeDisabled();
   });
 
@@ -235,140 +235,6 @@ describe("AttachmentChip", () => {
     );
     expect(screen.queryByRole("button", { name: "Открыть Файл.pdf" })).toBeNull();
     expect(screen.getByRole("button", { name: "Убрать Файл.pdf" })).toBeEnabled();
-  });
-});
-
-describe("ChatComposer: микрофон", () => {
-  class FakeRecorder {
-    static instances: FakeRecorder[] = [];
-    static isTypeSupported = (type: string) => type === "audio/webm;codecs=opus";
-    state: "inactive" | "recording" = "inactive";
-    mimeType: string;
-    ondataavailable: ((event: { data: Blob }) => void) | null = null;
-    onstop: (() => void) | null = null;
-    constructor(
-      readonly stream: unknown,
-      options?: { mimeType?: string },
-    ) {
-      this.mimeType = options?.mimeType ?? "";
-      FakeRecorder.instances.push(this);
-    }
-    start() {
-      this.state = "recording";
-    }
-    stop() {
-      this.state = "inactive";
-      this.ondataavailable?.({ data: new Blob(["voice"], { type: this.mimeType }) });
-      queueMicrotask(() => this.onstop?.());
-    }
-  }
-  const track = { stop: vi.fn() };
-  let getUserMedia: ReturnType<typeof vi.fn>;
-  const original = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
-
-  beforeEach(() => {
-    FakeRecorder.instances = [];
-    track.stop.mockClear();
-    getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track] });
-    vi.stubGlobal("MediaRecorder", FakeRecorder);
-    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    if (original) Object.defineProperty(navigator, "mediaDevices", original);
-    else Reflect.deleteProperty(navigator, "mediaDevices");
-  });
-
-  const mic = () => screen.getByRole("button", { name: "Записать голосовое сообщение" });
-
-  it("запись: индикатор со временем, остановка прикрепляет файл как голос", async () => {
-    const onAddFiles = vi.fn();
-    render(<Harness onAddFiles={onAddFiles} />);
-    await userEvent.click(mic());
-    expect(await screen.findByText(/Идёт запись · 0:00/)).toBeInTheDocument();
-    expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
-    expect(FakeRecorder.instances[0]?.mimeType).toBe("audio/webm;codecs=opus");
-    await userEvent.click(screen.getByRole("button", { name: "Остановить и прикрепить" }));
-    await waitFor(() => expect(onAddFiles).toHaveBeenCalledTimes(1));
-    const [files, source] = onAddFiles.mock.calls[0] as [File[], string];
-    expect(source).toBe("voice");
-    expect(files).toHaveLength(1);
-    expect(files[0]?.name).toMatch(/^Голосовое сообщение \d\d\.\d\d \d\d-\d\d\.webm$/);
-    expect(files[0]?.type).toBe("audio/webm");
-    expect(track.stop).toHaveBeenCalled();
-    expect(screen.queryByText(/Идёт запись/)).toBeNull();
-    // Поле снова на месте.
-    expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeVisible();
-  });
-
-  it("смена resetKey (другой чат) бросает идущую запись: голос не прикрепляется к чужому чату", async () => {
-    const onAddFiles = vi.fn();
-    const { rerender } = render(<Harness onAddFiles={onAddFiles} resetKey="t1" />);
-    await userEvent.click(mic());
-    expect(await screen.findByText(/Идёт запись/)).toBeInTheDocument();
-    rerender(<Harness onAddFiles={onAddFiles} resetKey="t2" />);
-    await waitFor(() => expect(screen.queryByText(/Идёт запись/)).toBeNull());
-    expect(onAddFiles).not.toHaveBeenCalled();
-    expect(track.stop).toHaveBeenCalled();
-  });
-
-  it("отмена записи бросает звук: файла нет, микрофон отпущен", async () => {
-    const onAddFiles = vi.fn();
-    render(<Harness onAddFiles={onAddFiles} />);
-    await userEvent.click(mic());
-    await screen.findByText(/Идёт запись/);
-    await userEvent.click(screen.getByRole("button", { name: "Отменить запись" }));
-    expect(onAddFiles).not.toHaveBeenCalled();
-    expect(track.stop).toHaveBeenCalled();
-    expect(screen.queryByText(/Идёт запись/)).toBeNull();
-  });
-
-  it("время записи идёт и показано цифрами одной ширины", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    try {
-      render(<Harness onAddFiles={() => {}} />);
-      fireEvent.click(mic());
-      await act(async () => {
-        await Promise.resolve();
-      });
-      await act(async () => {
-        vi.advanceTimersByTime(7_000);
-      });
-      const label = screen.getByText(/Идёт запись/);
-      expect(plain(label.textContent)).toBe("Идёт запись · 0:07");
-      expect(label).toHaveAttribute("data-numeric");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("отказ в микрофоне: сообщение в role=alert, запись не началась", async () => {
-    getUserMedia.mockRejectedValue(new DOMException("denied", "NotAllowedError"));
-    render(<Harness onAddFiles={() => {}} />);
-    await userEvent.click(mic());
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Нет доступа к микрофону. Разрешите его в настройках браузера.");
-    expect(screen.queryByText(/Идёт запись/)).toBeNull();
-    await userEvent.click(within(alert).getByRole("button", { name: "Закрыть" }));
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("микрофон есть, пока нет ни текста, ни вложений; потом «Отправить»", () => {
-    const { rerender } = render(<Harness onAddFiles={() => {}} />);
-    expect(mic()).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Отправить" })).toBeNull();
-    rerender(<Harness onAddFiles={() => {}} attachments={[ready("a", "A.pdf")]} />);
-    expect(screen.queryByRole("button", { name: "Записать голосовое сообщение" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Отправить" })).toBeInTheDocument();
-  });
-
-  it("voice={false} и браузер без MediaRecorder скрывают микрофон", () => {
-    const { unmount } = render(<Harness onAddFiles={() => {}} voice={false} />);
-    expect(screen.queryByRole("button", { name: "Записать голосовое сообщение" })).toBeNull();
-    unmount();
-    vi.stubGlobal("MediaRecorder", undefined);
-    render(<Harness onAddFiles={() => {}} />);
-    expect(screen.queryByRole("button", { name: "Записать голосовое сообщение" })).toBeNull();
   });
 });
 
