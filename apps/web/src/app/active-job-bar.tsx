@@ -48,6 +48,8 @@ export function ActiveJobBar() {
   }, [threadId, job?.lastEventId, queryClient]);
 
   if (!active || (threadId !== null && openThread === threadId)) return null;
+  // Отменил сам человек — сообщать нечего: плашка уходит без тревоги.
+  if (current?.state === "cancelled") return null;
   const terminal = current ? isTerminal(current.state) : false;
   const attention = (runtime.data?.pending ?? []).some((item) => item.jobId === active.jobId);
   const failed = current ? jobFailed(current) : false;
@@ -84,7 +86,7 @@ export function ActiveJobBar() {
           {terminal
             ? failed
               ? `${active.title}: не завершено`
-              : `${active.spaceTitle ?? "Вуз"} подключён`
+              : doneLabel(saved?.kind, active.title, active.spaceTitle)
             : active.title}
         </span>
         {attention && <Badge tone="warning">Нужен ответ</Badge>}
@@ -92,4 +94,12 @@ export function ActiveJobBar() {
       {!terminal && current?.stage && <p className="type-caption">{current.stage}</p>}
     </Banner>
   );
+}
+
+/** Итог по виду задачи: документ не «подключает вуз», обновление не «подключает». */
+function doneLabel(kind: string | undefined, title: string, spaceTitle: string | undefined | null): string {
+  if (kind === "ingest") return `${title}: готово`;
+  if (kind === "sync") return `${title}: данные обновлены`;
+  if (kind === "repair") return `${title}: починка завершена`;
+  return `${spaceTitle ?? "Вуз"}: источник подключён`;
 }

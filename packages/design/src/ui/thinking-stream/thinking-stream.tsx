@@ -71,10 +71,12 @@ export function ThinkingStream({
   className,
 }: ThinkingStreamProps) {
   const first = steps[0]?.at ?? nowMs;
-  const elapsed = (finishedAt ?? nowMs) - first;
-  const active =
-    finishedAt === undefined && steps.some((step) => step.state === "running" || step.state === "waiting");
-  const title = `${active ? "Думает" : "Думал"} · ${formatDuration(elapsed)}`;
+  const running = finishedAt === undefined && steps.some((step) => step.state === "running");
+  const waiting = !running && finishedAt === undefined && steps.some((step) => step.state === "waiting");
+  // Пока ждём человека, агент не думает: отсчёт стоит на последнем шаге, а не тикает минутами.
+  const last = steps.reduce((latest, step) => Math.max(latest, step.at), first);
+  const elapsed = (finishedAt ?? (running ? nowMs : last)) - first;
+  const title = `${running ? "Думает" : waiting ? "Ждёт ответа" : "Думал"} · ${formatDuration(elapsed)}`;
 
   const viewport = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -95,7 +97,7 @@ export function ThinkingStream({
           disabled={!onToggle}
           className="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left disabled:cursor-default"
         >
-          {active && (
+          {running && (
             <span aria-hidden="true" className="size-2 animate-pulse-soft rounded-full bg-accent-fg" />
           )}
           <span className="flex-1" data-numeric="">

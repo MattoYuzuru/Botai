@@ -277,6 +277,15 @@ describe("ThinkingStream", () => {
     expect(screen.getByRole("button", { name: /^Думал · 12\sс$/ })).toBeInTheDocument();
   });
 
+  it("пока ждёт человека, отсчёт стоит на последнем шаге и не тикает минутами", () => {
+    const waiting = [
+      { id: "1", label: "Открываю вход", state: "done" as const, at: NOW - 12_000 },
+      { id: "2", label: "Нужен ваш ответ", state: "waiting" as const, at: NOW - 1_000 },
+    ];
+    render(<ThinkingStream steps={waiting} nowMs={NOW + 600_000} collapsed />);
+    expect(screen.getByText(/Ждёт ответа · 11 с/)).toBeInTheDocument();
+  });
+
   it("переключение вызывает onToggle", async () => {
     const onToggle = vi.fn();
     render(<ThinkingStream steps={steps} nowMs={NOW} onToggle={onToggle} />);
