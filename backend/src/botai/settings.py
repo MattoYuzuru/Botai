@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     stt_language: str = Field(default="ru", pattern=r"^[a-z]{2}$")
     stt_deadline_s: float = Field(default=45.0, ge=5, le=120)
     stt_requests_per_hour: int = Field(default=60, ge=1, le=10_000)
-    stt_seconds_per_day: int = Field(default=7200, ge=10, le=86_400)
+    stt_seconds_per_day: int = Field(default=7200, ge=180, le=86_400)
     llm_base_url: str = "https://api.deepseek.com"
     llm_model_fast: str = "deepseek-flash"
     llm_model_pro: str = "deepseek-v4-pro"

@@ -22,6 +22,8 @@ x-app: &app
     # Dictation (docs/development/speech-to-text.md). The Groq key arrives with app.secrets (env_file).
     STT_PROVIDER: "${STT_PROVIDER:-groq}"
     STT_MODEL: "${STT_MODEL:-whisper-large-v3-turbo}"
+    STT_LANGUAGE: "${STT_LANGUAGE:-ru}"
+    STT_DEADLINE_S: "${STT_DEADLINE_S:-45}"
     STT_REQUESTS_PER_HOUR: "${STT_REQUESTS_PER_HOUR:-60}"
     STT_SECONDS_PER_DAY: "${STT_SECONDS_PER_DAY:-7200}"
     BOTAI_DIAGNOSTICS: "${BOTAI_DIAGNOSTICS:-false}"

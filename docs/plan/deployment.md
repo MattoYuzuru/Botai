@@ -85,7 +85,8 @@ smoke — [public-search.md](../development/public-search.md). `compose.vars` в
 скрипт функцией `set_secret` заменяет одноимённую строку `app.secrets` (или добавляет её), а пустое значение и
 отсутствующая строка (прежний порядок из четырёх строк) оставляют серверный ключ как есть. `app.secrets` читают
 все сервисы Compose через `env_file`, поэтому в `compose.prod.yaml` ключа нет: там только несекретные
-`STT_PROVIDER` (`groq` или `off`), `STT_MODEL`, `STT_REQUESTS_PER_HOUR`, `STT_SECONDS_PER_DAY`, которые меняются в
+`STT_PROVIDER` (`groq` или `off`), `STT_MODEL`, `STT_LANGUAGE`, `STT_DEADLINE_S`, `STT_REQUESTS_PER_HOUR`,
+`STT_SECONDS_PER_DAY`, которые меняются в
 `compose.vars`. Без ключа или при `STT_PROVIDER=off` эндпоинт отвечает `503 stt_unavailable`, остальное
 приложение не затронуто. Ключ в GitHub Secret ещё не ключ работающего контейнера: он доставляется следующим штатным
 деплоем. Запросы к `api.groq.com` идут через EgressProxy с отдельным разрешением на этот хост. Тело запроса диктовки
