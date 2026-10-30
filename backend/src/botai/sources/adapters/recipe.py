@@ -191,9 +191,13 @@ class RecipeAdapter:
         pagination = endpoint.pagination
         window = pagination if pagination is not None and pagination.type == "dateWindow" else None
 
-        def query_at(at: datetime) -> dict[str, str]:
+        def query_at(at: datetime) -> dict[str, str | list[str]]:
+            """The query at one moment; a repeated key keeps its values, in order."""
             return {
-                k: render(v, now=at, tz=ctx.tz, params=params) for k, v in (req.query or {}).items()
+                k: [render(item, now=at, tz=ctx.tz, params=params) for item in v]
+                if isinstance(v, list)
+                else render(v, now=at, tz=ctx.tz, params=params)
+                for k, v in (req.query or {}).items()
             }
 
         try:
@@ -209,7 +213,10 @@ class RecipeAdapter:
             )
         except TemplateError as exc:
             return fail("bootstrap" if exc.name in bootstrap_failed else "format")
-        if req.method == "POST" and not (req.read_only_post and is_read_only_post(req.path, query)):
+        if req.method == "POST" and not (
+            req.read_only_post
+            and is_read_only_post(req.path, {k: v for k, v in query.items() if isinstance(v, str)})
+        ):
             return fail("status", url)
 
         if req.browser_plan is not None:
@@ -369,7 +376,7 @@ class RecipeAdapter:
         ctx: SyncContext,
         reader: RenderedPageReader,
         url: str,
-        query: Mapping[str, str],
+        query: Mapping[str, str | list[str]],
         params: Mapping[str, str],
     ) -> tuple[EndpointOutcome, list[Record]]:
         response_spec = endpoint.response

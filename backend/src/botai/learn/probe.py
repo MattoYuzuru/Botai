@@ -115,6 +115,8 @@ def probe_url(
     for key, raw in overrides.items():
         if key not in current or not _KEY.match(key) or SECRET_NAME.search(key):
             raise ProbeRefused("unknown_query_key")
+        if sum(1 for name, _ in pairs if name == key) > 1:
+            raise ProbeRefused("repeated_query_key")  # one value cannot stand for several
         placeholder = _PLACEHOLDER.fullmatch(raw)
         if placeholder is not None:
             if _ISO_DATE.fullmatch(current[key]) is None:

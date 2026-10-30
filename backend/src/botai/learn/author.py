@@ -311,7 +311,7 @@ async def author_kind(
                     time_zone=time_zone or ZoneInfo("Europe/Moscow"),
                 )
             except FactoryCompileError as exc:
-                findings.append(f"вариант {i + 1}: {exc.code}")
+                findings.append(f"вариант {i + 1}: {exc.feedback()}")
                 continue
             cand = Candidate(kind, compiled.endpoint, compiled.bootstrap, compiled.auth)
             spec = candidate_spec(

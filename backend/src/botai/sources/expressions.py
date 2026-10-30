@@ -311,19 +311,55 @@ def _dates(source: Scalar | None, bindings: Mapping[str, Any], zone: ZoneInfo) -
     return {calendar_date(value) for value in values}
 
 
+# Days of the week by name. A bounded table, not locale guessing: ISO numbers 1-7 and
+# one-character numeric text are always accepted; these words stand for the same days. Names of
+# the source ("monday", "пн") are matched whole, case-insensitively; nothing is split or fuzzed.
+_WEEKDAY_WORDS: dict[str, int] = {
+    word: number
+    for number, words in enumerate(
+        (
+            ("monday", "mon", "mo", "понедельник", "пн"),
+            ("tuesday", "tue", "tu", "вторник", "вт"),
+            ("wednesday", "wed", "we", "среда", "ср"),
+            ("thursday", "thu", "th", "четверг", "чт"),
+            ("friday", "fri", "fr", "пятница", "пт"),
+            ("saturday", "sat", "sa", "суббота", "сб"),
+            ("sunday", "sun", "su", "воскресенье", "вс"),
+        ),
+        start=1,
+    )
+    for word in words
+}
+
+
+def _weekday(value: Any) -> int:
+    if isinstance(value, str):
+        text = value.strip().casefold().removesuffix(".")
+        if len(text) == 1 and text in "1234567":
+            return int(text)
+        if text in _WEEKDAY_WORDS:
+            return _WEEKDAY_WORDS[text]
+    elif isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 7:
+        return value
+    raise ExpressionError("fields")
+
+
 def _weekdays(value: Any) -> set[int]:
     values = value if isinstance(value, list) else [value]
     if not values or len(values) > 7:
         raise ExpressionError("fields")
-    # HTML source text may contain a single ISO weekday; no locale-name guessing or separators.
-    days: set[int] = set()
-    for value in values:
-        if isinstance(value, str) and len(value) == 1 and value in "1234567":
-            value = int(value)
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 7:
-            raise ExpressionError("fields")
-        days.add(value)
-    return days
+    return {_weekday(item) for item in values}
+
+
+def _interval(value: Any) -> int:
+    """Every N weeks, as the source states it: a small whole number."""
+    if isinstance(value, str) and value.isascii() and value.strip().isdecimal():
+        value = int(value)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 4:
+        raise ExpressionError("fields")
+    return value
 
 
 def expand_weekly(
@@ -367,6 +403,12 @@ def expand_weekly(
         else first
     )
     anchor_monday = anchor - timedelta(days=anchor.weekday())
+    interval_source = expression.interval_weeks
+    interval = (
+        _interval(scalar_value(interval_source, bindings, zone))
+        if isinstance(interval_source, (JsonScalar, HtmlScalar))
+        else interval_source
+    )
     exclude = _dates(expression.exclude_dates, bindings, zone)
     include = _dates(expression.include_dates, bindings, zone)
     begin, end = max(first, horizon), min(last, horizon_end)
@@ -376,7 +418,7 @@ def expand_weekly(
     for offset in range((end - begin).days + 1):
         day = begin + timedelta(days=offset)
         weeks = (day - anchor_monday).days // 7
-        scheduled = day.isoweekday() in weekdays and weeks % expression.interval_weeks == 0
+        scheduled = day.isoweekday() in weekdays and weeks % interval == 0
         if (not scheduled and day not in include) or day in exclude:
             continue
         starts = local_datetime(day, clock, zone, expression.fold)

@@ -132,7 +132,7 @@ class SourceClient:
         method: str,
         url: str,
         *,
-        params: Mapping[str, str] | None = None,
+        params: Mapping[str, str | list[str]] | None = None,
         data: Mapping[str, str] | None = None,
         json: Any = None,
         check_session: bool = True,

@@ -342,7 +342,16 @@ def _endpoint(
                 issues.append(
                     LintIssue("param.secret_name", where, "имя параметра похоже на секрет")
                 )
-            _check_template(value, known, where, issues)
+            for item in value if isinstance(value, list) else [value]:
+                _check_template(item, known, where, issues)
+    if request["method"] != "GET" and any(
+        isinstance(value, list) for value in (request.get("query") or {}).values()
+    ):
+        issues.append(
+            LintIssue(
+                "query.repeated_method", _p(*req_base, "query"), "повтор ключа query — только у GET"
+            )
+        )
     if request["method"] == "POST" and not (
         request.get("readOnlyPost") and is_read_only_post(request["path"], _query_literals(request))
     ):
@@ -408,6 +417,7 @@ def _date_window(
         and any(
             "weekStart" in templates.placeholders(value)
             for value in (request.get("query") or {}).values()
+            if isinstance(value, str)
         )
     ):
         issues.append(
@@ -546,6 +556,7 @@ def _response(
     expansion = response.get("expand")
     if expansion:
         for name in (
+            "intervalWeeks",
             "startDate",
             "untilDate",
             "weekdays",
@@ -754,7 +765,11 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
             yield from _path_literals(request["path"], (*base, "request", "path"))
             for section in ("query", "body"):
                 for key, value in (request.get(section) or {}).items():
-                    yield _p(*base, "request", section, key), templates.PLACEHOLDER.sub("", value)
+                    for item in value if isinstance(value, list) else [value]:
+                        yield (
+                            _p(*base, "request", section, key),
+                            templates.PLACEHOLDER.sub("", item),
+                        )
             if request.get("browserPlan") is not None:
                 yield from _browser_plan_literals(
                     request["browserPlan"], (*base, "request", "browserPlan")

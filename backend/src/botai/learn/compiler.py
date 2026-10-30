@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,11 +25,51 @@ from botai.learn.auth_bindings import BindingEvidenceError, compile_auth_binding
 from botai.learn.lint import SECRET_NAME
 from botai.sources import templates
 
+# What each static reason means for the author, in words. Structure only, never a value.
+HINTS: dict[str, str] = {
+    "evidence_unknown": "requestEvidenceId не из наблюдений: укажи ссылку r… из списка запросов",
+    "evidence_auth_unproven": "у наблюдённого запроса не подтверждены заголовки: выбери другой запрос",
+    "evidence_response_unverified": "наблюдённый запрос не завершился успехом: выбери успешный",
+    "evidence_origin_mismatch": "наблюдённый запрос относится к другому сайту",
+    "evidence_method_mismatch": "метод в описании не совпал с наблюдённым запросом",
+    "evidence_path_mismatch": (
+        "путь не совпал с путём наблюдённого запроса; `{имя}` из bootstrap можно подставить "
+        "только вместо идентификатора, который в наблюдении показан меткой <v…>"
+    ),
+    "evidence_path_literal_replaced": (
+        "слово вроде `me` в пути — литерал, по которому сам сайт узнаёт текущего студента; "
+        "оставь путь ровно как в наблюдении, без `{имя}` и без bootstrap"
+    ),
+    "evidence_query_mismatch": (
+        "query должен воспроизводить наблюдённый запрос: те же ключи и значения; ключ, который "
+        'повторяется в адресе, записывай списком всех значений ("state": ["a", "b"])'
+    ),
+    "evidence_auth_scheme_unsupported": "схема авторизации наблюдённого запроса не поддерживается",
+    "evidence_auth_inconsistent": "заголовки наблюдённого запроса противоречивы: выбери другой",
+    "window_param_missing": "в query нет ключа, который двигает окно дат",
+    "window_template_unsupported": "окно дат двигает только шаблон даты ({weekStart}, {today}…)",
+    "window_template_mismatch": "ни одно окно обхода не воспроизводит наблюдённый запрос",
+    "factory_bootstrap_read_only": "шаг bootstrap должен быть GET",
+    "factory_evidence_required": "у эндпоинта и шага bootstrap нужен requestEvidenceId",
+    "factory_execution_fields_forbidden": "authBinding, browserPlan и uiUrl задаёт сервер",
+    "browser_page_unobserved": "render=true нужен requestEvidenceId документа той же страницы",
+}
+
 
 class FactoryCompileError(ValueError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, detail: str | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.detail = detail
+
+    def feedback(self) -> str:
+        """The finding as the author reads it: code, what it means, where (no values)."""
+        parts = [self.code]
+        if hint := HINTS.get(self.code):
+            parts.append(hint)
+        if self.detail:
+            parts.append(self.detail)
+        return " — ".join(parts)
 
 
 @dataclass(slots=True)
@@ -55,6 +96,9 @@ def needs_recipe_v2(
         if isinstance(request, dict) and any(
             key in request for key in ("authBinding", "browserPlan")
         ):
+            return True
+        query = request.get("query") if isinstance(request, dict) else None
+        if isinstance(query, dict) and any(isinstance(value, list) for value in query.values()):
             return True
         if isinstance(response, dict):
             if any(key in response for key in ("collections", "expand", "links", "attributes")):
@@ -214,9 +258,10 @@ def ui_url_for(
     declared = request.get("query")
     api_query: dict[str, Any] = declared if isinstance(declared, dict) else {}
     query: dict[str, str] = {}
+    repeated = {key for key, count in Counter(key for key, _ in pairs).items() if count > 1}
     for key, value in pairs:
         if (
-            key in query
+            key in repeated  # a page address does not carry a list of values
             or not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", key)
             or SECRET_NAME.search(key)
         ):
@@ -312,7 +357,7 @@ def compile_candidate(
                 query=spec.get("query"),
             )
         except BindingEvidenceError as exc:
-            raise FactoryCompileError(exc.code) from None
+            raise FactoryCompileError(exc.code, exc.detail) from None
         name = _binding_name(binding)
         bindings[name] = binding
         spec["authBinding"] = name
