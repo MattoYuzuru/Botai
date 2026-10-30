@@ -137,7 +137,9 @@ def is_calendar_service_page(url: str) -> bool:
     parts = _parts(unicodedata.normalize("NFKC", url).translate(_ZERO_WIDTH))
     if parts is None:
         return False
-    host, path = (parts.hostname or "").lower(), unquote(parts.path).lower()
+    # (`normalize_host` of the proxy does the same, but this module is imported by the logging
+    # that the proxy imports.) A trailing dot is the same name: `calendar.yandex.ru.`
+    host, path = (parts.hostname or "").lower().rstrip("."), unquote(parts.path).lower()
     in_calendar = path == "/calendar" or path.startswith(("/calendar/", "/owa/calendar"))
     return (
         bool(_CALENDAR_APP.match(host))

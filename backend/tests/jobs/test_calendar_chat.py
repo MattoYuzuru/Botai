@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -475,39 +477,51 @@ async def test_with_several_universities_the_question_about_a_page_asks_which_on
     assert all(reply.startswith("Календарь для ") for reply in question["quickReplies"])
 
 
+@asynccontextmanager
+async def working_calendar(env: Env, who: Student) -> AsyncIterator[None]:
+    """A calendar of the student that works. Its recipe row is removed whatever happens: the
+    table is not cleared with the users, and other suites count its rows."""
+    origin = "https://calendar.fakeuni.test"
+    try:
+        async with env.sm() as session:
+            conn = m.Connection(
+                id=new_id(),
+                user_id=who.user_id,
+                space_id=who.space_id,
+                origin=origin,
+                kind="calendar",
+                adapter="ical",
+                title="Календарь",
+                status="active",
+                allow_hosts=["calendar.fakeuni.test"],
+            )
+            spec = m.AdapterSpecRow(
+                origin=origin,
+                adapter="ical",
+                revision=1,
+                state="active",
+                spec={"adapter": "ical", "origin": origin},
+            )
+            session.add_all([spec, conn])
+            await session.flush()
+            conn.spec_id = spec.id
+            await session.commit()
+        yield
+    finally:
+        async with env.sm() as session:
+            await session.execute(
+                delete(m.AdapterSpecRow).where(
+                    m.AdapterSpecRow.origin == origin, m.AdapterSpecRow.adapter == "ical"
+                )
+            )
+            await session.commit()
+
+
 async def test_a_calendar_that_works_is_offered_a_new_link_when_a_page_is_given(env: Env) -> None:
     who = await student(env)
-    async with env.sm() as session:
-        conn = m.Connection(
-            id=new_id(),
-            user_id=who.user_id,
-            space_id=who.space_id,
-            origin="https://calendar.fakeuni.test",
-            kind="calendar",
-            adapter="ical",
-            title="Календарь",
-            status="active",
-            allow_hosts=["calendar.fakeuni.test"],
-        )
-        spec = m.AdapterSpecRow(
-            origin="https://calendar.fakeuni.test",
-            adapter="ical",
-            revision=1,
-            state="active",
-            spec={"adapter": "ical", "origin": "https://calendar.fakeuni.test"},
-        )
-        session.add_all([spec, conn])
-        await session.flush()
-        conn.spec_id = spec.id
-        await session.commit()
-        spec_id = spec.id
-    try:
+    async with working_calendar(env, who):
         await offer_page(env, who)
         (question,) = await page_offers(env, who.thread_id)
         assert "уже подключён" in question["markdown"]
         assert question["quickReplies"] == [calendar.YES_REPLACE, calendar.NO_REPLACE]
         assert await made(env, who.user_id) == (1, 0)
-    finally:
-        async with env.sm() as session:
-            await session.delete(await session.get(m.AdapterSpecRow, spec_id))
-            await session.commit()

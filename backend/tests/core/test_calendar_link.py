@@ -156,6 +156,8 @@ def test_what_is_not_a_public_calendar_link_is_refused_without_repeating_it(raw:
         "https://outlook.live.com/owa/calendar/abc/reachcalendar.html",
         "https://www.icloud.com/calendar/",
         "https://calendar.proton.me/u/0",
+        "https://calendar.yandex.ru./week",  # a trailing dot is the same name
+        "https://CALENDAR.GOOGLE.COM./calendar/u/0/r",
     ],
 )
 def test_a_page_of_a_calendar_service_is_recognised_as_one(url: str) -> None:
