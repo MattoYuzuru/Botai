@@ -82,10 +82,11 @@ def test_a_later_observation_adds_to_the_map_within_its_caps() -> None:
 
 
 async def test_the_map_is_saved_once_per_origin_and_read_back(db: AsyncSession) -> None:
-    assert await get_site_map(db, ORIGIN) is None
-    await save_site_map(db, ORIGIN, {"navigation": [{"label": "A", "path": "/a"}]}, NOW)
-    await save_site_map(db, ORIGIN, {"routes": ["/b"], "endpoints": []}, NOW + timedelta(hours=1))
-    stored = await get_site_map(db, ORIGIN)
+    origin = "https://sitemap-store.test"  # the map is shared and survives other tests
+    assert await get_site_map(db, origin) is None
+    await save_site_map(db, origin, {"navigation": [{"label": "A", "path": "/a"}]}, NOW)
+    await save_site_map(db, origin, {"routes": ["/b"], "endpoints": []}, NOW + timedelta(hours=1))
+    stored = await get_site_map(db, origin)
     assert stored == {
         "navigation": [{"label": "A", "path": "/a"}],
         "routes": ["/b"],

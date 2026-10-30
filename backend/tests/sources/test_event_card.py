@@ -109,7 +109,8 @@ async def test_open_url_is_stored_updated_and_served_next_to_the_api_address(
     second = AdapterResult(
         [
             event(
-                {"group": "Группа Б-2"}, open_url="https://fakeuni.test/schedule?begin_date=2026-11-02"
+                {"group": "Группа Б-2"},
+                open_url="https://fakeuni.test/schedule?begin_date=2026-11-02",
             )
         ],
         later,
