@@ -15,7 +15,7 @@ type S = components["schemas"];
  */
 export type MockSpace = S["SpaceOut"] & Partial<Pick<Space, "shortTitle" | "aliases">>;
 export type MockConnection = S["ConnectionOut"] &
-  Partial<Pick<Connection, "entryUrl" | "threadId" | "activeTask">>;
+  Partial<Pick<Connection, "entryUrl" | "threadId" | "activeTask" | "scheduleRole">>;
 
 export type Scenario = "fresh" | "empty" | "connected" | "reauth" | "stale";
 

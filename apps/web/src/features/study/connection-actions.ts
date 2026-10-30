@@ -31,6 +31,26 @@ export async function deleteConnection(connectionId: string): Promise<void> {
   );
 }
 
+/** Отключение обратимо: данные источника уходят из видов, ничего не удаляется; включить можно там же (FR-054). */
+export async function setSourceEnabled(connectionId: string, enabled: boolean): Promise<void> {
+  const path = { connection_id: connectionId };
+  await call(
+    enabled
+      ? api.POST("/api/v1/connections/{connection_id}/enable", { params: { path } })
+      : api.POST("/api/v1/connections/{connection_id}/disable", { params: { path } }),
+  );
+}
+
+/** Основной источник расписания вуза: при расхождениях решает он. `null` — вернуть выбор по умолчанию. */
+export async function setPrimarySource(spaceId: string, connectionId: string | null): Promise<void> {
+  await call(
+    api.PUT("/api/v1/spaces/{space_id}/primary-source", {
+      params: { path: { space_id: spaceId } },
+      body: { connectionId },
+    }),
+  );
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
   await call(
     api.DELETE("/api/v1/documents/{document_id}", { params: { path: { document_id: documentId } } }),

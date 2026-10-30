@@ -89,6 +89,10 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "update_plan",
         "offer_choices",
         "rename_thread",
+        "set_primary_source",
+        "ask_primary_source",
+        "disable_source",
+        "compare_sources",
     }
     for spec in TOOL_SPECS.values():
         assert spec.parameters["additionalProperties"] is False

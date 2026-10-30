@@ -14,7 +14,13 @@ import {
 import { DetailList, DetailRow } from "@/features/data/detail-row";
 import { siteUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
-import { deleteConnection, forgetPassword, refreshAfterChange } from "./connection-actions";
+import {
+  deleteConnection,
+  forgetPassword,
+  refreshAfterChange,
+  setPrimarySource,
+  setSourceEnabled,
+} from "./connection-actions";
 import { SecretForm } from "./secret-form";
 
 export interface ConnectionSheetProps {
@@ -70,7 +76,7 @@ function ConnectionDetails({
 }) {
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
-  const [confirm, setConfirm] = useState<"password" | "delete" | null>(null);
+  const [confirm, setConfirm] = useState<"password" | "delete" | "disable" | null>(null);
   const timeZone = space?.timeZone;
   const view = describeConnection(connection, nowMs, { shortTitle: space?.shortTitle, timeZone });
   const lastSync = connection.lastSyncAt ? Date.parse(connection.lastSyncAt) : null;
@@ -79,6 +85,30 @@ function ConnectionDetails({
   const chat = connectionChatLink(connection, space?.title ?? connection.title);
 
   const refresh = () => refreshAfterChange(queryClient, connection.spaceId);
+  const run = async (what: "primary" | "enable" | "disable", action: () => Promise<void>) => {
+    try {
+      await action();
+      toast(
+        what === "primary"
+          ? "Источник стал основным"
+          : what === "enable"
+            ? "Источник включён"
+            : "Источник отключён",
+        {
+          tone: "success",
+          description:
+            what === "disable"
+              ? "Данные не удалены: включить источник можно здесь же."
+              : what === "enable"
+                ? "Он снова в расписании и обновится в ближайшее время."
+                : "Решает он, когда пара есть в нескольких источниках вуза.",
+        },
+      );
+      await refresh();
+    } catch (cause) {
+      toast("Не получилось", { tone: "warning", description: humanMessage(cause) });
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4 pb-2">
@@ -147,6 +177,43 @@ function ConnectionDetails({
         </section>
       )}
 
+      <section aria-label="Расписание и отключение" className="flex flex-col gap-3">
+        {connection.scheduleRole === "primary" && (
+          <p className="type-caption text-fg-muted" data-schedule-role="primary">
+            Основной источник расписания: когда пара есть и в других источниках вуза, при расхождениях решает
+            он, а пустые поля дополняются из остальных.
+          </p>
+        )}
+        {connection.scheduleRole === "secondary" && (
+          <>
+            <p className="type-caption text-fg-muted" data-schedule-role="secondary">
+              Дополнительный источник расписания: совпавшие пары склеиваются с основным источником, и он
+              решает при расхождениях.
+            </p>
+            <Button
+              variant="secondary"
+              leadingIcon="schedule"
+              onClick={() => void run("primary", () => setPrimarySource(connection.spaceId, connection.id))}
+            >
+              Сделать основным
+            </Button>
+          </>
+        )}
+        {connection.status === "disabled" ? (
+          <Button
+            variant="secondary"
+            leadingIcon="sync"
+            onClick={() => void run("enable", () => setSourceEnabled(connection.id, true))}
+          >
+            Включить источник
+          </Button>
+        ) : (
+          <Button variant="secondary" leadingIcon="paused" onClick={() => setConfirm("disable")}>
+            Отключить источник
+          </Button>
+        )}
+      </section>
+
       <section aria-label="Ссылка или ключ" className="flex flex-col gap-3">
         {connection.adapter === "ical" ? (
           // Календарь по ссылке: новую ссылку принимает защищённое поле чата, где её проверят и сразу прочитают.
@@ -208,6 +275,15 @@ function ConnectionDetails({
             toast("Не удалось удалить пароль", { tone: "warning", description: humanMessage(cause) });
           }
         }}
+      />
+      <Dialog
+        open={confirm === "disable"}
+        onOpenChange={(open) => !open && setConfirm(null)}
+        title={`Отключить «${connection.title}»?`}
+        description="BotAI перестанет обновлять источник и остановит его задачи, а его пары, сроки, предметы, оценки, документы и новости исчезнут из расписания, заданий и ответов чата. Ничего не удаляется: включить источник обратно можно здесь же."
+        confirmLabel="Отключить"
+        tone="default"
+        onConfirm={() => run("disable", () => setSourceEnabled(connection.id, false))}
       />
       <Dialog
         open={confirm === "delete"}

@@ -185,6 +185,7 @@ async def handle_chat(
         job_id=ctx.job_id,
         space_id=thread.space_id,
         public_question=question.text,
+        question_id=question.id,
         ctx=ctx,
         question_links=question_urls(question.text),
         seen=SeenLinks.load(thread.seen_links),

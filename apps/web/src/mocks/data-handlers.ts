@@ -138,6 +138,28 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       return HttpResponse.json(spaceId ? all.filter((row) => row.provenance.spaceId === spaceId) : all);
     });
 
+  /** Статус, который был у источника до отключения: включение возвращает его, как сервер. */
+  const before = new Map<string, S["ConnectionOut"]["status"]>();
+  const switchHandler = (action: "disable" | "enable") =>
+    http.post(`*/api/v1/connections/:connectionId/${action}`, async ({ params }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const connection = db.connections.find((c) => c.id === String(params.connectionId));
+      if (!connection) return problem(404, "not_found", "Подключение не найдено");
+      if (action === "disable" && connection.status !== "disabled") {
+        before.set(connection.id, connection.status);
+        connection.status = "disabled";
+        connection.nextSyncAt = null;
+        connection.scheduleRole = null;
+        connection.activeTask = null;
+      } else if (action === "enable" && connection.status === "disabled") {
+        connection.status = before.get(connection.id) ?? (connection.adapter ? "active" : "draft");
+        before.delete(connection.id);
+      }
+      save();
+      return HttpResponse.json(connection);
+    });
+
   const startJob = (job: Omit<MockJob, "polls" | "createdAt" | "id">) => {
     const id = ulid();
     jobs.set(id, { ...job, id, polls: 0, createdAt: new Date(db.now()).toISOString() });
@@ -421,6 +443,31 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const connection = db.connections.find((c) => c.id === String(params.connectionId));
       if (!connection) return problem(404, "not_found", "Подключение не найдено");
       connection.hasPassword = false;
+      save();
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    // Отключение обратимо: данные источника уходят из всех видов, ничего не удаляется (FR-054).
+    switchHandler("disable"),
+    switchHandler("enable"),
+
+    http.put("*/api/v1/spaces/:spaceId/primary-source", async ({ params, request }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const spaceId = String(params.spaceId);
+      if (!hasSpace(spaceId)) return problem(404, "not_found", "Пространство не найдено");
+      const body = (await request.json()) as S["PrimarySourceIn"];
+      const chosen = body.connectionId ?? null;
+      if (chosen !== null) {
+        const connection = db.connections.find((c) => c.id === chosen && c.spaceId === spaceId);
+        if (!connection) return problem(404, "not_found", "Источник не относится к этому вузу");
+        if (connection.status === "disabled")
+          return problem(409, "conflict", "Отключённый источник нельзя сделать основным");
+      }
+      for (const connection of db.connections.filter((c) => c.spaceId === spaceId)) {
+        if (connection.scheduleRole)
+          connection.scheduleRole = chosen === connection.id ? "primary" : "secondary";
+      }
       save();
       return new HttpResponse(null, { status: 204 });
     }),

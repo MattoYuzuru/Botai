@@ -18,6 +18,7 @@ from botai.spaces.schemas import (
     ConnectionStarted,
     ConversationIn,
     JobRef,
+    PrimarySourceIn,
     SecretIn,
     SectionOut,
     SpaceCreate,
@@ -80,6 +81,15 @@ async def delete_space(space_id: str, user: AuthUser, session: DbSession) -> Non
     await service.delete_space(session, user.id, space_id)
 
 
+@router.put("/spaces/{space_id}/primary-source", status_code=204)
+async def set_primary_source(
+    space_id: str, body: PrimarySourceIn, user: AuthUser, session: DbSession
+) -> None:
+    """The source that decides the university's schedule when several sources show the same class
+    (FR-054); null goes back to the default. A BotAI setting, nothing is sent to the university."""
+    await service.set_primary_source(session, user.id, space_id, body.connection_id)
+
+
 @router.get("/spaces/{space_id}/sections", response_model=list[SectionOut])
 async def list_sections(space_id: str, user: AuthUser, session: DbSession) -> list[SectionOut]:
     """Dynamic sections (FR-014): only the kinds of data the space actually has."""
@@ -118,6 +128,30 @@ async def get_connection(
     connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> ConnectionOut:
     conn = await repo.get_connection(session, user.id, connection_id)
+    return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
+
+
+@router.post("/connections/{connection_id}/disable", response_model=ConnectionOut)
+async def disable_connection(
+    connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> ConnectionOut:
+    """Switches the source off, reversibly: its tasks stop, there is no sync, and its classes, tasks,
+    courses, grades, people, news and documents leave every view; nothing is deleted."""
+    conn = await service.set_source_enabled(
+        session, services.vault, services.clock, user.id, connection_id, enabled=False
+    )
+    return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
+
+
+@router.post("/connections/{connection_id}/enable", response_model=ConnectionOut)
+async def enable_connection(
+    connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> ConnectionOut:
+    """Switches a disabled source back on: it returns to the status it had and its data is shown
+    again; a source that syncs is refreshed at the next tick."""
+    conn = await service.set_source_enabled(
+        session, services.vault, services.clock, user.id, connection_id, enabled=True
+    )
     return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
 
 

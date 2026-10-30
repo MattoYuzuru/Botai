@@ -162,6 +162,44 @@
       ]
     },
 
+    "EventSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Источник, из которого прочитано занятие (FR-054). В ответе API у занятия их список: первый — основной источник расписания вуза, чьи значения занятие показывает.",
+      "required": ["connectionId", "title"],
+      "properties": {
+        "connectionId": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "maxLength": 120, "description": "Человеческое название источника, не адрес." }
+      }
+    },
+
+    "EventDisagreement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Источники одного вуза говорят о занятии разное (FR-054). Решает основной источник; здесь — что у остальных, либо что в основном такого занятия нет.",
+      "required": ["kind", "detail"],
+      "properties": {
+        "kind": {
+          "enum": ["time", "title", "location", "teacher", "group", "address", "several", "not_in_primary"],
+          "description": "Что расходится (title — слова названия, которых нет у основного); several — больше одного поля; not_in_primary — похожее занятие того же типа есть в основном источнике в пределах семи дней, а в этот час нет при регулярных занятиях основного на это время (вероятно, перенесено или отменено)."
+        },
+        "detail": { "type": "string", "maxLength": 400, "description": "Коротко для человека: «Календарь» — ауд. 305." }
+      }
+    },
+
+    "ScheduleEventView": {
+      "description": "Занятие в ответе API чтения (`/schedule`, `/today`, инструмент агента). Не хранимая запись: занятия разных источников одного вуза, совпавшие по времени и названию, склеены при чтении (FR-054), хранимые строки остаются по источникам. Поля ниже — аддитивные: без них ответ тот же, что у ScheduleEvent.",
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/EventSource" },
+          "description": "Все источники занятия, основной первым; больше одного — занятие склеено."
+        },
+        "disagreement": { "oneOf": [{ "$ref": "#/$defs/EventDisagreement" }, { "type": "null" }] }
+      }
+    },
+
     "Assignment": {
       "allOf": [
         { "$ref": "#/$defs/entityBase" },

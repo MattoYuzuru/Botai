@@ -10,7 +10,7 @@ import {
 import { Badge } from "../badge/badge";
 import { Skeleton } from "../skeleton/skeleton";
 import type { ScheduleDayState, ScheduleItem } from "./schedule-day";
-import { KIND_BADGE, ScheduleFacts } from "./schedule-facts";
+import { KIND_BADGE, ScheduleFacts, ScheduleProvenance } from "./schedule-facts";
 
 export interface ScheduleGridDay {
   /** Любой момент нужного дня, мс. */
@@ -120,6 +120,7 @@ export function ScheduleGrid({
                           </Badge>
                         )}
                         <ScheduleFacts facts={item.facts} layout="stacked" />
+                        <ScheduleProvenance sources={item.sources} note={item.note} />
                         <span className="flex flex-wrap gap-1 empty:hidden">
                           {live && <Badge tone="accent">Идёт сейчас</Badge>}
                           {item.conflict && (

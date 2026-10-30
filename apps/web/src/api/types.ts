@@ -8,7 +8,14 @@ import type {
   Today as TodayV3,
 } from "./v3-data";
 
-export type { ConnectionKind, ConnectionTask, EventAttribute, EventLink } from "./v3-data";
+export type {
+  ConnectionKind,
+  ConnectionTask,
+  EventAttribute,
+  EventDisagreement,
+  EventLink,
+  EventSource,
+} from "./v3-data";
 
 import type { MessageOut, ThreadOut } from "./v3";
 

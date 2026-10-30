@@ -8,21 +8,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.core.clock import SystemClock
+from botai.core.clock import Clock, SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Connection, Job, Space, University
+from botai.domain import primary
 from botai.jobs.events import IN_FLIGHT
-from botai.jobs.queue import SOURCE_KINDS, PgJobQueue, enqueue_in_session
+from botai.jobs.queue import SOURCE_KINDS, TASK_KINDS, PgJobQueue, enqueue_in_session
 from botai.learn.addresses import navigation_url, url_origin
 from botai.spaces import repo, universities, views
 from botai.spaces.schemas import (
@@ -76,7 +77,11 @@ def _active_task_out(task: ActiveTask | None) -> ActiveTaskOut | None:
 
 
 async def connection_out(
-    vault: Vault, conn: Connection, *, task: TaskInfo | None = None
+    vault: Vault,
+    conn: Connection,
+    *,
+    task: TaskInfo | None = None,
+    schedule_role: Literal["primary", "secondary"] | None = None,
 ) -> ConnectionOut:
     """`task` carries the thread and the active task of the source (`connection_outs` loads it)."""
     task = task or TaskInfo()
@@ -101,6 +106,7 @@ async def connection_out(
         error_detail=conn.error_detail,
         thread_id=task.thread_id,
         active_task=_active_task_out(task.active_task),
+        schedule_role=schedule_role,
     )
 
 
@@ -108,7 +114,11 @@ async def connection_outs(
     session: AsyncSession, vault: Vault, user_id: str, conns: Sequence[Connection]
 ) -> list[ConnectionOut]:
     tasks = await views.load_task_info(session, user_id, [c.id for c in conns])
-    return [await connection_out(vault, c, task=tasks.get(c.id)) for c in conns]
+    roles = await primary.schedule_roles(session, user_id, space_ids={c.space_id for c in conns})
+    return [
+        await connection_out(vault, c, task=tasks.get(c.id), schedule_role=roles.get(c.id))
+        for c in conns
+    ]
 
 
 # --- spaces ---------------------------------------------------------------------------------------
@@ -411,6 +421,89 @@ async def ensure_source(
     session.add(conn)
     await session.flush()
     return conn, True
+
+
+async def set_primary_source(
+    session: AsyncSession, user_id: str, space_id: str, connection_id: str | None
+) -> Space:
+    """Chooses the source that decides the schedule of this university when several sources show
+    the same class (FR-054). `None` goes back to the default (the oldest live source with schedule
+    events). A BotAI setting: nothing is sent to a university and no data is changed or deleted."""
+    space = await repo.get_space(session, user_id, space_id)
+    if connection_id is not None:
+        conn = await repo.get_connection(session, user_id, connection_id)
+        if conn.space_id != space.id:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Источник не относится к этому вузу")
+        if conn.status == "disabled":
+            raise BotaiError(
+                ErrorCode.CONFLICT, "Отключённый источник нельзя сделать основным: сначала включите"
+            )
+    space.primary_schedule_connection_id = connection_id
+    await session.commit()
+    return space
+
+
+# Statuses that only describe a task in flight: switching a source off stops the task, and the
+# status to come back to is what the source is without it.
+_TRANSIENT = frozenset({"learning", "syncing", "repairing", "waiting_user"})
+_SETTLED = frozenset({"active", "stale", "needs_reauth", "error", "draft"})
+_SYNCED = frozenset({"active", "stale"})
+
+
+def _configured_status(conn: Connection) -> str:
+    """What a source without a task is: `stale` when it has finished connecting (an `ical` source has
+    its adapter from the day it is made: configured is having a spec), else `draft`. The same
+    predicate as `jobs.cleanup.restore_source_after_stop`."""
+    configured = conn.spec_id is not None or conn.adapter not in (None, "ical")
+    return "stale" if configured else "draft"
+
+
+async def set_source_enabled(
+    session: AsyncSession,
+    vault: Vault,
+    clock: Clock,
+    user_id: str,
+    connection_id: str,
+    *,
+    enabled: bool,
+) -> Connection:
+    """Switches a source off or back on, reversibly.
+
+    Off: its tasks are stopped (a question it was waiting an answer to goes with them), there is no
+    sync, and none of its records or documents is shown anywhere (nothing is deleted). The status it
+    had is kept in `disabled_from`; the student's choice of the primary schedule source stays and
+    applies again when it is back on. On: the source returns to the status it had (one that needed a
+    login still needs it, a calendar waiting for its link still waits); a source that syncs is
+    refreshed at the next tick."""
+    from botai.jobs import answers
+
+    conn = await repo.get_connection(session, user_id, connection_id)
+    secrets: list[str] = []
+    if enabled and conn.status == "disabled":
+        before = conn.disabled_from
+        conn.status = before if before in _SETTLED else _configured_status(conn)
+        conn.disabled_from = None
+        conn.next_sync_at = clock.now() if conn.status in _SYNCED else None
+    elif not enabled and conn.status != "disabled":
+        running = await session.scalars(
+            select(Job.id).where(
+                Job.user_id == user_id,
+                Job.connection_id == conn.id,
+                Job.kind.in_(TASK_KINDS),
+                Job.state.in_(sorted(IN_FLIGHT)),
+            )
+        )
+        for job_id in list(running):
+            _, found = await answers.stop_job(session, clock, user_id, job_id)
+            secrets += found
+        await session.refresh(conn)  # stopping a task may have settled the status
+        conn.disabled_from = _configured_status(conn) if conn.status in _TRANSIENT else conn.status
+        conn.status = "disabled"
+        conn.next_sync_at = None
+    await session.commit()
+    for block_id in secrets:  # an unconsumed secret answer must not outlive its task
+        await vault.delete(user_id, block_id, SecretKind.TRANSIENT)
+    return conn
 
 
 async def delete_connection(session: AsyncSession, user_id: str, connection_id: str) -> None:

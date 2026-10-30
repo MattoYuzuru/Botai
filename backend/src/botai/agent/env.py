@@ -129,10 +129,14 @@ class ChatEnv:
     used: set[str] = field(default_factory=set)
     repairs: list[str] = field(default_factory=list)  # titles of connections sent to repair
     public_question: str = ""  # only the current typed question; never history or private tool data
+    question_id: str | None = None  # the message of the student this turn answers
     search_budget: SearchBudget | None = None
     ctx: JobContext | None = None  # to publish the plan while the turn is still running
     blocks: list[AgentUiBlock] = field(default_factory=list)  # task cards appended to the reply
     quick_replies: list[str] = field(default_factory=list)
+    # The application wrote the buttons itself (the question before switching a source off): the
+    # model cannot replace them with its own.
+    pinned_replies: bool = False
     plan_id: str | None = None
     # Pages the agent may open besides its source's own: the links it has met in this thread (the
     # last ones are kept with the thread) and the ones the student wrote in this question.

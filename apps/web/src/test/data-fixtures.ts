@@ -36,6 +36,8 @@ export function eventFixture(patch: Partial<ScheduleEvent> = {}): ScheduleEvent 
     changed: false,
     conflictsWith: [],
     provenance: provenanceFixture(),
+    sources: [{ connectionId: "c", title: "Личный кабинет" }],
+    disagreement: null,
     ...patch,
   };
 }
@@ -71,6 +73,7 @@ export function connectionFixture(patch: Partial<Connection> = {}): Connection {
     nextSyncAt: null,
     errorCode: null,
     errorDetail: null,
+    scheduleRole: null,
     ...patch,
   };
 }

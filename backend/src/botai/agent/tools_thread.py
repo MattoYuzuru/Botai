@@ -125,6 +125,11 @@ async def offer_choices(env: ChatEnv, args: dict[str, Any]) -> str:
     raw = args.get("options")
     if not isinstance(raw, list):
         return "Ошибка аргументов: options — список строк."
+    if env.pinned_replies:
+        return (
+            "Кнопки под этим ответом уже поставило приложение (вопрос об отключении источника): "
+            "заменить их нельзя. Сначала ответьте студенту по существу и задайте этот вопрос."
+        )
     options = list(
         dict.fromkeys(clean(str(o), CHOICE_CHARS) for o in raw if clean(str(o), CHOICE_CHARS))
     )[:MAX_CHOICES]

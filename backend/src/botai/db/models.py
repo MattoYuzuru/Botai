@@ -131,6 +131,19 @@ class Space(Base):
     profile: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, nullable=False
     )  # name, programme, year
+    # The source whose schedule decides when several sources of this university show the same
+    # class (FR-054). NULL: nothing chosen, the oldest live source with schedule events decides
+    # (`domain.primary`). A deleted source clears the choice; a disabled one is passed over at read
+    # time and counts again once switched back on. `use_alter`: connections point back at spaces.
+    primary_schedule_connection_id: Mapped[str | None] = mapped_column(
+        String(26),
+        ForeignKey(
+            "connections.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_spaces_primary_schedule_connection_id_connections",
+        ),
+    )
     created_at: Mapped[datetime] = ts_now()
 
 
@@ -204,6 +217,9 @@ class Connection(Base):
     error_code: Mapped[str | None] = mapped_column(String(40))
     error_detail: Mapped[str | None] = mapped_column(Text)
     error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The status the source had when the student switched it off; switching it on restores it
+    # (a source that needed a login still needs one; a calendar waiting for its link still waits).
+    disabled_from: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = ts_now()
 
 
@@ -269,6 +285,8 @@ class ScheduleEvent(_Domain, Base):
     __table_args__ = (
         *_uq("schedule_events"),
         Index("ix_schedule_events_user_start", "user_id", "starts_at"),
+        # One source's classes in a window (the read of a schedule, the reach of a source, FR-054).
+        Index("ix_schedule_events_conn_start", "connection_id", "starts_at"),
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="other")
@@ -563,6 +581,33 @@ class ChatThread(Base):
     seen_links: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+
+
+class AgentChoice(Base):
+    """The buttons the application itself put under an answer of the agent before it changes a setting
+    that the agent proposed (the primary source of a university, switching a source off): each button
+    is bound to exact actions on exact connections. The action runs only when the student's next
+    message is exactly the label of a button, within a few minutes, once: the first call that sees the
+    press arms the choice for that message (`armed`), and every action it binds is spent at most once.
+    One pending choice per thread: a new question replaces the old one, so a press never reaches a
+    question the student did not see last."""
+
+    __tablename__ = "agent_choices"
+    __table_args__ = (UniqueConstraint("thread_id"),)
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    thread_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False
+    )
+    # [{"label": str, "actions": [{"type": "primary" | "disable", "connectionId": str}]}]
+    buttons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    # After a press: {"messageId", "label", "actions": [what the button stood for], "remaining":
+    # [actions not yet spent]}; None before. A pressed choice stays, spent or not, until the turn of
+    # that message is over (the next call of any later turn removes it), so a repeated call in the
+    # press turn finds the press instead of asking anew.
+    armed: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = ts_now()
 
 
 class ChatMessage(Base):

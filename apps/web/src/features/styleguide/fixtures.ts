@@ -60,6 +60,8 @@ export const SCHEDULE: ScheduleItem[] = [
     ],
     spaceId: "hse",
     spaceTitle: "ВШЭ",
+    sources: ["Единый личный кабинет", "Календарь"],
+    note: "Источники расходятся: «Календарь» — ауд. 305",
   },
   {
     id: "s2",
@@ -90,6 +92,7 @@ export const SCHEDULE: ScheduleItem[] = [
     title: "Теория вероятностей",
     spaceId: "cu",
     spaceTitle: "ЦУ",
+    note: "Нет в основном источнике «Единый личный кабинет»: возможно, пару перенесли или отменили",
   },
 ];
 

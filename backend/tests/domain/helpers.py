@@ -10,8 +10,11 @@ import httpx
 
 from botai.core.ids import new_id
 from botai.db.models import (
+    Chunk,
+    Connection,
     Course,
     Deadline,
+    Document,
     Grade,
     NewsItem,
     Person,
@@ -98,6 +101,30 @@ def person(user_id: str, conn_id: str, name: str = "Иванов И. И.", **kw:
     return Person(name=name, **_common(user_id, conn_id, ext), **kw)
 
 
+def document(
+    user_id: str,
+    space_id: str,
+    conn_id: str | None,
+    title: str,
+    text: str,
+    *,
+    url: str | None = None,
+) -> tuple[Document, Chunk]:
+    """A saved document and its one chunk of text (add the document first)."""
+    doc = Document(
+        id=new_id(),
+        user_id=user_id,
+        space_id=space_id,
+        connection_id=conn_id,
+        kind="page",
+        title=title,
+        url=url,
+        fetched_at=T0,
+        hash=new_id(),
+    )
+    return doc, Chunk(user_id=user_id, document_id=doc.id, ord=0, text=text, tokens=len(text) // 3)
+
+
 def news(user_id: str, conn_id: str, published_at: datetime, title: str = "Новость") -> NewsItem:
     return NewsItem(title=title, published_at=published_at, **_common(user_id, conn_id, None))
 
@@ -112,3 +139,48 @@ class World:
     space_b: str
     conn_a: str
     conn_b: str
+
+
+async def add_source(
+    sm: Sm,
+    user_id: str,
+    space_id: str,
+    title: str,
+    *,
+    age_days: int,
+    kind: str = "schedule",
+    status: str = "active",
+) -> str:
+    """A source of a university created `age_days` before the frozen clock (the oldest decides the
+    default primary), with an adapter, so that switching it back on makes it active again."""
+    conn_id = new_id()
+    async with sm() as session:
+        session.add(
+            Connection(
+                id=conn_id,
+                user_id=user_id,
+                space_id=space_id,
+                origin=f"https://{title.lower().replace(' ', '-')}.fakeuni.test",
+                kind=kind,
+                adapter="ical" if kind == "calendar" else "recipe",
+                title=title,
+                status=status,
+                allow_hosts=[],
+                created_at=T0 - timedelta(days=age_days),
+            )
+        )
+        await session.commit()
+    return conn_id
+
+
+@dataclass(frozen=True, slots=True)
+class Campus:
+    """One university with a cabinet (older) and a calendar, and a second university."""
+
+    client: httpx.AsyncClient
+    user_id: str
+    space: str
+    other_space: str
+    cabinet: str
+    calendar: str
+    elsewhere: str

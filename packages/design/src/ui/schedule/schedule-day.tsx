@@ -4,7 +4,7 @@ import { countRu, DEFAULT_TIME_ZONE, formatDayWithWeekday, formatTime } from "..
 import { Badge } from "../badge/badge";
 import { EmptyState } from "../empty-state/empty-state";
 import { Skeleton } from "../skeleton/skeleton";
-import { KIND_BADGE, type ScheduleFact, ScheduleFacts } from "./schedule-facts";
+import { KIND_BADGE, type ScheduleFact, ScheduleFacts, ScheduleProvenance } from "./schedule-facts";
 
 export interface ScheduleItem {
   id: string;
@@ -22,6 +22,10 @@ export interface ScheduleItem {
   changed?: boolean;
   /** Пересекается по времени с другим занятием. */
   conflict?: boolean;
+  /** Источники, из которых склеена пара, основной первым; строка видна, когда их больше одного (FR-054). */
+  sources?: readonly string[];
+  /** Источники расходятся или пары нет в основном источнике: готовая спокойная строка под деталями. */
+  note?: string | null;
 }
 
 export type { ScheduleFact };
@@ -128,6 +132,7 @@ export function ScheduleDay({
                       )}
                     </span>
                     <ScheduleFacts facts={item.facts} layout="inline" />
+                    <ScheduleProvenance sources={item.sources} note={item.note} />
                     <span className="flex flex-wrap gap-1.5 empty:hidden">
                       {live && <Badge tone="accent">Идёт сейчас</Badge>}
                       {item.changed && (

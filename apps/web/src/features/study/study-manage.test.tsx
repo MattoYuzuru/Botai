@@ -50,6 +50,74 @@ describe("«Источники»: управление", () => {
     expect(within(sheet).queryByRole("button", { name: /Повторить|Обновить/ })).toBeNull();
   });
 
+  describe("отключение, включение и основной источник расписания (FR-054)", () => {
+    const portal = () =>
+      current.db.connections.find((c) => c.spaceId === hseId() && c.kind === "portal") as {
+        id: string;
+        status: string;
+        scheduleRole?: string | null;
+      };
+
+    it("«Отключить источник» просит подтверждения, говорит, что ничего не удаляется, и отключает", async () => {
+      const sheet = await openPortal();
+      await userEvent.click(within(sheet).getByRole("button", { name: "Отключить источник" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "Отключить «Личный кабинет»?" });
+      expect(dialog).toHaveTextContent("Ничего не удаляется");
+      // что именно скрывается: не только расписание
+      expect(dialog).toHaveTextContent(/документы/);
+      expect(dialog).toHaveTextContent(/остановит его задачи/);
+      expect(portal().status).toBe("active"); // пока не подтвердили — ничего не изменилось
+      await userEvent.click(within(dialog).getByRole("button", { name: "Отключить" }));
+      await waitFor(() => expect(portal().status).toBe("disabled"));
+      expect(await screen.findByText("Источник отключён")).toBeInTheDocument();
+    });
+
+    it("отключённый источник включается обратно кнопкой в той же карточке", async () => {
+      portal().status = "disabled";
+      const sheet = await openPortal();
+      await userEvent.click(within(sheet).getByRole("button", { name: "Включить источник" }));
+      await waitFor(() => expect(portal().status).toBe("active"));
+      expect(await screen.findByText("Источник включён")).toBeInTheDocument();
+    });
+
+    it("дополнительный источник расписания можно сделать основным; у основного кнопки нет", async () => {
+      addConnection(current.db, hseId(), {
+        title: "Календарь",
+        kind: "calendar",
+        adapter: "ical",
+        origin: "https://calendar.fakeuni.test",
+        entryUrl: null,
+        hasPassword: false,
+        scheduleRole: "secondary",
+      });
+      portal().scheduleRole = "primary";
+      const requests: unknown[] = [];
+      current.server.use(
+        http.put("*/api/v1/spaces/:id/primary-source", async ({ request }) => {
+          requests.push(await request.json());
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      renderApp(`/study/connections?space=${hseId()}`);
+      // в списке у обоих подписана роль: источников с расписанием несколько
+      expect(await screen.findByText("Основное расписание")).toBeInTheDocument();
+      expect(screen.getByText("Дополнительное расписание")).toBeInTheDocument();
+      await userEvent.click(await screen.findByRole("button", { name: /^Календарь/ }));
+      const calendar = await screen.findByRole("dialog", { name: "Календарь" });
+      expect(within(calendar).getByText(/Дополнительный источник расписания/)).toBeInTheDocument();
+      await userEvent.click(within(calendar).getByRole("button", { name: "Сделать основным" }));
+      await waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toEqual({ connectionId: expect.stringMatching(/^[0-9A-Z]{26}$/) });
+    });
+
+    it("у единственного источника расписания роль в списке не подписана", async () => {
+      portal().scheduleRole = "primary";
+      renderApp(`/study/connections?space=${hseId()}`);
+      await screen.findByRole("button", { name: /Личный кабинет/ });
+      expect(screen.queryByText("Основное расписание")).toBeNull();
+    });
+  });
+
   it("в разделе «Источники» у вуза есть «Добавить источник» и его вариант «Календарь (iCal)» — оба в чат", async () => {
     renderApp(`/study/connections?space=${hseId()}`);
     const add = await screen.findByRole("link", { name: "Добавить источник" });

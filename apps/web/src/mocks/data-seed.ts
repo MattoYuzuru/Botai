@@ -341,6 +341,13 @@ export function seedEvents(db: MockDb): ScheduleEvent[] {
         changed: Boolean(template.changed) && offset >= 0 && offset < 7,
         conflictsWith: [],
         provenance: prov,
+        sources: [
+          {
+            connectionId: prov.connectionId,
+            title: db.connections.find((c) => c.id === prov.connectionId)?.title ?? "Источник",
+          },
+        ],
+        disagreement: null,
       });
     }
   }

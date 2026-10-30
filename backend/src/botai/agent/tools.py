@@ -21,12 +21,14 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
-from botai.agent import tools_sources, tools_thread, tools_web
+from botai.agent import tools_manage, tools_sources, tools_thread, tools_web
 from botai.agent.env import (
     DEFAULT_TZ,
     STATUS_RU,
     ChatEnv,
     clean,
+    data_text,
+    document_link,
     fmt_day,
     fmt_dt,
     fmt_updated,
@@ -35,7 +37,9 @@ from botai.agent.env import (
 )
 from botai.agent.harness import HarnessTool
 from botai.core.llm import LlmTool
-from botai.db.models import Chunk, Document, Fact
+from botai.db.models import Chunk, Connection, Document, Fact
+from botai.domain.repo import LIVE_DOCUMENT
+from botai.domain.schemas import ScheduleEventOut
 
 MAX_RANGE_DAYS = 31
 MAX_ROWS = 60
@@ -69,6 +73,7 @@ DATA_TOOLS = frozenset(
         "task_status",
         "browse_source",
         "site_map",
+        "compare_sources",
     }
 )
 DOCUMENT_TOOLS = frozenset(
@@ -98,6 +103,7 @@ OUTSIDE_TEXT = frozenset(
         "fetch_public_page",
         "read_document",
         "browse_source",
+        "compare_sources",
     }
 )
 
@@ -172,11 +178,46 @@ async def get_schedule(env: ChatEnv, args: dict[str, Any]) -> str:
             "ИЗМЕНЕНО" if e.changed else "",
             "пересекается с занятием другого вуза" if e.conflicts_with else "",
             "данные устарели" if e.provenance.stale else "",
+            *(await _merge_notes(env, e)),
         ]
-        lines.append("- " + " | ".join(p for p in parts if p) + f" [{key}]")
+        keys = [key, *(await _extra_keys(env, e))]
+        lines.append("- " + " | ".join(p for p in parts if p) + "".join(f" [{k}]" for k in keys))
     if len(events) > MAX_ROWS:
         lines.append(f"…и ещё {len(events) - MAX_ROWS}: сузьте диапазон дат.")
     return "\n".join(lines)
+
+
+async def _merge_notes(env: ChatEnv, e: ScheduleEventOut) -> list[str]:
+    """What the merge of several sources of one university adds to a class (FR-054)."""
+    notes: list[str] = []
+    if len(e.sources) > 1:
+        notes.append(
+            "склеено из источников: " + " + ".join(f"«{data_text(s.title, 60)}»" for s in e.sources)
+        )
+    if e.disagreement is not None:
+        notes.append(
+            f"НЕТ В ОСНОВНОМ ИСТОЧНИКЕ: {data_text(e.disagreement.detail, 200)}"
+            if e.disagreement.kind == "not_in_primary"
+            else f"источники расходятся ({data_text(e.disagreement.detail, 200)}); верно основное"
+        )
+    return notes
+
+
+async def _extra_keys(env: ChatEnv, e: ScheduleEventOut) -> list[str]:
+    """Citations of the sources besides the primary one, whose values the class also carries."""
+    metas = await env.titles()
+    keys: list[str] = []
+    for source in e.sources[1:]:
+        meta = metas.get(source.connection_id)
+        keys.append(
+            env.sources.add(
+                title=meta.title if meta else source.title,
+                url=f"botai://connections/{source.connection_id}",
+                kind="connection",
+                fetched_at=meta.last_sync_at if meta else None,
+            )
+        )
+    return keys
 
 
 async def get_deadlines(env: ChatEnv, args: dict[str, Any]) -> str:
@@ -330,6 +371,7 @@ async def search_documents(env: ChatEnv, args: dict[str, Any]) -> str:
                 .where(
                     Chunk.user_id == env.user_id,
                     Document.user_id == env.user_id,
+                    LIVE_DOCUMENT,
                     Chunk.tsv.op("@@")(tsquery),
                 )
                 .order_by(rank.desc(), Chunk.ord)
@@ -364,6 +406,19 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
         return "Ошибка аргументов: нужен непустой query."
     now = env.services.clock.now()
     async with env.services.db() as session:
+        # A saved answer that cites a document of a source the student switched off goes with it.
+        # A document is cited by its address, or, when it was uploaded and has none, by its link
+        # inside the application: both forms of a switched-off source's document are hidden.
+        switched_off = (
+            await session.execute(
+                select(Document.id, Document.url)
+                .join(Connection, Connection.id == Document.connection_id)
+                .where(Document.user_id == env.user_id, Connection.status == "disabled")
+            )
+        ).all()
+        hidden = {document_link(doc_id) for doc_id, _ in switched_off} | {
+            url for _, url in switched_off if url
+        }
         rows: list[Fact] = []
         for tsquery in _tsqueries(query):
             doc = func.to_tsvector("russian", Fact.question + " " + Fact.answer)
@@ -371,11 +426,15 @@ async def search_facts(env: ChatEnv, args: dict[str, Any]) -> str:
                 select(Fact)
                 .where(Fact.user_id == env.user_id, doc.op("@@")(tsquery))
                 .order_by(func.ts_rank_cd(doc, tsquery).desc())
-                .limit(3)
+                .limit(12)
             )
             if env.space_id:
                 stmt = stmt.where((Fact.space_id == env.space_id) | Fact.space_id.is_(None))
-            rows = list((await session.execute(stmt)).scalars())
+            rows = [
+                fact
+                for fact in (await session.execute(stmt)).scalars()
+                if not any(str(s.get("url", "")) in hidden for s in fact.sources)
+            ][:3]
             if rows:
                 break
     if not rows:
@@ -420,7 +479,9 @@ _DATE = {"type": "string", "description": "Дата YYYY-MM-DD"}
 READ_SPECS: dict[str, LlmTool] = {
     "get_schedule": spec(
         "get_schedule",
-        "Занятия студента за период. Без аргументов — сегодня. Диапазон не больше 31 дня.",
+        "Занятия студента за период. Без аргументов — сегодня. Диапазон не больше 31 дня. Если вуз "
+        "читается из нескольких источников, совпадающие пары склеены в одну, а расхождения и пары, "
+        "которых нет в основном источнике, помечены.",
         {"from_date": _DATE, "to_date": {**_DATE, "description": "Последний день, включительно"}},
         [],
     ),
@@ -492,18 +553,21 @@ TOOL_SPECS: dict[str, LlmTool] = {
     **tools_sources.SPECS,
     **tools_web.SPECS,
     **tools_thread.SPECS,
+    **tools_manage.SPECS,
 }
 STAGES: dict[str, str] = {
     **READ_STAGES,
     **tools_sources.STAGES,
     **tools_web.STAGES,
     **tools_thread.STAGES,
+    **tools_manage.STAGES,
 }
 _IMPLS: dict[str, Callable[[ChatEnv, dict[str, Any]], Awaitable[str]]] = {
     **READ_IMPLS,
     **tools_sources.IMPLS,
     **tools_web.IMPLS,
     **tools_thread.IMPLS,
+    **tools_manage.IMPLS,
 }
 
 
@@ -516,6 +580,9 @@ MUTATING = frozenset(
         "sync_source",
         "request_repair",
         "request_login",
+        "set_primary_source",
+        "ask_primary_source",
+        "disable_source",
         "remember",
         "forget",
     }

@@ -19,6 +19,7 @@ from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.db import models as m
+from botai.domain.repo import LIVE_DOCUMENT
 from botai.jobs.queue import enqueue_in_session
 from botai.sources import public_links
 from botai.sources.ingest import check_url, source_for_url
@@ -32,7 +33,7 @@ async def list_documents(session: AsyncSession, user_id: str, space_id: str) -> 
     space = await repo.get_space(session, user_id, space_id)
     rows = await session.scalars(
         select(m.Document)
-        .where(m.Document.user_id == user_id, m.Document.space_id == space.id)
+        .where(m.Document.user_id == user_id, m.Document.space_id == space.id, LIVE_DOCUMENT)
         .order_by(m.Document.fetched_at.desc(), m.Document.id)
     )
     return [DocumentOut.model_validate(doc) for doc in rows]

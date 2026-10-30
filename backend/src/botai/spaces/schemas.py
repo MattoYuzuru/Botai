@@ -92,6 +92,16 @@ class ConnectionOut(ApiModel):
     error_detail: str | None = None
     thread_id: str | None = None  # the thread of the latest task of this source
     active_task: ActiveTaskOut | None = None
+    # Among the university's sources that have schedule events: the one that decides when they show
+    # the same class (`primary`) or the others (`secondary`); null for a source without a schedule
+    # and for a disabled one (FR-054).
+    schedule_role: Literal["primary", "secondary"] | None = None
+
+
+class PrimarySourceIn(ApiModel):
+    """`connectionId`: a live source of this university; null returns to the default."""
+
+    connection_id: str | None = Field(default=None, pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 class ConnectionStarted(ApiModel):

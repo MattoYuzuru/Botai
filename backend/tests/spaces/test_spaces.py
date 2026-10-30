@@ -450,4 +450,4 @@ async def test_sections_ignore_disabled_connections(
         await s.execute(update(Connection).where(Connection.id == conn).values(status="disabled"))
         await s.commit()
     kinds = {s["kind"] for s in (await a.get(f"/api/v1/spaces/{space}/sections")).json()}
-    assert kinds == {"documents"}  # documents belong to the space, not to the switched-off source
+    assert kinds == set()  # its documents leave with it (FR-054): nothing of the source is counted

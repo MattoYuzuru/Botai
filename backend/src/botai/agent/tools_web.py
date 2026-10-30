@@ -49,6 +49,7 @@ from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.vault import SecretKind, VaultError
 from botai.db.models import AdapterSpecRow, Attachment, Chunk, Connection, Document
+from botai.domain.repo import LIVE_DOCUMENT
 from botai.learn.addresses import url_origin
 from botai.learn.observe import protect_observation
 from botai.learn.redact import Redactor
@@ -211,12 +212,20 @@ def _spa_route(raw: str) -> str:
     return fragment
 
 
+_SWITCHED_OFF = (
+    "Результат: не выполнено. Источник отключён студентом: его страницы не читаются, пока он не "
+    "включит источник обратно в разделе «Источники»."
+)
+
+
 async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     deadline = monotonic() + TOOL_BUDGET_S
     connection_id = str(args.get("connection_id", "")).strip()
     conn_meta = (await env.titles()).get(connection_id)
     if conn_meta is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
+    if conn_meta.status == "disabled":
+        return _SWITCHED_OFF
     raw = str(args.get("url", ""))
     url = webtext.normalize_url(raw)
     route = _spa_route(raw)
@@ -660,6 +669,8 @@ async def site_map(env: ChatEnv, args: dict[str, Any]) -> str:
     conn = (await env.titles()).get(connection_id)
     if conn is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
+    if conn.status == "disabled":
+        return _SWITCHED_OFF
     async with env.services.db() as session:
         row = await session.scalar(
             select(Connection).where(
@@ -821,7 +832,9 @@ async def read_document(env: ChatEnv, args: dict[str, Any]) -> str:
     limit = max(500, min(int(args.get("max_chars", READ_CHARS) or READ_CHARS), READ_CHARS_MAX))
     async with env.services.db() as session:
         doc = await session.scalar(
-            select(Document).where(Document.id == document_id, Document.user_id == env.user_id)
+            select(Document).where(
+                Document.id == document_id, Document.user_id == env.user_id, LIVE_DOCUMENT
+            )
         )
         att = (
             None
