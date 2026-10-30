@@ -601,7 +601,10 @@ class AgentChoice(Base):
     )
     # [{"label": str, "actions": [{"type": "primary" | "disable", "connectionId": str}]}]
     buttons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
-    # After a press: {"messageId", "label", "remaining": [actions not yet spent]}; None before.
+    # After a press: {"messageId", "label", "actions": [what the button stood for], "remaining":
+    # [actions not yet spent]}; None before. A pressed choice stays, spent or not, until the turn of
+    # that message is over (the next call of any later turn removes it), so a repeated call in the
+    # press turn finds the press instead of asking anew.
     armed: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = ts_now()

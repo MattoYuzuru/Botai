@@ -13,11 +13,19 @@ agent's answer, each bound to the actions it stands for on exact connections; th
 when the student's next message is exactly the label of such a button, once and within
 `CHOICE_TTL` of the question. A button that names two actions («сделать основным «A» и отключить
 «B»») authorises both in that one press, because its label says so.
+
+What a label may be is the application's business too: names are cleaned of quotes that could close
+ours, no two labels of a question read alike once folded or cut (the web client shows one button
+for two equal labels), each fits the 60 UTF-16 units of a button, and no question is asked under an
+answer that already carries a task card (the web client shows buttons only under a last text block).
+A press covers its whole turn: a call that comes after the press, to repeat or to ask anew, is told
+what is left of the button and replaces nothing.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Any, Literal
@@ -42,7 +50,7 @@ from botai.db import models as m
 from botai.domain import merge, primary, repo
 from botai.domain.primary import ScheduleSources
 from botai.domain.schemas import ScheduleEventOut
-from botai.spaces import service
+from botai.spaces import service, views
 
 MAX_COMPARE_DAYS = 14
 EXAMPLES = 5  # classes listed per side of a comparison
@@ -104,60 +112,142 @@ async def _schedule_sources(
     )
 
 
+def _u16(text: str) -> int:
+    """Length in UTF-16 units: what the web client counts against the 60 characters of a button
+    (an emoji is two)."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
 def _cut(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: max(limit - 1, 1)].rstrip() + "…"
+    """At most `limit` UTF-16 units, a cut ending in «…»."""
+    if _u16(text) <= limit:
+        return text
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        width = 2 if ord(ch) > 0xFFFF else 1
+        if used + width > limit - 1:
+            break
+        out.append(ch)
+        used += width
+    return "".join(out).rstrip() + "…"
+
+
+# The quotes of a source's name must not close ours: a document called `Календарь» и отключить
+# «Кабинет` would otherwise make a button that says something else than it stands for.
+_QUOTES = str.maketrans(dict.fromkeys("«„“‟〝＂", "‹") | dict.fromkeys('»”〞"', "›"))
 
 
 def _title(conn: ConnectionMeta) -> str:
     """The name of a source as every tool result and every button shows it: one line, cleaned of
-    look-alikes of our own text, at most `TITLE_CHARS` (a long name ends in «…»). A button made of
-    it is the same words the model reads."""
-    return _cut(data_text(conn.title, 200), TITLE_CHARS)
+    look-alikes of our own text and of quotes, at most `TITLE_CHARS` UTF-16 units (a long name ends
+    in «…»). A button made of it is the same words the model reads."""
+    text = data_text(conn.title, 200).translate(_QUOTES)
+    return _cut(text or views.KIND_TITLES.get(conn.kind, "Источник"), TITLE_CHARS)
 
 
-def _disable_label(conn: ConnectionMeta) -> str:
-    return f"Отключить «{_title(conn)}»"
+def _tagged(text: str, tag: str) -> str:
+    suffix = f" ({tag})"
+    return _cut(text, TITLE_CHARS - _u16(suffix)) + suffix
 
 
-def _primary_label(conn: ConnectionMeta) -> str:
-    return f"Сделать основным «{_title(conn)}»"
+def _names(conns: Sequence[ConnectionMeta]) -> dict[str, str]:
+    """A name for each source such that no two buttons can look the same: sources whose names fold
+    to one (a long name cut at the same place, names that differ in case, empty names that fall
+    back to the title of the kind) get the kind of the source added, then a number."""
+    names = {c.id: _title(c) for c in conns}
+
+    def clashes() -> list[list[ConnectionMeta]]:
+        groups: dict[str, list[ConnectionMeta]] = {}
+        for c in conns:
+            groups.setdefault(_fold(names[c.id]), []).append(c)
+        return [g for g in groups.values() if len(g) > 1]
+
+    for group in clashes():
+        for c in group:
+            names[c.id] = _tagged(names[c.id], views.KIND_TITLES.get(c.kind, "источник").lower())
+    for group in clashes():
+        for number, c in enumerate(group, 1):
+            names[c.id] = _tagged(_title(c), str(number))
+    return names
 
 
-def _switch_label(new: ConnectionMeta, old: ConnectionMeta) -> str:
-    """«Сделать основным «A» и отключить «B»»: both names, whole when they fit the 60 characters of
-    a button, else the longer is cut first, so the button still names both sources."""
-    fixed = len("Сделать основным «» и отключить «»")
-    room = MAX_LABEL - fixed
-    first, second = _title(new), _title(old)
-    if len(first) + len(second) > room:
-        short = min(len(first), len(second), room // 2)
-        first = _cut(first, short if len(first) <= len(second) else room - short)
-        second = _cut(second, short if len(second) < len(first) else room - short)
-        if len(first) + len(second) > room:  # equal lengths: split the room evenly
-            first, second = _cut(first, room // 2), _cut(second, room - room // 2)
+def _disable_label(name: str) -> str:
+    return f"Отключить «{name}»"
+
+
+def _primary_label(name: str) -> str:
+    return f"Сделать основным «{name}»"
+
+
+def _switch_label(new: ConnectionMeta, old: ConnectionMeta, names: dict[str, str]) -> str:
+    """«Сделать основным «A» и отключить «B»»: both names, whole when they fit the 60 UTF-16 units
+    of a button, else the longer is cut first, so the button still names both sources. Names that
+    would look the same once cut give way to the kind of each source, then to «новый» and «старый»."""
+    room = MAX_LABEL - _u16("Сделать основным «» и отключить «»")
+    first, second = names[new.id], names[old.id]
+    if _u16(first) + _u16(second) > room:
+        half = room // 2
+        keep_first = _u16(first) <= half
+        keep_second = _u16(second) <= half
+        if keep_first:
+            second = _cut(second, room - _u16(first))
+        elif keep_second:
+            first = _cut(first, room - _u16(second))
+        else:
+            first, second = _cut(first, half), _cut(second, room - half)
+        if _fold(first) == _fold(second):
+            first = _cut(views.KIND_TITLES.get(new.kind, "новый"), half)
+            second = _cut(views.KIND_TITLES.get(old.kind, "старый"), room - half)
+        if _fold(first) == _fold(second):
+            first, second = "новый", "старый"
     return f"Сделать основным «{first}» и отключить «{second}»"
 
 
 # --- the buttons the application pins ----------------------------------------------------------
 
+_BLOCKED = (
+    "Не выполнено: в этом ответе уже есть карточка задачи, а под такой ответ приложение не может "
+    "поставить кнопки. Расскажите студенту, что сделано, и задайте этот вопрос в следующем "
+    "сообщении: вызовите инструмент ещё раз тогда."
+)
 
-async def _pin(env: ChatEnv, buttons: list[Button]) -> bool:
+
+def _distinct(buttons: list[Button]) -> list[Button]:
+    """Buttons whose labels differ even after folding (the student sees one button for two equal
+    labels, and the press could not tell them apart), each within the 60 units of a button."""
+    out: list[Button] = []
+    seen: set[str] = set()
+    for button in buttons:
+        label = _cut(button.label, MAX_LABEL)
+        number = 1
+        while _fold(label) in seen:
+            number += 1
+            tag = f" ({number})"
+            label = _cut(button.label, MAX_LABEL - _u16(tag)) + tag
+        seen.add(_fold(label))
+        out.append(Button(label, button.actions))
+    return out
+
+
+async def _pin(env: ChatEnv, buttons: list[Button]) -> Literal["pinned", "replaced", "blocked"]:
     """Stores the question (replacing the thread's pending one) and writes the buttons under the
-    agent's answer. Returns whether it replaced a question that was still open."""
+    agent's answer. `replaced`: another question of the thread was still open. `blocked`: the answer
+    already carries a task card, and the web client shows buttons only under a last text block, so
+    nothing is stored: the question is for the next message."""
+    if env.blocks:
+        return "blocked"
+    buttons = _distinct(buttons)
     now = env.services.clock.now()
+    mine = (m.AgentChoice.user_id == env.user_id, m.AgentChoice.thread_id == env.thread_id)
     async with env.services.db() as session:
         await session.execute(
             delete(m.AgentChoice).where(
                 m.AgentChoice.user_id == env.user_id, m.AgentChoice.expires_at <= now
             )
         )
-        replaced = (
-            await session.scalar(
-                select(m.AgentChoice.id).where(m.AgentChoice.thread_id == env.thread_id)
-            )
-            is not None
-        )
-        await session.execute(delete(m.AgentChoice).where(m.AgentChoice.thread_id == env.thread_id))
+        replaced = await session.scalar(select(m.AgentChoice.id).where(*mine)) is not None
+        await session.execute(delete(m.AgentChoice).where(*mine))
         session.add(
             m.AgentChoice(
                 id=new_id(),
@@ -172,7 +262,7 @@ async def _pin(env: ChatEnv, buttons: list[Button]) -> bool:
         await session.commit()
     env.quick_replies = [b.label for b in buttons]
     env.pinned_replies = True
-    return replaced
+    return "replaced" if replaced else "pinned"
 
 
 async def _question_time(session: AsyncSession, env: ChatEnv) -> datetime | None:
@@ -189,19 +279,33 @@ async def _question_time(session: AsyncSession, env: ChatEnv) -> datetime | None
     )
 
 
-async def _authorize(
-    env: ChatEnv, action: Act, connection_id: str
-) -> Literal["ok", "declined", "none"]:
-    """Does the student's message of this turn press a button of the pending question that stands
-    for `action` on `connection_id`?
+@dataclass(frozen=True, slots=True)
+class Auth:
+    """What the message of this turn authorises for one requested action.
 
-    `ok`: it does, and that action is now spent. `declined`: it presses a button that stands for
-    nothing («Оставить как есть», «Не отключать»); the question is closed. `none`: it presses nothing
-    that applies: not a button, not one of this question, a question that is stale or newer than the
-    message, or another action. The first call that sees a press arms the question for that
-    message; the actions of the button are then spent one by one, and only in that turn."""
+    `ok`: it presses a button that stands for the action, and the action is now spent. `declined`: it
+    presses a button that stands for nothing («Оставить как есть», «Не отключать»); the question is
+    closed. `spent`: it pressed a button of the question in this very turn, and the action is not
+    left on it (it was done already, or the button never stood for it): the question is kept for
+    what is left. `none`: it presses nothing that applies: not a button, not one of this question,
+    labels that cannot be told apart, a question that is stale or newer than the message."""
+
+    outcome: Literal["ok", "declined", "spent", "none"]
+    label: str = ""
+    done: bool = False  # `spent`: the requested action was on the button and is already done
+    remaining: tuple[dict[str, str], ...] = ()
+
+
+async def _authorize(env: ChatEnv, action: Act | None, connection_id: str = "") -> Auth:
+    """Does the student's message of this turn press a button of the pending question that stands
+    for `action` on `connection_id`? (`None`: only whether it pressed one, spending nothing.)
+
+    The first call that sees a press arms the question for that message; the actions of the button
+    are then spent one by one, and only in that turn. The question stays in the table, with what is
+    left of it, until the turn is over: a call that repeats a spent action, or asks anew, finds the
+    press and is told so, instead of replacing the question and losing the rest of the button."""
     now = env.services.clock.now()
-    hit = Action(action, connection_id).dump()
+    hit = Action(action, connection_id).dump() if action is not None else None
     async with env.services.db() as session:
         # Questions nobody answered in time are gone, not merely ignored.
         await session.execute(
@@ -215,37 +319,69 @@ async def _authorize(
             .with_for_update()
         )
         asked_at = await _question_time(session, env)
-        outcome: Literal["ok", "declined", "none"] = "none"
+        result = Auth("none")
         if choice is not None and asked_at is not None and choice.created_at < asked_at:
             armed: dict[str, Any] | None = choice.armed
             if armed is not None and armed["messageId"] != env.question_id:
                 await session.delete(choice)  # pressed in an earlier turn: whatever is left is void
             else:
+                fresh = False
                 if armed is None:
-                    pressed = next(
-                        (b for b in choice.buttons if _same(b["label"], env.public_question)), None
-                    )
-                    if pressed is not None:
+                    matches = [b for b in choice.buttons if _same(b["label"], env.public_question)]
+                    # Two buttons that read alike cannot be told apart by a press: nothing passes.
+                    if len(matches) == 1:
+                        actions = list(matches[0]["actions"])
                         armed = {
                             "messageId": env.question_id,
-                            "label": pressed["label"],
-                            "remaining": list(pressed["actions"]),
+                            "label": matches[0]["label"],
+                            "actions": actions,
+                            "remaining": list(actions),
                         }
-                        if not armed["remaining"]:
-                            await session.delete(choice)
-                            outcome = "declined"
-                if outcome == "none" and armed is not None:
-                    if hit in armed["remaining"]:
-                        remaining = [a for a in armed["remaining"] if a != hit]
-                        if remaining:
-                            choice.armed = {**armed, "remaining": remaining}
-                        else:
-                            await session.delete(choice)
-                        outcome = "ok"
+                        fresh = True
+                if armed is not None:
+                    remaining: list[dict[str, str]] = list(armed["remaining"])
+                    if fresh and not remaining:
+                        result = Auth("declined", armed["label"])
+                    elif hit is not None and hit in remaining:
+                        remaining.remove(hit)
+                        result = Auth("ok", armed["label"])
                     else:
-                        choice.armed = armed
+                        result = Auth(
+                            "spent",
+                            armed["label"],
+                            done=hit is not None and hit in armed.get("actions", []),
+                            remaining=tuple(remaining),
+                        )
+                    choice.armed = {**armed, "remaining": remaining}
         await session.commit()
-    return outcome
+    return result
+
+
+def _spent_text(auth: Auth, titles: dict[str, ConnectionMeta], *, asking: bool = False) -> str:
+    """Why nothing happened when the student's press of this turn has no such action left, and what
+    is left on that button. The question stays; no new one is asked in the same turn."""
+
+    def describe(action: dict[str, str]) -> str:
+        meta = titles.get(action["connectionId"])
+        name = _title(meta) if meta is not None else "источник"
+        return f"{'сделать основным' if action['type'] == 'primary' else 'отключить'} «{name}»"
+
+    left = (
+        "По этой кнопке осталось: " + "; ".join(describe(a) for a in auth.remaining) + ". Вызовите "
+        "для этого set_primary_source или disable_source."
+        if auth.remaining
+        else "По этой кнопке больше ничего не осталось."
+    )
+    if asking:
+        why = "вопрос этим закрыт"
+    elif auth.done:
+        why = "это действие уже выполнено"
+    else:
+        why = "эта кнопка его не включает"
+    return (
+        f"Не выполнено: в этом ходе студент нажал «{auth.label}», и {why}. {left} Новый вопрос "
+        "в этом же ответе не задавайте: если нужно другое, спросите в следующем сообщении."
+    )
 
 
 # --- set_primary_source and ask_primary_source --------------------------------------------------
@@ -274,30 +410,33 @@ def _what_stops(conn: ConnectionMeta, hidden: list[str]) -> str:
 
 
 async def _ask_primary(env: ChatEnv, conn: ConnectionMeta) -> str:
+    titles = await env.titles()
     async with env.services.db() as session:
         sources = await _schedule_sources(session, env.user_id, conn.space_id)
         hidden: list[str] = []
         old = None
-        titles = await env.titles()
         if sources and sources.primary and sources.primary != conn.id:
             old = titles.get(sources.primary)
             if old is not None and old.status == "disabled":
                 old = None
         if old is not None:
             hidden = await _counts(session, env.user_id, old.id)
-    buttons = [Button(_primary_label(conn), (Action("primary", conn.id),))]
+    names = _names([conn, old] if old is not None else [conn])
+    buttons = [Button(_primary_label(names[conn.id]), (Action("primary", conn.id),))]
     if old is not None:
         buttons.append(
             Button(
-                _switch_label(conn, old),
+                _switch_label(conn, old, names),
                 (Action("primary", conn.id), Action("disable", old.id)),
             )
         )
     buttons.append(Button(KEEP_LABEL))
-    await _pin(env, buttons)
+    if await _pin(env, buttons) == "blocked":
+        return _BLOCKED
+    labels = env.quick_replies
     lines = [
         "Не выполнено: основной источник меняет нажатие кнопки, которую ставит приложение. "
-        f"Под вашим ответом будут кнопки: {', '.join(f'«{b.label}»' for b in buttons)}.",
+        f"Под вашим ответом будут кнопки: {', '.join(f'«{label}»' for label in labels)}.",
         "В тексте ответа скажите, что изменится: основной решает при расхождениях (время, название и "
         "тип пары — его, пустые поля дополняются из остальных), в вуз ничего не отправляется.",
     ]
@@ -316,7 +455,8 @@ async def _ask_primary(env: ChatEnv, conn: ConnectionMeta) -> str:
 
 async def set_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
     connection_id = str(args.get("connection_id", "")).strip()
-    conn = (await env.titles()).get(connection_id)
+    titles = await env.titles()
+    conn = titles.get(connection_id)
     if conn is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     if conn.status == "disabled":
@@ -324,10 +464,12 @@ async def set_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
             f"Не выполнено: «{_title(conn)}» отключён. Основным можно сделать только работающий "
             "источник; студент включает его сам в разделе «Источники»."
         )
-    outcome = await _authorize(env, "primary", conn.id)
-    if outcome == "declined":
-        return f"Студент нажал «{KEEP_LABEL}»: основной источник не менялся. Спокойно продолжайте."
-    if outcome == "none":
+    auth = await _authorize(env, "primary", conn.id)
+    if auth.outcome == "declined":
+        return f"Студент нажал «{auth.label}»: основной источник не менялся. Спокойно продолжайте."
+    if auth.outcome == "spent":
+        return _spent_text(auth, titles)
+    if auth.outcome == "none":
         return await _ask_primary(env, conn)
     async with env.services.db() as session:
         try:
@@ -342,8 +484,8 @@ async def set_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
             .select_from(m.ScheduleEvent)
             .where(m.ScheduleEvent.user_id == env.user_id, m.ScheduleEvent.connection_id == conn.id)
         )
-    titles = {c.id: _title(c) for c in (await env.titles()).values()}
-    others = [titles[i] for i in (sources.order if sources else ()) if i != connection_id]
+    names = {c.id: _title(c) for c in (await env.titles()).values()}
+    others = [names[i] for i in (sources.order if sources else ()) if i != connection_id]
     lines = [
         f"Готово: основным источником расписания вуза «{data_text(conn.space_title)}» теперь "
         f"«{_title(conn)}». Это настройка Ботай, в вуз ничего не отправлено, данные не менялись."
@@ -367,6 +509,9 @@ async def set_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
 async def ask_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
     """The question «which of the sources decides the schedule?» as one click: a button per source."""
     titles = await env.titles()
+    pressed = await _authorize(env, None)  # a button of this turn is not to be replaced
+    if pressed.outcome != "none":
+        return _spent_text(pressed, titles, asking=True)
     anchor = titles.get(str(args.get("connection_id", "")).strip())
     async with env.services.db() as session:
         by_space = await primary.live_schedule_sources(
@@ -387,12 +532,14 @@ async def ask_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
             "Если студент назвал источник, вызовите set_primary_source."
         )
     chosen = [titles[i] for i in found.order[:3] if i in titles]
-    buttons = [Button(_primary_label(c), (Action("primary", c.id),)) for c in chosen]
+    names = _names(chosen)
+    buttons = [Button(_primary_label(names[c.id]), (Action("primary", c.id),)) for c in chosen]
     buttons.append(Button(KEEP_LABEL, (Action("primary", found.order[0]),)))
-    await _pin(env, buttons)
+    if await _pin(env, buttons) == "blocked":
+        return _BLOCKED
     return (
         "Кнопки поставило приложение: "
-        + ", ".join(f"«{b.label}»" for b in buttons)
+        + ", ".join(f"«{label}»" for label in env.quick_replies)
         + ". Сначала ответьте студенту по существу, в конце одной фразой объясните, что пары "
         "склеиваются и при расхождениях решает основной источник, и спросите, какой считать "
         "основным. offer_choices не вызывайте. Когда студент нажмёт кнопку, вызовите "
@@ -407,38 +554,47 @@ async def ask_primary_source(env: ChatEnv, args: dict[str, Any]) -> str:
 
 async def disable_source(env: ChatEnv, args: dict[str, Any]) -> str:
     connection_id = str(args.get("connection_id", "")).strip()
-    conn = (await env.titles()).get(connection_id)
+    metas = await env.titles()
+    conn = metas.get(connection_id)
     if conn is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     if conn.status == "disabled":
         return f"«{_title(conn)}» уже отключён студентом. Ничего не изменено."
-    outcome = await _authorize(env, "disable", conn.id)
-    if outcome == "declined":
+    auth = await _authorize(env, "disable", conn.id)
+    if auth.outcome == "declined":
         return "Студент отказался отключать: ничего не изменено. Спокойно продолжайте."
+    if auth.outcome == "spent":
+        return _spent_text(auth, metas)
     async with env.services.db() as session:
         hidden = await _counts(session, env.user_id, connection_id)
         sources = await _schedule_sources(session, env.user_id, conn.space_id)
     after = [i for i in (sources.order if sources else ()) if i != connection_id]
-    titles = {c.id: _title(c) for c in (await env.titles()).values()}
+    titles = {c.id: _title(c) for c in metas.values()}
     consequence = f"Что остановится: {_what_stops(conn, hidden)}."
     if sources and sources.primary == connection_id and after:
         consequence += f" Основным расписанием станет «{titles[after[0]]}»."
-    if outcome == "none":
-        replaced = await _pin(
+    if auth.outcome == "none":
+        siblings = _names([c for c in metas.values() if c.space_id == conn.space_id])
+        pinned = await _pin(
             env,
-            [Button(_disable_label(conn), (Action("disable", conn.id),)), Button(CANCEL_LABEL)],
+            [
+                Button(_disable_label(siblings[conn.id]), (Action("disable", conn.id),)),
+                Button(CANCEL_LABEL),
+            ],
         )
+        if pinned == "blocked":
+            return _BLOCKED
         swapped = (
             " Прежний вопрос заменён этим: за один раз спрашивается об одном источнике, второй "
             "спросите отдельно."
-            if replaced
+            if pinned == "replaced"
             else ""
         )
         return (
             "Не выполнено: отключение ждёт подтверждения студента. "
             f"{consequence}{swapped} Приложение само поставит под вашим ответом кнопки "
-            f"«{_disable_label(conn)}» и «{CANCEL_LABEL}»: offer_choices не вызывайте. В тексте "
-            "ответа назовите источник, скажите, что остановится, и спросите, отключать ли. "
+            f"«{env.quick_replies[0]}» и «{env.quick_replies[1]}»: offer_choices не вызывайте. В "
+            "тексте ответа назовите источник, скажите, что остановится, и спросите, отключать ли. "
             "Источник отключится, когда студент нажмёт первую кнопку; тогда вызовите "
             "disable_source ещё раз."
         )
