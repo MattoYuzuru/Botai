@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock, TextBlock
+from botai.core.calendar_link import calendar_link_in
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.execution import guard_job
 from botai.core.ids import new_id
@@ -45,14 +46,23 @@ def safe_url(value: object) -> str:
     return url
 
 
+KEYED_LINK_TEXT = (
+    "В ссылке есть секретный ключ: токен, код доступа или логин с паролем. Такие ссылки в чат "
+    "не отправляют. Пришлите адрес без ключа, а пароли и коды вводите в защищённом поле"
+)
+CALENDAR_LINK_TEXT = (
+    "Это личная ссылка календаря, её нельзя присылать в чат. Напишите «подключи календарь», "
+    "и я открою для неё защищённое поле"
+)
+
+
 def safe_text(text: str) -> str:
     """Do not durably copy a rejected URL or a labelled secret from the composer."""
+    if calendar_link_in(text):
+        raise BotaiError(ErrorCode.VALIDATION, CALENDAR_LINK_TEXT)
     turn = prepare_turn(text, max_length=8000)
     if turn.rejected_links:
-        raise BotaiError(
-            ErrorCode.VALIDATION,
-            "Ссылка содержит недопустимые или секретные параметры. Пришлите обычную ссылку",
-        )
+        raise BotaiError(ErrorCode.VALIDATION, KEYED_LINK_TEXT)
     value = turn.text
     for index, url in enumerate(turn.links):
         value = value.replace(f"[link:{index}]", url)
@@ -78,10 +88,7 @@ def reject_secret_links(text: str) -> str:
             or parts.password is not None
             or any(secret_query_key(k) or JWT.search(v) or LONG_TOKEN.search(v) for k, v in pairs)
         ):
-            raise BotaiError(
-                ErrorCode.VALIDATION,
-                "Ссылка содержит недопустимые или секретные параметры. Пришлите обычную ссылку",
-            )
+            raise BotaiError(ErrorCode.VALIDATION, KEYED_LINK_TEXT)
     return text
 
 

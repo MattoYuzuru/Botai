@@ -41,6 +41,8 @@ class ErrorCode(StrEnum):
     # 409 on sending a message: the client decides what to do from the code
     AGENT_BUSY = "agent_busy"  # the agent's turn is still running: retry later
     SECRET_IN_CHAT = "secret_in_chat"  # noqa: S105 - a code name; looks like a secret in chat: delete
+    # a personal calendar export link was typed into the chat: dropped, it goes in a protected field
+    SECRET_LINK_CALENDAR = "secret_link_calendar"  # noqa: S105 - a code name, not a secret
     REQUEST_REUSED = "request_reused"  # the client request id was used for another body
     STALE_TARGET = "stale_target"  # the addressed task has ended or was replaced
     NOT_IMPLEMENTED = "not_implemented"
@@ -57,6 +59,7 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.BLOCK_ANSWERED: 409,
     ErrorCode.AGENT_BUSY: 409,
     ErrorCode.SECRET_IN_CHAT: 409,
+    ErrorCode.SECRET_LINK_CALENDAR: 409,
     ErrorCode.REQUEST_REUSED: 409,
     ErrorCode.STALE_TARGET: 409,
     ErrorCode.QUOTA_EXCEEDED: 429,

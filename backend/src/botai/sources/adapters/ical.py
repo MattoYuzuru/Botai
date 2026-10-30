@@ -8,8 +8,9 @@ pattern); otherwise it is a class. Recurring events are expanded inside the sync
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from zoneinfo import ZoneInfo
 
 from dateutil.rrule import rrulestr
@@ -73,6 +74,51 @@ def _external_id(uid: str, start: datetime | None = None) -> str:
     return f"{base}#{start.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}"
 
 
+def _outcomes() -> list[EndpointOutcome]:
+    return [
+        EndpointOutcome("events", "scheduleEvents", ok=True),
+        EndpointOutcome("deadlines", "deadlines", ok=True),
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """What a calendar link answered. `problem` is `gone` when the service no longer knows the link
+    (revoked, regenerated, mistyped), `status` for any other HTTP failure, `format` when the
+    answer is not an iCalendar file."""
+
+    calendar: Calendar | None
+    status: int
+    problem: Literal["gone", "status", "format"] | None
+
+
+async def read_link(ctx: SyncContext, url: str) -> Reading:
+    """Fetch a calendar link through the EgressProxy, without cookies, and parse it.
+
+    The caller's `allow_hosts` hold the link's host only: a redirect to any other host is refused
+    by the client (`egress_blocked`), a slow or oversized answer by its time and size caps.
+    """
+    if not host_allowed(url, ctx.allow_hosts):
+        raise BotaiError(
+            ErrorCode.EGRESS_BLOCKED,
+            "Ссылка на календарь ведёт на хост вне разрешённых",
+            extra={"host": origin_host(url)},
+        )
+    async with SourceClient(ctx, auth_type="none", use_session=False) as client:
+        response = await client.request("GET", url, check_session=False)
+    if response.status_code in (401, 403, 404, 410):
+        return Reading(None, response.status_code, "gone")
+    if response.status_code >= 400:
+        return Reading(None, response.status_code, "status")
+    try:
+        calendar = Calendar.from_ical(response.content)
+    except Exception:
+        return Reading(None, response.status_code, "format")
+    if calendar.name != "VCALENDAR":  # a contact card or any other iCalendar-family file
+        return Reading(None, response.status_code, "format")
+    return Reading(calendar, response.status_code, None)
+
+
 class IcalAdapter:
     kind: ClassVar[AdapterKind] = "ical"
 
@@ -90,32 +136,20 @@ class IcalAdapter:
         secret = await ctx.vault.get(ctx.user_id, ctx.connection_id, SecretKind.ICAL_URL)
         if secret is None:
             raise SessionExpired("no calendar link stored", reauth="token")
-        url = secret.get_secret_value()
-        if not host_allowed(url, ctx.allow_hosts):
-            raise BotaiError(
-                ErrorCode.EGRESS_BLOCKED,
-                "Ссылка на календарь ведёт на хост вне разрешённых",
-                extra={"host": host},
-            )
-        async with SourceClient(ctx, auth_type="none", use_session=False) as client:
-            response = await client.request("GET", url, check_session=False)
-        outcomes = [
-            EndpointOutcome("events", "scheduleEvents", ok=True),
-            EndpointOutcome("deadlines", "deadlines", ok=True),
-        ]
-        if response.status_code in (401, 403, 404, 410):
+        reading = await read_link(ctx, secret.get_secret_value())
+        if reading.problem == "gone":
             raise SessionExpired("the calendar link no longer works", reauth="token")
-        if response.status_code >= 400:
+        if reading.calendar is None:
+            outcomes = _outcomes()
             for o in outcomes:
-                o.ok, o.problem = False, "status"
+                o.ok, o.problem = False, reading.problem
             return AdapterResult([], ctx.now, outcomes, spec_revision=ctx.spec_revision)
-        try:
-            calendar = Calendar.from_ical(response.content)
-        except Exception:
-            for o in outcomes:
-                o.ok, o.problem = False, "format"
-            return AdapterResult([], ctx.now, outcomes, spec_revision=ctx.spec_revision)
+        return self.result_for(reading.calendar, ctx)
+
+    def result_for(self, calendar: Calendar, ctx: SyncContext) -> AdapterResult:
+        """The records of a calendar that was read already (the link check reads it once)."""
         records = self._records(calendar, ctx)
+        outcomes = _outcomes()
         for o in outcomes:
             o.items_seen = o.items_valid = sum(1 for r in records if r.kind == o.kind)
             if o.items_valid == 0:

@@ -54,6 +54,9 @@ RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30
 SYNC_STATUSES = ("active", "stale")
 ACTIVE_STATES = ("running", "waiting_user")
 MANUAL_LOGIN = {"manual_login": True}
+# A calendar link task drives no browser and no site of the student's: it waits for the student
+# without holding the user's source slot, and does not wait for it either.
+CALENDAR_LINK = {"calendar": True}
 
 
 def retry_failures(payload: dict[str, Any], attempt: int) -> int:
@@ -183,6 +186,7 @@ class Worker:
                         active.user_id == Job.user_id,
                         active.kind.in_(SOURCE_KINDS),
                         active.state.in_(ACTIVE_STATES),
+                        ~active.payload.contains(CALENDAR_LINK),
                     )
                 )
                 job = await session.scalar(
@@ -193,7 +197,11 @@ class Worker:
                         Job.run_after <= now,
                         User.disabled.is_(False),
                         compatible,
-                        or_(Job.kind.not_in(SOURCE_KINDS), ~busy),
+                        or_(
+                            Job.kind.not_in(SOURCE_KINDS),
+                            Job.payload.contains(CALENDAR_LINK),
+                            ~busy,
+                        ),
                         or_(~manual, manual_active < manual_cap),
                         Job.user_id.not_in(skipped_users),
                         Job.id.not_in(self._tasks),
@@ -214,7 +222,7 @@ class Worker:
                     skipped_jobs.add(job.id)
                     await session.rollback()
                     continue
-                if job.kind in SOURCE_KINDS:
+                if job.kind in SOURCE_KINDS and job.payload.get("calendar") is not True:
                     acquired = await session.scalar(
                         select(
                             func.pg_try_advisory_xact_lock(
@@ -229,6 +237,7 @@ class Worker:
                                 Job.user_id == job.user_id,
                                 Job.kind.in_(SOURCE_KINDS),
                                 Job.state.in_(ACTIVE_STATES),
+                                ~Job.payload.contains(CALENDAR_LINK),
                             )
                             .limit(1)
                         )

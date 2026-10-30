@@ -70,6 +70,8 @@ def acknowledgement_text(block: AgentUiBlock, values: list[str] | str | bool | N
             return "Пароль передан"
         if block.input_kind == "code":
             return "Код передан"
+        if block.secret and block.input_kind == "url":
+            return "Ссылка передана"  # a personal link, the calendar's
         if block.secret or dialogue.is_auth_input(block):
             login = block.autocomplete in {"username", "email"} or block.input_kind == "email"
             return "Логин передан" if login else "Ответ передан"

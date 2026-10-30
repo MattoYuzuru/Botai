@@ -28,6 +28,7 @@ from botai.agent.schemas import (
 from botai.agent.threads import primary_task
 from botai.attachments import service as attachments
 from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, Quote, TextBlock
+from botai.core.calendar_link import calendar_link_in
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -39,6 +40,7 @@ from botai.jobs.events import IN_FLIGHT
 from botai.jobs.notify import CHANNEL_ANSWERS
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.schemas import JobOut
+from botai.sources import calendar
 from botai.spaces import repo, service
 from botai.spaces.conversations import owned_thread, reject_secret_links, safe_text
 
@@ -47,6 +49,13 @@ RUNTIME_TASKS = 20
 RUNTIME_RECEIPTS = 200
 _ASKING = {"input", "choice", "confirm", "approval", "login", "wait"}
 SECRET_IN_CHAT_TEXT = "Пароль и код вводятся только в защищённое поле, не в чат"  # noqa: S105
+CALENDAR_LINK_OPENED = (
+    "Это личная ссылка календаря — вставьте её в защищённое поле: я открыл его ниже"
+)
+CALENDAR_LINK_ASK = (
+    "Это личная ссылка календаря, в чат её вставлять нельзя. Напишите, для какого вуза этот "
+    "календарь, и я открою защищённое поле для ссылки"
+)
 
 
 def message_out(message: ChatMessage) -> MessageOut:
@@ -395,6 +404,8 @@ async def post_message(
                 target = None  # answered while we were waiting for the lock
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
+    if calendar_link_in(body.text):
+        raise await _refuse_calendar_link(session, services, user_id, thread)
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
     # A reply to a task is quoted by the server from the question the task is asking; a quote of the
     # client (quick replies of the agent) is kept only for a message to the agent, and only with a block
@@ -475,6 +486,31 @@ async def post_message(
         connection_id=target.connection_id if target else None,
     )
     return MessageAccepted(message=message_out(message), job_id=job_id)
+
+
+async def _refuse_calendar_link(
+    session: AsyncSession, services: Services, user_id: str, thread: ChatThread
+) -> BotaiError:
+    """A personal calendar link must not stay in a chat: nothing of the message is kept. Instead
+    the protected field for it opens in this thread (the thread's university, or the student's only
+    one); with several universities and no hint the student is asked which one."""
+    thread_id = thread.id
+    started = await calendar.start_from_chat(
+        session, user_id, thread_id, thread.space_id, services.clock.now()
+    )
+    if started is None:
+        await session.rollback()
+    else:
+        await session.commit()
+    diagnostic_event(
+        "chat.calendar_link",
+        thread_id=thread_id,
+        outcome="started" if started is not None else "refused",
+    )
+    return BotaiError(
+        ErrorCode.SECRET_LINK_CALENDAR,
+        CALENDAR_LINK_OPENED if started is not None else CALENDAR_LINK_ASK,
+    )
 
 
 async def _attach_files(

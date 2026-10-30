@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.core.calendar_link import normalize_calendar_link
 from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
@@ -38,7 +39,7 @@ from botai.spaces.views import ActiveTask, SourceView, TaskInfo, UniversitySourc
 
 # Connections in these states have no finished setup (or were switched off): no sync, no repair.
 _NOT_READY = frozenset({"draft", "learning", "disabled"})
-_ICAL_SCHEMES = frozenset({"http", "https", "webcal"})
+_BROWSER_PAYLOAD = frozenset({"manual_login", "learning_intent", "url", "kinds"})
 MATERIALS_TITLE = "Мои материалы"
 MATERIALS_SHORT_TITLE = "Материалы"
 _NAME_NOT_ADDRESS = "Назовите вуз словами, а не адресом сайта"
@@ -114,20 +115,27 @@ async def connection_outs(
 # --- spaces ---------------------------------------------------------------------------------------
 
 
+async def lock_university_space(
+    session: AsyncSession, user_id: str, university_id: str | None
+) -> None:
+    """Held until the transaction ends. The same key as the chat's own lookup: two requests for one
+    university queue up here (and so do those that add a source to its space); the unique index is
+    only the last line of defence."""
+    await session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtextextended(f"university-space:{user_id}:{university_id or ''}", 0)
+            )
+        )
+    )
+
+
 async def _space_of(
     session: AsyncSession, user_id: str, university: University | None
 ) -> tuple[Space, bool]:
     """The one space of (user, university) - or of the user's materials - made if it is missing."""
     uni_id = university.id if university else None
-    # The same key as the chat's own lookup: two requests for one university queue up here, and the
-    # unique index is only the last line of defence.
-    await session.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtextextended(f"university-space:{user_id}:{uni_id or ''}", 0)
-            )
-        )
-    )
+    await lock_university_space(session, user_id, uni_id)
     existing = await session.scalar(
         select(Space)
         .where(
@@ -490,8 +498,19 @@ async def enqueue_for_connection(
     conn = await repo.get_connection(session, user_id, connection_id)
     if conn.status == "disabled":
         raise BotaiError(ErrorCode.CONFLICT, "Подключение ещё настраивается или отключено")
+    # A calendar is read by its link, never through a browser: what a login or a repair would do
+    # for another source, here is asking for the link again. Only a plain refresh stays a sync.
+    calendar_link = conn.adapter == "ical" and (kind != JobKind.SYNC or conn.spec_id is None)
+    if calendar_link:
+        kind = JobKind.CONNECT
+        payload = {
+            **{k: v for k, v in (payload or {}).items() if k not in _BROWSER_PAYLOAD},
+            "calendar": True,
+        }
     manual_login = kind == JobKind.CONNECT and (payload or {}).get("manual_login") is True
-    if manual_login:
+    if calendar_link:
+        pass  # a calendar waiting for its link is a normal state of the source
+    elif manual_login:
         pass  # Explicit human login can resume both unfinished and configured sources.
     elif (
         kind in {JobKind.SYNC, JobKind.REPAIR}
@@ -514,7 +533,7 @@ async def enqueue_for_connection(
     else:
         existing_thread = await connection_thread(session, user_id, conn.id)
         target_thread = existing_thread.id if existing_thread else None
-    if kind == JobKind.CONNECT:
+    if kind == JobKind.CONNECT and not calendar_link:
         payload = await _connect_retry_payload(session, conn, payload)
     if manual_login and isinstance(queue, PgJobQueue):
         job = await enqueue_in_session(
@@ -576,8 +595,10 @@ async def put_secret(
     value = body.value.strip()
     if not value:
         raise BotaiError(ErrorCode.VALIDATION, "Значение не может быть пустым")
-    if body.kind == "ical_url" and urlsplit(value).scheme.lower() not in _ICAL_SCHEMES:
-        raise BotaiError(ErrorCode.VALIDATION, "Нужна ссылка на календарь (https:// или webcal://)")
+    if body.kind == "ical_url":
+        value = normalize_calendar_link(
+            value
+        )  # `webcal://` is kept as the `https://` it stands for
     await session.commit()  # the Vault works in its own transaction
     await vault.put(user_id, conn.id, SecretKind(body.kind), value)
 

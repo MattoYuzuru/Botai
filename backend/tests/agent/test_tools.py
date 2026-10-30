@@ -76,6 +76,7 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "list_universities",
         "find_university",
         "connect_source",
+        "connect_calendar",
         "add_document_url",
         "task_status",
         "sync_source",
@@ -103,6 +104,13 @@ def test_the_agent_has_exactly_these_tools() -> None:
     assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {
         "connection_id",
         "on_screen",
+    }
+    # The link of a calendar never passes through the model: the tool has no place for it.
+    assert set(TOOL_SPECS["connect_calendar"].parameters["properties"]) == {
+        "university_id",
+        "university_query",
+        "title",
+        "replace_link",
     }
 
 
