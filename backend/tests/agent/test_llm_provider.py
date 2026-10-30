@@ -48,7 +48,7 @@ async def test_profile_by_purpose_is_applied() -> None:
     body = wire.body()
     assert body["model"] == "deepseek-flash"
     assert body["thinking"] == {"type": "enabled"}
-    assert body["reasoning_effort"] == "low"
+    assert body["reasoning_effort"] == "high"
     assert "temperature" not in body  # ignored in thinking mode
 
 

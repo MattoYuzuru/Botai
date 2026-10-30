@@ -278,7 +278,8 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
 _UNSETTLED = {"unresolved", "rolled_back", "skipped"}
 
 
-def terminal_text(job: Job) -> str:
+def terminal_text(job: Job) -> str | None:
+    """None: the task already told its outcome itself (a document reports its own summary)."""
     cancelled, failed_text, done = _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
     status = (job.result or {}).get("status")
     failed = job.state == "failed" or status == "error"
@@ -293,6 +294,8 @@ def terminal_text(job: Job) -> str:
         return "Автоматическая настройка не завершена. Можно уточнить источник или продолжить."
     if status == "healthy":
         return "Источник работает, чинить нечего."
+    if job.kind == "ingest":
+        return None
     return done
 
 
@@ -308,13 +311,17 @@ async def project_terminal(session: AsyncSession, job: Job, now: datetime) -> No
         message_id = entry.get("message_id")
         if message_id and message_id not in set(state.get("applied_ids") or []):
             receipt(job, now=now, status="rejected", message_id=str(message_id))
+    text = terminal_text(job)
     state = state_of(job)
+    if text is None:
+        save_state(job, state)
+        return
     block_id = state.get("terminal_block_id") or new_id()
     state["terminal_block_id"] = block_id
     save_state(job, state)
     await project_block(
         session,
         job,
-        {"type": "text", "id": block_id, "at": iso(now), "markdown": terminal_text(job)},
+        {"type": "text", "id": block_id, "at": iso(now), "markdown": text},
         now,
     )

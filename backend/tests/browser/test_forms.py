@@ -541,3 +541,22 @@ def test_replay_of_push_and_captcha_kinds() -> None:
     captcha = LoginStep(id="cap", match={"urlPathPrefix": "/wait"}, fields=[], kind="captcha")
     assert isinstance(replay([push], snap), PushWait)
     assert isinstance(replay([captcha], snap), CaptchaPage)
+
+
+def test_login_entry_selector_finds_only_a_login_control() -> None:
+    from botai.browser.forms import login_entry_selector
+    from botai.core.browser import PageSnapshot
+
+    landing = PageSnapshot(
+        url="https://fakeuni.test/schedule",
+        html="<main><h1>Вы не вошли</h1><a href='/news'>Новости</a><button>Войти</button></main>",
+    )
+    assert login_entry_selector(landing) == ':is(a, button, [role=button]):visible:text-is("Войти")'
+    english = PageSnapshot(url="https://fakeuni.test/", html="<a href='/sso'>Sign in</a>")
+    assert login_entry_selector(english) is not None
+    other = PageSnapshot(
+        url="https://fakeuni.test/",
+        html="<button>Войти через «Госуслуги» и ещё</button><a>Выйти</a>",
+    )
+    assert login_entry_selector(other) is None
+    assert login_entry_selector(PageSnapshot(url="https://fakeuni.test/")) is None

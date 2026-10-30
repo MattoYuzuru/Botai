@@ -131,7 +131,10 @@ async def offer_choices(env: ChatEnv, args: dict[str, Any]) -> str:
     if not options:
         return "Ошибка аргументов: нужен хотя бы один вариант."
     env.quick_replies = options
-    return "Быстрые ответы появятся под вашим ответом. Сам ответ должен задавать вопрос."
+    return (
+        "Кнопки появятся под вашим ответом. Сначала ответьте студенту по существу, "
+        "а в конце задайте вопрос, к которому относятся кнопки."
+    )
 
 
 async def rename_thread(env: ChatEnv, args: dict[str, Any]) -> str:

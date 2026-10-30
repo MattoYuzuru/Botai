@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_model_pro: str = "deepseek-v4-pro"
     # Profiles per purpose: "model:thinking:effort" (agent-harness.md §2). Benchmark tunes these.
     llm_profile_classify: str = "deepseek-flash:disabled:-"
-    llm_profile_agent: str = "deepseek-flash:enabled:low"
+    llm_profile_agent: str = "deepseek-flash:enabled:high"
     llm_profile_learn: str = "deepseek-flash:enabled:high"
     llm_profile_repair: str = "deepseek-flash:enabled:low"
     llm_profile_extract: str = "deepseek-flash:enabled:low"
