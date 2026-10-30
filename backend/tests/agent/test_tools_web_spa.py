@@ -235,7 +235,7 @@ async def test_an_application_that_lost_the_session_is_needs_login(
     assert [h.closed for h in browser.handles] == [True]
 
 
-async def test_a_redirect_to_a_foreign_host_is_not_followed_into_the_answer(
+async def test_a_move_to_another_address_is_not_followed_into_the_answer(
     sm: Sm, user_id: str, fakeuni_app: FastAPI
 ) -> None:
     class Elsewhere(Recording):
@@ -253,7 +253,10 @@ async def test_a_redirect_to_a_foreign_host_is_not_followed_into_the_answer(
         sm, user_id, fakeuni_app, browser=browser, inner=shell_only(), routes=("/faq",)
     )
     text = await browse(r)
-    assert "needs_login" in text
+    # not a login (nothing on the page asks for one) and not shown: the page left the source
+    assert text.startswith("Результат: ошибка.")
+    assert "другой адрес" in text
+    assert "needs_login" not in text
     assert QUESTION not in text
     assert "evil.test" not in text
 

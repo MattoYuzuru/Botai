@@ -30,7 +30,9 @@ Sm = async_sessionmaker[AsyncSession]
 ORIGIN = "https://fakeuni.test"
 FAQ = f"{ORIGIN}/spa-cabinet/faq"
 QUIET = f"{ORIGIN}/spa-cabinet/quiet"
-ROUTES = ("/spa-cabinet/faq", "/spa-cabinet/quiet")
+HASH = f"{ORIGIN}/spa-cabinet/hash"
+ROUTES = ("/spa-cabinet/faq", "/spa-cabinet/quiet", "/spa-cabinet/hash")
+QUESTION = spa.QUESTIONS[0][0]
 
 
 @pytest.fixture(autouse=True)
@@ -87,9 +89,14 @@ async def test_the_shell_has_no_text_and_the_browser_reads_the_faq(
     assert "Заметка: сессия [скрыто]" in text
     assert TOKEN not in text
     assert spa.FAQ_TOKEN not in text
-    # the read-only browser sent nothing: no POST, no WebSocket, nothing to the foreign host
+    # a cookie the page was given while it ran has no token shape, yet it is hidden too
+    assert "renewed=[скрыто]" in text
+    assert spa.RENEWED not in text
+    # the read-only browser sent nothing: no POST, no WebSocket, no GET of an action, nothing to
+    # the foreign host
     assert spa.STATE.writes == 0
     assert spa.STATE.sockets == 0
+    assert spa.STATE.actions == 0
     assert "[foreign blocked]" in text
     assert "[foreign sent]" not in text
     assert r.spy.requests[0].method == "GET"
@@ -183,3 +190,43 @@ async def test_the_entry_page_of_a_plain_source_is_still_one_get(
     assert "Перенос занятий 4 ноября" in text
     assert "прочитана в браузере" not in text
     assert "render" not in r.env.counters
+
+
+async def test_a_hash_route_reaches_the_application_and_not_the_server(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI, browser: PlaywrightGateway
+) -> None:
+    r = await source_rig(sm, user_id, fakeuni_app, stored=stored(), routes=ROUTES)
+    r.env.services.browser = browser
+    home = await r.call("browse_source", connection_id=r.conn_id, url=HASH)
+    assert "Выберите раздел." in home
+    assert QUESTION not in home
+    # the links of the application keep their routes: that is how the agent finds a section
+    assert f"Вопросы — {HASH}#/faq" in home
+    assert f"Заявки — {HASH}#/requests" in home
+    faq = await r.call("browse_source", connection_id=r.conn_id, url=f"{HASH}#/faq")
+    assert QUESTION in faq
+    assert f"{HASH}#/faq [S" in faq  # the citation leads to the section, not to the front page
+    assert len(r.spy.requests) == 2  # the shell went by HTTP, twice
+    assert all("#" not in str(q.url) for q in r.spy.requests)  # and the route went to no server
+    # a route that names an action is as refused as a path that does
+    refused = await r.call("browse_source", connection_id=r.conn_id, url=f"{HASH}#/logout")
+    assert "похож на действие" in refused
+    assert spa.STATE.actions == 0
+
+
+async def test_a_learned_map_keeps_the_routes_of_a_hash_application(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI, browser: PlaywrightGateway
+) -> None:
+    r = await source_rig(sm, user_id, fakeuni_app, stored=stored(), routes=ROUTES)
+    async with sm() as session:
+        await session.execute(delete(SourceSitemap))
+        await session.commit()
+    r.env.services.browser = browser
+    r.env.question_links = {HASH}  # the student wrote this address: there is no map yet
+    await r.call("browse_source", connection_id=r.conn_id, url=f"{HASH}#/faq")
+    async with sm() as session:
+        learned = await get_site_map(session, ORIGIN)
+    assert learned is not None
+    assert "/spa-cabinet/hash#/faq" in learned["routes"]
+    assert {"label": "Заявки", "path": "/spa-cabinet/hash#/requests"} in learned["navigation"]
+    assert "logout" not in str(learned)

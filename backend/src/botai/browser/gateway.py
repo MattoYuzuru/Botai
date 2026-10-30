@@ -58,6 +58,7 @@ from botai.browser.session import (
     storage_origin,
 )
 from botai.contracts.browser_plan import BrowserPlan
+from botai.core.actions import looks_like_action
 from botai.core.browser import (
     BrowserBusy,
     ObservedRequest,
@@ -322,9 +323,15 @@ def map_navigation_error(
 
 
 async def _read_only_request(
-    route: Route, *, diagnostic_facts: dict[str, object] | None = None
+    route: Route, *, diagnostic_facts: dict[str, object] | None = None, refuse_actions: bool = False
 ) -> None:
-    if route.request.method in {"GET", "HEAD", "OPTIONS"}:
+    request = route.request
+    named_action = (
+        refuse_actions
+        and request.resource_type in {"document", "xhr", "fetch"}
+        and looks_like_action(request.url)
+    )
+    if request.method in {"GET", "HEAD", "OPTIONS"} and not named_action:
         await route.fallback()
     else:
         diagnostic_event(
@@ -370,6 +377,7 @@ class PlaywrightHandle:
         capture: CaptureConfig,
         clock: Clock,
         read_only: bool = False,
+        agent_read: bool = False,
         injected_authorizations: dict[Request, str] | None = None,
         confirmed_entry_url: SecretStr | None = None,
         restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
@@ -390,6 +398,7 @@ class PlaywrightHandle:
         self._capture = capture
         self._clock = clock
         self.read_only = read_only
+        self.agent_read = agent_read
         self._confirmed_entry_url = confirmed_entry_url
         self._entry_guarded = False
         self._entry_verifying = 0
@@ -988,6 +997,8 @@ class PlaywrightHandle:
             )
 
     def _on_failed(self, request: Request) -> None:
+        if (entry := self._entries.get(request)) is not None:
+            entry.failed = True
         self._on_finished(request)
         failure = request.failure or ""
         if self._failed_diagnostics < MAX_LOG:
@@ -1675,6 +1686,7 @@ class PlaywrightGateway:
         suffixes: Sequence[str] = (),
         read_only: bool = False,
         background: bool = False,
+        agent_read: bool = False,
     ) -> PlaywrightHandle:
         async with self._user_locks.setdefault(user_id, asyncio.Lock()):
             return await self._open_for_user(
@@ -1687,6 +1699,7 @@ class PlaywrightGateway:
                 suffixes=suffixes,
                 read_only=read_only,
                 background=background,
+                agent_read=agent_read,
             )
 
     async def _open_for_user(
@@ -1701,12 +1714,22 @@ class PlaywrightGateway:
         suffixes: Sequence[str] = (),
         read_only: bool = False,
         background: bool = False,
+        agent_read: bool = False,
     ) -> PlaywrightHandle:
         hosts = tuple(dict.fromkeys(h.lower() for h in allow_hosts))
         if not hosts and not suffixes:
             raise ValueError("a browser context needs at least one allowed host")
+        if agent_read and not (read_only and background):
+            raise ValueError("an agent's read is a read-only background browser")
         previous = self._by_user.get(user_id)
-        if background and previous is not None and not previous.closed:
+        # A background action never pushes out the running browser of the user, except the live
+        # read of the agent: that one gives way to every other action and never to another read.
+        if (
+            background
+            and previous is not None
+            and not previous.closed
+            and (agent_read or not previous.agent_read)
+        ):
             raise BrowserBusy()
         if previous is not None:
             await previous.close()  # one live context per user
@@ -1747,7 +1770,9 @@ class PlaywrightGateway:
                 route_diagnostics = _browser_diagnostics(connection_id)
 
                 async def read_only_request(route: Route) -> None:
-                    await _read_only_request(route, diagnostic_facts=route_diagnostics)
+                    await _read_only_request(
+                        route, diagnostic_facts=route_diagnostics, refuse_actions=agent_read
+                    )
 
                 await context.route("**/*", read_only_request)
                 await context.route_web_socket("**/*", _read_only_socket)
@@ -1784,6 +1809,7 @@ class PlaywrightGateway:
             capture=capture or CaptureConfig(),
             clock=self._clock,
             read_only=read_only,
+            agent_read=agent_read,
             injected_authorizations=injected_authorizations,
             restored_bearers=restored_bearers,
             suffixes=suffixes,
