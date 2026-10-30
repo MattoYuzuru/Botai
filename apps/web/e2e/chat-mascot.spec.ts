@@ -29,6 +29,25 @@ const overlaps = (a: Box, b: Box) =>
   a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 test.describe("Варя на насесте и на сцене", () => {
+  test("поле с ошибкой сохраняет видимую тонкую границу клавиатурного фокуса", async ({ page }) => {
+    await open(page);
+    const invalid = page.locator('#controls input[aria-invalid="true"]').first();
+    const surface = invalid.locator("..");
+    const before = await surface.evaluate((element) => getComputedStyle(element).borderColor);
+    await invalid.scrollIntoViewIfNeeded();
+    await invalid.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(invalid).toBeFocused();
+    const focused = await surface.evaluate((element) => ({
+      border: getComputedStyle(element).borderColor,
+      outline: getComputedStyle(element).outlineStyle,
+    }));
+    expect(focused.border).not.toBe(before);
+    expect(focused.outline).toBe("none");
+    await expect(invalid).toHaveAttribute("aria-invalid", "true");
+  });
+
   test("фокус ввода без внешнего кольца; лапы компактной Вари стоят над границей", async ({ page }) => {
     await open(page);
     const scope = frame(page, "390");

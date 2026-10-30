@@ -16,6 +16,7 @@ export const controlFrame = cva(
     "hover:border-control",
     "outline-none focus-within:border-focus-ring focus-within:hover:border-focus-ring",
     "data-[invalid]:border-danger-fg data-[invalid]:hover:border-danger-fg",
+    "data-[invalid]:focus-within:border-focus-ring data-[invalid]:focus-within:hover:border-focus-ring",
     "data-[disabled]:pointer-events-none data-[disabled]:opacity-60",
   ],
   {
