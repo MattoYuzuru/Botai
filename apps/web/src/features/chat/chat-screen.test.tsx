@@ -1,71 +1,55 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { jobManager } from "@/features/jobs/job-manager";
-import { resetChatState } from "@/mocks/chat-handlers";
-import type { Scenario } from "@/mocks/db";
-import { createDataServer, NOW } from "@/test/data-server";
+import { HttpResponse, http } from "msw";
+import { describe, expect, it } from "vitest";
+import type { ThreadOut } from "@/api/v3";
+import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
-import { useChatJobs } from "./chat-jobs";
 import { outbox } from "./runtime";
 
-let current = createDataServer();
+const harness = chatHarness();
 
-function setScenario(scenario: Scenario) {
-  current.server.close();
-  current = createDataServer(scenario);
-  resetChatState(current.db);
-  current.server.listen({ onUnhandledRequest: "error" });
+const ULID = (n: number) => `01JMKCDB00000000000000${String(n).padStart(4, "0")}`;
+const AT = "2026-10-27T11:00:00.000Z";
+async function seededThreadId(): Promise<string> {
+  const response = await fetch(new URL("/api/v1/chat/threads", window.location.origin));
+  const rows = (await response.json()) as ThreadOut[];
+  const id = rows[0]?.id;
+  if (!id) throw new Error("В стенде нет треда");
+  return id;
 }
 
-beforeAll(() => {
-  // Часы подменяем только у Date: таймеры настоящие, `waitFor` и поток ответа работают как обычно.
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(NOW);
-});
-beforeEach(() => setScenario("connected"));
-afterEach(() => {
-  current.server.resetHandlers();
-  outbox.clear();
-  useChatJobs.getState().clearAll();
-  jobManager.stopAll();
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  vi.restoreAllMocks();
-  window.dispatchEvent(new Event("online"));
-});
-afterAll(() => {
-  current.server.close();
-  vi.useRealTimers();
-});
+describe("чат на весь экран: шапка, история, источники ответа", () => {
+  it("название треда — заголовок, «Чат» — подпись; справа «Источники», «Чаты», «Новый чат»", async () => {
+    renderApp("/chat");
+    const title = await screen.findByRole("heading", { level: 1, name: "Что сегодня по расписанию?" }, wait);
+    const bar = title.closest("[data-chat-topbar]") as HTMLElement;
+    expect(within(bar).getByText("Чат")).toBeInTheDocument();
+    for (const name of ["Источники", "Чаты", "Новый чат"]) {
+      expect(within(bar).getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
 
-const wait = { timeout: 8000 };
-
-async function openNewChat(user: ReturnType<typeof userEvent.setup>) {
-  renderApp("/chat?thread=new");
-  await screen.findByRole("heading", { level: 1, name: "Чат" });
-  await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" });
-  return user;
-}
-
-async function ask(user: ReturnType<typeof userEvent.setup>, text: string) {
-  await user.type(screen.getByRole("textbox", { name: "Сообщение агенту" }), text);
-  await user.click(screen.getByRole("button", { name: "Отправить" }));
-}
-
-describe("чат: история, источники и шкала контекста", () => {
-  it("открывает последний чат: вопрос, ответ с источниками, внутренняя ссылка ведёт в «Учёбу»", async () => {
+  it("цитаты — одна запись на источник с названием источника; внутренняя ссылка ведёт в «Учёбу»", async () => {
+    const user = userEvent.setup();
     const { router } = renderApp("/chat");
-    expect(
-      await screen.findByText("Что сегодня по расписанию?", { selector: "p, span, div" }, wait),
-    ).toBeTruthy();
-    const link = await screen.findByRole("link", { name: /Открыть подключение в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", "/study/connections");
-    // Внешний источник — в новой вкладке, внутренний — в той же.
-    const external = screen.getByRole("link", { name: /lk\.fakeuni\.test/ });
-    expect(external).toHaveAttribute("target", "_blank");
-    expect(link).not.toHaveAttribute("target");
-    await userEvent.setup().click(link);
+    const sources = await screen.findByRole("list", { name: "Источники" }, wait);
+    expect(within(sources).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(sources).getByText("ВШЭ")).toBeInTheDocument();
+    // Название источника, а не адрес сайта.
+    expect(within(sources).queryByText("lk.fakeuni.test")).toBeNull();
+    const row = within(sources).getByRole("button", { name: /Личный кабинет/ });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    await user.click(row);
+    const internal = within(sources).getByRole("link", { name: /Открыть подключение в «Учёбе»/ });
+    expect(internal).toHaveAttribute("href", "/study/connections");
+    expect(internal).not.toHaveAttribute("target");
+    // Внешняя страница — в новой вкладке.
+    expect(within(sources).getByRole("link", { name: /Расписание на сайте вуза/ })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+    await user.click(internal);
     await waitFor(() => expect(router.state.location.pathname).toBe("/study/connections"));
   });
 
@@ -81,30 +65,97 @@ describe("чат: история, источники и шкала контек�
     expect(within(sheet).getByText("Переписка")).toBeInTheDocument();
     expect(within(sheet).getByRole("heading", { name: "Источники ответа" })).toBeInTheDocument();
     expect(within(sheet).getByText("Расписание — личный кабинет")).toBeInTheDocument();
-    // Свободного места нет в легенде: это остаток трека, а не слой контекста.
     expect(within(sheet).queryByText("Свободно")).toBeNull();
-  });
-
-  it("история чатов в шите: выбор чата и «Новый чат»", async () => {
-    const user = userEvent.setup();
-    const { router } = renderApp("/chat");
-    await screen.findByRole("button", { name: "История чатов" });
-    await user.click(screen.getByRole("button", { name: "История чатов" }));
-    const sheet = await screen.findByRole("dialog", { name: "Чаты" });
-    expect(
-      await within(sheet).findByRole("link", { name: /Что сегодня по расписанию\?/ }),
-    ).toBeInTheDocument();
-    await user.click(within(sheet).getByRole("button", { name: "Новый чат" }));
-    await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: "new" }));
-    expect(
-      await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }),
-    ).toBeInTheDocument();
   });
 });
 
-describe("чат: пустой чат и подсказки из настоящих данных", () => {
+describe("переходы в чат: /chat?thread=, /chat?draft=", () => {
+  it("/chat?thread=<id> открывает тред", async () => {
+    const id = await seededThreadId();
+    const { router } = renderApp(`/chat?thread=${id}`);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Что сегодня по расписанию?" }, wait),
+    ).toBeTruthy();
+    expect(router.state.location.search).toMatchObject({ thread: id });
+  });
+
+  it("/chat?draft=… — новый тред с заполненным полем, ничего не отправлено, заготовка ушла из адреса", async () => {
+    const { router } = renderApp("/chat?draft=Хочу%20подключить%20вуз");
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait),
+    ).toBeTruthy();
+    await waitFor(() => expect(composer()).toHaveValue("Хочу подключить вуз"), wait);
+    await waitFor(() => expect(router.state.location.search).toEqual({ thread: "new" }));
+    expect(outbox.snapshot).toEqual([]);
+    expect(document.querySelector("[data-timeline]")).toBeNull();
+  });
+
+  it("/chat?thread=<id>&draft=… — то же в существующем треде: история на месте, поле заполнено", async () => {
+    const id = await seededThreadId();
+    const { router } = renderApp(`/chat?thread=${id}&draft=Уточни%20время`);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Что сегодня по расписанию?" }, wait),
+    ).toBeTruthy();
+    await waitFor(() => expect(composer()).toHaveValue("Уточни время"), wait);
+    await waitFor(() => expect(router.state.location.search).toEqual({ thread: id }));
+    expect(outbox.snapshot).toEqual([]);
+    expect(await screen.findByText(/Сегодня три пары/, undefined, wait)).toBeInTheDocument();
+  });
+
+  it("у каждого чата свой черновик: начатое не теряется при переключении", async () => {
+    const user = userEvent.setup();
+    renderApp("/chat");
+    await screen.findByText(/Сегодня три пары/, undefined, wait);
+    await user.type(composer(), "Недописанное");
+    await user.click(screen.getByRole("button", { name: "Новый чат" }));
+    await screen.findByRole("heading", { level: 2, name: "Спросите про пары и сроки" }, wait);
+    expect(composer()).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Чаты" }));
+    await user.click(await screen.findByRole("link", { name: /Что сегодня по расписанию\?/ }, wait));
+    await screen.findByText(/Сегодня три пары/, undefined, wait);
+    expect(composer()).toHaveValue("Недописанное");
+  });
+
+  it("botai://threads/<id> в ответе — ссылка, она открывает тред в приложении, а не сайт", async () => {
+    const id = await seededThreadId();
+    const other = ULID(77);
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/messages", ({ params }) =>
+        HttpResponse.json(
+          params.threadId === id
+            ? [
+                {
+                  id: ULID(1),
+                  role: "agent",
+                  jobId: null,
+                  createdAt: AT,
+                  blocks: [
+                    {
+                      type: "text",
+                      id: ULID(2),
+                      at: AT,
+                      markdown: `Подключение идёт [в этом чате](botai://threads/${other}).`,
+                    },
+                  ],
+                },
+              ]
+            : [],
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    const { router } = renderApp(`/chat?thread=${id}`);
+    const link = await screen.findByRole("link", { name: "в этом чате" }, wait);
+    expect(link).toHaveAttribute("href", `/chat?thread=${other}`);
+    expect(link).not.toHaveAttribute("target");
+    await user.click(link);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: other }));
+  });
+});
+
+describe("пустой чат и подсказки из настоящих данных", () => {
   it("до трёх подсказок, построенных из данных; нажатие отправляет вопрос", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
     const list = await screen.findByRole("list", { name: "Подсказки" }, wait);
     const items = within(list).getAllByRole("button");
     expect(items.length).toBeGreaterThan(0);
@@ -114,48 +165,86 @@ describe("чат: пустой чат и подсказки из настоящ�
     expect(await screen.findByText(items[0]?.textContent ?? "", { selector: "p" }, wait)).toBeInTheDocument();
   });
 
-  it("вуз не подключён: приглашение «Подключить вуз» вместо выдуманных подсказок", async () => {
-    setScenario("empty");
+  it("вуз не подключён: приглашение «Подключить вуз» открывает чат с заготовкой, без выдуманных подсказок", async () => {
+    harness.setScenario("empty");
     renderApp("/chat?thread=new");
-    expect(await screen.findByRole("link", { name: "Подключить вуз" }, wait)).toHaveAttribute(
-      "href",
-      "/connect",
-    );
+    const link = await screen.findByRole("link", { name: "Подключить вуз" }, wait);
+    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/chat\?draft=/));
     expect(screen.queryByRole("list", { name: "Подсказки" })).toBeNull();
   });
 });
 
-describe("чат: ответ агента", () => {
-  it("вопрос → шаги → текст с источниками; поле ввода на время ответа занято и потом свободно", async () => {
-    const user = await openNewChat(userEvent.setup());
-    await ask(user, "Что сдавать на неделе?");
-    expect(await screen.findByText("Что сдавать на неделе?", { selector: "p" }, wait)).toBeInTheDocument();
-    expect(await screen.findByText(/Ближайшие работы/, undefined, wait)).toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: /Открыть подключение в «Учёбе»/ })).toBeInTheDocument();
-    // Ответ в истории, живая лента ушла, поле снова свободно.
-    await waitFor(
-      () => expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled(),
-      wait,
+describe("ответ агента: таблицы, курсив, ссылки, график, план, быстрые ответы", () => {
+  it("вопрос → шаги → таблица с выделением, курсив, ссылка, цитаты одной записью; поле занято и потом свободно", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Какая следующая пара?");
+    expect(await screen.findByText("Какая следующая пара?", { selector: "p" }, wait)).toBeInTheDocument();
+    const table = await screen.findByRole("table", undefined, wait);
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).toEqual(["Время", "Предмет", "Аудитория"]);
+    const italic = screen.getByText(/Расписание обновлено 12 минут назад/);
+    expect(italic.tagName).toBe("EM");
+    expect(screen.getByRole("link", { name: "в кабинете" })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/^https:/),
     );
+    const sources = await screen.findByRole("list", { name: "Источники" });
+    expect(within(sources).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(sources).getByText(/3 страницы/)).toBeInTheDocument();
+    await waitFor(() => expect(composer()).toBeEnabled(), wait);
     expect(document.querySelector("[data-live-reply]")).toBeNull();
     // Название чата подставилось из вопроса.
     await waitFor(
-      () =>
-        expect(within(screen.getByRole("banner")).getByText("Что сдавать на неделе?")).toBeInTheDocument(),
+      () => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Какая следующая пара?"),
       wait,
     );
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Чат");
+  });
+
+  it("быстрые ответы под последним ответом: нажатие отправляет текст как сообщение; потом кнопки уходят", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Какая следующая пара?");
+    const group = await screen.findByRole("group", { name: "Быстрые ответы" }, wait);
+    await user.click(within(group).getByRole("button", { name: "Что сдавать на неделе?" }));
+    expect(await screen.findByText(/Ближайшие работы/, undefined, wait)).toBeInTheDocument();
+    expect(screen.getAllByText("Что сдавать на неделе?", { selector: "p" })).toHaveLength(1);
+    // Кнопки были под прежним ответом; теперь последний ответ — про работы, без быстрых ответов.
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Быстрые ответы" })).toBeNull(), wait);
+  });
+
+  it("план ответа: шаги обновляются тем же блоком и доходят до «выполнено 3 из 3»; в ленте один план", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Сравни нагрузку и составь план");
+    expect(await screen.findByText(/выполнено 3 из 3/, undefined, wait)).toBeInTheDocument();
+    expect(screen.getAllByText(/^План ·/)).toHaveLength(1);
+    const table = await screen.findByRole("table", undefined, wait);
+    // Выделение жирным в ячейках таблицы сохраняется.
+    expect(
+      within(table)
+        .getAllByText("2")
+        .some((cell) => cell.tagName === "STRONG"),
+    ).toBe(true);
+  });
+
+  it("график ```chart: доступная картинка и таблица-альтернатива", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Покажи график");
+    const figure = await screen.findByRole("figure", undefined, wait);
+    expect(within(figure).getByRole("img")).toHaveAccessibleName(/Пар по дням/);
+    expect(within(figure).getByRole("button", { name: "Показать таблицу" })).toBeInTheDocument();
   });
 
   it("ответ из документов: источник-документ — внутренняя ссылка «Открыть документ в «Учёбе»»", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
     await ask(user, "Какие правила сдачи курсовых?");
     const link = await screen.findByRole("link", { name: /Открыть документ в «Учёбе»/ }, wait);
     expect(link).toHaveAttribute("href", "/study/documents");
   });
 
   it("«Не знаю: …» помечено «Не уверен», источника нет и он не имитируется", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
     await ask(user, "Расскажи анекдот");
     expect(await screen.findByText("Не уверен", undefined, wait)).toBeInTheDocument();
     expect(await screen.findByText(/^Не знаю:/)).toBeInTheDocument();
@@ -163,81 +252,71 @@ describe("чат: ответ агента", () => {
   });
 
   it("сбой задания: человеческий текст без кода и без кнопки «Повторить»", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
     await ask(user, "сбой");
     expect(await screen.findByText(/лимит ответов исчерпан/, undefined, wait)).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/quota_exceeded/);
     for (const button of screen.getAllByRole("button")) {
       expect(button.textContent?.trim()).not.toMatch(/^(Повторить|Обновить|Загрузить|Попробовать снова)$/);
     }
-    // После сбоя спросить можно снова.
-    await waitFor(
-      () => expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled(),
-      wait,
-    );
+    await waitFor(() => expect(composer()).toBeEnabled(), wait);
   });
 
-  it("запрос на запись: вопрос агента, ApprovalCard с методом, хостом и полями, одобрение по POST /actions", async () => {
-    const user = await openNewChat(userEvent.setup());
+  it("запрос на запись: вопрос у поля ввода, ApprovalCard с методом, хостом и полями, одобрение по POST /actions", async () => {
+    const { user } = await openNewChat();
     await ask(user, "Мне нужна справка");
     expect(await screen.findByText("Какая справка нужна?", undefined, wait)).toBeInTheDocument();
-    // Пока агент ждёт человека, новое сообщение отправить нельзя, и это сказано словами.
-    expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toHaveAttribute(
-      "placeholder",
-      "Ответьте на вопрос выше",
-    );
+    // Пока агент ждёт человека, писать в поле нельзя, и это сказано словами.
+    expect(composer()).toBeDisabled();
+    expect(composer()).toHaveAttribute("placeholder", "Ответьте на вопрос выше");
+    // Вопрос с вводом стоит у поля ввода, а не в середине ленты.
+    expect(document.querySelector("[data-pending-questions] [data-question='pending']")).not.toBeNull();
     await user.click(screen.getByRole("radio", { name: "О стипендии" }));
     await user.click(screen.getByRole("button", { name: "Ответить" }));
-    const card = await screen.findByText("Подать заявку на справку", undefined, wait);
-    const approval = card.closest("[data-approval], article, section, div") as HTMLElement;
-    expect(approval).toBeTruthy();
+    await screen.findByText("Подать заявку на справку", undefined, wait);
     expect(screen.getByText("lk.fakeuni.test")).toBeInTheDocument();
     expect(screen.getByText("POST")).toBeInTheDocument();
-    expect(screen.getAllByText("О стипендии").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Подтвердить" }));
-    // Поток заменяется сообщением истории: проверяем текущее дерево, а не уже снятый live-узел.
     await waitFor(() => {
-      const result = screen.getByText(/Заявка отправлена/);
-      expect(result).toBeInTheDocument();
-      expect(result.closest("[data-live-reply]")).toBeNull();
-      expect(screen.getByRole("textbox", { name: "Сообщение агенту" })).toBeEnabled();
+      expect(screen.getByText(/Заявка отправлена/)).toBeInTheDocument();
+      expect(composer()).toBeEnabled();
     }, wait);
+    expect(document.querySelector("[data-pending-questions]")).toBeNull();
   });
 
   it("отказ от записи: «Не делать» — ничего не отправлено", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
     await ask(user, "Хочу записаться на консультацию");
     await screen.findByText("Какая справка нужна?", undefined, wait);
     await user.click(screen.getByRole("radio", { name: "Об обучении" }));
     await user.click(screen.getByRole("button", { name: "Ответить" }));
     await screen.findByText("Подать заявку на справку", undefined, wait);
     await user.click(screen.getByRole("button", { name: "Не делать" }));
-    // Итог виден дважды: в карточке запроса («Ничего не отправлено») и в ответе агента.
-    expect((await screen.findAllByText(/Ничего не отправлено/, undefined, wait)).length).toBeGreaterThan(0);
     expect(
       await screen.findByText(/Если передумаете, напишите ещё раз/, undefined, wait),
     ).toBeInTheDocument();
   });
 
-  it("агент не может отправить форму сам: готовый текст с «Скопировать» и ссылка на сайт вуза", async () => {
-    const user = await openNewChat(userEvent.setup());
+  it("агент не может отправить форму сам: готовый текст с «Скопировать» остаётся в ленте после ответа", async () => {
+    const { user } = await openNewChat();
     await ask(user, "Подай заявку вручную");
     expect(await screen.findByRole("button", { name: "Скопировать" }, wait)).toBeInTheDocument();
     const open = screen.getByRole("link", { name: /Открыть сайт вуза/ });
     expect(open).toHaveAttribute("href", "https://lk.fakeuni.test/requests/new");
     expect(open).toHaveAttribute("target", "_blank");
+    await waitFor(() => expect(composer()).toBeEnabled(), wait);
+    expect(screen.getByRole("button", { name: "Скопировать" })).toBeInTheDocument();
   });
 });
 
-describe("чат: нет сети", () => {
+describe("нет сети", () => {
   it("сообщение ждёт с подписью «Отправится, когда появится сеть» и уходит само, без кнопки", async () => {
-    const user = await openNewChat(userEvent.setup());
+    const { user } = await openNewChat();
+    const { vi } = await import("vitest");
     const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
     await ask(user, "Что сдавать на неделе?");
     expect(await screen.findByText("Отправится, когда появится сеть")).toBeInTheDocument();
     expect(screen.getByText("Что сдавать на неделе?", { selector: "p" })).toBeInTheDocument();
-    // Кнопки «Повторить» нет, повтор идёт сам.
     expect(screen.queryByRole("button", { name: /Повторить|Отправить ещё раз/ })).toBeNull();
     expect(outbox.snapshot).toHaveLength(1);
 
@@ -246,7 +325,6 @@ describe("чат: нет сети", () => {
     expect(await screen.findByText(/Ближайшие работы/, undefined, wait)).toBeInTheDocument();
     expect(screen.queryByText("Отправится, когда появится сеть")).toBeNull();
     expect(outbox.snapshot).toHaveLength(0);
-    // Сообщение одно: повтор не продублировал его.
     expect(screen.getAllByText("Что сдавать на неделе?", { selector: "p" })).toHaveLength(1);
   });
 });

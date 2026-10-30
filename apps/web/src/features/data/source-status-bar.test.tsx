@@ -95,7 +95,14 @@ describe.each(SCREENS)("SourceStatusBar на экране %s", (_name, path, scr
 
 describe("spaceShortTitle: чем подписан вуз", () => {
   const universities = [
-    { id: "u-hse", title: "Высшая школа экономики", shortTitle: "ВШЭ", aliases: [], accentHue: 262, origins: [] },
+    {
+      id: "u-hse",
+      title: "Высшая школа экономики",
+      shortTitle: "ВШЭ",
+      aliases: [],
+      accentHue: 262,
+      origins: [],
+    },
   ];
 
   it("shortTitle пространства, затем справочник вузов, затем название; адрес сайта именем не становится", () => {

@@ -1,12 +1,10 @@
 import {
   Banner,
-  Button,
   ChatComposer,
+  ChatDropZone,
   ChatLayout,
   IconButton,
   MascotDock,
-  ScreenHeader,
-  ScrollArea,
   SkeletonText,
   toast,
   useLatest,
@@ -14,51 +12,49 @@ import {
 } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { humanMessage } from "@/api/errors";
-import { meQuery, queryKeys } from "@/api/queries";
-import type { Me, Message } from "@/api/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { humanMessage, isApiError } from "@/api/errors";
+import { meQuery } from "@/api/queries";
+import type { Message } from "@/api/types";
 import { useComposerKeyboard } from "@/app/keyboard";
 import { documentsQuery, todayQuery } from "@/features/data/queries";
 import { useReconnect } from "@/features/data/use-reconnect";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
-import { useActiveJob } from "@/features/jobs/active-job";
-import { jobManager, useJob } from "@/features/jobs/job-manager";
-import { isTerminal, needsHuman } from "@/features/jobs/job-state";
+import { isTerminal as isJobTerminal } from "@/features/jobs/job-state";
 import { toDeadlineView } from "@/features/tasks/deadlines";
-import { JOB_REF_TTL_MS, useChatJobs } from "./chat-jobs";
-import { startConnectThread, threadRuntimeKey, threadRuntimeQuery } from "./connection-api";
-import { ConnectionComposer, SOURCE_JOBS } from "./connection-composer";
-import { ConnectionContext } from "./connection-context";
-import { connectionSnapshot, connectionTurns } from "./connection-timeline";
-import { ConnectTimeline } from "./connection-timeline-view";
+import { AttachmentViewerHost, useAttachmentViewer } from "./attachment-viewer-host";
+import { useChatLinks } from "./chat-links";
+import { ChatTopBar } from "./chat-top-bar";
+import { composerState } from "./composer-state";
 import { ContextButton } from "./context-meter-view";
 import { EmptyChat } from "./empty-chat";
-import { chatKeys, messagesQuery, threadsQuery } from "./queries";
+import { useOpenThread } from "./open-thread";
+import { isSecretInChat } from "./outbox";
+import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
 import { outbox, useOutbox } from "./runtime";
+import { SourcesPanel } from "./sources-panel";
 import { buildSuggestions } from "./suggestions";
-import { ThreadsSheet } from "./threads-sheet";
-import { awaitingReply, buildTimeline, isReplying, keptBlocks } from "./timeline";
+import { ThreadsPanel } from "./threads-panel";
+import { awaitingReply, buildTimeline } from "./timeline";
 import { TimelineView } from "./timeline-view";
+import { useAttachments } from "./use-attachments";
 import { useChatMascot } from "./use-chat-mascot";
-import { useConnectionEchoes } from "./use-connection-echoes";
+import { useMarkRead } from "./use-mark-read";
 import { useStickToBottom } from "./use-stick-to-bottom";
+import { useThreadJobs } from "./use-thread-jobs";
 
 const NEW_THREAD = "new";
 const POLL_WHILE_AWAITING_MS = 4_000;
+const POLL_RUNTIME_MS = 5_000;
+const DEFAULT_TITLE = "Новый чат";
 
 /**
- * Чат (`/chat`): последний чат или новый, история чатов в шите, шкала контекста в шапке. Сообщение уходит через
- * очередь отправки: нет сети — остаётся в ленте с подписью и уходит само. Ответ приходит по потоку задания:
- * шаги, вопросы агента (общие блоки `AgentUiBlock`) и текст с источниками.
+ * Чат (`/chat`) на весь экран (§3.9): один тред — один таймлайн. Подключение, вход, вопросы агента и ответы идут в
+ * одной ленте; ход агента и фоновые задачи — задания этого треда. Сообщение уходит через очередь отправки: нет
+ * сети — остаётся в ленте с подписью и уходит само. Вложения грузятся сразу, как выбраны, и уходят с сообщением.
  */
 export function ChatScreen() {
-  const {
-    thread: param,
-    connect: connectRequestId,
-    space: connectSpace,
-    university: connectUniversity,
-  } = useSearch({ from: "/_app/chat" });
+  const { thread: param, draft: draftParam, threads: listParam } = useSearch({ from: "/_app/chat" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const me = useQuery(meQuery);
@@ -66,26 +62,48 @@ export function ChatScreen() {
   const directory = useSpaceDirectory();
   const keyboardOpen = useComposerKeyboard();
   const pendingAll = useOutbox();
-  const [draft, setDraft] = useState("");
-  const [connectTyping, setConnectTyping] = useState(false);
   const reconnect = useReconnect();
-  const creatingConnection = useQuery({
-    queryKey: ["chat", "connect-intent", connectRequestId],
-    enabled: Boolean(connectRequestId),
-    staleTime: Number.POSITIVE_INFINITY,
-    queryFn: () =>
-      startConnectThread({
-        clientRequestId: connectRequestId ?? "",
-        spaceId: connectSpace,
-        connectContext: connectUniversity ? { universityId: connectUniversity, userNote: "" } : undefined,
-      }),
-  });
+  const links = useChatLinks();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+
+  // Какой чат открыт: явный `?thread=`, иначе последний; `?draft=` без чата — новый.
+  const newRequested =
+    param === NEW_THREAD || (param === undefined && (draftParam !== undefined || listParam !== undefined));
+  const latestId = threads.data?.[0]?.id ?? null;
+  const activeId = newRequested ? null : (param ?? latestId);
+  const resolving = !newRequested && param === undefined && threads.isPending;
+  const activeThread = threads.data?.find((thread) => thread.id === activeId) ?? null;
+  const draftKey = activeId ?? NEW_THREAD;
+
+  // Текст в поле у каждого чата свой: переключение чата не теряет начатое.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draft = drafts[draftKey] ?? "";
+  const setDraft = useCallback(
+    (value: string) => setDrafts((all) => (all[draftKey] === value ? all : { ...all, [draftKey]: value })),
+    [draftKey],
+  );
+
+  // Вложения поля: у каждого чата свой набор, файл грузится сразу.
+  const attachments = useAttachments(draftKey);
+
+  // `/chat?draft=…`: заготовка ложится в поле и сразу уходит из адреса; сообщение не отправляется.
   useEffect(() => {
-    if (!creatingConnection.data || !connectRequestId) return;
-    void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
-    void navigate({ to: "/chat", search: { thread: creatingConnection.data.id }, replace: true });
-  }, [creatingConnection.data, connectRequestId, queryClient, navigate]);
-  // Сохраняем принадлежность черновику, пока очередь получает threadId раньше маршрута.
+    if (draftParam === undefined) return;
+    const key = param && param !== NEW_THREAD ? param : NEW_THREAD;
+    setDrafts((all) => ({ ...all, [key]: draftParam }));
+    void navigate({ to: "/chat", search: { thread: key }, replace: true });
+    queueMicrotask(() => document.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus());
+  }, [draftParam, param, navigate]);
+
+  // `/chat?threads=1`: список чатов открывается поверх нового чата, а не «последнего» наугад.
+  useEffect(() => {
+    if (listParam === undefined) return;
+    setHistoryOpen(true);
+    void navigate({ to: "/chat", search: { thread: param ?? NEW_THREAD }, replace: true });
+  }, [listParam, param, navigate]);
+
+  // Сообщения нового чата живут в очереди, пока сервер не назвал чат; их принадлежность запоминаем.
   const [draftMessages, setDraftMessages] = useState<
     readonly { id: string; ownerId: string; threadId: string | null }[]
   >(() =>
@@ -93,134 +111,103 @@ export function ChatScreen() {
       .filter((item) => item.threadId === null)
       .map(({ id, ownerId, threadId }) => ({ id, ownerId, threadId })),
   );
-  const [historyOpen, setHistoryOpen] = useState(false);
-
-  // Какой чат открыт: явный `?thread=`, иначе последний, иначе пустой новый.
-  const latestId = threads.data?.[0]?.id ?? null;
-  const activeId = connectRequestId || param === NEW_THREAD ? null : (param ?? latestId);
-  const resolving = Boolean(connectRequestId) || (param === undefined && threads.isPending);
-  const activeThread = threads.data?.find((thread) => thread.id === activeId) ?? null;
-  const sourceEchoes = useConnectionEchoes(me.data?.user.id ?? null, activeId);
-
+  const ownerId = me.data?.user.id;
   const pending = useMemo(
     () =>
       pendingAll.filter(
         (item) =>
-          item.ownerId === me.data?.user.id &&
+          item.ownerId === ownerId &&
           (activeId === null
             ? draftMessages.some((message) => message.id === item.id)
             : item.threadId === activeId),
       ),
-    [pendingAll, activeId, draftMessages, me.data?.user.id],
+    [pendingAll, activeId, draftMessages, ownerId],
   );
   useEffect(() => {
     if (activeId !== null) setDraftMessages([]);
   }, [activeId]);
   const assignedThreadId = draftMessages.find(
-    (message) => message.ownerId === me.data?.user.id && message.threadId !== null,
+    (message) => message.ownerId === ownerId && message.threadId !== null,
   )?.threadId;
   useEffect(() => {
-    if (!connectRequestId && activeId === null && assignedThreadId) {
+    if (activeId === null && assignedThreadId) {
+      attachments.move(NEW_THREAD, assignedThreadId);
       void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true });
     }
-  }, [connectRequestId, activeId, assignedThreadId, navigate]);
-  const jobRef = useChatJobs((state) => (activeId ? state.byThread[activeId] : undefined));
-  const runtimeResult = useQuery({ ...threadRuntimeQuery(activeId ?? ""), enabled: activeId !== null });
-  const runtime = runtimeResult.data;
-  const connectionMode =
-    Boolean(connectRequestId) ||
-    runtime?.purpose === "connect" ||
-    SOURCE_JOBS.has(runtime?.activeJob?.kind ?? "");
-  const streamedJob = useJob(connectionMode ? runtime?.activeJob?.id : jobRef?.jobId);
-  const job = useMemo(
-    () => (connectionMode ? connectionSnapshot(runtime, streamedJob) : (streamedJob ?? null)),
-    [connectionMode, runtime, streamedJob],
-  );
+  }, [activeId, assignedThreadId, navigate, attachments.move]);
 
+  const jobsRef = useRef(0);
+  const runtimeResult = useQuery({
+    ...runtimeQuery(activeId ?? ""),
+    enabled: activeId !== null,
+    // Поток может оборваться: пока задание идёт, состояние треда спрашиваем и само.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const running =
+        (data?.activeJob && !isJobTerminal(data.activeJob.state)) ||
+        data?.tasks.some((task) => !isJobTerminal(task.state));
+      return running ? POLL_RUNTIME_MS : false;
+    },
+  });
+  const runtime = runtimeResult.data;
   const messagesResult = useQuery({
     ...messagesQuery(activeId ?? ""),
     enabled: activeId !== null,
-    // Ответ мог прийти, пока страница была закрыта, или задание неизвестно: спрашиваем историю, пока ждём.
+    // Ответ мог прийти, пока страница была закрыта, а задание неизвестно: спрашиваем историю, пока ждём.
     refetchInterval: (query) =>
-      !job && awaitingReply(query.state.data ?? [], pending, Date.now()) ? POLL_WHILE_AWAITING_MS : false,
+      jobsRef.current === 0 && awaitingReply(query.state.data ?? [], pending, Date.now())
+        ? POLL_WHILE_AWAITING_MS
+        : false,
   });
   const messages = useMemo<readonly Message[]>(() => messagesResult.data ?? [], [messagesResult.data]);
+  const jobs = useThreadJobs(activeId, runtime, messages);
+  jobsRef.current = jobs.filter((job) => !isJobTerminal(job.snapshot.state)).length;
 
-  const awaiting = !connectionMode && !job && awaitingReply(messages, pending, Date.now());
-  const replying = isReplying(job, awaiting);
-  const waitingForHuman = connectionMode ? (runtime?.pending.length ?? 0) > 0 : job ? needsHuman(job) : false;
-  const nowMs = useNow(replying ? 1_000 : 30_000);
+  const running = jobsRef.current > 0;
+  // Задание неизвестно (страницу перезагрузили, ответ потерялся), но вопрос свежий: ответ ещё может прийти.
+  const awaiting = jobs.length === 0 && awaitingReply(messages, pending, Date.now());
+  const composer = composerState({
+    threadId: activeId,
+    runtime,
+    runtimeLoading: activeId !== null && runtimeResult.isPending,
+    runtimeFailed: activeId !== null && runtimeResult.isError,
+    jobs,
+    awaiting,
+  });
+  const busy = composer.replying || running;
+  const nowMs = useNow(busy ? 1_000 : 30_000);
   const timeZone = directory.homeZone;
 
-  // Поток ответа: после перезагрузки привязка к заданию поднимает его заново; устаревшая — снимается.
-  useEffect(() => {
-    if (connectionMode || !activeId || !jobRef) return;
-    const answered = messages.some((message) => message.role === "agent" && message.jobId === jobRef.jobId);
-    const expired = Date.now() - jobRef.at > JOB_REF_TTL_MS;
-    const kept = job ? keptBlocks(job).length > 0 : false;
-    if (expired || (answered && !kept && (!job || isTerminal(job.state)))) {
-      jobManager.stop(jobRef.jobId);
-      useChatJobs.getState().clear(activeId);
-      return;
+  const timeline = useMemo(
+    () => buildTimeline({ messages, pending, jobs, nowMs }),
+    [messages, pending, jobs, nowMs],
+  );
+  const startingThread = activeId === null && draftMessages.some((message) => message.ownerId === ownerId);
+  const loaded =
+    activeId === null || (!messagesResult.isPending && !runtimeResult.isPending && !runtimeResult.isError);
+  const showEmpty = !resolving && !startingThread && loaded && timeline.turns.length === 0;
+  const suggestions = useSuggestions(showEmpty, nowMs);
+
+  const openAttachment = useAttachmentViewer((state) => state.open);
+  const known = useMemo(() => {
+    const items = [...attachments.viewer];
+    for (const turn of timeline.turns) {
+      if (turn.kind === "user")
+        for (const item of turn.attachments)
+          items.push({
+            id: "attachmentId" in item ? item.attachmentId : item.id,
+            name: item.name,
+            mime: item.mime,
+            size: item.size,
+            kind: item.kind,
+            url: `/api/v1/attachments/${encodeURIComponent("attachmentId" in item ? item.attachmentId : item.id)}/content`,
+          });
     }
-    jobManager.start(jobRef.jobId);
-  }, [connectionMode, activeId, jobRef, messages, job]);
-
-  // CONNECT восстанавливается по серверному runtime, без срока жизни локальной ссылки на job.
-  const sourceJobId = connectionMode ? runtime?.activeJob?.id : undefined;
-  useEffect(() => {
-    if (!activeId || !sourceJobId || !runtime?.activeJob) return;
-    if (!isTerminal(runtime.activeJob.state)) {
-      jobManager.start(sourceJobId);
-      useActiveJob.getState().set({
-        jobId: sourceJobId,
-        title: runtime.connection?.title ?? "Подключаю источник",
-        connectionId: runtime.connection?.id,
-        threadId: activeId,
-      });
-    }
-  }, [activeId, sourceJobId, runtime?.activeJob, runtime?.connection]);
-
-  const refreshConnection = useCallback(() => {
-    if (!activeId) return;
-    void queryClient.invalidateQueries({ queryKey: chatKeys.messages(activeId) });
-    void queryClient.invalidateQueries({ queryKey: threadRuntimeKey(activeId) });
-    void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
-  }, [activeId, queryClient]);
-  useEffect(() => {
-    if (connectionMode && streamedJob?.lastEventId) refreshConnection();
-  }, [connectionMode, streamedJob?.lastEventId, refreshConnection]);
-
-  // Задание закончилось: подтягиваем историю и шкалу; успешное — отпускаем, сбой остаётся в ленте до следующего вопроса.
-  const finishedJobId = job && isTerminal(job.state) ? job.jobId : null;
-  const finishedState = job?.state;
-  const finishedKeeps = job ? keptBlocks(job).length > 0 : false;
-  useEffect(() => {
-    if (!activeId || !finishedJobId) return;
-    let cancelled = false;
-    void (async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: chatKeys.messages(activeId) }),
-        queryClient.invalidateQueries({ queryKey: chatKeys.context(activeId) }),
-        queryClient.invalidateQueries({ queryKey: chatKeys.threads }),
-      ]);
-      // Сбой и готовый текст для ручной отправки остаются в ленте до следующего вопроса.
-      if (connectionMode) {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.spaces });
-        await queryClient.invalidateQueries({ queryKey: queryKeys.today });
-        return;
-      }
-      if (cancelled || finishedState !== "done" || finishedKeeps) return;
-      jobManager.stop(finishedJobId);
-      useChatJobs.getState().clear(activeId);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [connectionMode, activeId, finishedJobId, finishedState, finishedKeeps, queryClient]);
+    return items;
+  }, [attachments.viewer, timeline.turns]);
 
   // Очередь отправки: новый чат появляется в списке, отправленное сообщение — в ленте, отказ возвращает текст в поле.
-  const latest = useLatest({ activeId, param, draftMessages, ownerId: me.data?.user.id });
+  const latest = useLatest({ activeId, draftMessages, ownerId, restore: attachments.restore });
   useEffect(
     () =>
       outbox.on((event) => {
@@ -240,222 +227,202 @@ export function ChatScreen() {
               old && !old.some((message) => message.id === sent.id) ? [...old, sent] : old,
             );
           }
+          void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(event.threadId) });
           void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
         } else {
           setDraftMessages((items) => items.filter((item) => item.id !== event.item.id));
-          toast("Сообщение не отправлено", { tone: "warning", description: humanMessage(event.error) });
+          const { item, error } = event;
+          // Пароль в обычном поле: сообщение уже стёрто из очереди и хранилища и в поле не возвращается.
+          if (isSecretInChat(error)) {
+            toast("Пароль и коды вводите только в защищённое поле", {
+              tone: "warning",
+              description: "Сообщение не отправлено и удалено.",
+            });
+            return;
+          }
+          // Сервер не принял вложения: они уже загружены и возвращаются чипами для повторной отправки.
+          const refused =
+            item.attachments.length > 0 &&
+            isApiError(error) &&
+            (error.status === 400 || error.status === 422);
+          toast(refused ? "Не удалось отправить вложения" : "Сообщение не отправлено", {
+            tone: "warning",
+            description: humanMessage(error),
+          });
+          if (refused) latest.current.restore(item.attachments, item.threadId ?? NEW_THREAD);
           const current = latest.current;
           if (
-            event.item.ownerId === current.ownerId &&
+            item.ownerId === current.ownerId &&
             (current.activeId === null
-              ? current.draftMessages.some((message) => message.id === event.item.id)
-              : event.item.threadId === current.activeId)
+              ? current.draftMessages.some((message) => message.id === item.id)
+              : item.threadId === current.activeId)
           ) {
-            setDraft((current) => current || event.item.text);
+            setDrafts((all) => {
+              const key = current.activeId ?? NEW_THREAD;
+              return all[key] ? all : { ...all, [key]: item.text };
+            });
           }
         }
       }),
     [queryClient, latest],
   );
 
-  const timeline = useMemo(
-    () => buildTimeline({ messages, pending, job, nowMs }),
-    [messages, pending, job, nowMs],
+  const send = useCallback(
+    (text: string, withAttachments: boolean) => {
+      if (!ownerId) return;
+      const files = withAttachments ? attachments.take() : [];
+      const item = outbox.send(text, {
+        ownerId,
+        threadId: activeId,
+        spaceId: null,
+        attachments: files,
+        targetJobId: composer.targetJobId,
+      });
+      if (activeId === null) {
+        setDraftMessages((items) => [...items, { id: item.id, ownerId: item.ownerId, threadId: null }]);
+      }
+      if (withAttachments) setDraft("");
+    },
+    [ownerId, attachments, activeId, composer.targetJobId, setDraft],
   );
-  const connectTimeline = useMemo(
-    () =>
-      runtime ? connectionTurns(sourceEchoes.messages(messages), job, runtime, sourceEchoes.echoes) : [],
-    [messages, job, runtime, sourceEchoes],
-  );
-  const startingThread =
-    activeId === null && draftMessages.some((message) => message.ownerId === me.data?.user.id);
-  const showEmpty =
-    !connectionMode &&
-    !startingThread &&
-    !resolving &&
-    !(activeId && (messagesResult.isPending || runtimeResult.isPending || runtimeResult.isError)) &&
-    timeline.length === 0;
-
-  const suggestions = useSuggestions(showEmpty, nowMs);
-
-  const send = (text: string) => {
-    if (!me.data) return;
-    const item = outbox.send(text, { ownerId: me.data.user.id, threadId: activeId, spaceId: null });
-    if (activeId === null) {
-      setDraftMessages((items) => [...items, { id: item.id, ownerId: item.ownerId, threadId: null }]);
-    }
-    setDraft("");
-  };
 
   const startNewChat = () => {
-    setDraft("");
+    // Новый чат начинается пустым: сообщение, которое ещё создаёт прежний чат, остаётся в очереди и уйдёт туда.
     setDraftMessages([]);
+    setDrafts((all) => ({ ...all, [NEW_THREAD]: "" }));
     void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
   };
 
+  // Ответ или решение по действию принято: история и состояние треда обновляются.
+  const refreshThread = useCallback(() => {
+    if (!activeId) return;
+    void queryClient.invalidateQueries({ queryKey: chatKeys.messages(activeId) });
+    void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(activeId) });
+    void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
+  }, [activeId, queryClient]);
+
+  // Тред открыт: наблюдатель списка чатов не присылает уведомление о нём.
+  useEffect(() => {
+    useOpenThread.getState().set(activeId);
+    return () => useOpenThread.getState().set(null);
+  }, [activeId]);
+
+  const changeKey = `${timeline.turns.length}|${jobs.map((job) => `${job.snapshot.blocks.length}${job.snapshot.state}`).join(",")}`;
+  const stick = useStickToBottom(changeKey, activeId);
+  // Прочитанным тред отмечается, когда история дозагружена и самое новое сообщение треда уже показано на экране.
+  const lastShownAt = messages.reduce(
+    (latest, message) => Math.max(latest, Date.parse(message.createdAt) || 0),
+    0,
+  );
+  const newestAt = activeThread ? Date.parse(activeThread.lastMessageAt) || 0 : 0;
+  useMarkRead(
+    activeId,
+    activeThread?.unread ?? false,
+    stick.atBottom,
+    activeId !== null && !messagesResult.isPending && !messagesResult.isFetching && lastShownAt >= newestAt,
+  );
+
   // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.
+  const activeJob = jobs.find((job) => !isJobTerminal(job.snapshot.state));
   const mascot = useChatMascot({
-    mode:
-      !connectionMode && (showEmpty || (activeId === null && !startingThread && timeline.length === 0))
-        ? "floor"
-        : "perch",
-    replying,
-    waitingForHuman,
-    stage: job && !isTerminal(job.state) ? job.stage : null,
-    typing: connectionMode ? connectTyping : draft.trim().length > 0,
+    mode: showEmpty ? "floor" : "perch",
+    replying: busy,
+    waitingForHuman: composer.waitingForHuman,
+    stage: activeJob?.snapshot.stage ?? null,
+    typing: draft.trim().length > 0,
     keyboardOpen,
-    replyCount: timeline.filter(
-      (item) =>
-        item.kind === "agent" || (item.kind === "live" && item.blocks.some((block) => block.type === "text")),
-    ).length,
-    threadKey: activeId ?? connectRequestId ?? NEW_THREAD,
+    replyCount: timeline.turns.filter((turn) => turn.kind === "block" && turn.block.type === "text").length,
+    threadKey: draftKey,
   });
 
-  const scroll = useStickToBottom(
-    (connectionMode ? connectTimeline.length : timeline.length) +
-      (job?.blocks.length ?? 0) +
-      (job?.state ?? ""),
-    activeId,
+  const title = activeThread && activeThread.title !== DEFAULT_TITLE ? activeThread.title : DEFAULT_TITLE;
+  const othersNeedYou = (threads.data ?? []).some(
+    (thread) => thread.id !== activeId && (thread.unread || thread.attention === "waiting_user"),
   );
-  // Название экрана — «Чат», как у остальных вкладок; тема открытого чата — подзаголовок.
-  const subtitle = activeThread && activeThread.title !== "Новый чат" ? activeThread.title : undefined;
+  const restart = (connectionId: string) => {
+    const space = directory.spaces.find((item) => item.connections.some((c) => c.id === connectionId));
+    reconnect.mutate({ connectionId, spaceId: space?.id, spaceTitle: space?.shortTitle ?? "вуз" });
+  };
 
   return (
-    <ChatLayout
-      keyboardOpen={keyboardOpen}
-      header={
-        <ScreenHeader
-          narrow
-          sticky={false}
-          title="Чат"
-          subtitle={subtitle}
-          trailing={
-            <>
-              {connectionMode ? (
-                <ConnectionContext
-                  key={activeId ?? connectRequestId}
-                  threadId={activeId}
-                  runtime={runtime}
-                  job={job}
-                />
-              ) : (
-                <ContextButton threadId={activeId} nowMs={nowMs} />
-              )}
-              <IconButton icon="stale" label="История чатов" onClick={() => setHistoryOpen(true)} />
-              <IconButton icon="plus" label="Новый чат" onClick={startNewChat} />
-            </>
-          }
-        />
-      }
-      composer={
-        // Насест — верхняя кромка поля: слой Вари стоит в той же обёртке и едет вместе с полем над клавиатурой.
-        <div className="relative">
-          {connectionMode ? (
-            <ConnectionComposer
-              key={`${activeId ?? connectRequestId}:${sourceEchoes.generation}`}
-              threadId={activeId}
-              runtime={runtime}
-              job={job}
-              onTyping={setConnectTyping}
-              onSending={(id, text) =>
-                sourceEchoes.start(
-                  id,
-                  text,
-                  connectTimeline.map((turn) => turn.key),
-                  messages,
-                )
-              }
-              onAccepted={(id, message) => {
-                if (
-                  !activeId ||
-                  queryClient.getQueryData<Me>(meQuery.queryKey)?.user.id !== me.data?.user.id ||
-                  !sourceEchoes.accept(id, message)
-                )
-                  return false;
-                queryClient.setQueryData<Message[]>(chatKeys.messages(activeId), (old) =>
-                  old?.some((row) => row.id === message.id) ? old : [...(old ?? []), message],
-                );
-                return true;
-              }}
-              onRejected={sourceEchoes.reject}
+    <ChatDropZone onFiles={(files, source) => attachments.add(files, source, activeId)} disabled={!ownerId}>
+      <ChatLayout
+        keyboardOpen={keyboardOpen}
+        header={
+          <ChatTopBar
+            title={title}
+            context={<ContextButton threadId={activeId} nowMs={nowMs} />}
+            othersNeedYou={othersNeedYou}
+            onSources={() => setSourcesOpen(true)}
+            onThreads={() => setHistoryOpen(true)}
+            onNew={startNewChat}
+          />
+        }
+        floating={
+          stick.atBottom ? undefined : (
+            <IconButton
+              icon="chevron-down"
+              label="К последнему сообщению"
+              variant="secondary"
+              shape="round"
+              className="shadow-md"
+              onClick={stick.toBottom}
             />
-          ) : (
+          )
+        }
+        composer={
+          // Насест — верхняя кромка поля: слой Вари стоит в той же обёртке и едет вместе с полем над клавиатурой.
+          <div className="relative">
             <ChatComposer
               value={draft}
               onValueChange={setDraft}
-              onSend={send}
-              disabled={replying || Boolean(activeId && (runtimeResult.isPending || runtimeResult.isError))}
-              placeholder={
-                waitingForHuman
-                  ? "Ответьте на вопрос выше"
-                  : replying
-                    ? "Агент отвечает…"
-                    : "Спросите про пары и сроки"
-              }
+              onSend={(text) => send(text, true)}
+              disabled={composer.disabled}
+              placeholder={composer.placeholder}
+              attachments={attachments.items}
+              onAddFiles={(files, source) => attachments.add(files, source, activeId)}
+              onRemoveAttachment={attachments.remove}
+              onOpenAttachment={openAttachment}
+              resetKey={draftKey}
             />
-          )}
-          <MascotDock {...mascot} />
-        </div>
-      }
-    >
-      <ScrollArea
-        className="h-full"
-        viewportRef={scroll.viewport}
-        onViewportScroll={scroll.onScroll}
-        viewportClassName="px-safe-4 xs:px-safe-5 [&>div]:block!"
+            <MascotDock {...mascot} />
+          </div>
+        }
       >
-        <div
-          className={`mx-auto flex min-h-full w-full max-w-col flex-col justify-end pt-4 ${showEmpty ? "pb-4" : "pb-10"}`}
-        >
-          {creatingConnection.isError && connectRequestId ? (
-            <div className="flex flex-col items-start gap-3">
-              <Banner tone="danger" icon="warning">
-                {humanMessage(creatingConnection.error)}
-              </Banner>
-              <Button
-                variant="secondary"
-                loading={creatingConnection.isFetching}
-                onClick={() => void creatingConnection.refetch()}
-              >
-                Открыть разговор
-              </Button>
-            </div>
-          ) : activeId && runtimeResult.isError ? (
+        <div ref={stick.content} className="flex min-h-full flex-1 flex-col pt-4 pb-10" data-chat-content="">
+          {activeId && runtimeResult.isError ? (
             <Banner tone="danger" icon="warning">
               Не удалось открыть чат. {humanMessage(runtimeResult.error)}
             </Banner>
-          ) : resolving ||
-            (activeId && (runtimeResult.isPending || messagesResult.isPending) && timeline.length === 0) ? (
+          ) : resolving || (activeId && !loaded && timeline.turns.length === 0) ? (
             <SkeletonText lines={4} label="Загрузка чата" />
           ) : showEmpty ? (
             <EmptyChat
               suggestions={suggestions}
               noSpaces={directory.loaded && directory.none}
-              onPick={send}
-            />
-          ) : connectionMode && runtime ? (
-            <ConnectTimeline
-              turns={connectTimeline}
-              runtime={runtime}
-              job={job}
-              nowMs={nowMs}
-              timeZone={timeZone}
-              onChanged={refreshConnection}
-              restarting={reconnect.isPending}
-              onRestart={() => {
-                if (runtime.connection)
-                  reconnect.mutate({
-                    connectionId: runtime.connection.id,
-                    spaceTitle: runtime.connection.title,
-                  });
-              }}
+              onPick={(text) => send(text, false)}
             />
           ) : (
-            <TimelineView items={timeline} job={job} nowMs={nowMs} timeZone={timeZone} />
+            <div className="mt-auto">
+              <TimelineView
+                timeline={timeline}
+                jobs={jobs}
+                runtime={runtime}
+                threadId={activeId}
+                nowMs={nowMs}
+                timeZone={timeZone}
+                links={links}
+                onQuickReply={(text) => send(text, false)}
+                quickRepliesDisabled={composer.disabled}
+                onRestart={restart}
+                restarting={reconnect.isPending}
+                onChanged={refreshThread}
+              />
+            </div>
           )}
         </div>
-      </ScrollArea>
-      <ThreadsSheet
+      </ChatLayout>
+      <ThreadsPanel
         open={historyOpen}
         onOpenChange={setHistoryOpen}
         threads={threads.data}
@@ -463,11 +430,14 @@ export function ChatScreen() {
         activeId={activeId}
         nowMs={nowMs}
         timeZone={timeZone}
-        onNew={() => {
-          startNewChat();
+        onNew={startNewChat}
+        onDeleted={(id) => {
+          if (id === activeId) void navigate({ to: "/chat", search: { thread: NEW_THREAD }, replace: true });
         }}
       />
-    </ChatLayout>
+      <SourcesPanel open={sourcesOpen} onOpenChange={setSourcesOpen} nowMs={nowMs} />
+      <AttachmentViewerHost known={known} />
+    </ChatDropZone>
   );
 }
 

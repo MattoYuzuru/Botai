@@ -191,43 +191,23 @@ test("laptop: наведение раскрывает пояснение, ухо
   await expect(chips.first()).toHaveAttribute("aria-pressed", "false");
 });
 
-test("подключение: поиск с клавиатуры, отдельный повторный вход, обе темы и крупный текст", async ({
+test("«Источники» в чате: панель вузов, обе темы и крупный текст не переполняют экран", async ({
   page,
 }, info) => {
   const width = info.project.name === "phone" ? 400 : 1512;
   await page.setViewportSize({ width, height: 982 });
-  await open(page, "/connect", "connected");
-  await expect(page).toHaveURL(/\/chat\?thread=/);
-  await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
-  await page.getByRole("button", { name: "Источник и подключения" }).click();
-  await expectSheetReady(page, "Источник и подключения");
-  await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
-  const input = page.getByRole("combobox", { name: "Вуз" });
-  await input.fill("ВШЭ");
-  await expect(page.getByRole("option", { name: /Высшая школа/ })).toBeVisible();
-  await input.press("ArrowDown");
-  await input.press("Enter");
-  await expect(page.getByText(/Этот вуз уже добавлен/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Начать подключение" })).toHaveCount(0);
-  expect(await page.getByRole("button", { name: "Открыть разговор", exact: true }).count()).toBeGreaterThan(
-    0,
-  );
-  await expect(page.getByRole("link", { name: "Новый источник", exact: true })).toBeVisible();
+  await open(page, "/chat?pace=0", "connected");
+  await page.getByRole("button", { name: "Источники" }).click();
+  await expectSheetReady(page, "Источники");
+  const sheet = page.getByRole("dialog", { name: "Источники" });
+  await expect(sheet.getByRole("heading", { name: "Высшая школа экономики" })).toBeVisible();
+  await expect(sheet.getByRole("link", { name: "Добавить вуз" })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => {
       document.documentElement.dataset.theme = value;
     }, theme);
-    const background = await input.evaluate(
-      (node, value) =>
-        getComputedStyle(node)
-          .getPropertyValue(value === "dark" ? "--palette-slate-950" : "--palette-paper-100")
-          .trim(),
-      theme,
-    );
-    await expect(input.locator("..")).toHaveCSS("background-color", background);
     await expectFitsWidth(page, width);
-    await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
-    await page.screenshot({ path: info.outputPath(`connect-${theme}.png`), fullPage: true });
+    await page.screenshot({ path: info.outputPath(`sources-${theme}.png`), fullPage: true });
   }
   await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
   await expect
@@ -235,9 +215,8 @@ test("подключение: поиск с клавиатуры, отдельн
       message: "ширина после перераскладки крупного текста",
     })
     .toBeLessThanOrEqual(width);
-  await expect(input).toBeVisible();
-  await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
-  await page.screenshot({ path: info.outputPath("connect-200.png"), fullPage: true });
+  await expect(sheet.getByRole("heading", { name: "Высшая школа экономики" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("sources-200.png"), fullPage: true });
 });
 
 test("навигация уезжает и возвращается плавно; сокращённое движение отключает переход", async ({

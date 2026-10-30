@@ -485,7 +485,13 @@ describe("TabBar", () => {
     render(<TabBar items={items} activeId="today" brand={<span>BotAI</span>} />);
     const nav = screen.getByRole("navigation");
     expect(nav.className).toContain("lg:w-rail");
-    expect(screen.getByText("BotAI").parentElement).toHaveClass("hidden", "lg:block");
+    // Строка знака той же высоты, что верхняя полоса чата: знак и кнопки полосы лежат на одной линии.
+    expect(screen.getByText("BotAI").parentElement).toHaveClass(
+      "hidden",
+      "lg:flex",
+      "lg:h-topbar",
+      "lg:items-center",
+    );
   });
 
   it("скрывается при открытой клавиатуре", () => {

@@ -16,6 +16,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { humanMessage } from "@/api/errors";
+import { threadOfJob } from "@/features/chat/job-thread";
 import { trackJob } from "@/features/data/use-reconnect";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import {
@@ -253,6 +254,7 @@ function IngestProgress({
 }) {
   const nowMs = useNow(1000);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const view = describeJob(job);
   const startedAt = job ? Date.parse(job.createdAt) : nowMs;
   return (
@@ -294,7 +296,9 @@ function IngestProgress({
               connectionId,
             });
             onAnswer();
-            void navigate({ to: "/connect/$jobId", params: { jobId } });
+            void threadOfJob(queryClient, jobId).then((thread) =>
+              navigate({ to: "/chat", search: thread ? { thread } : {} }),
+            );
           }}
         >
           Ответить

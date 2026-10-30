@@ -170,11 +170,23 @@ export const RULES = [
   },
   {
     id: "raw-scroll",
-    message: "Прокрутка через overflow-auto/scroll. Используй <ScrollArea>.",
+    message:
+      "Прокрутка через overflow-auto/scroll. Вложенная область — <ScrollArea>; страница прокручивается документом с общим тонким бегунком.",
     test: (line, ext) =>
       ext === ".css"
         ? /overflow(-[xy])?\s*:\s*(auto|scroll)\b/.test(line)
         : ext !== ".html" && /(^|[\s"'`:!])overflow(-[xy])?-(auto|scroll)\b/.test(line),
+  },
+  {
+    id: "raw-scrollbar",
+    message:
+      "Свой стиль скроллбара. Бегунок один — токены --scrollbar-* в packages/design/src/styles и <ScrollArea>; ::-webkit-scrollbar, scrollbar-width/color/gutter и no-scrollbar запрещены.",
+    test: (line, ext) =>
+      ext !== ".html" &&
+      (/::-webkit-scrollbar/.test(line) ||
+        /(^|[^\w-])scrollbar-(width|color|gutter|hide|none|thin|thumb|track)\b/.test(line) ||
+        /(^|[^\w-])no-scrollbar\b/.test(line) ||
+        /\[(&:*[^\]]*)?scrollbar/.test(line)),
   },
   {
     id: "vh-unit",

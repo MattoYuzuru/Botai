@@ -1,5 +1,6 @@
 import type { AgentUiBlock } from "@/api/agent-ui.gen";
-import type { UnknownBlock } from "@/features/jobs/blocks";
+import type { AttachmentBlock, PlanBlock, TaskBlock } from "@/api/v3";
+import type { TextBlock, UnknownBlock } from "@/features/jobs/blocks";
 
 export type Choice = Extract<AgentUiBlock, { type: "choice" }>;
 export type InputBlock = Extract<AgentUiBlock, { type: "input" }>;
@@ -9,5 +10,5 @@ export type Approval = Extract<AgentUiBlock, { type: "approval" }>;
 export type Login = Extract<AgentUiBlock, { type: "login" }>;
 export type Wait = Extract<AgentUiBlock, { type: "wait" }>;
 export type Handoff = Extract<AgentUiBlock, { type: "handoff" }>;
-export type TextBlock = Extract<AgentUiBlock, { type: "text" }>;
+export type { AttachmentBlock, PlanBlock, TaskBlock, TextBlock };
 export type Unknown = UnknownBlock;

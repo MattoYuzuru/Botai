@@ -10,6 +10,8 @@ import type {
 
 export type { ConnectionKind, ConnectionTask, EventAttribute, EventLink } from "./v3-data";
 
+import type { MessageOut, ThreadOut } from "./v3";
+
 type Schemas = components["schemas"];
 
 export type Me = Schemas["MeOut"];
@@ -23,7 +25,8 @@ export type Today = TodayV3;
 export type ScheduleEvent = ScheduleEventV3;
 export type Deadline = DeadlineV3;
 export type Provenance = ProvenanceV3;
-export type Thread = Schemas["ThreadOut"];
-export type Message = Schemas["MessageOut"];
+/** Тред агент-хаба v3 (`unread`, `attention`, `activeTask`) — см. `v3.ts`. */
+export type Thread = ThreadOut;
+export type Message = MessageOut;
 export type ContextOut = Schemas["ContextOut"];
 export type Job = Schemas["JobOut"];

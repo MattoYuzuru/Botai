@@ -1,10 +1,12 @@
-import { ChatMessage, HandoffCard, WaitCard } from "@botai/design";
+import { ChatMessage, HandoffCard, PlanCard, WaitCard } from "@botai/design";
 import type { ParsedBlock } from "@/features/jobs/blocks";
 import { RemoteScreen } from "@/features/remote-screen/remote-screen";
+import { viewerFromBlock } from "./attachments";
 import { ChoiceCard } from "./choice-card";
 import type { BlockContext } from "./context";
 import { InputCard } from "./input-card";
 import { ApprovalBlock, ConfirmCard, SummaryCard, UnknownBlockView } from "./other-cards";
+import { TaskBlockView } from "./task-block";
 
 /**
  * Один блок интерфейса агента (ADR-0004) — только компонентами дизайн-системы. Клиент ничего не исполняет
@@ -38,17 +40,25 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
           nowMs={ctx.nowMs}
           timeZone={ctx.timeZone}
           confidence={ctx.confidence?.(block.markdown)}
-          citations={block.sources?.map((source, index) => ({
-            id: `${block.id}-${index}`,
-            title: source.title,
-            url: source.url,
-            fetchedAt: Date.parse(source.fetchedAt),
-            stale: source.stale,
-            spaceTitle: ctx.spaceTitle,
-            internal: ctx.internalLink?.(source.url) ?? undefined,
-          }))}
+          citationGroups={block.sources ? ctx.groupSources?.(block.sources) : undefined}
+          resolveLink={ctx.resolveLink}
         />
       );
+    case "plan":
+      return <PlanCard title={block.title} steps={block.steps} />;
+    case "attachment":
+      return (
+        <ChatMessage
+          role="agent"
+          attachments={[viewerFromBlock(block)]}
+          onOpenAttachment={ctx.openAttachment}
+          at={Date.parse(block.at)}
+          nowMs={ctx.nowMs}
+          timeZone={ctx.timeZone}
+        />
+      );
+    case "task":
+      return <TaskBlockView block={block} ctx={ctx} />;
     case "choice":
       return <ChoiceCard block={block} ctx={ctx} />;
     case "input":
