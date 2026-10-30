@@ -334,12 +334,21 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
         "",  # a document reports its own summary
     ),
 }
+# A connect task that adds kinds to a source that works: the source keeps working whatever happens.
+_EXTENSION_TEXT = (
+    "Добавление остановлено. Подключённые данные работают как раньше.",
+    "Добавить данные не удалось. Подключённые данные работают как раньше.",
+    "",  # it ends with its own closing message
+)
 _UNSETTLED = {"unresolved", "rolled_back", "skipped"}
 
 
 def terminal_text(job: Job) -> str | None:
     """None: the task already told its outcome itself (a connection and a document both do)."""
-    cancelled, failed_text, done = _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
+    extension = job.kind == "connect" and job.payload.get("extend") is True
+    cancelled, failed_text, done = (
+        _EXTENSION_TEXT if extension else _TERMINAL_TEXT.get(job.kind, _TERMINAL_TEXT["connect"])
+    )
     status = (job.result or {}).get("status")
     failed = job.state == "failed" or status == "error"
     if job.state == "cancelled":
@@ -350,6 +359,8 @@ def terminal_text(job: Job) -> str | None:
     if status == "continued":
         return "Продолжаю подключение по новой ссылке в этом разговоре."
     if status in _UNSETTLED:
+        if extension:
+            return "Добавление не выполнено. Подключённые данные работают как раньше."
         return "Автоматическая настройка не завершена. Можно уточнить источник или продолжить."
     if status == "healthy":
         return "Источник работает, чинить нечего."

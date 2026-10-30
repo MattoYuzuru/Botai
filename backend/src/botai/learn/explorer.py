@@ -104,10 +104,11 @@ from botai.sources.runner import (
     context_for,
     guard_source_write,
     load_conn_info,
+    load_snapshot,
     set_connection,
     sync_connection,
 )
-from botai.sources.scope import scoped_spec
+from botai.sources.scope import covered_kinds, scoped_spec
 from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
 from botai.spaces.views import source_title
@@ -194,6 +195,12 @@ class Explorer:
         # A page of a calendar service was given: it is no source, the student was told so (once).
         self._calendar_told = False
         self._calendar_page_given = False
+        # An extension: a source that already works learns kinds its recipe lacks and nothing else.
+        # What it reads now (`_covered`) is not touched, its status stays as it is, and a failure
+        # leaves the source as it was.
+        self._extend = False
+        self._covered: frozenset[Kind] = frozenset()
+        self._scope_before: tuple[Kind, ...] | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -422,6 +429,16 @@ class Explorer:
                 self.intent = apply_intent(
                     self.intent, turn, {"linkIndices": list(range(len(turn.links)))}
                 )
+        if self._extend:
+            # Only kinds that are not read yet are added; what is read stays read.
+            self._scope_replaced = False
+            if any(kind in self._covered for kind in self.intent.absent_kinds):
+                self.intent = replace(
+                    self.intent,
+                    absent_kinds=tuple(
+                        k for k in self.intent.absent_kinds if k not in self._covered
+                    ),
+                )
         self._without_calendar_pages()
         self._trace_intent(changed=self.intent != before, rejected_count=turn.rejected_links)
         if self._calendar_page_given:
@@ -574,6 +591,7 @@ class Explorer:
 
     async def connect(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._manual_connect = payload.get("manual_login") is True
+        self._extend = payload.get("extend") is True
         result = await self._connect(connection_id, payload)
         if not self._manual_connect or result.get("status") != "repairing":
             return result
@@ -600,12 +618,19 @@ class Explorer:
         info = await self._info(connection_id)
         if info.status == "disabled":
             return {"status": "skipped", "detail": "disabled"}
+        base_spec: dict[str, Any] | None = None
+        if self._extend:
+            base_spec = await self._begin_extension(info)
+            if base_spec is None:
+                return await self._extension_not_needed(info)
         manual_existing = self._manual_login and info.adapter is not None
-        if manual_existing:
-            # An authentication request cannot narrow an already configured source's scope.
+        if manual_existing or self._extend:
+            # An authentication request cannot narrow an already configured source's scope, and an
+            # extension widens it only together with the recipe that reads the new kinds.
             self._scope_connection_id = None
         self._previous_status = info.status
-        await self._set(connection_id, status="learning", clear_error=not manual_existing)
+        if not self._extend:
+            await self._set(connection_id, status="learning", clear_error=not manual_existing)
         try:
             if self._calendar_page_given:  # the earlier intent of this task held such a page
                 await self._offer_calendar()
@@ -665,21 +690,73 @@ class Explorer:
                 continued = await self._continue_foreign(info)
                 if continued is not None:
                     return continued
-            reused = await self._reuse(info)
+            reused = await self._reuse(info) if not self._extend else None
             if reused is not None:
                 return await self._then_continue(info, reused)
-            return await self._explore(info, wanted_kinds(payload), base_spec=None)
+            kinds = list(self.intent.requested_kinds) if self._extend else wanted_kinds(payload)
+            return await self._explore(info, kinds, base_spec=base_spec)
         except (JobCancelled, asyncio.CancelledError):
             # nobody answered in time (JobCancelled), or the student stopped the job and the
             # runner cancelled its task (CancelledError): either way the setup is not running
             with contextlib.suppress(JobClaimLost):
                 await self._set(
                     connection_id,
-                    status=(self._previous_status or "draft") if manual_existing else "draft",
+                    status=(self._previous_status or "draft")
+                    if manual_existing or self._extend
+                    else "draft",
                 )
             raise
         except BotaiError as err:
             return await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
+
+    # --- extension of a source that works ---------------------------------------------------
+
+    async def _begin_extension(self, info: ConnInfo) -> dict[str, Any] | None:
+        """The recipe a working source is extended from, or None when it cannot be (it does not
+        work, has no recipe, or already reads every kind asked for). Remembers what it reads now."""
+        if info.status != "active" or info.adapter != "recipe":
+            return None
+        try:
+            async with self.services.db() as db:
+                snap = await load_snapshot(db, self.ctx.user_id, info.connection_id)
+                shared = await revisions.active_row(db, info.origin, "recipe")
+        except BotaiError:
+            return None
+        self._covered = frozenset(covered_kinds(snap.spec, snap.data_scope))
+        self._scope_before = snap.data_scope
+        self._scope_base = tuple(sorted(self._covered, key=list(KIND_LABELS).index))
+        if not self._pending(chosen={}):
+            return None
+        # The newest shared recipe holds what other students taught it too; the source's own
+        # revision is the base when there is none.
+        return shared.spec if shared is not None else snap.spec
+
+    async def _extension_not_needed(self, info: ConnInfo) -> dict[str, Any]:
+        if self._covered and not self._pending(chosen={}):
+            await self.ui.say(
+                f"Эти данные уже подключены: {words.labels(sorted(self._covered, key=list(KIND_LABELS).index))}."
+            )
+            return {"status": "ok", "kinds": [], "extension": True, "detail": "covered"}
+        await self.ui.say(
+            "Сейчас дополнить это подключение нельзя: оно не работает или у него нет описания. "
+            "Данные остаются как были."
+        )
+        return {"status": "skipped", "detail": info.status, "extension": True}
+
+    def _pending(self, chosen: Collection[Kind]) -> list[Kind]:
+        """What is still to be found: asked for, not found yet, and not read already."""
+        return [
+            kind
+            for kind in self.intent.requested_kinds
+            if kind not in chosen and kind not in self._covered
+        ]
+
+    def _extended_scope(self, added: Collection[Kind]) -> list[Kind] | None:
+        """The durable scope of the source after the kinds `added` joined its recipe."""
+        absent = self.intent.absent_kinds
+        if self._scope_before is None:
+            return [k for k in KIND_LABELS if k not in absent] if absent else None
+        return [k for k in dict.fromkeys((*self._scope_before, *added)) if k not in absent]
 
     # --- origin ------------------------------------------------------------------------------
 
@@ -949,7 +1026,7 @@ class Explorer:
                         return continued
                 if chosen:
                     break
-            pending = [k for k in self.intent.requested_kinds if k not in chosen]
+            pending = self._pending(chosen)
             diagnostic_event(
                 "learn.round",
                 round_no=round_no,
@@ -1080,7 +1157,7 @@ class Explorer:
             continued = await self._continue_foreign(info)  # nothing accepted: nothing to save
             if continued is not None:
                 return continued
-        pending = [k for k in self.intent.requested_kinds if k not in chosen]
+        pending = self._pending(chosen)
 
         if not chosen:
             await ui.say(self._nothing_connected(pending))
@@ -1157,7 +1234,11 @@ class Explorer:
                 {kind: report.valid.get(kind, []) for kind in chosen},
                 svc.clock.now(),
                 info.tz,
-                heading=f"Нашла в «{plain(info.title, 80)}»:",
+                heading=(
+                    f"Добавляю в «{plain(info.title, 80)}»:"
+                    if self._extend
+                    else f"Нашла в «{plain(info.title, 80)}»:"
+                ),
                 unconnected=self._gap_lines(extra) if extra else "",
             ),
         )
@@ -1190,7 +1271,11 @@ class Explorer:
         what could not be read is told in the summary instead of being asked about."""
         if self.intent.discovery_mode != "requested":
             return ()
-        return tuple(k for k in self.intent.requested_kinds if k not in self.intent.absent_kinds)
+        return tuple(
+            k
+            for k in self.intent.requested_kinds
+            if k not in self.intent.absent_kinds and k not in self._covered
+        )
 
     def _only_foreign_added(self, before: LearningIntent, info: ConnInfo) -> bool:
         """The last words of the student brought a link to another site and changed nothing about
@@ -2071,6 +2156,9 @@ class Explorer:
             conn.allow_hosts = sorted({*known_hosts, host})
             conn.status = "active"
             conn.error_code = conn.error_detail = conn.error_at = None
+            if self._extend:
+                scope = self._extended_scope(chosen)
+                conn.data_scope = [str(kind) for kind in scope] if scope is not None else None
             await update_university(db, info.university_id, info.origin, warning)
             revision = row.revision
             if self._research is not None:
@@ -2153,6 +2241,12 @@ class Explorer:
             outcome="failed",
             error_code=code.value,
         )
+        if self._extend:
+            # The source works: a failed extension is told and changes nothing about it.
+            if say:
+                await self.ui.say(f"Не получилось добавить данные: {detail}.")
+            await self.ui.say("Уже подключённые данные работают как раньше.")
+            return {"status": "error", "detail": code.value, "extension": True}
         if say:
             await self.ui.say(f"Не получилось подключить: {detail}.")
         await self._set(info.connection_id, status="error", error=(code.value, detail))

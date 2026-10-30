@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from botai.agent.env import ChatEnv
 from botai.agent.tools_sources import (
@@ -21,15 +23,27 @@ from botai.agent.tools_sources import (
 )
 from botai.contracts.agent_ui import TaskBlock
 from botai.core.ids import new_id
-from botai.db.models import Connection, Job, Space, University
+from botai.db.models import AdapterSpecRow, Connection, Job, Space, University
 from tests.jobs.env import Env
+from tests.sources import recipes
 
 pytestmark = pytest.mark.db
 LMS = "https://smart.fakeuni.test/courses?tab=current"
 PORTAL = "https://lk.fakeuni.test/schedule"
 PORTAL_TASKS = "https://lk.fakeuni.test/tasks"
+PORTAL_ORIGIN = "https://lk.fakeuni.test"
 SHEET = "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit"
 HSE = "vysshaya-shkola-ekonomiki"
+
+
+@pytest.fixture(autouse=True)
+async def no_recipes_left_behind(env: Env) -> AsyncIterator[None]:
+    """The sources of these tests share one site; the recipes they are given must not outlive them
+    (the table is not cleared with the users, and other suites count its rows)."""
+    yield
+    async with env.sm() as session:
+        await session.execute(delete(AdapterSpecRow).where(AdapterSpecRow.origin == PORTAL_ORIGIN))
+        await session.commit()
 
 
 async def student(env: Env) -> tuple[httpx.AsyncClient, str]:
@@ -754,3 +768,230 @@ async def test_a_page_of_a_calendar_service_is_never_a_source_the_agent_is_point
     assert await jobs_of(env, user) == []
     assert await count(env, Connection, Connection.user_id == user) == 0
     assert chat.blocks == []
+
+
+# --- a source that works is extended with the kinds it lacks (the schedule stays as it is) ---------
+
+
+async def make_working(
+    env: Env, user: str, *, kinds: tuple[str, ...] = ("timetable",), scope: list[str] | None = None
+) -> Connection:
+    """The only source of the user, as a connection that works: a recipe with the given endpoints,
+    status `active`, its first task done."""
+    endpoints = {"timetable": recipes.timetable_endpoint, "deadlines": recipes.deadlines_endpoint}
+    revision = int.from_bytes(os.urandom(3))  # the table keeps one row per (origin, revision)
+    spec = recipes.recipe_spec(
+        [endpoints[name]() for name in kinds],
+        revision=revision,
+        require=tuple("scheduleEvents" if name == "timetable" else name for name in kinds),
+    )
+    async with env.sm() as session:
+        (job,) = list(await session.scalars(select(Job).where(Job.user_id == user)))
+        job.state = "done"
+        conn = await session.get(Connection, job.connection_id)
+        assert conn is not None
+        row = AdapterSpecRow(
+            origin=conn.origin, adapter="recipe", revision=revision, state="active", spec=spec
+        )
+        session.add(row)
+        await session.flush()
+        conn.adapter, conn.spec_id, conn.spec_revision = "recipe", row.id, revision
+        conn.status, conn.data_scope = "active", scope
+        await session.commit()
+        return conn
+
+
+async def working_schedule(env: Env, **kw: Any) -> tuple[ChatEnv, str, Connection]:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(
+        tools(env, user, first),
+        {
+            "url": PORTAL,
+            "title": "Единый кабинет",
+            "university_query": "Вышка",
+            "kinds": ["scheduleEvents"],
+        },
+    )
+    conn = await make_working(env, user, **kw)
+    return tools(env, user, again), user, conn
+
+
+ASK = {"url": PORTAL, "title": "Единый кабинет", "university_query": "Вышка"}
+
+
+async def test_adding_tasks_to_a_working_schedule_starts_a_task_that_learns_only_the_tasks(
+    env: Env,
+) -> None:
+    chat, user, conn = await working_schedule(env)
+
+    result = await connect_source(
+        chat, {**ASK, "kinds": ["scheduleEvents", "deadlines"], "note": "добавь задания"}
+    )
+
+    assert result.startswith("Результат: запущено")
+    assert "уже подключён (читается: расписание)" in result
+    assert "добавляю то, чего в нём ещё нет: дедлайны" in result
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.connection_id == conn.id
+    assert extension.thread_id == chat.thread_id
+    assert extension.payload["extend"] is True
+    assert extension.payload["learning_intent"] == {
+        "entry_urls": [PORTAL],
+        "requested_kinds": ["deadlines"],  # the schedule is read already: not asked again
+        "absent_kinds": [],
+        "user_note": "добавь задания",
+        "discovery_mode": "requested",
+    }
+    async with env.sm() as session:  # the source is not touched by the ask itself
+        stored = await session.get(Connection, conn.id)
+        assert stored is not None
+        assert (stored.status, stored.spec_revision) == ("active", conn.spec_revision)
+    (card,) = chat.blocks
+    assert isinstance(card, TaskBlock)
+
+
+async def test_what_the_source_already_reads_is_not_extended(env: Env) -> None:
+    chat, user, _ = await working_schedule(env)
+    result = await connect_source(chat, {**ASK, "kinds": ["scheduleEvents"]})
+    assert result.startswith("Результат: уже подключено, ничего не запущено")
+    assert "добавлять нечего" in result
+    assert len(await jobs_of(env, user, "connect")) == 1
+    bare = await connect_source(chat, ASK)  # nothing named: nothing to add
+    assert bare.startswith("Результат: уже подключено, ничего не запущено")
+    assert len(await jobs_of(env, user, "connect")) == 1
+
+
+async def test_a_kind_the_student_excluded_before_is_not_added_unasked(env: Env) -> None:
+    chat, user, conn = await working_schedule(env)
+    async with env.sm() as session:  # in the dialogue of the first task: rooms are not needed
+        (first,) = list(await session.scalars(select(Job).where(Job.user_id == user)))
+        first.payload = {
+            **first.payload,
+            "learning_intent": {**first.payload["learning_intent"], "absent_kinds": ["locations"]},
+        }
+        await session.commit()
+
+    await connect_source(chat, {**ASK, "kinds": ["deadlines"], "note": "добавь задания"})
+
+    (_, extension) = await jobs_of(env, user, "connect")
+    intent = extension.payload["learning_intent"]
+    assert intent["requested_kinds"] == ["deadlines"]
+    assert intent["absent_kinds"] == ["locations"]  # the exclusion goes on with the task
+    assert extension.connection_id == conn.id
+
+
+async def test_a_kind_the_recipe_has_but_the_connection_does_not_read_is_added_too(
+    env: Env,
+) -> None:
+    chat, user, _ = await working_schedule(
+        env, kinds=("timetable", "deadlines"), scope=["scheduleEvents"]
+    )
+    result = await connect_source(chat, {**ASK, "kinds": ["deadlines"]})
+    assert result.startswith("Результат: запущено")
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.payload["learning_intent"]["requested_kinds"] == ["deadlines"]
+
+
+async def test_a_source_that_does_not_work_is_not_extended_but_offered_the_usual_choices(
+    env: Env,
+) -> None:
+    chat, user, conn = await working_schedule(env)
+    async with env.sm() as session:
+        stored = await session.get(Connection, conn.id)
+        assert stored is not None
+        stored.status = "needs_reauth"
+        await session.commit()
+    result = await connect_source(chat, {**ASK, "kinds": ["deadlines"]})
+    assert result.startswith("Результат: уже подключено, ничего не запущено")
+    assert len(await jobs_of(env, user, "connect")) == 1
+
+
+# --- the agent names the source it sees (the address is not in its context) ----------------------
+
+
+async def test_a_source_named_by_its_id_is_extended_without_an_address(env: Env) -> None:
+    chat, user, conn = await working_schedule(env)
+    result = await connect_source(
+        chat,
+        {
+            "connection_id": conn.id,
+            "title": "Единый кабинет",
+            "kinds": ["scheduleEvents", "deadlines"],
+            "note": "добавь задания",
+        },
+    )
+    assert result.startswith("Результат: запущено")
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.connection_id == conn.id
+    assert extension.payload["extend"] is True
+    assert extension.payload["learning_intent"]["requested_kinds"] == ["deadlines"]
+    assert extension.payload["learning_intent"]["entry_urls"] == [PORTAL]  # the earlier page stays
+    assert await count(env, Connection, Connection.user_id == user) == 1
+
+
+async def test_an_unfinished_source_named_by_its_id_is_resumed(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(tools(env, user, first), {**ASK, "note": "Расписание"})
+    old = await cancel_first_attempt(env, user)
+    result = await connect_source(
+        tools(env, user, again),
+        {
+            "connection_id": old.connection_id,
+            "title": "Единый кабинет",
+            "kinds": ["scheduleEvents", "deadlines"],
+        },
+    )
+    assert result.startswith("Результат: продолжено")
+    (_, resumed) = await jobs_of(env, user, "connect")
+    assert resumed.connection_id == old.connection_id
+    assert resumed.payload["learning_intent"]["requested_kinds"] == ["scheduleEvents", "deadlines"]
+    assert "extend" not in resumed.payload
+    assert await count(env, Connection, Connection.user_id == user) == 1
+
+
+async def test_a_source_the_student_does_not_have_is_not_touched_by_an_id(env: Env) -> None:
+    chat, user, conn = await working_schedule(env)
+    result = await connect_source(
+        chat, {"connection_id": new_id(), "title": "Кабинет", "kinds": ["deadlines"]}
+    )
+    assert result.startswith("Результат: не запущено. Такого подключения у студента нет")
+    other = tools(env, (await student(env))[1], chat.thread_id)
+    result = await connect_source(
+        other, {"connection_id": conn.id, "title": "Кабинет", "kinds": ["deadlines"]}
+    )
+    assert result.startswith("Результат: не запущено. Такого подключения у студента нет")
+    assert len(await jobs_of(env, user, "connect")) == 1
+
+
+async def test_a_source_asked_for_by_its_title_without_an_address_is_not_made_twice(
+    env: Env,
+) -> None:
+    chat, user, conn = await working_schedule(env)
+    result = await connect_source(
+        chat,
+        {
+            "title": "единый кабинет",  # the case of the letters is not a second source
+            "university_query": "Вышка",
+            "kinds": ["scheduleEvents", "deadlines"],
+        },
+    )
+    assert result.startswith("Результат: запущено")
+    (_, extension) = await jobs_of(env, user, "connect")
+    assert extension.connection_id == conn.id
+    assert await count(env, Connection, Connection.user_id == user) == 1
+
+
+async def test_a_calendar_is_never_continued_or_extended_through_the_site_tool(env: Env) -> None:
+    chat, user, conn = await working_schedule(env)
+    async with env.sm() as session:
+        stored = await session.get(Connection, conn.id)
+        assert stored is not None
+        stored.adapter = "ical"
+        await session.commit()
+    result = await connect_source(
+        chat, {"connection_id": conn.id, "title": "Календарь", "kinds": ["deadlines"]}
+    )
+    assert "connect_calendar" in result
+    assert len(await jobs_of(env, user, "connect")) == 1

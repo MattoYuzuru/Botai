@@ -17,9 +17,9 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
-from botai.contracts.agent_ui import ConfirmBlock
+from botai.contracts.agent_ui import ConfirmBlock, InputBlock
 from botai.core.dialogue import DialogueTurn
-from botai.core.jobs import JobKind
+from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.core.llm import LlmRequest, LlmResponse
 from botai.db import models as m
 from botai.domain import repo
@@ -816,7 +816,7 @@ async def test_a_source_that_is_a_calendar_service_is_not_learned_through_its_lo
     result = await study.run(payload={"url": "https://calendar.yandex.ru/week"})
 
     assert result["status"] == "error"
-    assert study.llm.requests == []  # nothing was observed, no model was asked
+    assert study.services.llm.requests == []  # nothing was observed, no model was asked
     assert study.asked == []
     conn = await study.conn()
     assert (conn.status, conn.spec_id) == ("error", None)
@@ -839,7 +839,7 @@ async def test_a_calendar_service_is_not_accepted_as_the_site_to_connect(
 
     assert result["status"] == "error"
     assert [type(b).__name__ for b in study.asked] == ["InputBlock"]  # asked once, not twice
-    assert study.llm.requests == []
+    assert study.services.llm.requests == []
     text = said(study)
     assert "Это страница календаря в браузере" in text
     assert "Не получилось подключить: Не получилось определить адрес сайта" in text
@@ -901,6 +901,206 @@ async def test_the_calendar_question_goes_into_the_thread_of_the_task_with_its_b
     assert question["quickReplies"] == [calendar.YES, calendar.NO]
     assert "calendar.yandex.ru" not in str(question)
     assert "Это страница календаря в браузере" not in said(study)  # said once, where it belongs
+
+
+# --- a source that works is extended: only the missing kinds are learned ---------------------------
+
+
+class Watching(InMemoryJobContext):
+    """A task whose questions are answered like the usual ones, and which notes what the source
+    looked like at the moment each was asked."""
+
+    def __init__(self, study: Any, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.study, self.seen = study, []
+
+    async def ask(self, block: Any) -> Any:
+        self.seen.append(
+            (
+                type(block).__name__,
+                (await self.study.conn()).status,
+                len(await events(self.study)),
+                await self.study.specs(),
+            )
+        )
+        return await super().ask(block)
+
+
+def classified(**kw: Any) -> LlmResponse:
+    body = {"linkIndices": [], "kinds": [], "absentKinds": [], "note": "Добавь задания", **kw}
+    return LlmResponse(content=json.dumps(body, ensure_ascii=False))
+
+
+async def working_schedule_only(
+    make_env: EnvFactory, app: FastAPI, monkeypatch: pytest.MonkeyPatch, *answers: LlmResponse
+) -> tuple[Any, set[tuple[str, str, str, str]]]:
+    """A cabinet whose schedule is connected and read: the recipe has no tasks."""
+    study = await connect(make_env, app, monkeypatch, [author(schedule_endpoint())])
+    first = await study.run(payload={"url": ENTRY, "kinds": ["scheduleEvents"]})
+    assert first["status"] == "ok", first
+    assert await study.specs() == [(1, "active")]
+    assert (await study.conn()).data_scope == ["scheduleEvents"]
+    assert await study.count(m.Deadline) == 0
+    rows = {(r.external_id, r.title, *moscow(r)) for r in await events(study)}
+    assert rows
+    llm = study.services.llm
+    llm._queue.extend(answers)
+    llm._discovery_queue[:] = finish_with("deadlines")
+    return study, rows
+
+
+EXTENSION = {
+    "entry_urls": [ENTRY],
+    "requested_kinds": ["deadlines"],
+    "absent_kinds": [],
+    "user_note": "Добавь задания",
+    "discovery_mode": "requested",
+}
+
+
+async def extend(study: Any, *, confirm: bool = True, **intent: Any) -> tuple[Watching, Any]:
+
+    def respond(block: Any) -> Any:
+        if isinstance(block, ConfirmBlock):
+            return confirm
+        if isinstance(block, InputBlock):
+            return " "  # the student has no link to give
+        return None
+
+    ctx = Watching(
+        study,
+        user_id=study.seeded.user_id,
+        connection_id=study.seeded.connection_id,
+        responder=respond,
+    )
+    study.ctx = ctx  # what `said` reads
+    payload = {"learning_intent": {**EXTENSION, **intent}, "extend": True, "source": "chat"}
+    result = await study.handlers[JobKind.CONNECT](ctx, study.services, payload)
+    return ctx, result
+
+
+async def test_tasks_added_to_a_working_schedule_are_learned_alone_and_the_schedule_stays(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, before = await working_schedule_only(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        classified(kinds=["deadlines"]),
+        author(deadlines_endpoint()),
+    )
+    schedule_before = (await study.spec(1))["recipe"]["endpoints"]
+
+    ctx, result = await extend(study)
+
+    assert result["status"] == "ok", result
+    assert result["kinds"] == ["deadlines"]  # what was added, not what was already there
+    assert "extension" not in result
+    # the question was asked while the source still worked as it had: active, the schedule stored
+    (asked,) = ctx.seen
+    assert asked == ("ConfirmBlock", "active", len(before), [(1, "active")])
+    assert study.services.llm._queue == []  # one author call, for the tasks alone
+
+    # the recipe has both; the schedule endpoint is the very one that was there
+    specs = await study.specs()
+    assert len(specs) == 2
+    assert specs[-1] == (2, "active")
+    endpoints = (await study.spec(2))["recipe"]["endpoints"]
+    assert {e["kind"] for e in endpoints} == {"scheduleEvents", "deadlines"}
+    assert [e for e in endpoints if e["kind"] == "scheduleEvents"] == schedule_before
+    conn = await study.conn()
+    assert (conn.status, conn.spec_revision) == ("active", 2)
+    assert conn.data_scope == ["scheduleEvents", "deadlines"]
+    assert {(r.external_id, r.title, *moscow(r)) for r in await events(study)} == before
+    assert await study.count(m.Deadline) > 0
+    text = said(study)
+    assert "Готово!" in text  # the closing line counts both
+    assert "Не вышло" not in text
+
+    # and both go on being read: a sync after the extension keeps the schedule and the tasks
+    synced = await study.sync()
+    assert synced["status"] == "ok", synced
+    assert {(r.external_id, r.title, *moscow(r)) for r in await events(study)} == before
+    assert await study.count(m.Deadline) > 0
+
+
+async def test_an_extension_that_finds_nothing_leaves_the_working_source_as_it_was(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, before = await working_schedule_only(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        classified(kinds=["deadlines"]),
+        author(deadlines_endpoint("backlog")),
+        author(deadlines_endpoint("backlog")),
+    )
+    _, result = await extend(study)
+
+    assert result["status"] == "error"
+    assert result["extension"] is True
+    conn = await study.conn()
+    assert (conn.status, conn.spec_revision, conn.error_code) == ("active", 1, None)
+    assert conn.data_scope == ["scheduleEvents"]
+    assert await study.specs() == [(1, "active")]
+    assert {(r.external_id, r.title, *moscow(r)) for r in await events(study)} == before
+    text = said(study)
+    assert "Уже подключённые данные работают как раньше." in text
+    assert "Не получилось подключить" not in text
+    assert (await study.sync())["status"] == "ok"
+
+
+async def test_declining_the_added_tasks_changes_nothing(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, before = await working_schedule_only(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        classified(kinds=["deadlines"]),
+        author(deadlines_endpoint()),
+    )
+    _, result = await extend(study, confirm=False)
+    assert result["status"] == "error"
+    conn = await study.conn()
+    assert (conn.status, conn.spec_revision, conn.data_scope) == ("active", 1, ["scheduleEvents"])
+    assert await study.specs() == [(1, "active")]
+    assert await study.count(m.Deadline) == 0
+    assert {(r.external_id, r.title, *moscow(r)) for r in await events(study)} == before
+
+
+async def test_a_clarification_cannot_take_the_schedule_off_a_source_while_adding_tasks(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, before = await working_schedule_only(
+        make_env,
+        fakeuni_app,
+        monkeypatch,
+        classified(kinds=["deadlines"], absentKinds=["scheduleEvents"], replaceKinds=True),
+        author(deadlines_endpoint()),
+    )
+    _, result = await extend(study)
+    assert result["status"] == "ok", result
+    conn = await study.conn()
+    assert conn.data_scope == ["scheduleEvents", "deadlines"]  # neither narrowed nor replaced
+    assert {e["kind"] for e in (await study.spec(2))["recipe"]["endpoints"]} == {
+        "scheduleEvents",
+        "deadlines",
+    }
+    assert {(r.external_id, r.title, *moscow(r)) for r in await events(study)} == before
+
+
+async def test_kinds_a_source_reads_already_are_not_learned_again(
+    make_env: EnvFactory, fakeuni_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, _ = await working_schedule_only(make_env, fakeuni_app, monkeypatch)
+    requests_before = len(study.services.llm.requests)
+    _, result = await extend(study, requested_kinds=["scheduleEvents"], user_note="")
+    assert result == {"status": "ok", "kinds": [], "extension": True, "detail": "covered"}
+    assert len(study.services.llm.requests) == requests_before  # no model, no browser
+    assert "Эти данные уже подключены: расписание" in said(study)
+    assert (await study.conn()).status == "active"
+    assert await study.specs() == [(1, "active")]
 
 
 async def test_nothing_connected_says_what_was_seen_tried_and_can_be_done(
