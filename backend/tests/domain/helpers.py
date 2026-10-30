@@ -10,6 +10,7 @@ import httpx
 
 from botai.core.ids import new_id
 from botai.db.models import (
+    Connection,
     Course,
     Deadline,
     Grade,
@@ -112,3 +113,48 @@ class World:
     space_b: str
     conn_a: str
     conn_b: str
+
+
+async def add_source(
+    sm: Sm,
+    user_id: str,
+    space_id: str,
+    title: str,
+    *,
+    age_days: int,
+    kind: str = "schedule",
+    status: str = "active",
+) -> str:
+    """A source of a university created `age_days` before the frozen clock (the oldest decides the
+    default primary), with an adapter, so that switching it back on makes it active again."""
+    conn_id = new_id()
+    async with sm() as session:
+        session.add(
+            Connection(
+                id=conn_id,
+                user_id=user_id,
+                space_id=space_id,
+                origin=f"https://{title.lower().replace(' ', '-')}.fakeuni.test",
+                kind=kind,
+                adapter="ical" if kind == "calendar" else "recipe",
+                title=title,
+                status=status,
+                allow_hosts=[],
+                created_at=T0 - timedelta(days=age_days),
+            )
+        )
+        await session.commit()
+    return conn_id
+
+
+@dataclass(frozen=True, slots=True)
+class Campus:
+    """One university with a cabinet (older) and a calendar, and a second university."""
+
+    client: httpx.AsyncClient
+    user_id: str
+    space: str
+    other_space: str
+    cabinet: str
+    calendar: str
+    elsewhere: str

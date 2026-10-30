@@ -9,6 +9,8 @@ Rules shared by every read:
 * `space_id`, when given, must be the user's space, otherwise `not_found`: a caller that guesses a
   foreign id learns nothing and an assistant that hallucinates one is told so instead of being
   handed an empty list;
+* the schedule of one university read from several sources is merged here, on every read and
+  nowhere else (`domain.merge`, FR-054): stored rows stay per source;
 * every row carries provenance (FR-012, NFR-007). `stale` is true when the connection needs
   attention (`stale`, `needs_reauth`, `repairing`) or when its last sync is older than the
   freshness of its adapter spec (`staleAfterMinutes`, see `sources.schedule`).
@@ -16,7 +18,7 @@ Rules shared by every read:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -41,11 +43,14 @@ from botai.db.models import (
     ScheduleEvent,
     Space,
 )
+from botai.domain import primary
+from botai.domain.merge import NEARBY, SpacePlan, merge_events
 from botai.domain.schemas import (
     CourseOut,
     DeadlineOut,
     EventAttribute,
     EventLink,
+    EventSource,
     GradeOut,
     NewsOut,
     PersonOut,
@@ -54,6 +59,7 @@ from botai.domain.schemas import (
     TodayOut,
 )
 from botai.sources.schedule import freshness_of, is_stale
+from botai.spaces.views import display_title
 
 # Section kinds of the API (FR-014) and the tables that feed them, in display order.
 _SECTION_TABLES = (
@@ -76,6 +82,10 @@ MAX_ROWS = 2000
 TODAY_DEADLINES = 10
 DEFAULT_TZ = "Europe/Moscow"
 
+# Rows are read this far beyond the window so that a class near its edge still finds, in the
+# primary source, the same class a week away (`merge.NEARBY`) and the one that overlaps it.
+MERGE_MARGIN = NEARBY + timedelta(days=1)
+
 _EVENT_KINDS = ("lecture", "seminar", "lab", "exam", "consultation", "other")
 _EVENT_FORMATS = ("offline", "online", "hybrid", "unknown")
 _DEADLINE_STATES = ("open", "submitted", "graded", "missed", "unknown")
@@ -88,6 +98,7 @@ class _Conn:
     status: str
     stale: bool
     created_at: datetime
+    title: str
 
 
 def _choice(value: str | None, allowed: tuple[str, ...], default: str) -> Any:
@@ -125,7 +136,9 @@ async def _connections(
         stale = conn.status in NEEDS_ATTENTION or is_stale(
             now, conn.last_sync_at, freshness_of(spec or {})
         )
-        out[conn.id] = _Conn(conn.id, conn.space_id, conn.status, stale, conn.created_at)
+        out[conn.id] = _Conn(
+            conn.id, conn.space_id, conn.status, stale, conn.created_at, display_title(conn)
+        )
     return out
 
 
@@ -222,46 +235,35 @@ def _mark_conflicts(events: list[ScheduleEventOut]) -> None:
         ev.conflicts_with.sort()
 
 
-async def _events(
-    session: AsyncSession,
-    user_id: str,
-    conns: dict[str, _Conn],
-    *,
-    start: datetime,
-    end: datetime,
-) -> list[ScheduleEventOut]:
-    """Events overlapping [start, end) with conflicts computed against *all* live connections,
-    including events just outside the window that overlap one inside it."""
-    if not conns:
-        return []
-    overlap = (
-        ScheduleEvent.user_id == user_id,
-        ScheduleEvent.connection_id.in_(list(conns)),
+async def _merge_plans(
+    session: AsyncSession, user_id: str, conns: dict[str, _Conn]
+) -> dict[str, SpacePlan]:
+    """How each university with more than one schedule source is merged (`domain.merge`)."""
+    sources = await primary.schedule_sources(session, user_id, conns.values())
+    several = {sid: found for sid, found in sources.items() if len(found.order) > 1}
+    if not several:
+        return {}
+    coverage = await primary.coverage_of(
+        session, user_id, [found.order[0] for found in several.values()]
     )
-    bounds = (
-        await session.execute(
-            select(func.min(ScheduleEvent.starts_at), func.max(ScheduleEvent.ends_at)).where(
-                *overlap, ScheduleEvent.starts_at < end, ScheduleEvent.ends_at > start
-            )
+    return {
+        sid: SpacePlan(
+            order=found.order,
+            titles={cid: conns[cid].title for cid in found.order},
+            zone=_zone(found.time_zone),
+            coverage=coverage.get(found.order[0]),
         )
-    ).one()
-    # min/max over an empty set are NULL, which the driver typing does not admit
-    first, last = cast("tuple[datetime | None, datetime | None]", tuple(bounds))
-    if first is None or last is None:  # nothing in the window
-        return []
-    lo, hi = min(first, start), max(last, end)
-    rows = (
-        await session.scalars(
-            select(ScheduleEvent)
-            .where(*overlap, ScheduleEvent.starts_at < hi, ScheduleEvent.ends_at > lo)
-            .order_by(ScheduleEvent.starts_at, ScheduleEvent.ends_at, ScheduleEvent.id)
-            .limit(MAX_ROWS)
-        )
-    ).all()
+        for sid, found in several.items()
+    }
+
+
+async def _event_outs(
+    session: AsyncSession, user_id: str, rows: Sequence[ScheduleEvent], conns: dict[str, _Conn]
+) -> list[ScheduleEventOut]:
     titles = await _course_titles(
         session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
     )
-    events = [
+    return [
         ScheduleEventOut(
             id=r.id,
             title=r.title,
@@ -282,11 +284,87 @@ async def _events(
             changed=r.changed,
             conflicts_with=[],
             provenance=_prov(r, conns[r.connection_id]),
+            sources=[
+                EventSource(connection_id=r.connection_id, title=conns[r.connection_id].title)
+            ],
         )
         for r in rows
     ]
+
+
+async def _events(
+    session: AsyncSession,
+    user_id: str,
+    conns: dict[str, _Conn],
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[ScheduleEventOut]:
+    """Events overlapping [start, end) with conflicts computed against *all* live connections,
+    including events just outside the window that overlap one inside it. Classes of one university
+    that several of its sources describe are merged first (FR-054): the primary source decides."""
+    if not conns:
+        return []
+    overlap = (
+        ScheduleEvent.user_id == user_id,
+        ScheduleEvent.connection_id.in_(list(conns)),
+    )
+    bounds = (
+        await session.execute(
+            select(func.min(ScheduleEvent.starts_at), func.max(ScheduleEvent.ends_at)).where(
+                *overlap, ScheduleEvent.starts_at < end, ScheduleEvent.ends_at > start
+            )
+        )
+    ).one()
+    # min/max over an empty set are NULL, which the driver typing does not admit
+    first, last = cast("tuple[datetime | None, datetime | None]", tuple(bounds))
+    if first is None or last is None:  # nothing in the window
+        return []
+    plans = await _merge_plans(session, user_id, conns)
+    margin = MERGE_MARGIN if plans else timedelta(0)
+    lo, hi = min(first, start) - margin, max(last, end) + margin
+    rows = (
+        await session.scalars(
+            select(ScheduleEvent)
+            .where(*overlap, ScheduleEvent.starts_at < hi, ScheduleEvent.ends_at > lo)
+            .order_by(ScheduleEvent.starts_at, ScheduleEvent.ends_at, ScheduleEvent.id)
+            .limit(MAX_ROWS)
+        )
+    ).all()
+    events = merge_events(await _event_outs(session, user_id, rows, conns), plans)
     _mark_conflicts(events)
     return [e for e in events if e.starts_at < end and e.ends_at > start]
+
+
+async def source_events(
+    session: AsyncSession,
+    user_id: str,
+    connection_id: str,
+    *,
+    start: datetime,
+    end: datetime,
+    now: datetime | None = None,
+) -> list[ScheduleEventOut]:
+    """The classes of ONE source overlapping [start, end), as the source has them: no merge, no
+    conflicts (the agent compares two sources with it). A disabled or foreign source is empty."""
+    now = now or SystemClock().now()
+    conns = await _connections(session, user_id, now=now)
+    if connection_id not in conns:
+        return []
+    rows = (
+        await session.scalars(
+            select(ScheduleEvent)
+            .where(
+                ScheduleEvent.user_id == user_id,
+                ScheduleEvent.connection_id == connection_id,
+                ScheduleEvent.starts_at < _aware(end),
+                ScheduleEvent.ends_at > _aware(start),
+            )
+            .order_by(ScheduleEvent.starts_at, ScheduleEvent.ends_at, ScheduleEvent.id)
+            .limit(MAX_ROWS)
+        )
+    ).all()
+    return await _event_outs(session, user_id, rows, conns)
 
 
 async def list_events(

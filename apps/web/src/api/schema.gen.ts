@@ -354,6 +354,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connections/{connection_id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable Connection
+         * @description Switches the source off, reversibly: no sync, its data leaves every view, nothing is deleted.
+         */
+        post: operations["disable_connection_api_v1_connections__connection_id__disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{connection_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enable Connection
+         * @description Switches a disabled source back on; its data returns and it syncs at the next tick.
+         */
+        post: operations["enable_connection_api_v1_connections__connection_id__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections/{connection_id}/login-session": {
         parameters: {
             query?: never;
@@ -818,6 +858,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/spaces/{space_id}/primary-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Primary Source
+         * @description The source that decides the university's schedule when several sources show the same class
+         *     (FR-054); null goes back to the default. A BotAI setting, nothing is sent to the university.
+         */
+        put: operations["set_primary_source_api_v1_spaces__space_id__primary_source_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/spaces/{space_id}/sections": {
         parameters: {
             query?: never;
@@ -1083,6 +1144,8 @@ export interface components {
             nextSyncAt: string | null;
             /** Origin */
             origin: string;
+            /** Schedulerole */
+            scheduleRole?: ("primary" | "secondary") | null;
             /** Spaceid */
             spaceId: string;
             /**
@@ -1252,12 +1315,38 @@ export interface components {
             /** Value */
             value: string;
         };
+        /**
+         * EventDisagreement
+         * @description Two sources of one university say different things about a class. The primary source
+         *     decides what the class shows; this says what the other one has, or that the primary has no such
+         *     class at all.
+         */
+        EventDisagreement: {
+            /** Detail */
+            detail: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "time" | "location" | "teacher" | "group" | "address" | "several" | "not_in_primary";
+        };
         /** EventLink */
         EventLink: {
             /** Label */
             label: string;
             /** Url */
             url: string;
+        };
+        /**
+         * EventSource
+         * @description A source that contributed to a class (FR-054): the first one is the university's primary
+         *     schedule source, whose values the class shows.
+         */
+        EventSource: {
+            /** Connectionid */
+            connectionId: string;
+            /** Title */
+            title: string;
         };
         /** GradeOut */
         GradeOut: {
@@ -1497,6 +1586,14 @@ export interface components {
             /** Userid */
             userId: string;
         };
+        /**
+         * PrimarySourceIn
+         * @description `connectionId`: a live source of this university; null returns to the default.
+         */
+        PrimarySourceIn: {
+            /** Connectionid */
+            connectionId?: string | null;
+        };
         /** Provenance */
         Provenance: {
             /** Connectionid */
@@ -1575,6 +1672,7 @@ export interface components {
             conflictsWith: string[];
             /** Coursetitle */
             courseTitle: string | null;
+            disagreement?: components["schemas"]["EventDisagreement"] | null;
             /**
              * Endsat
              * Format: date-time
@@ -1603,6 +1701,8 @@ export interface components {
             /** Location */
             location: string | null;
             provenance: components["schemas"]["Provenance"];
+            /** Sources */
+            sources?: components["schemas"]["EventSource"][];
             /**
              * Startsat
              * Format: date-time
@@ -2545,6 +2645,68 @@ export interface operations {
             };
         };
     };
+    disable_connection_api_v1_connections__connection_id__disable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_connection_api_v1_connections__connection_id__enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     open_login_session_api_v1_connections__connection_id__login_session_post: {
         parameters: {
             query?: never;
@@ -3418,6 +3580,39 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DocumentStarted"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_primary_source_api_v1_spaces__space_id__primary_source_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrimarySourceIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

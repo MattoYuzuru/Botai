@@ -131,6 +131,19 @@ class Space(Base):
     profile: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, nullable=False
     )  # name, programme, year
+    # The source whose schedule decides when several sources of this university show the same
+    # class (FR-054). NULL: nothing chosen, the oldest live source with schedule events decides
+    # (`domain.primary`). A deleted source clears the choice; a disabled one is passed over at read
+    # time and counts again once switched back on. `use_alter`: connections point back at spaces.
+    primary_schedule_connection_id: Mapped[str | None] = mapped_column(
+        String(26),
+        ForeignKey(
+            "connections.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_spaces_primary_schedule_connection_id_connections",
+        ),
+    )
     created_at: Mapped[datetime] = ts_now()
 
 

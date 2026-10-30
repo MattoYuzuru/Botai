@@ -28,6 +28,25 @@ class EventAttribute(ApiModel):
     value: str
 
 
+class EventSource(ApiModel):
+    """A source that contributed to a class (FR-054): the first one is the university's primary
+    schedule source, whose values the class shows."""
+
+    connection_id: str
+    title: str  # the human title of the source, never an address
+
+
+class EventDisagreement(ApiModel):
+    """Two sources of one university say different things about a class. The primary source
+    decides what the class shows; this says what the other one has, or that the primary has no such
+    class at all."""
+
+    kind: Literal[
+        "time", "location", "teacher", "group", "address", "several", "not_in_primary"
+    ]  # `several`: more than one field differs; `not_in_primary`: see `domain.merge`
+    detail: str  # short and human, e.g. «Календарь» — ауд. 305
+
+
 class ScheduleEventOut(ApiModel):
     id: str
     title: str
@@ -48,6 +67,10 @@ class ScheduleEventOut(ApiModel):
     lesson_number: int | None = None
     links: list[EventLink] = Field(default_factory=list)
     attributes: list[EventAttribute] = Field(default_factory=list)
+    # Every source the class was read from, the primary first; more than one means the class was
+    # merged from several sources of one university (FR-054). `provenance` is the primary's.
+    sources: list[EventSource] = Field(default_factory=list)
+    disagreement: EventDisagreement | None = None
 
 
 class DeadlineOut(ApiModel):

@@ -456,6 +456,21 @@
             "title": "Origin",
             "type": "string"
           },
+          "scheduleRole": {
+            "anyOf": [
+              {
+                "enum": [
+                  "primary",
+                  "secondary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedulerole"
+          },
           "spaceId": {
             "title": "Spaceid",
             "type": "string"
@@ -1020,6 +1035,34 @@
         "title": "EventAttribute",
         "type": "object"
       },
+      "EventDisagreement": {
+        "description": "Two sources of one university say different things about a class. The primary source\ndecides what the class shows; this says what the other one has, or that the primary has no such\nclass at all.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "time",
+              "location",
+              "teacher",
+              "group",
+              "address",
+              "several",
+              "not_in_primary"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "title": "EventDisagreement",
+        "type": "object"
+      },
       "EventLink": {
         "properties": {
           "label": {
@@ -1036,6 +1079,25 @@
           "label"
         ],
         "title": "EventLink",
+        "type": "object"
+      },
+      "EventSource": {
+        "description": "A source that contributed to a class (FR-054): the first one is the university's primary\nschedule source, whose values the class shows.",
+        "properties": {
+          "connectionId": {
+            "title": "Connectionid",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connectionId",
+          "title"
+        ],
+        "title": "EventSource",
         "type": "object"
       },
       "GradeOut": {
@@ -1686,6 +1748,25 @@
         "title": "PoolUserUsage",
         "type": "object"
       },
+      "PrimarySourceIn": {
+        "description": "`connectionId`: a live source of this university; null returns to the default.",
+        "properties": {
+          "connectionId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          }
+        },
+        "title": "PrimarySourceIn",
+        "type": "object"
+      },
       "Provenance": {
         "properties": {
           "connectionId": {
@@ -1881,6 +1962,16 @@
             ],
             "title": "Coursetitle"
           },
+          "disagreement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventDisagreement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "endsAt": {
             "format": "date-time",
             "title": "Endsat",
@@ -1965,6 +2056,13 @@
           },
           "provenance": {
             "$ref": "#/components/schemas/Provenance"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/EventSource"
+            },
+            "title": "Sources",
+            "type": "array"
           },
           "startsAt": {
             "format": "date-time",
@@ -3550,6 +3648,92 @@
         ]
       }
     },
+    "/api/v1/connections/{connection_id}/disable": {
+      "post": {
+        "description": "Switches the source off, reversibly: no sync, its data leaves every view, nothing is deleted.",
+        "operationId": "disable_connection_api_v1_connections__connection_id__disable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Connection",
+        "tags": [
+          "spaces"
+        ]
+      }
+    },
+    "/api/v1/connections/{connection_id}/enable": {
+      "post": {
+        "description": "Switches a disabled source back on; its data returns and it syncs at the next tick.",
+        "operationId": "enable_connection_api_v1_connections__connection_id__enable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Connection",
+        "tags": [
+          "spaces"
+        ]
+      }
+    },
     "/api/v1/connections/{connection_id}/login-session": {
       "post": {
         "description": "A fresh ticket for the screen this connection's login is waiting on.\n\nCall it right before connecting and again on every reconnect: the ticket in the `login`\nblock is only a fast path, it expires after a minute.",
@@ -4809,6 +4993,52 @@
         "summary": "Add Document Url",
         "tags": [
           "sources"
+        ]
+      }
+    },
+    "/api/v1/spaces/{space_id}/primary-source": {
+      "put": {
+        "description": "The source that decides the university's schedule when several sources show the same class\n(FR-054); null goes back to the default. A BotAI setting, nothing is sent to the university.",
+        "operationId": "set_primary_source_api_v1_spaces__space_id__primary_source_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrimarySourceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Primary Source",
+        "tags": [
+          "spaces"
         ]
       }
     },

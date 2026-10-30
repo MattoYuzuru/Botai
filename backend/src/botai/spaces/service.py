@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +21,7 @@ from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Connection, Job, Space, University
+from botai.domain import primary
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import SOURCE_KINDS, PgJobQueue, enqueue_in_session
 from botai.learn.addresses import navigation_url, url_origin
@@ -76,7 +77,11 @@ def _active_task_out(task: ActiveTask | None) -> ActiveTaskOut | None:
 
 
 async def connection_out(
-    vault: Vault, conn: Connection, *, task: TaskInfo | None = None
+    vault: Vault,
+    conn: Connection,
+    *,
+    task: TaskInfo | None = None,
+    schedule_role: Literal["primary", "secondary"] | None = None,
 ) -> ConnectionOut:
     """`task` carries the thread and the active task of the source (`connection_outs` loads it)."""
     task = task or TaskInfo()
@@ -101,6 +106,7 @@ async def connection_out(
         error_detail=conn.error_detail,
         thread_id=task.thread_id,
         active_task=_active_task_out(task.active_task),
+        schedule_role=schedule_role,
     )
 
 
@@ -108,7 +114,11 @@ async def connection_outs(
     session: AsyncSession, vault: Vault, user_id: str, conns: Sequence[Connection]
 ) -> list[ConnectionOut]:
     tasks = await views.load_task_info(session, user_id, [c.id for c in conns])
-    return [await connection_out(vault, c, task=tasks.get(c.id)) for c in conns]
+    roles = await primary.schedule_roles(session, user_id, space_ids={c.space_id for c in conns})
+    return [
+        await connection_out(vault, c, task=tasks.get(c.id), schedule_role=roles.get(c.id))
+        for c in conns
+    ]
 
 
 # --- spaces ---------------------------------------------------------------------------------------
@@ -411,6 +421,50 @@ async def ensure_source(
     session.add(conn)
     await session.flush()
     return conn, True
+
+
+async def set_primary_source(
+    session: AsyncSession, user_id: str, space_id: str, connection_id: str | None
+) -> Space:
+    """Chooses the source that decides the schedule of this university when several sources show
+    the same class (FR-054). `None` goes back to the default (the oldest live source with schedule
+    events). A BotAI setting: nothing is sent to a university and no data is changed or deleted."""
+    space = await repo.get_space(session, user_id, space_id)
+    if connection_id is not None:
+        conn = await repo.get_connection(session, user_id, connection_id)
+        if conn.space_id != space.id:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Источник не относится к этому вузу")
+        if conn.status == "disabled":
+            raise BotaiError(
+                ErrorCode.CONFLICT, "Отключённый источник нельзя сделать основным: сначала включите"
+            )
+    space.primary_schedule_connection_id = connection_id
+    await session.commit()
+    return space
+
+
+async def set_source_enabled(
+    session: AsyncSession,
+    user_id: str,
+    connection_id: str,
+    *,
+    enabled: bool,
+    now: datetime | None = None,
+) -> Connection:
+    """Switches a source off or back on, reversibly. Off: no sync and none of its data in any
+    view (nothing is deleted; the student's choice of the primary source stays and applies again
+    when it is back on). On: a source that had finished connecting is active and syncs at the next
+    tick; one that had not goes back to `draft`."""
+    conn = await repo.get_connection(session, user_id, connection_id)
+    if enabled and conn.status == "disabled":
+        ready = conn.spec_id is not None or conn.adapter is not None
+        conn.status = "active" if ready else "draft"
+        conn.next_sync_at = (now or SystemClock().now()) if ready else None
+    elif not enabled and conn.status != "disabled":
+        conn.status = "disabled"
+        conn.next_sync_at = None
+    await session.commit()
+    return conn
 
 
 async def delete_connection(session: AsyncSession, user_id: str, connection_id: str) -> None:
