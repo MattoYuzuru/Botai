@@ -68,7 +68,7 @@ SMS-шагом (`/cu/…`), JSON API, HTML-страница, Moodle WS, iCal). �
 на …»), смену формата ответа (`recipe_drift`), **скользящее окно дат** (`fakeuni/slide.py`:
 `GET /api/get-myschedule?begin_date=…` отдаёт 7 дней от даты и игнорирует `end_date`, неделя
 контрольной — одна пара, соседние недели полные; страница `/schedule?begin_date=…` вызывает этот
-API; `slide.STATE.sparse` делает расписание тонким во всех окнах). На нём
+API; `slide.STATE.sparse` делает расписание тонким во всех окнах; **правила повторения и повторяющийся ключ query** — `fakeuni/lms.py`, см. ниже). На нём
 `tests/learn/test_horizon_story.py` проверяет probe, обход окон `dateWindow`, поля карточки,
 `open_url`, карту сайта, вопрос студенту при редких данных и расширение горизонта в repair, а
 `tests/browser/test_initiator.py` — страницу-инициатор запроса в настоящем Chromium.
