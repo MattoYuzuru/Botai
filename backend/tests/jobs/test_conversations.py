@@ -1738,7 +1738,7 @@ async def test_a_task_cannot_be_queued_into_a_thread_that_is_gone(env: Env) -> N
 
 
 async def test_deleting_a_thread_keeps_the_history_of_the_jobs_it_had(env: Env) -> None:
-    client, user, thread, job_id = await start(env)
+    client, _user, thread, job_id = await start(env)
     await finish(env, job_id)
     assert (await client.delete(f"/api/v1/chat/threads/{thread}")).status_code == 204
     kept = await env.job(job_id)

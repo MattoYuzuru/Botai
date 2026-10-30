@@ -39,7 +39,9 @@ async def source(
     acc = await env.account()
     _, conn = await env.connection(acc.id, status=status)
     async with env.sm() as session:
-        await session.execute(update(Connection).where(Connection.id == conn).values(adapter=adapter))
+        await session.execute(
+            update(Connection).where(Connection.id == conn).values(adapter=adapter)
+        )
         await session.commit()
     return acc.id, conn
 

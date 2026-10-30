@@ -84,7 +84,9 @@ async def turn_context(
             if profile.get(key)
         )
         lines.append(
-            f"Чат относится к вузу «{data_text(own.title)}»" + (f" ({extra})" if extra else "") + "."
+            f"Чат относится к вузу «{data_text(own.title)}»"
+            + (f" ({extra})" if extra else "")
+            + "."
         )
 
     owned = await service.list_sources(session, user_id)

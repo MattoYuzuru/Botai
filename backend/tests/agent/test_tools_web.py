@@ -398,7 +398,9 @@ async def test_the_site_map_of_a_source_lists_its_sections_and_routes(
     assert f"Входная страница данных: {ENTRY}" in text
     assert r.spy.requests == []  # the map is read from the base, not from the university
     assert r.env.sources.refs  # the map is a source of the answer
-    assert "Такого подключения" in await r.call("site_map", connection_id="01J0000000000000000000NOPE")
+    assert "Такого подключения" in await r.call(
+        "site_map", connection_id="01J0000000000000000000NOPE"
+    )
 
 
 async def test_a_source_without_a_saved_map_says_so(sm: Sm, user_id: str) -> None:
