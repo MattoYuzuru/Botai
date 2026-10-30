@@ -27,7 +27,7 @@ from botai.agent.schemas import (
 )
 from botai.agent.threads import primary_task
 from botai.attachments import service as attachments
-from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, TextBlock
+from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, Quote, TextBlock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -310,6 +310,40 @@ def _waiting_dialogue(job: Job) -> bool:
     )
 
 
+def _quote_of(body: MessageIn) -> Quote | None:
+    """The quote a client sent with a message to the agent, as it is stored: plain one-line text under
+    the secret rule of links. It only decorates, so a bad one is dropped instead of refusing the message."""
+    if body.quote is None or not body.text.strip():
+        return None
+    text = " ".join(body.quote.text.split())
+    try:
+        text = reject_secret_links(text)
+    except BotaiError:
+        return None
+    text = dialogue.clip_quote(text)
+    return Quote(text=text, block_id=body.quote.block_id) if text else None
+
+
+async def _verified(
+    session: AsyncSession, user_id: str, thread_id: str, quote: Quote | None
+) -> Quote | None:
+    """The quote with a block id only if that block is an agent message of this thread; a block the
+    thread does not have is not kept as a reference (the words of the quote still are)."""
+    if quote is None or quote.block_id is None:
+        return quote
+    known = await session.scalar(
+        select(ChatMessage.id)
+        .where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.role == "agent",
+            ChatMessage.blocks.contains([{"id": quote.block_id}]),
+        )
+        .limit(1)
+    )
+    return quote if known is not None else Quote(text=quote.text)
+
+
 async def post_message(
     session: AsyncSession, services: Services, user_id: str, thread_id: str, body: MessageIn
 ) -> MessageAccepted:
@@ -362,6 +396,13 @@ async def post_message(
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
+    # A reply to a task is quoted by the server from the question the task is asking; a quote of the
+    # client (quick replies of the agent) is kept only for a message to the agent, and only with a block
+    # that is in this thread.
+    if target is not None:
+        quote = await dialogue.question_quote(session, target) if text.strip() else None
+    else:
+        quote = await _verified(session, user_id, thread.id, _quote_of(body))
     if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
@@ -379,7 +420,7 @@ async def post_message(
     at = await dialogue.message_time(session, user_id, thread.id, now)
     blocks: list[dict[str, Any]] = []
     if text.strip():
-        block = TextBlock(id=new_id(), at=at, markdown=text)
+        block = TextBlock(id=new_id(), at=at, markdown=text, quote=quote)
         blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
     message = ChatMessage(
         id=new_id(),
@@ -517,8 +558,19 @@ async def _replay(
     sent_files = [
         str(b.get("attachmentId")) for b in existing.blocks if b.get("type") == "attachment"
     ]
+    stored_quote = next(
+        (
+            b["quote"]["text"]
+            for b in existing.blocks
+            if b.get("type") == "text" and isinstance(b.get("quote"), dict)
+        ),
+        None,
+    )
+    to_task = existing_job is not None and existing_job.kind in TASK_KINDS
+    submitted_quote = None if to_task else _quote_of(body)  # a task's quote is the server's
     if (
         stored != submitted
+        or (submitted_quote is not None and submitted_quote.text != stored_quote)
         or sorted(sent_files) != sorted(dict.fromkeys(body.attachment_ids))
         or (body.target_job_id is not None and body.target_job_id != existing.job_id)
     ):

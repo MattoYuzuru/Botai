@@ -26,6 +26,15 @@ class Source(BaseModel):
 
 
 QuickReply = Annotated[str, Field(min_length=1, max_length=60)]
+QUOTE_MAX = 200
+
+
+class Quote(BaseModel):
+    """What a student's message answers: the question of the agent or of a task, as short plain text."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, alias_generator=to_camel)
+    text: str = Field(min_length=1, max_length=QUOTE_MAX)
+    block_id: Ulid | None = Field(default=None)
 
 
 class TextBlock(_Block):
@@ -33,6 +42,10 @@ class TextBlock(_Block):
     markdown: str = Field(max_length=8000)
     sources: list[Source] | None = Field(default=None, max_length=10)
     quick_replies: list[QuickReply] | None = Field(default=None, max_length=4)
+    quote: Quote | None = None
+    # A pick from a question (an option, a confirm button, "password passed"): not the student's own
+    # words, so a model reads it as data.
+    picked: bool | None = None
 
 
 class ThinkingBlock(_Block):
@@ -65,6 +78,7 @@ class InputBlock(_Block):
     placeholder: str | None = Field(default=None, max_length=120)
     required: bool
     max_length: int = Field(default=500, ge=1, le=2000)
+    login: bool = False  # a field of a source's login: its value is never shown or read by a model
     secret: bool = False
     autocomplete: Literal[
         "off", "username", "email", "current-password", "one-time-code", "url"
@@ -76,6 +90,7 @@ class ConfirmBlock(_Block):
     question: str = Field(max_length=500)
     confirm_label: str = Field(max_length=40)
     cancel_label: str = Field(max_length=40)
+    details: str | None = Field(default=None, max_length=2000)
 
 
 class SummaryItem(BaseModel):

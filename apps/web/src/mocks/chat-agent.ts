@@ -96,6 +96,21 @@ export function observe(ctx: AgentCtx, sim: JobSim, threadId: string): void {
       const existing = messages.find(
         (message) => message.jobId === sim.jobId && message.blocks.some((item) => item.id === block.id),
       );
+      if (sim.kind === "chat" && block.type === "text" && !existing) {
+        // Ход агента оставляет в треде шаги, через которые прошёл, прямо перед ответом: «Думал · N» остаётся над ним.
+        const steps = new Map<string, KnownBlock>();
+        for (const item of sim.events)
+          if (item.event === "block" && (item.data as KnownBlock).type === "thinking")
+            steps.set((item.data as KnownBlock).id, item.data as KnownBlock);
+        if (steps.size > 0)
+          messages.push({
+            id: ulid(),
+            role: "agent",
+            jobId: sim.jobId,
+            blocks: [...steps.values()] as never,
+            createdAt: new Date(Date.parse(block.at) - 1).toISOString(),
+          });
+      }
       if (existing) {
         existing.blocks = existing.blocks.map((item) => (item.id === block.id ? (block as never) : item));
       } else {
@@ -125,6 +140,62 @@ export function observe(ctx: AgentCtx, sim: JobSim, threadId: string): void {
   };
   for (const event of sim.events) project(event);
   sim.onEvent = project;
+  // Ответ на вопрос задачи попадает в тред сообщением человека: слова варианта под цитатой вопроса (как на сервере).
+  sim.onAnswer = (blockId, values) => {
+    const asked = sim.events.find(
+      (event) => event.event === "block" && (event.data as { id?: string }).id === blockId,
+    )?.data as KnownBlock | undefined;
+    if (!asked) return;
+    const at = ctx.iso();
+    const question =
+      asked.type === "approval" ? asked.proposal.intent : "question" in asked ? asked.question : "";
+    ctx.state().messages[threadId] = [
+      ...(ctx.state().messages[threadId] ?? []),
+      {
+        id: ulid(),
+        role: "user",
+        jobId: sim.jobId,
+        createdAt: at,
+        blocks: [
+          {
+            type: "text",
+            id: ulid(),
+            at,
+            markdown: acknowledgementText(asked, values),
+            picked: true,
+            ...(question ? { quote: { text: question.slice(0, 200), blockId } } : {}),
+          } as never,
+        ],
+      },
+    ];
+    const thread = ctx.find(threadId);
+    if (thread && at > thread.lastMessageAt) thread.lastMessageAt = at;
+    ctx.save();
+  };
+}
+
+/** Что тред показывает вместо ответа: вариант словами; пароль, код и логин не повторяются (как `acknowledgement_text`). */
+export function acknowledgementText(block: KnownBlock, values: unknown): string {
+  if (block.type === "confirm") return values === true ? block.confirmLabel : block.cancelLabel;
+  if (block.type === "choice") {
+    const labels = new Map(block.options.map((option) => [option.value, option.label]));
+    const picked = typeof values === "string" ? [values] : Array.isArray(values) ? values : [];
+    return (
+      picked
+        .filter((value): value is string => typeof value === "string" && value !== "")
+        .map((value) => labels.get(value) ?? value)
+        .join(", ") || "Не знаю"
+    );
+  }
+  if (block.type === "input") {
+    if (block.inputKind === "password") return "Пароль передан";
+    if (block.inputKind === "code") return "Код передан";
+    const auth =
+      block.login === true || block.autocomplete === "username" || block.autocomplete === "one-time-code";
+    if (block.secret || auth) return block.autocomplete === "username" ? "Логин передан" : "Ответ передан";
+    return typeof values === "string" && values ? values : "Ответ передан";
+  }
+  return "Ответ передан";
 }
 
 export interface TaskInput {

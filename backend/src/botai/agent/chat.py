@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent import facts, harness
 from botai.agent.attachment_context import attachments_message
@@ -28,6 +29,7 @@ from botai.agent.memory import (
     refresh_summary,
     split_recent,
     summary_message,
+    turn_messages,
 )
 from botai.agent.reader import DomainReader
 from botai.agent.sources import Finalized, finalize
@@ -41,7 +43,7 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobContext
 from botai.core.llm import LlmMessage
 from botai.core.services import Services
-from botai.db.models import ChatMessage, ChatThread
+from botai.db.models import ChatMessage, ChatThread, JobEvent
 from botai.jobs.dialogue import message_time
 
 log = logging.getLogger("botai.agent.chat")
@@ -113,7 +115,7 @@ def meter_segments(
     ctx_msg: LlmMessage,
     summary: LlmMessage | None,
     recent: list[LlmMessage],
-    question: LlmMessage,
+    question: list[LlmMessage],
 ) -> dict[str, int]:
     """Estimated tokens by kind for the context meter (agent-harness.md §6)."""
     by_tool = {"data": 0, "documents": 0}
@@ -127,7 +129,7 @@ def meter_segments(
         "profile": estimate_messages([ctx_msg]),
         "data": by_tool["data"],
         "documents": by_tool["documents"],
-        "history": estimate_messages([*([summary] if summary else []), *recent, question]),
+        "history": estimate_messages([*([summary] if summary else []), *recent, *question]),
     }
 
 
@@ -173,8 +175,8 @@ async def handle_chat(
         )
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
-    question_msg = LlmMessage(role="user", content=question.text)
-    messages = [ctx_msg, *([summary_msg] if summary_msg else []), *recent_msgs, question_msg]
+    question_msgs = turn_messages(question)
+    messages = [ctx_msg, *([summary_msg] if summary_msg else []), *recent_msgs, *question_msgs]
 
     env = ChatEnv(
         services=services,
@@ -232,7 +234,7 @@ async def handle_chat(
         "tools": [t.name for t in result.tool_calls],
         "blockedCalls": result.blocked_calls,
         "injections": len(result.findings),
-        "context": meter_segments(result, ctx_msg, summary_msg, recent_msgs, question_msg),
+        "context": meter_segments(result, ctx_msg, summary_msg, recent_msgs, question_msgs),
         "sources": [
             {
                 "title": r.title,
@@ -285,7 +287,8 @@ async def _store_reply(
     seen: SeenLinks,
 ) -> str:
     """Persist the reply once per job (a retried job does not answer twice). The plan the turn
-    published lives in its own message with the same job id; the reply is the one starting with text."""
+    published and the steps it went through ("Думал · 12 с") live in their own messages with the
+    same job id, stored just before the reply; the reply is the one starting with text."""
     async with services.db() as session:
         existing = (
             await session.execute(
@@ -300,6 +303,22 @@ async def _store_reply(
         ).scalar_one_or_none()
         if existing:
             return existing
+        steps = await _thinking_steps(session, ctx)
+        if steps:
+            session.add(
+                ChatMessage(
+                    id=new_id(),
+                    user_id=ctx.user_id,
+                    thread_id=thread.id,
+                    role="agent",
+                    blocks=steps,
+                    job_id=ctx.job_id,
+                    created_at=await message_time(
+                        session, ctx.user_id, thread.id, services.clock.now()
+                    ),
+                )
+            )
+            await session.flush()  # the reply is ordered after the steps
         message_id = new_id()
         session.add(
             ChatMessage(
@@ -329,6 +348,27 @@ async def _store_reply(
             row.seen_links = seen.dump()
         await session.commit()
         return message_id
+
+
+MAX_STEPS = 40
+
+
+async def _thinking_steps(session: AsyncSession, ctx: JobContext) -> list[dict[str, Any]]:
+    """The stages the turn showed while it worked, as they ended (a stage re-sent under its id is
+    taken in its last state). They stay in the thread, so "Думал · N" remains above the answer."""
+    rows = await session.scalars(
+        select(JobEvent.data)
+        .where(
+            JobEvent.job_id == ctx.job_id,
+            JobEvent.type == "block",
+            JobEvent.data["type"].astext == "thinking",
+        )
+        .order_by(JobEvent.seq)
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for data in rows:
+        by_id[str(data["id"])] = dict(data)
+    return list(by_id.values())[:MAX_STEPS]
 
 
 def title_from(question: str) -> str:

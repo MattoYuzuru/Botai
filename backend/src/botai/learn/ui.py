@@ -28,6 +28,7 @@ from botai.core.clock import Clock
 from botai.core.dialogue import DialogueContext
 from botai.core.ids import new_id
 from botai.core.jobs import JobContext
+from botai.learn.summary import DETAILS_MAX, UNITS, counted, fit_text
 from botai.sources.adapter import Record
 from botai.sources.vocab import KIND_LABELS
 
@@ -85,7 +86,11 @@ class Ui:
             SummaryBlock(id=new_id(), at=self._now(), title=title[:200], groups=groups)
         )
 
-    async def confirm(self, question: str, yes: str, no: str) -> bool:
+    async def confirm(
+        self, question: str, yes: str, no: str, *, details: str | None = None
+    ) -> bool:
+        """Ask for confirmation. `details` (markdown) is what is confirmed: it is shown in the same
+        message as the question and the buttons."""
         answer = await self.ctx.ask(
             ConfirmBlock(
                 id=new_id(),
@@ -93,6 +98,7 @@ class Ui:
                 question=question[:500],
                 confirm_label=yes[:40],
                 cancel_label=no[:40],
+                details=fit_text(details, DETAILS_MAX) if details else None,
             )
         )
         return truthy(answer)
@@ -233,9 +239,10 @@ def sample_of(records: list[Record], kind: Kind, now: datetime) -> list[Record]:
 
 
 def kinds_text(kinds: dict[str, dict[str, int]], only: Collection[str] | None = None) -> str:
-    """Counts per kind in a fixed order, from the Normalizer's per-kind stats."""
+    """Counts per kind in a fixed order, in words: "расписание — 35 занятий, дедлайны — 12 заданий
+    со сроками", from the Normalizer's per-kind stats."""
     return ", ".join(
-        f"{KIND_LABELS[k].lower()}: {v['inserted'] + v['updated'] + v['unchanged']}"
+        f"{KIND_LABELS[k].lower()} — {counted(v['inserted'] + v['updated'] + v['unchanged'], UNITS[k])}"
         for k in KIND_LABELS
         if k in kinds and (only is None or k in only)
         for v in [kinds[k]]

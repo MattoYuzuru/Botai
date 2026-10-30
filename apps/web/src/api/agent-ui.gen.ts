@@ -39,6 +39,21 @@ export interface Text {
    * @maxItems 4
    */
   quickReplies?: string[];
+  quote?: Quote;
+  /**
+   * Сообщение студента — не его слова, а выбор из предложенного вопросом (вариант, кнопка согласия, отметка «Пароль передан»): текст взят из вопроса, поэтому модель читает его как данные, а не как слова студента.
+   */
+  picked?: boolean;
+}
+export interface Quote {
+  /**
+   * Короткая цитата того, на что отвечает сообщение студента: вопрос агента или задачи, обычным текстом.
+   */
+  text: string;
+  /**
+   * ULID
+   */
+  blockId?: string;
 }
 export interface Thinking {
   type: "thinking";
@@ -91,6 +106,10 @@ export interface Input {
   required: boolean;
   maxLength?: number;
   /**
+   * Поле входа в источник (логин, пароль, код, любое другое поле формы входа): значение не показывается в ленте и не читается моделью, в историю идёт только отметка «Ответ передан».
+   */
+  login?: boolean;
+  /**
    * Пароль, код MFA, токен. Значение идёт API → Vault → воркер, мимо LLM, не пишется в события и логи; клиент не хранит его в состоянии после отправки.
    */
   secret?: boolean;
@@ -103,6 +122,10 @@ export interface Confirm {
   question: string;
   confirmLabel: string;
   cancelLabel: string;
+  /**
+   * Что подтверждается, markdown (сводка собранного): показывается в одном сообщении с вопросом и кнопками.
+   */
+  details?: string;
 }
 export interface Summary {
   type: "summary";
