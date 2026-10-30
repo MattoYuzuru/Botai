@@ -100,7 +100,10 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "browse_source",
         "fetch_public_page",
     }
-    assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {"connection_id"}
+    assert set(TOOL_SPECS["request_login"].parameters["properties"]) == {
+        "connection_id",
+        "on_screen",
+    }
 
 
 async def test_schedule_is_shown_in_the_space_time_zone_with_sources(sm: Sm, user_id: str) -> None:

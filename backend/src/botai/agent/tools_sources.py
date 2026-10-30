@@ -638,7 +638,16 @@ async def request_login(env: ChatEnv, args: dict[str, Any]) -> str:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     if conn.status == "disabled":
         return "Подключение отключено. Защищённый вход не запущен."
+    # Native fields of BotAI by default (e-mail, password, code); the screen only when the
+    # student asked to log in on the site themselves.
+    on_screen = args.get("on_screen") is True
+    payload: dict[str, Any] = {"source": "chat"}
+    if on_screen:
+        payload["manual_login"] = True
     async with env.services.db() as session:
+        running = {
+            t.job_id for t in await active_tasks(session, env.user_id) if t.connection_id == conn.id
+        }
         try:
             job_id = await service.enqueue_for_connection(
                 session,
@@ -647,16 +656,14 @@ async def request_login(env: ChatEnv, args: dict[str, Any]) -> str:
                 connection_id,
                 JobKind.CONNECT,
                 thread_id=env.thread_id,
-                payload={"manual_login": True, "source": "chat"},
+                payload=payload,
                 now=env.services.clock.now(),
             )
         except BotaiError as exc:
             return f"Вход в «{conn.title}» не запущен: {exc.detail}."
         job = await _load_job(session, env.user_id, job_id)
     _task_card(env, job, "connect", task_title("connect", conn.title), conn.id)
-    if job is not None and not (
-        job.kind == JobKind.CONNECT.value and job.payload.get("manual_login") is True
-    ):
+    if job is not None and job.id in running:
         controls = ""
         pending = (job.payload.get("dialogue") or {}).get("pending")
         if (
@@ -761,12 +768,13 @@ SPECS = {
     ),
     "request_login": spec(
         "request_login",
-        "Открыть защищённый ручной вход BotAI по явной просьбе студента войти заново, войти "
-        "самому или открыть браузер для входа, и когда сессия источника истекла. Только "
-        "известный connection_id своего подключения. При неоднозначности сначала уточните "
-        "подключение. Существующее активное задание продолжается без второго браузера. "
-        "Пароли, коды, URL и cookie сюда не передаются.",
-        {"connection_id": _TEXT},
+        "Войти в источник заново или продолжить незавершённое подключение со входом: студент "
+        "вводит почту, пароль и код в защищённых полях BotAI в этом чате. on_screen=true — "
+        "только если студент сам просит войти на сайте на экране браузера. Только известный "
+        "connection_id своего подключения; при неоднозначности сначала уточните. Существующее "
+        "активное задание продолжается без второго браузера. Пароли, коды, URL и cookie сюда "
+        "не передаются.",
+        {"connection_id": _TEXT, "on_screen": {"type": "boolean"}},
         ["connection_id"],
     ),
 }

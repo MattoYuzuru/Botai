@@ -224,7 +224,7 @@ async def test_explicit_browser_login_can_start_protected_connect_from_chat(
     r.llm._queue.extend(
         [
             step(call("list_universities")),
-            step(call("request_login", connection_id=r.conn_id)),
+            step(call("request_login", connection_id=r.conn_id, on_screen=True)),
             final("Запросил защищённый вход. Введите данные в полях приложения, не в чате."),
         ]
     )

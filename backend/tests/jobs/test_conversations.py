@@ -1439,7 +1439,7 @@ async def test_manual_login_resumes_connect_in_the_current_thread_and_preserves_
         services=env.services, user_id=user, thread_id=other_thread, job_id=None, space_id=None
     )
     results = await asyncio.gather(
-        *(request_login(tools, {"connection_id": connection}) for _ in range(2))
+        *(request_login(tools, {"connection_id": connection, "on_screen": True}) for _ in range(2))
     )
     runtime = await runtime_of(client, other_thread)
     resumed_id = runtime["activeJob"]["id"]
@@ -1509,7 +1509,7 @@ async def test_manual_login_returns_active_source_without_replacing_it(
     tools = ChatEnv(
         services=env.services, user_id=user, thread_id=current, job_id=None, space_id=None
     )
-    result = await request_login(tools, {"connection_id": connection})
+    result = await request_login(tools, {"connection_id": connection, "on_screen": True})
     assert "уже идёт" in result
     assert "Новый вход не запущен" in result
     assert active_id not in result
