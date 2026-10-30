@@ -512,16 +512,18 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       const upload = await readUpload(request);
       if (!upload) return problem(422, "validation", "Файл не передан");
       const file = upload.file;
+      // undici (Node на Linux) кодирует имя файла в multipart процентами; браузер шлёт UTF-8 как есть.
+      const name = decodedName(file.name);
       if (file.size > MAX_FILE_BYTES) return problem(413, "file_too_large", "Файл больше 20 МБ");
-      if (file.type === "application/x-msdownload" || /\.(exe|bat|dll)$/i.test(file.name))
+      if (file.type === "application/x-msdownload" || /\.(exe|bat|dll)$/i.test(name))
         return problem(415, "unsupported_type", "Такой тип файла не поддерживается");
       const threadId = upload.threadId;
       const item: MockAttachment = {
         id: ulid(),
-        name: file.name,
+        name,
         mime: file.type || "application/octet-stream",
         size: file.size,
-        kind: kindOfMime(file.type, file.name),
+        kind: kindOfMime(file.type, name),
         createdAt: iso(),
         threadId: threadId || null,
         attached: false,
@@ -571,3 +573,12 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
 }
 
 export type { ChatState };
+
+function decodedName(name: string): string {
+  if (!/%[0-9A-Fa-f]{2}/.test(name)) return name;
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
