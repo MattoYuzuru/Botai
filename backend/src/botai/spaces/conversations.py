@@ -186,6 +186,21 @@ async def _empty_thread(
     )
 
 
+async def thread_for_connection(
+    session: AsyncSession, conn: Connection, now: datetime
+) -> ChatThread:
+    """The thread that shows this source's tasks: that of its newest task, else a thread opened
+    for it earlier and never written to, else a new one (titled with the source)."""
+    thread = await connection_thread(session, conn.user_id, conn.id)
+    if thread is None:
+        thread = await _empty_thread(session, conn.user_id, conn.space_id, conn.title)
+    if thread is None:
+        thread = _new_thread(conn.user_id, conn.space_id, conn.title, now)
+        session.add(thread)
+        await session.flush()
+    return thread
+
+
 async def attach_conversation(
     session: AsyncSession, services: Services, user_id: str, connection_id: str, job_id: str | None
 ) -> ChatThread:
@@ -211,15 +226,9 @@ async def attach_conversation(
     thread: ChatThread | None = None
     if job is not None and job.thread_id:
         thread = await owned_thread(session, user_id, job.thread_id)
-    if thread is None:
-        thread = await connection_thread(session, user_id, conn.id)
     now = services.clock.now()
     if thread is None:
-        thread = await _empty_thread(session, user_id, conn.space_id, conn.title)
-    if thread is None:
-        thread = _new_thread(user_id, conn.space_id, conn.title, now)
-        session.add(thread)
-        await session.flush()
+        thread = await thread_for_connection(session, conn, now)
     if job is not None and job.thread_id is None:
         await adopt_job(session, job, thread.id, now)
     await session.commit()

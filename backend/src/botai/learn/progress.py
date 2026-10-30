@@ -108,6 +108,9 @@ class ResearchProgress(BaseModel):
     pending_tokens: int = Field(default=0, ge=0)
     pending_active_ms: int = Field(default=0, ge=0)
     uncertain_calls: int = Field(default=0, ge=0)
+    # Kinds whose thin horizon the student was already asked about: once per research, even
+    # across restarts and a changed intent.
+    horizon_asked: list[Kind] = Field(default_factory=list, max_length=8)
 
     @property
     def tokens(self) -> int:
@@ -186,6 +189,7 @@ class ResearchLedger:
                     steps=previous.steps,
                     tokens=previous.tokens,
                     requests=previous.requests,
+                    probes=previous.probes,
                     active_ms=previous.active_ms,
                     reserved_tokens=previous.reserved_tokens,
                     uncertain_calls=previous.uncertain_calls,

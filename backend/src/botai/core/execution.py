@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -83,3 +86,27 @@ async def save_secret(
         await ctx.put_secret(user_id, connection_id, kind, value, expires_at=expires_at)
     else:
         await vault.put(user_id, connection_id, kind, value, expires_at=expires_at)
+
+
+# A login that runs unattended (a scheduled sync) stays silent while the stored password is enough.
+# The moment it needs the student (a code, a push approval, a screen), the caller that started it
+# wants to know, so the question appears where the student will see it. The login announces that
+# moment; the caller says what to do about it. Nobody listening is the normal case.
+StudentNeededHook = Callable[[], Awaitable[None]]
+_student_needed: ContextVar[StudentNeededHook | None] = ContextVar("student_needed", default=None)
+
+
+@contextmanager
+def when_the_student_is_needed(hook: StudentNeededHook) -> Generator[None]:
+    token = _student_needed.set(hook)
+    try:
+        yield
+    finally:
+        _student_needed.reset(token)
+
+
+async def student_is_needed() -> None:
+    """Called by a login right before it asks a person for something."""
+    hook = _student_needed.get()
+    if hook is not None:
+        await hook()

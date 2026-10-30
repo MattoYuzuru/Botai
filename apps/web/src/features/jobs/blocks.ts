@@ -3,9 +3,25 @@
  * извне, поэтому каждое поле проверяется. Неизвестный тип или битый блок не игнорируется и не исполняется:
  * он превращается в `UnknownBlock` и показывается текстом с пометкой.
  */
-import type { AgentUiBlock } from "@/api/agent-ui.gen";
+import type { AgentUiBlock, Text } from "@/api/agent-ui.gen";
+import {
+  type AttachmentBlock,
+  MAX_QUICK_REPLIES,
+  MAX_QUICK_REPLY_CHARS,
+  type PlanBlock,
+  type TaskBlock,
+} from "@/api/v3";
 
-export type KnownBlock = AgentUiBlock;
+/** Текст ответа: в v3 к нему могут прилагаться быстрые ответы (кнопки под последним ответом). */
+export type TextBlock = Text & { quickReplies?: string[] };
+
+/** Блоки контракта: схема `agent-ui` плюс `plan`, `attachment`, `task` и быстрые ответы v3 (§3.3). */
+export type KnownBlock =
+  | Exclude<AgentUiBlock, { type: "text" }>
+  | TextBlock
+  | PlanBlock
+  | AttachmentBlock
+  | TaskBlock;
 export type BlockType = KnownBlock["type"];
 
 export interface UnknownBlock {
@@ -31,6 +47,9 @@ export const KNOWN_TYPES: readonly BlockType[] = [
   "login",
   "wait",
   "handoff",
+  "plan",
+  "attachment",
+  "task",
 ];
 
 type Rec = Record<string, unknown>;
@@ -42,6 +61,9 @@ const isBool = (value: unknown): value is boolean => typeof value === "boolean";
 const optStr = (value: unknown) => value === undefined || isStr(value);
 const optBool = (value: unknown) => value === undefined || isBool(value);
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const PLAN_STATES = ["pending", "active", "done", "skipped"];
+const ATTACHMENT_KINDS = ["image", "document", "audio", "other"];
+const TASK_KIND_NAMES = ["connect", "repair", "sync", "ingest"];
 const isId = (value: unknown): value is string => isStr(value) && ULID.test(value);
 
 const SOURCE_OK = (value: unknown) =>
@@ -139,6 +161,37 @@ function isValidKnown(o: Rec): boolean {
       return isStr(o.message) && optStr(o.expiresAt);
     case "handoff":
       return isStr(o.title) && isStr(o.url) && isStr(o.text);
+    case "plan":
+      return (
+        isStr(o.title) &&
+        Array.isArray(o.steps) &&
+        o.steps.length >= 1 &&
+        o.steps.length <= 20 &&
+        o.steps.every(
+          (step) =>
+            isRecord(step) &&
+            isStr(step.id) &&
+            isStr(step.title) &&
+            PLAN_STATES.includes(step.state as string),
+        )
+      );
+    case "attachment":
+      return (
+        isStr(o.attachmentId) &&
+        isStr(o.name) &&
+        isStr(o.mime) &&
+        typeof o.size === "number" &&
+        ATTACHMENT_KINDS.includes(o.kind as string)
+      );
+    case "task":
+      return (
+        isStr(o.jobId) &&
+        TASK_KIND_NAMES.includes(o.kind as string) &&
+        isStr(o.title) &&
+        isStr(o.state) &&
+        isStr(o.threadId) &&
+        (o.connectionId === undefined || isStr(o.connectionId))
+      );
     default:
       return false;
   }
@@ -166,9 +219,28 @@ function unknownFrom(o: Rec, fallbackId: string): UnknownBlock {
 export function parseBlock(raw: unknown, fallbackId = "unknown"): ParsedBlock | null {
   if (!isRecord(raw)) return null;
   if (isStr(raw.type) && (KNOWN_TYPES as readonly string[]).includes(raw.type) && isValidKnown(raw)) {
-    return raw as unknown as KnownBlock;
+    return (raw.type === "text" ? withQuickReplies(raw) : raw) as unknown as KnownBlock;
   }
   return unknownFrom(raw, fallbackId);
+}
+
+/** Быстрые ответы: до четырёх непустых строк не длиннее 60 знаков; всё остальное молча отбрасывается. */
+export function sanitizeQuickReplies(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const options = value
+    .filter((item): item is string => isStr(item))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0 && item.length <= MAX_QUICK_REPLY_CHARS);
+  // Одинаковые подписи схлопываются: кнопка с тем же текстом ничего не добавляет.
+  const unique = [...new Set(options)].slice(0, MAX_QUICK_REPLIES);
+  return unique.length > 0 ? unique : undefined;
+}
+
+function withQuickReplies(raw: Rec): Rec {
+  if (!("quickReplies" in raw)) return raw;
+  const { quickReplies, ...rest } = raw;
+  const options = sanitizeQuickReplies(quickReplies);
+  return options ? { ...rest, quickReplies: options } : rest;
 }
 
 /** Применяет `block_update`: поверхностное слияние патча и повторная проверка формы. */
@@ -178,11 +250,4 @@ export function patchBlock(current: ParsedBlock, patch: unknown): ParsedBlock {
   // Тип и идентификатор патчем не меняются.
   const { type: _type, id: _id, ...rest } = patch;
   return parseBlock({ ...current, ...rest }, current.id) ?? current;
-}
-
-/** Блок, на который ждут ответа человека. */
-export function isQuestion(block: ParsedBlock): boolean {
-  return (
-    block.type === "choice" || block.type === "input" || block.type === "confirm" || block.type === "approval"
-  );
 }

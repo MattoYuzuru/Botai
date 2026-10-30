@@ -1,17 +1,19 @@
-import { Badge, Button, Card, EmptyState, Icon, ListRow, useNow } from "@botai/design";
+import { Button, Card, EmptyState, Icon, useNow } from "@botai/design";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
+import type { Connection } from "@/api/types";
+import { addSourceLink, connectUniversityLink } from "@/features/data/chat-links";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { AddDocumentSheet } from "../add-document-sheet";
 import { ConnectionSheet } from "../connection-sheet";
 import { type SectionContext, SectionFrame } from "../section-frame";
+import { SourceList } from "../source-list";
 import { useSectionState } from "../use-section";
 
 /**
- * «Подключения»: источники каждого вуза со статусом человеческим языком. Нажатие открывает управление:
- * ссылка календаря или ключ, «Забыть пароль», удаление. Здесь же — «Добавить документ». Обновление и повторы
- * идут сами, кнопки «Обновить» нет.
+ * «Источники»: все источники выбранных вузов с управлением. Нажатие открывает карточку: ссылка календаря или
+ * ключ, «Забыть пароль», удаление. «Добавить источник» и «Подключить ещё вуз» открывают чат с готовой просьбой,
+ * здесь же — «Добавить документ». Обновление и повторы идут сами, кнопки «Обновить» нет.
  */
 export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
   const nowMs = useNow(30_000);
@@ -37,9 +39,9 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
       actions={
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" asChild>
-            <Link to="/connect" search={{ space: ctx.scope.spaceId ?? undefined }}>
+            <Link {...connectUniversityLink()}>
               <Icon name="plus" size={20} />
-              Подключить источник
+              Подключить ещё вуз
             </Link>
           </Button>
           <Button variant="secondary" leadingIcon="document" onClick={() => setAdding(true)}>
@@ -52,12 +54,12 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
         <EmptyState icon={ctx.def.icon} {...ctx.def.empty} />
       ) : (
         spaces.map((space) => (
-          <SpaceConnections
+          <SpaceSources
             key={space.id}
             space={space}
             nowMs={nowMs}
             showTitle={spaces.length > 1}
-            onOpen={setOpenId}
+            onOpen={(connection) => setOpenId(connection.id)}
           />
         ))
       )}
@@ -77,7 +79,7 @@ export function ConnectionsSection({ ctx }: { ctx: SectionContext }) {
   );
 }
 
-function SpaceConnections({
+function SpaceSources({
   space,
   nowMs,
   showTitle,
@@ -86,7 +88,7 @@ function SpaceConnections({
   space: SpaceInfo;
   nowMs: number;
   showTitle: boolean;
-  onOpen: (id: string) => void;
+  onOpen: (connection: Connection) => void;
 }) {
   if (space.connections.length === 0) return null;
   return (
@@ -94,35 +96,14 @@ function SpaceConnections({
       <h2 id={`connections-${space.id}`} className={showTitle ? "px-1 type-heading text-fg" : "sr-only"}>
         {space.title}
       </h2>
-      <Card padding="sm">
-        <ul>
-          {space.connections.map((connection) => {
-            const view = describeConnection(connection, nowMs, {
-              shortTitle: space.shortTitle,
-              timeZone: space.timeZone,
-            });
-            return (
-              <li key={connection.id} data-connection-status={connection.status}>
-                <ListRow
-                  icon="connection"
-                  title={connection.title}
-                  meta={
-                    <>
-                      <span>
-                        {connectionKindTitle(connection.kind)} · {originLabel(connection)}
-                      </span>
-                      <Badge tone={view.tone} icon={view.icon}>
-                        {view.label}
-                      </Badge>
-                      <span>{view.detail}</span>
-                    </>
-                  }
-                  onOpen={() => onOpen(connection.id)}
-                />
-              </li>
-            );
-          })}
-        </ul>
+      <Card padding="sm" className="flex flex-col">
+        <SourceList space={space} nowMs={nowMs} onOpen={onOpen} />
+        <Button variant="ghost" asChild className="self-start">
+          <Link {...addSourceLink(space.title)}>
+            <Icon name="plus" size={20} />
+            Добавить источник
+          </Link>
+        </Button>
       </Card>
     </section>
   );

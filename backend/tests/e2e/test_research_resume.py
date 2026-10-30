@@ -37,7 +37,6 @@ ENTRY = data.ORIGIN + "/app"
 
 async def configured_learner(stack: Stack, email: str):
     env = stack.env
-    env.settings.botai_research_enabled = True
     learner = await Campus(env).enrol(email, url=ENTRY)
     async with env.sm() as session, session.begin():
         job = await session.get(m.Job, learner.connect_job)
@@ -75,7 +74,7 @@ async def test_saved_proposal_survives_shutdown_then_fresh_runtime_canaries_with
     env = stack.env
     monkeypatch.setattr(fakeuni_login, "OTP_REQUIRED", False)
     learner = await configured_learner(stack, "research-restart@example.com")
-    first_llm = ScriptedLlm(queue=[ls.timetable_answer()])
+    first_llm = ls.EvidenceLlm(queue=[ls.timetable_answer()])
     env.services.llm = first_llm
     ready, hold = asyncio.Event(), asyncio.Event()
     first_canary = Explorer._canary
@@ -189,7 +188,7 @@ async def test_saved_proposal_survives_shutdown_then_fresh_runtime_canaries_with
             await new_gateway.aclose()
 
 
-class SlicePlanner(ScriptedLlm):
+class SlicePlanner(ls.EvidenceLlm):
     def __init__(self) -> None:
         super().__init__(queue=[ls.timetable_answer()])
 
@@ -278,12 +277,12 @@ async def test_new_scope_message_during_canary_blocks_late_activation(
     )
     assert attached.status_code == 200
     thread_id = attached.json()["id"]
-    env.services.llm = ScriptedLlm(queue=[ls.timetable_answer()])
+    env.services.llm = ls.EvidenceLlm(queue=[ls.timetable_answer()])
     ready, release = asyncio.Event(), asyncio.Event()
     original = explorer_module.run_canary
 
-    async def delayed_result(spec, sctx, *, require):
-        result = await original(spec, sctx, require=require)
+    async def delayed_result(spec, sctx, *, require, capture_failures=False):
+        result = await original(spec, sctx, require=require, capture_failures=capture_failures)
         assert result.ok
         ready.set()
         await release.wait()
@@ -357,7 +356,7 @@ async def test_committed_activation_survives_shutdown_before_first_sync_without_
     env = stack.env
     monkeypatch.setattr(fakeuni_login, "OTP_REQUIRED", False)
     learner = await configured_learner(stack, "research-activation-window@example.com")
-    initial_llm = ScriptedLlm(queue=[ls.timetable_answer()])
+    initial_llm = ls.EvidenceLlm(queue=[ls.timetable_answer()])
     env.services.llm = initial_llm
     activated, hold = asyncio.Event(), asyncio.Event()
     original_sync = explorer_module.sync_connection

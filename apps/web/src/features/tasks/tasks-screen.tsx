@@ -6,6 +6,7 @@ import {
   EmptyState,
   Icon,
   Skeleton,
+  SourceStatusBar,
   useNow,
   useOnline,
 } from "@botai/design";
@@ -15,7 +16,7 @@ import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
 import { resolveDataState } from "@/features/data/data-state";
 import { deadlinesQuery } from "@/features/data/queries";
-import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
+import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
@@ -86,7 +87,12 @@ export function TasksScreen() {
   const selected = views.find((view) => view.deadline.id === openId) ?? null;
 
   return (
-    <Screen title="Задания" subtitle={scope.isAll ? "Все вузы" : scope.spaces[0]?.title} trailing={trailing}>
+    <Screen
+      title="Задания"
+      subtitle={scope.isAll ? "Все вузы" : scope.spaces[0]?.title}
+      meta={<SourceStatusBar items={sourceStatusItems(scope.spaces)} nowMs={nowMs} />}
+      trailing={trailing}
+    >
       <div data-screen="tasks" data-state={state} className="flex flex-col gap-6">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
         <MascotPresence screen="deadlines" />
@@ -170,8 +176,6 @@ export function TasksScreen() {
             })}
           </>
         )}
-
-        <FreshnessFooter spaces={scope.spaces} nowMs={nowMs} />
       </div>
 
       <DeadlineSheet view={selected} spaces={directory.byId} nowMs={nowMs} onClose={() => setOpenId(null)} />

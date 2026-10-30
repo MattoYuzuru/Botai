@@ -80,6 +80,7 @@ def test_the_agent_has_exactly_these_tools() -> None:
         "sync_source",
         "read_document",
         "browse_source",
+        "site_map",
         "fetch_public_page",
         "remember",
         "forget",

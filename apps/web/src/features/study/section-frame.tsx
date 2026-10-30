@@ -1,9 +1,9 @@
-import { useNow } from "@botai/design";
+import { SourceStatusBar, useNow } from "@botai/design";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { Screen } from "@/app/screen";
 import type { DataState } from "@/features/data/data-state";
-import { FreshnessFooter, ScreenSyncIndicator, SourceNotices } from "@/features/data/source-notices";
+import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import type { Scope, SpaceDirectory } from "@/features/data/use-space-directory";
 import type { SectionDef } from "./registry";
 
@@ -18,8 +18,8 @@ export const scopeSubtitle = (scope: Scope): string | undefined =>
   scope.isAll ? "Все вузы" : scope.spaces[0]?.title;
 
 /**
- * Рамка экрана-раздела: шапка со стрелкой «Назад» (системный жест «назад» тоже работает), полосы источников,
- * подпись свежести по вузам. Состояние данных — в `data-state`.
+ * Рамка экрана-раздела: шапка со стрелкой «Назад» (системный жест «назад» тоже работает) и чипами статусов
+ * вузов, полосы источников над содержимым. Состояние данных — в `data-state`.
  */
 export function SectionFrame({
   ctx,
@@ -46,13 +46,13 @@ export function SectionFrame({
       subtitle={scopeSubtitle(ctx.scope)}
       leading="back"
       onBack={back}
+      meta={<SourceStatusBar items={sourceStatusItems(ctx.scope.spaces)} nowMs={nowMs} />}
       trailing={<ScreenSyncIndicator />}
     >
       <div data-screen={`study-${ctx.def.kind}`} data-state={state} className="flex flex-col gap-4">
         <SourceNotices spaces={ctx.scope.spaces} nowMs={nowMs} />
         {actions}
         {children}
-        <FreshnessFooter spaces={ctx.scope.spaces} nowMs={nowMs} />
       </div>
     </Screen>
   );

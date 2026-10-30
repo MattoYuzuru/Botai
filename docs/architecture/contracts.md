@@ -117,10 +117,12 @@ type Provenance = {
 
 V1 остаётся строгим исходным контрактом. V2 добавляет per-request authBinding, compiler-owned
 Cookie/Bearer policy, nested collections/from, dateTime composition, bounded weekly expansion
-и portable browserPlan. Новый reader принимает обе версии; producer включается отдельно
-BOTAI_FACTORY_V2_ENABLED (default false). Значения credentials и временные evidence refs
+и portable browserPlan; с 2026-10-30 также окна дат (`pagination.type=dateWindow`), адрес страницы
+(`endpoint.uiUrl`) и секции карточки занятия (`response.links`, `response.attributes`). Новый reader
+принимает обе версии; автор всегда создаёт v2 (флаги `BOTAI_RESEARCH_ENABLED` и
+`BOTAI_FACTORY_V2_ENABLED` удалены). Значения credentials и временные evidence refs
 в recipe не сохраняются. Подробности — [контракт v2](../../contracts/recipe-v2.md) и
-[реализация/границы](factory-v2.md). REST/SSE и доменные сущности этим этапом не меняются.
+[реализация/границы](factory-v2.md).
 
 ### Жизненный цикл ревизии
 
@@ -236,8 +238,8 @@ type ActionProposal = {
 |---|---|
 | `POST /api/v1/auth/invite/redeem` | Активация приглашения |
 | `GET /api/v1/me` | Профиль, пространства, квоты |
-| `POST /api/v1/spaces` · `GET /api/v1/spaces` | Пространства вузов |
-| `POST /api/v1/spaces/{id}/connections` | Начать подключение (создаёт job) |
+| `POST /api/v1/spaces` · `GET /api/v1/spaces` | Пространство вуза студента (повтор возвращает то же, `200`) · все его вузы с `shortTitle` и `aliases` |
+| `GET /api/v1/spaces/{id}/connections` | Источники вуза: человеческий `title`, `kind`, `entryUrl`, `threadId`, `activeTask`. Источник создаёт агент в треде, а не REST |
 | `GET /api/v1/connections/{id}` · `DELETE` | Состояние, отключение |
 | `POST /api/v1/connections/{id}/login-session` | Открыть сессию входа (вернёт `wsUrl`) |
 | `POST /api/v1/connections/{id}/sync` | Ручная синхронизация |
@@ -245,7 +247,8 @@ type ActionProposal = {
 | `GET /api/v1/deadlines` · `/courses` · `/grades` · `/people` | Домен |
 | `POST /api/v1/chat/threads` · `POST /api/v1/chat/threads/{id}/messages` | Чат |
 | `POST /api/v1/chat/threads/{id}/answers` | Ответ на `AgentUiBlock` |
-| `POST /api/v1/documents` | Подключить таблицу/документ/ссылку |
+| `POST /api/v1/spaces/{id}/documents/url` · `/documents/upload` · `DELETE /api/v1/documents/{id}` | Подключить таблицу/документ/ссылку (в том числе Google по ссылке) или файл |
+| `POST /api/v1/attachments` · `GET /{id}` · `GET /{id}/content` · `DELETE /{id}` | Файлы чата до 20 МиБ: тип по байтам, отдача без исполнения HTML |
 | `POST /api/v1/actions/{id}/approve` · `/reject` | Write-действия |
 | `GET /api/v1/jobs/{id}/events` | SSE потока задания |
 | `GET /api/v1/usage` | Расход токенов и квота |
@@ -270,6 +273,7 @@ type ActionProposal = {
 | `source_auth_required` | Сессия протухла | Кнопка «войти снова», старые данные с меткой |
 | `source_unavailable` | 5xx/таймаут источника | Повтор позже, данные устарели |
 | `source_rate_limited` | 429 | Пауза, видимый срок |
+| `login_guard_refused` | Наш guard остановил запрос входа (сайт при этом работает) | Честный текст, запасной экран или повтор шага; не «сайт не отвечает» |
 | `recipe_drift` | Ответ не сошёлся со схемой | Пометка рецепта, задача автору |
 | `recipe_rejected` | Lint нашёл личные данные | Рецепт не сохраняется |
 | `egress_blocked` | Хост вне allowlist | Показать хост и спросить пользователя |
@@ -292,6 +296,9 @@ type ActionProposal = {
 | 2026-10-26 | Первая редакция | Основание для параллельной работы |
 | 2026-10-29 | Optional `X-Botai-Data-Reset` на `/me`, без изменения JSON | FR-023: после очистки очередь и offline snapshots не восстанавливают удалённые попытки; потребители API auth/PWA/chat/offline |
 | 2026-10-26 | Ограничение рецепта v1 (только JSON) записано явно | Вывод исследования §4b: часть вузов отдаёт только HTML |
+| 2026-10-30 | Новый код ошибки `login_guard_refused` (§7) | Блокировка нашего guard входа больше не выдаётся за `source_unavailable`; потребители: UI заданий, агент |
 | 2026-10-28 | Conversational CONNECT: purpose/context, runtime, идемпотентные сообщения, защищённые receipts, legacy conversation resolver | Запрос владельца; потребители W1/W2/W3/W4/W5. Новые поля optional, старые клиенты сохраняют поведение |
 | 2026-10-28 | recipe.request.render (default false, GET HTML only), weekStart | SPA, выбранная неделя; Explorer/Runner/BrowserSvc требуют новой реализации перед включением, старые рецепты без флага совместимы |
 | 2026-10-30 | Единый тред (ADR-0013): удалены `purpose`/`connectContext` и `ThreadRuntime.purpose/connection`; `ThreadOut` получил `lastMessageAt`, `unread`, `attention`, `activeTask`, `preview` (убран `updatedAt`); `GET` списка возвращает все треды; новые `PATCH`/`DELETE` треда, `POST …/read`, `GET/DELETE /me/memory`; `runtime` = `{activeJob, tasks, pending, receipts}`; блоки `plan`, `task`, `attachment`, `text.quickReplies` | Агент хаба v3; ломает фронтенд чата (WS5: типы `ThreadOut`, `ThreadRuntime`, моки), сводку тредов в «Учёбе»; пользователей нет, совместимость не требуется |
+| 2026-10-30 | Рецепт v2: `pagination.type=dateWindow {param, stepDays, windows, startOffset}`, `endpoint.uiUrl {path, query}`, `response.links` (≤4), `response.attributes` (≤8); словарь `scheduleEvents`: `kindText`, `address`, `group`, `lessonNumber`. v1 не меняется | FR-039–FR-042: источник отдаёт окно от даты, карточка занятия и ссылка на страницу, а не на API. Потребители: `learn/*`, `sources/*`, recipe executor; существующие рецепты читаются без изменений |
+| 2026-10-30 | Домен: `provenance.openUrl` (все сущности), `ScheduleEvent.kindText/address/group/lessonNumber/links/attributes`; БД: `open_url` у всех доменных таблиц, новые колонки `schedule_events`, таблица `source_sitemaps`. В OpenAPI поля необязательны (значение по умолчанию), в ответе присутствуют всегда | FR-041, FR-042, FR-049; потребители: API, PWA (экраны данных, карточка занятия), агент (цитаты через провенанс). Миграция `b5d1c8e7a42f` от `e4a91b7c603d` |

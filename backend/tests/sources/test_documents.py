@@ -14,7 +14,6 @@ from openpyxl import Workbook
 
 from botai.core.errors import BotaiError, ErrorCode
 from botai.sources.adapter import AdapterResult, NeedsUserInput
-from botai.sources.adapters.document import google_export_url
 from botai.sources.documents import chunk_text, detect_format, extract, to_chunks
 from botai.sources.factory import AdapterFactory
 from tests.sources.helpers import make_ctx
@@ -219,6 +218,33 @@ async def test_document_from_url_uses_only_the_allowed_host() -> None:
     assert exc.value.code == ErrorCode.EGRESS_BLOCKED
 
 
+@pytest.mark.parametrize("host", ["files.fakeuni.test", "docs.google.com"])
+async def test_a_document_by_link_may_be_as_big_as_an_upload_and_no_bigger(host: str) -> None:
+    """Pages and API answers stop at 10 MiB; a document has the 20 MiB of an uploaded file."""
+    url = (
+        "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUv/edit"
+        if host == "docs.google.com"
+        else f"https://{host}/long.txt"
+    )
+    kind = "google_doc" if host == "docs.google.com" else "url"
+    spec = {"adapter": "document", "source": {"kind": kind, "url": url}, "format": "text"}
+
+    def serving(size: int) -> httpx.MockTransport:
+        return httpx.MockTransport(
+            lambda r: httpx.Response(200, content=b"\xd0\x90" * (size // 2))  # Cyrillic "А"
+        )
+
+    ok = make_ctx(transport=serving(15 * 1024 * 1024), allow_hosts=(host,))
+    result = await AdapterFactory().create(spec).fetch(ok)
+    (doc,) = result.documents
+    assert doc.chunks  # read to the end
+
+    too_big = make_ctx(transport=serving(21 * 1024 * 1024), allow_hosts=(host,))
+    with pytest.raises(BotaiError) as exc:
+        await AdapterFactory().create(spec).fetch(too_big)
+    assert exc.value.code == ErrorCode.SOURCE_UNAVAILABLE
+
+
 async def test_missing_link_target_is_a_problem_not_an_exception() -> None:
     spec = {"adapter": "document", "source": {"kind": "url", "url": "https://files.fakeuni.test/x"}}
     ctx = make_ctx(
@@ -228,15 +254,6 @@ async def test_missing_link_target_is_a_problem_not_an_exception() -> None:
     result = await AdapterFactory().create(spec).fetch(ctx)
     assert result.outcomes[0].problem == "not_found"
     assert result.documents == []
-
-
-def test_google_links_become_public_export_links() -> None:
-    doc = "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUv/edit?usp=sharing"
-    sheet = "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUv/edit#gid=77"
-    assert google_export_url("google_doc", doc).endswith("/export?format=docx")
-    assert google_export_url("google_sheet", sheet).endswith("/export?format=xlsx&gid=77")
-    with pytest.raises(BotaiError):
-        google_export_url("google_doc", "https://docs.google.com/forms/d/e/abc")
 
 
 # --- adapter: table -> records --------------------------------------------------------------

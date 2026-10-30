@@ -10,11 +10,12 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.db
 BACKEND = Path(__file__).resolve().parents[2]
-PREVIOUS = "e4a91b7c603d"
+PREVIOUS = "b5d1c8e7a42f"  # the chain: WS4 sources, WS2 event card, then the threads
 REVISION = "a7d41c9e5b20"
 
 
@@ -59,6 +60,9 @@ async def test_thread_migration_backfills_read_state_and_can_roll_back(database_
             "INSERT INTO chat_messages (id,user_id,thread_id,role,blocks,created_at) VALUES "
             "('m1','u1','t-old','user','[]','2026-10-01T10:05:00Z'),"
             "('m2','u1','t-old','agent','[]','2026-10-01T10:09:00Z')",
+            "INSERT INTO jobs (id,user_id,kind,state,thread_id,payload,attempts,run_after) VALUES "
+            "('j-ok','u1','connect','done','t-old','{}',0,now()),"
+            "('j-lost','u1','connect','done','t-gone','{}',0,now())",
         ):
             await execute(sql)
         await asyncio.to_thread(command.upgrade, cfg, REVISION)
@@ -73,10 +77,24 @@ async def test_thread_migration_backfills_read_state_and_can_roll_back(database_
         assert await execute(
             "SELECT last_message_at = created_at FROM chat_threads WHERE id='t-empty'"
         ) == [(True,)]
+        assert await execute("SELECT seen_links::text FROM chat_threads WHERE id='t-old'") == [
+            ("{}",)
+        ]
+        # a task keeps its thread; one that pointed at nothing is detached instead of failing
+        assert await execute("SELECT id, thread_id FROM jobs ORDER BY id") == [
+            ("j-lost", None),
+            ("j-ok", "t-old"),
+        ]
         assert await columns("user_memory") == {"id", "user_id", "note", "created_at"}
         await execute(
             "INSERT INTO user_memory (id,user_id,note) VALUES ('n1','u1','группа БПМ-21')"
         )
+        with pytest.raises(IntegrityError):  # the same note, whatever its case, is kept once
+            await execute(
+                "INSERT INTO user_memory (id,user_id,note) VALUES ('n2','u1','Группа бпм-21')"
+            )
+        await execute("DELETE FROM chat_threads WHERE id='t-old'")
+        assert await execute("SELECT thread_id FROM jobs WHERE id='j-ok'") == [(None,)]
         await execute("DELETE FROM users WHERE id='u1'")
         assert await execute("SELECT count(*) FROM user_memory") == [(0,)]  # follows its user
 

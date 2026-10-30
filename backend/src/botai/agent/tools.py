@@ -68,6 +68,7 @@ DATA_TOOLS = frozenset(
         "list_universities",
         "task_status",
         "browse_source",
+        "site_map",
     }
 )
 DOCUMENT_TOOLS = frozenset(
@@ -490,8 +491,6 @@ MUTATING = frozenset(
         "request_login",
         "remember",
         "forget",
-        "update_plan",
-        "rename_thread",
     }
 )
 

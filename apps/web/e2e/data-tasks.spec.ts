@@ -57,9 +57,19 @@ test.describe("«Задания»", () => {
     await expect(page.getByText(/сдано/i)).toHaveCount(0);
   });
 
+  test("статусы вузов — чипами в шапке, как в «Расписании»; подвала со свежестью нет", async ({ page }) => {
+    await open(page, "/tasks", "connected");
+    await expect(screen(page)).toHaveAttribute("data-state", "ok");
+    const bar = page.locator("header").getByRole("list", { name: "Статусы вузов" });
+    await expect(bar.getByRole("button")).toHaveCount(2);
+    await expect(bar.getByRole("button").first()).toHaveAttribute("aria-label", /^ВШЭ: Обновлено/);
+    await expect(page.getByRole("list", { name: "Свежесть данных" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Состояние источников" })).toHaveCount(0);
+  });
+
   test("нужен вход: полоса «Войти снова», задания на месте", async ({ page }) => {
     await open(page, "/tasks", "reauth");
-    await expect(page.getByRole("button", { name: "Войти снова" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
     await expect(screen(page)).toHaveAttribute("data-state", "reauth");
     await expect(page.getByText("Эссе по продуктовой стратегии")).toBeVisible();
   });

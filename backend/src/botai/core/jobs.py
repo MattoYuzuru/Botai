@@ -19,7 +19,6 @@ from botai.contracts.agent_ui import AgentUiAnswer, AgentUiBlock, InputBlock
 
 class JobKind(StrEnum):
     CONNECT = "connect"  # login + learn for a new connection
-    LEARN = "learn"
     SYNC = "sync"
     REPAIR = "repair"
     INGEST = "ingest"  # document source

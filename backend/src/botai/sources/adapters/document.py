@@ -12,13 +12,16 @@ import asyncio
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time
 from typing import Any, ClassVar
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
+
+import httpx
 
 from botai.contracts.specs import DocumentSpec, Kind
 from botai.core.errors import BotaiError, ErrorCode
+from botai.sources import public_links
 from botai.sources.adapter import (
     AdapterKind,
     AdapterResult,
@@ -29,30 +32,84 @@ from botai.sources.adapter import (
     Record,
     SyncContext,
 )
-from botai.sources.documents import DocFormat, Extracted, Table, detect_format, extract, to_chunks
+from botai.sources.documents import (
+    MAX_UPLOAD,
+    DocFormat,
+    Extracted,
+    Table,
+    detect_format,
+    extract,
+    to_chunks,
+)
 from botai.sources.extract import apply_transform, collapse, parse_datetime, parse_time, to_utc_iso
 from botai.sources.fetch import SourceClient
 from botai.sources.vocab import REQUIRED, VOCAB
 
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_GOOGLE_ID = re.compile(r"/(?:document|spreadsheets)/d/([A-Za-z0-9_-]{10,})")
-
-
-def google_export_url(kind: str, url: str) -> str:
-    """Export link of a link-shared Google document or sheet (no sign-in involved)."""
-    match = _GOOGLE_ID.search(urlsplit(url).path)
-    if not match:
-        raise BotaiError(ErrorCode.VALIDATION, "Это не похоже на ссылку на документ Google")
-    doc_id = match.group(1)
-    if kind == "google_doc":
-        return f"https://docs.google.com/document/d/{doc_id}/export?format=docx"
-    gid = parse_qs(urlsplit(url).fragment).get("gid") or parse_qs(urlsplit(url).query).get("gid")
-    suffix = f"&gid={gid[0]}" if gid and gid[0].isdigit() else ""
-    return f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx{suffix}"
+_FILENAME_STAR = re.compile(r"filename\*\s*=\s*[^']*'[^']*'([^;]+)", re.I)
+_FILENAME = re.compile(r'filename\s*=\s*"?([^";]+)"?', re.I)
+MAX_HOPS = 5
 
 
 def _norm(value: str) -> str:
     return collapse(value).casefold().replace("ё", "е")
+
+
+def _is_html(content_type: str | None) -> bool:
+    return (content_type or "").lower().startswith(("text/html", "application/xhtml"))
+
+
+def _failed(url: str, status: int) -> EndpointOutcome:
+    problem: Problem = "not_found" if status in (404, 410) else "status"
+    return EndpointOutcome(
+        "document", None, ok=False, problem=problem, source_url=url, status=status
+    )
+
+
+def _disposition_name(header: str | None) -> str | None:
+    """The file name a server gives a download (Google names an export after the document)."""
+    if not header:
+        return None
+    match = _FILENAME_STAR.search(header)
+    raw = unquote(match.group(1).strip()) if match else None
+    if raw is None and (plain := _FILENAME.search(header)):
+        raw = plain.group(1).strip()
+    name = "".join(
+        ch for ch in (raw or "").replace("\\", "/").rsplit("/", 1)[-1] if ch.isprintable()
+    )
+    return name[:200] or None
+
+
+async def _get(ctx: SyncContext, target: str) -> httpx.Response:
+    async with SourceClient(ctx, auth_type="none", use_session=False) as client:
+        return await client.request("GET", target, check_session=False, max_bytes=MAX_UPLOAD)
+
+
+async def _get_google(
+    ctx: SyncContext, target: str, original: str
+) -> httpx.Response | EndpointOutcome:
+    """An export of a link-shared Google document. Google answers with a redirect to a file host
+    named after the document, so every hop is a request of its own to a host that is checked
+    against Google's own and granted for that request only. A redirect to the sign-in page means
+    the document is not shared by link."""
+    current = target
+    for _ in range(MAX_HOPS):
+        hop = replace(ctx, allow_hosts=((urlsplit(current).hostname or "").lower(),))
+        async with SourceClient(
+            hop, auth_type="none", use_session=False, follow_redirects=False
+        ) as client:
+            response = await client.request(
+                "GET", current, check_session=False, max_bytes=MAX_UPLOAD
+            )
+        location = response.headers.get("location")
+        if not (response.is_redirect and location):
+            return response
+        current = urljoin(current, location)
+        if public_links.is_sign_in(current):
+            return _failed(original, 403)
+        if not public_links.hop_allowed(current):
+            return _failed(original, 502)
+    return _failed(original, 508)
 
 
 @dataclass(slots=True)
@@ -70,7 +127,8 @@ class DocumentAdapter:
 
     async def fetch_bytes(self, ctx: SyncContext) -> tuple[bytes, str | None] | EndpointOutcome:
         """The raw document: the uploaded bytes, or the download. A failed download is a problem
-        of the source (an outcome), not an exception."""
+        of the source (an outcome), not an exception; a document that is not shared by link is an
+        outcome with status 403."""
         source = self.spec.source
         kind = str(source.get("kind", "upload"))
         url: str | None = source.get("url")
@@ -80,25 +138,36 @@ class DocumentAdapter:
             return ctx.content, None
         if not url:
             raise BotaiError(ErrorCode.VALIDATION, "У источника нет ссылки")
-        target = google_export_url(kind, url) if kind.startswith("google_") else url
-        async with SourceClient(ctx, auth_type="none", use_session=False) as client:
-            response = await client.request("GET", target, check_session=False)
+        target = public_links.export_url(url)
+        google = public_links.is_google(target)
+        response = await (_get_google(ctx, target, url) if google else _get(ctx, target))
+        if isinstance(response, EndpointOutcome):
+            return response
+        content_type = response.headers.get("content-type")
         if response.status_code >= 400:
-            problem: Problem = "not_found" if response.status_code in (404, 410) else "status"
-            return EndpointOutcome("document", None, ok=False, problem=problem, source_url=url)
-        return response.content, response.headers.get("content-type")
+            return _failed(url, response.status_code)
+        if google and _is_html(content_type) and not urlsplit(target).path.endswith("/pub"):
+            return _failed(url, 403)  # a sign-in page instead of the file
+        ctx.filename = ctx.filename or _disposition_name(
+            response.headers.get("content-disposition")
+        )
+        return response.content, content_type
 
     def process(self, data: bytes, content_type: str | None, ctx: SyncContext) -> LoadedDocument:
         url: str | None = self.spec.source.get("url")
         fmt: DocFormat = self.spec.format or detect_format(data, ctx.filename or url, content_type)
         extracted = extract(data, fmt)
-        leaf = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if url else ""
+        # The last path segment of an editor link ("edit") is not a name; a host is not either.
+        leaf = (
+            urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            if url and not public_links.is_google(url)
+            else ""
+        )
         title = (
             (ctx.filename or "").rsplit(".", 1)[0]
             or extracted.title
             or leaf
-            or (urlsplit(url).netloc if url else "")
-            or "Документ"
+            or ("Таблица" if fmt in ("xlsx", "csv") else "Документ")
         )
         doc_kind = "sheet" if fmt in ("xlsx", "csv") else "page" if fmt == "html" else "file"
         document = ExtractedDocument(

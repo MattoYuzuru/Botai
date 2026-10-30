@@ -4,6 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataVariant } from "@/mocks/data-handlers";
 import type { Scenario } from "@/mocks/db";
+import { hrefOf } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -115,7 +116,9 @@ describe("«Сегодня»: состояния данных", () => {
     useScenario("empty");
     renderApp("/");
     expect(await screen.findByText("Вузов пока нет")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Подключить вуз" })).toHaveAttribute("href", "/connect");
+    const link = screen.getByRole("link", { name: "Подключить вуз" });
+    expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(link).draft).toBeTruthy();
     expect(screen.queryByText(/сдано/i)).toBeNull();
   });
 
@@ -141,18 +144,35 @@ describe("«Сегодня»: состояния данных", () => {
     renderApp("/");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
     expect(within(notices).getByText(/Нужно снова войти в личный кабинет ЦУ/)).toBeInTheDocument();
-    expect(within(notices).getByRole("button", { name: "Войти снова" })).toBeInTheDocument();
+    expect(within(notices).getByRole("link", { name: "Войти снова" })).toBeInTheDocument();
     await waitFor(() => expect(screenState()).toBe("reauth"));
     // Пары ЦУ остаются на экране, но отмечены устаревшими в подписи свежести.
     expect(await screen.findByText("Основы продуктового менеджмента")).toBeInTheDocument();
   });
 
-  it("«Войти снова» ставит вход в очередь и открывает ход задания, где агент спросит пароль", async () => {
+  it("«Войти снова» без треда задачи ведёт в новый чат с готовой просьбой, ничего не запуская", async () => {
     useScenario("reauth");
     const { router } = renderApp("/");
-    await userEvent.click(await screen.findByRole("button", { name: "Войти снова" }));
+    const link = await screen.findByRole("link", { name: "Войти снова" });
+    expect(hrefOf(link).pathname).toBe("/chat");
+    expect(hrefOf(link).draft).toContain("LMS");
+    expect(hrefOf(link).draft).toContain("Центральный университет");
+    await userEvent.click(link);
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
+    expect(router.state.location.search.draft).toContain("Центральный университет");
+    expect(router.state.location.search.thread).toBeUndefined();
+  });
+
+  it("плашка источника с тредом задачи ведёт прямо в него: /chat?thread=<id>", async () => {
+    useScenario("reauth");
+    const cu = current.db.connections.find((row) => row.status === "needs_reauth");
+    if (cu) cu.threadId = "01JTHREADTASK00000000000AA";
+    const { router } = renderApp("/");
+    const link = await screen.findByRole("link", { name: "Войти снова" });
+    expect(hrefOf(link)).toEqual({ pathname: "/chat", thread: "01JTHREADTASK00000000000AA" });
+    await userEvent.click(link);
+    await waitFor(() => expect(router.state.location.search.thread).toBe("01JTHREADTASK00000000000AA"));
+    expect(router.state.location.search.draft).toBeUndefined();
   });
 
   it("stale: подключение устарело — полоса объясняет, что показан снимок, обновление идёт само", async () => {
@@ -179,9 +199,9 @@ describe("«Сегодня»: состояния данных", () => {
     const { router } = renderApp("/");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
     expect(within(notices).getByText("Сайт вуза не отвечает уже вторые сутки.")).toBeInTheDocument();
-    await userEvent.click(within(notices).getByRole("button", { name: "Спросить в чате" }));
+    await userEvent.click(within(notices).getByRole("link", { name: "Спросить в чате" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
-    expect(router.state.location.search.thread).toMatch(/^[0-9A-Z]{26}$/);
+    expect(router.state.location.search.draft).toContain("Личный кабинет");
   });
 
   it("offline: последний снимок и подпись «Нет сети. Показан снимок от …»", async () => {

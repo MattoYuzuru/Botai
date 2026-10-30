@@ -243,3 +243,22 @@ async def test_expired_knowledge_does_not_reset_job_budget_or_uncertain_reservat
         )
     assert failure.value.code == ErrorCode.QUOTA_EXCEEDED
     assert provider.requests == []
+
+
+async def test_a_question_already_asked_and_the_probe_count_survive_restart_and_a_new_intent() -> (
+    None
+):
+    ctx = MemoryContext()
+    ledger = await load(ctx)
+    ledger.state.horizon_asked.append("scheduleEvents")
+    ledger.state.memory.probes = 3
+    await ledger.save()
+
+    restarted = await load(ctx)
+    assert restarted.state.horizon_asked == ["scheduleEvents"]
+
+    # the answer to the question changes the intent; the research keeps what it already spent
+    answered = await load(ctx, intent=LearningIntent(entry_urls=INTENT.entry_urls, user_note="Да"))
+    assert answered.state.intent_key != restarted.state.intent_key
+    assert answered.state.horizon_asked == ["scheduleEvents"]
+    assert answered.state.memory.probes == 3

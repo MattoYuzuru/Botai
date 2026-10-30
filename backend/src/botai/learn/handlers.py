@@ -33,13 +33,8 @@ def make_handlers(
         explorer = Explorer(ctx, services, transport=transport, retry=retry)
         return await explorer.connect(_connection_id(ctx, payload), payload)
 
-    async def learn(ctx: JobContext, services: Services, payload: dict[str, Any]) -> dict[str, Any]:
-        explorer = Explorer(ctx, services, transport=transport, retry=retry)
-        return await explorer.learn(_connection_id(ctx, payload), payload)
-
     return {
         JobKind.CONNECT: connect,
-        JobKind.LEARN: learn,
         JobKind.REPAIR: make_repair_handler(transport=transport, retry=retry),
     }
 

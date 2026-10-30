@@ -26,6 +26,8 @@ import logging
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, replace
+from datetime import datetime
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -37,7 +39,7 @@ from botai.browser.session import EntrySessionProvider, encode_session, session_
 from botai.contracts.agent_ui import SummaryGroup
 from botai.contracts.browser_plan import BrowserPlan
 from botai.contracts.specs import Kind
-from botai.core.browser import ObservedRequest, SessionState
+from botai.core.browser import BrowserHandle, ObservedRequest, SessionState
 from botai.core.diagnostics import diagnostic_event, url_facts
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -49,7 +51,7 @@ from botai.core.research import ResearchContext
 from botai.core.services import Services
 from botai.core.vault import SecretKind
 from botai.db import models as m
-from botai.learn import revisions
+from botai.learn import horizon, revisions
 from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.author import (
     AuthorError,
@@ -62,18 +64,21 @@ from botai.learn.author import (
     parse_json,
 )
 from botai.learn.canary import CanaryReport, Comparison, compare, run_canary
-from botai.learn.discovery import DiscoveryBudget, adaptive_observe
+from botai.learn.discovery import DiscoveryBudget, ProbeKit, adaptive_observe
+from botai.learn.entry import entry_queries, rank_entries
 from botai.learn.intent import LearningIntent, apply_intent, intent_request, prepare_turn
 from botai.learn.lint import LintContext, lint_spec
 from botai.learn.memory import MemoryLimits
 from botai.learn.observe import Observations
 from botai.learn.policies import bind_parts
+from botai.learn.probe import http_prober
 from botai.learn.progress import ActivationReceipt, ResearchLedger, SavedCandidate, intent_key
 from botai.learn.progress import digest as research_digest
 from botai.learn.redact import Redactor
 from botai.learn.registry import find_warning, update_university
+from botai.learn.sitemap import save_site_map
 from botai.learn.ui import Ui, describe, item, kinds_text, sample_of
-from botai.search import institutional_search_query
+from botai.search.service import SearchResult
 from botai.sources.adapter import SessionExpired, SyncContext
 from botai.sources.runner import (
     ConnInfo,
@@ -82,7 +87,6 @@ from botai.sources.runner import (
     context_for,
     guard_source_write,
     load_conn_info,
-    load_snapshot,
     set_connection,
     sync_connection,
 )
@@ -159,6 +163,8 @@ class Explorer:
         self._request_facts: dict[str, ObservedRequest] = {}
         self._browser_plans: dict[str, BrowserPlan] = {}
         self._browser_plan_urls: dict[str, str] = {}
+        self._horizon_asked: set[Kind] = set()
+        self._observed_at: datetime | None = None
 
     # --- small helpers -----------------------------------------------------------------------
 
@@ -184,9 +190,7 @@ class Explorer:
         return self.services.settings.botai_research_max_tokens if self._research else TOKEN_BUDGET
 
     async def _research_for(self, info: ConnInfo) -> None:
-        if not self.services.settings.botai_research_enabled or not isinstance(
-            self.ctx, ResearchContext
-        ):
+        if not isinstance(self.ctx, ResearchContext):
             return
         if self._research is not None and self._research.state.intent_key == intent_key(
             self.intent
@@ -532,35 +536,6 @@ class Explorer:
         except BotaiError as err:
             return await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
 
-    async def learn(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Teach an existing connection more kinds of data; the other endpoints are kept."""
-        self._start_intent(payload)
-        async with self.services.db() as db:
-            snap = await load_snapshot(db, self.ctx.user_id, connection_id)
-        if snap.adapter != "recipe":
-            return {"status": "skipped", "detail": "adapter"}
-        self._scope_connection_id = connection_id
-        self._scope_auto_base = snap.data_scope is None
-        self._scope_base = (
-            snap.data_scope
-            if snap.data_scope is not None
-            else tuple(
-                dict.fromkeys(endpoint["kind"] for endpoint in snap.spec["recipe"]["endpoints"])
-            )
-        )
-        try:
-            if payload.get("_research_engine") == 1:
-                await self._research_for(snap)
-            await self._checkpoint()
-            await self._drain(await self._redactor(snap))
-            resumed = await self._resume_activation(snap)
-            if resumed is not None:
-                return resumed
-            return await self._explore(snap, wanted_kinds(payload), base_spec=snap.spec)
-        except BotaiError as err:
-            await self.ui.say(err.detail or "Не удалось выучить новые данные.")
-            return {"status": "error", "detail": err.code.value}
-
     # --- origin ------------------------------------------------------------------------------
 
     async def _resolve_origin(self, info: ConnInfo, payload: dict[str, Any]) -> str | None:
@@ -578,31 +553,9 @@ class Explorer:
             if len(known) == 1:
                 origin = known[0]
         if origin is None and self.services.search is not None:
-            query = institutional_search_query(public_title)
-            if query is not None:
-                result = await self.services.search.search(
-                    query,
-                    budget=self.services.search.budget(),
-                    user_id=self.ctx.user_id,
-                    job_id=self.ctx.job_id,
-                )
-                if result.results:
-                    # Search output is untrusted. Show only validated citation URLs with
-                    # provenance, never titles/snippets as instructions or an egress grant.
-                    candidates = "\n".join(
-                        f"- <{hit.url}> (поиск: {hit.provider})" for hit in result.results
-                    )
-                    await self.ui.say(
-                        "Публичный поиск нашёл возможные сайты:\n\n"
-                        + candidates
-                        + "\n\nЭто ещё не подтверждает доступ к вашим данным. "
-                        "Пришлите точную ссылку на сайт, который нужно подключить."
-                    )
-                elif result.status in {"unavailable", "budget"}:
-                    await self.ui.say(
-                        "Публичный поиск сейчас недоступен. Подключение можно продолжить "
-                        "по вашей ссылке на сайт."
-                    )
+            await self._suggest_entries(info, public_title)
+            if self.intent.entry_urls:
+                origin = url_origin(self.intent.entry_urls[0])
         for _ in range(2):
             if origin is not None:
                 break
@@ -622,6 +575,49 @@ class Explorer:
             info.connection_id, origin=origin, allow_hosts=hosts, title=info.title or host
         )
         return origin
+
+    async def _suggest_entries(self, info: ConnInfo, title: str) -> None:
+        """Offer public candidates for the entry page and let the student choose one (FR-038).
+
+        A hit is an untrusted citation, shown by address only. It becomes the entry of the
+        connection when the student picks it, which is what grants its host, nothing else does.
+        """
+        search = self.services.search
+        if search is None:
+            return
+        queries = entry_queries(title)
+        if not queries:
+            return
+        budget = search.budget()
+        results: list[SearchResult] = []
+        unavailable = False
+        for query in queries:
+            response = await search.search(
+                query, budget=budget, user_id=self.ctx.user_id, job_id=self.ctx.job_id
+            )
+            results.extend(response.results)
+            unavailable = unavailable or (
+                not response.results and response.status in {"unavailable", "budget"}
+            )
+        candidates = rank_entries(results)
+        if not candidates:
+            if unavailable:
+                await self.ui.say(
+                    "Публичный поиск сейчас недоступен. Подключение можно продолжить "
+                    "по вашей ссылке на сайт."
+                )
+            return
+        picked = await self.ui.choose(
+            "Поиск нашёл возможные адреса. Это лишь предложение: ваши данные он не открывает. "
+            "Какой адрес подключить?",
+            [
+                (str(index), candidate.label[:120], f"поиск: {candidate.provider}")
+                for index, candidate in enumerate(candidates)
+            ]
+            + [("other", "Другой адрес", "Пришлю ссылку сама")],
+        )
+        if picked is not None and picked.isdigit() and int(picked) < len(candidates):
+            await self._turn(candidates[int(picked)].url, await self._redactor(info))
 
     # --- reuse (FR-009) ----------------------------------------------------------------------
 
@@ -809,6 +805,10 @@ class Explorer:
                     found = await self._author_and_verify(
                         kind, text, lint_ctx, sctx, info, revision, digest
                     )
+                    if found is not None:
+                        found = await self._thin_horizon(
+                            kind, found, redactor, sctx, info, revision, digest, lint_ctx
+                        )
                     if await self._drain(redactor):
                         break  # A clarification during a canary must affect the final selection.
                     if found is not None:
@@ -943,6 +943,7 @@ class Explorer:
         self, info: ConnInfo, session: SessionState, redactor: Redactor, extra: list[str]
     ) -> Observations:
         self._request_facts, self._browser_plans, self._browser_plan_urls = {}, {}, {}
+        self._observed_at = self.services.clock.now()  # the day the browser asks, for templates
         research = self._research
         if research is not None:
             state = research.state
@@ -997,8 +998,12 @@ class Explorer:
                     start_urls=start_urls,
                     intent=self.intent,
                     llm=self.services.llm,
+                    probe_kit=ProbeKit(
+                        http_prober(partial(self._probe_context, handle, info, redactor)),
+                        self.services.clock.now(),
+                        info.tz,
+                    ),
                     budget=DiscoveryBudget(
-                        capabilities=settings.botai_factory_v2_enabled,
                         steps=settings.botai_research_slice_steps if research else 10,
                         seconds=min(
                             settings.botai_research_slice_seconds, research.remaining_seconds()
@@ -1103,7 +1108,22 @@ class Explorer:
         self._request_facts = obs.request_facts
         self._browser_plans = obs.browser_plans
         self._browser_plan_urls = obs.browser_plan_urls
+        if obs.sitemap and not obs.auth_required and not obs.bot_protection:
+            async with self.services.db() as db, db.begin():
+                await guard_job(self.ctx, db, check_input=True)
+                await save_site_map(db, info.origin, obs.sitemap, self.services.clock.now())
         return obs
+
+    async def _probe_context(
+        self, handle: BrowserHandle, info: ConnInfo, redactor: Redactor
+    ) -> SyncContext:
+        """The student's session as the browser holds it now, for a read-only probe."""
+        async with asyncio.timeout(5.0):
+            state = await handle.export_session()
+        redactor.protect_session(state)
+        context = self._sync_context(info, state)
+        context.before_request = None  # the discovery memory already counts its probes
+        return context
 
     async def _restore_candidate(
         self,
@@ -1166,15 +1186,6 @@ class Explorer:
         feedback: list[str] | None = None
         candidate_count = 0
         for attempt in range(MAX_CANARY_AUTHOR_ROUNDS):
-            factory_kwargs: dict[str, Any] = {}
-            if self.services.settings.botai_factory_v2_enabled:
-                factory_kwargs = {
-                    "factory_v2": True,
-                    "request_facts": self._request_facts,
-                    "browser_plans": self._browser_plans,
-                    "browser_plan_urls": self._browser_plan_urls,
-                    "time_zone": info.tz,
-                }
             try:
                 authored = await author_kind(
                     self._llm(),
@@ -1188,7 +1199,11 @@ class Explorer:
                     previous=previous,
                     problem=problem,
                     verification_feedback=feedback,
-                    **factory_kwargs,
+                    request_facts=self._request_facts,
+                    browser_plans=self._browser_plans,
+                    browser_plan_urls=self._browser_plan_urls,
+                    time_zone=info.tz,
+                    observed_at=self._observed_at,
                 )
             except AuthorError:
                 self._verification_failed = True
@@ -1285,98 +1300,179 @@ class Explorer:
         digest: str,
         lint_ctx: LintContext,
     ) -> tuple[tuple[Candidate, CanaryReport] | None, list[str]]:
-        """Try an authored read and at most one supported alternative auth binding.
+        """Run one compiled candidate on the student's session.
 
         A refused HTTP replay is evidence about this candidate, not proof that the browser
         login expired. Credentials remain executor-owned and are never part of feedback.
         """
-        variants = [candidate]
         rendered = candidate.endpoint.get("request", {}).get("render") is True
         state = sctx.session
-        if not rendered and state is not None and state.origin == info.origin:
-            auth_type = candidate.auth.get("type")
-            if auth_type == "cookie" and state.bearer is not None:
-                variants.append(replace(candidate, auth={"type": "bearer"}))
-            elif auth_type == "bearer" and state.cookies:
-                variants.append(replace(candidate, auth={"type": "cookie"}))
         findings: list[str] = []
-        for bound in variants:
-            spec = candidate_spec(
-                bound,
-                origin=info.origin,
-                revision=revision,
-                now=self.services.clock.now(),
-                digest=digest,
-                index=index,
-            )
-            # Auth alternatives can only change a supported mode; recheck the complete spec
-            # before any request so it retains the same origin, paths and read-only boundary.
-            lint = lint_spec(spec, lint_ctx)
-            if not lint.ok:
-                findings.extend(lint.reasons())
-                continue
-            facts = {
-                "kind": kind,
-                "candidate_index": index,
-                "auth_type": bound.auth.get("type"),
-                "transport": "rendered" if rendered else "http",
-                "rendered": rendered,
-                "bearer_present": state is not None and state.bearer is not None,
-            }
-            diagnostic_event("canary.candidate", phase="request", **facts)
-            try:
+        spec = candidate_spec(
+            candidate,
+            origin=info.origin,
+            revision=revision,
+            now=self.services.clock.now(),
+            digest=digest,
+            index=index,
+        )
+        lint = lint_spec(spec, lint_ctx)
+        if not lint.ok:
+            return None, lint.reasons()
+        facts = {
+            "kind": kind,
+            "candidate_index": index,
+            "auth_type": candidate.auth.get("type"),
+            "transport": "rendered" if rendered else "http",
+            "rendered": rendered,
+            "bearer_present": state is not None and state.bearer is not None,
+        }
+        diagnostic_event("canary.candidate", phase="request", **facts)
+        try:
+            report = await self._canary(spec, sctx, require={kind})
+            if info.connection_id not in self._canary_session_checked and any(
+                finding.code
+                in {"auth_missing", "auth_rejected", "auth_scope_mismatch", "login_redirect"}
+                for finding in report.findings
+            ):
+                self._canary_session_checked.add(info.connection_id)
+                async with self.services.db() as db:
+                    await guard_job(self.ctx, db, check_input=True)
+                # Endpoint refusal is not a request to log in. The session provider checks
+                # the independent entry/probe, preserving a healthy human login (force=False).
+                sctx.session = await self._ensure_session(info, force=False)
+                self._observed_session = sctx.session
                 report = await self._canary(spec, sctx, require={kind})
-                if (
-                    spec["recipe"]["version"] == 2
-                    and info.connection_id not in self._canary_session_checked
-                    and any(
-                        finding.code
-                        in {
-                            "auth_missing",
-                            "auth_rejected",
-                            "auth_scope_mismatch",
-                            "login_redirect",
-                        }
-                        for finding in report.findings
-                    )
-                ):
-                    self._canary_session_checked.add(info.connection_id)
-                    async with self.services.db() as db:
-                        await guard_job(self.ctx, db, check_input=True)
-                    # Endpoint refusal is not a request to log in. The session provider checks
-                    # the independent entry/probe, preserving a healthy human login (force=False).
-                    sctx.session = await self._ensure_session(info, force=False)
-                    self._observed_session = sctx.session
-                    report = await self._canary(spec, sctx, require={kind})
-            except SessionExpired:
-                diagnostic_event(
-                    "canary.candidate",
-                    phase="response",
-                    outcome="rejected",
-                    reason="session_expired",
-                    **facts,
-                )
-                findings.append(
-                    f"вариант {index + 1}: доступ к данным не воспроизведён "
-                    f"с авторизацией {bound.auth.get('type')}. "
-                    "Это не доказывает потерю входа в браузере; проверь наблюдаемый запрос "
-                    "или предложи render=true для подтверждённого HTML DOM."
-                )
-                continue
+        except SessionExpired:
             diagnostic_event(
                 "canary.candidate",
                 phase="response",
-                outcome="accepted" if report.ok else "rejected",
-                reason="ok" if report.ok else "canary_rejected",
-                problem_count=len(report.problems),
+                outcome="rejected",
+                reason="session_expired",
                 **facts,
             )
-            if report.ok:
-                return (bound, report), findings
-            # The source responded: changing auth cannot repair a schema/field mismatch.
-            findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
-            break
+            return None, [
+                f"вариант {index + 1}: доступ к данным не воспроизведён "
+                f"с авторизацией {candidate.auth.get('type')}. "
+                "Это не доказывает потерю входа в браузере; проверь наблюдаемый запрос "
+                "или предложи render=true для подтверждённого HTML DOM."
+            ]
+        diagnostic_event(
+            "canary.candidate",
+            phase="response",
+            outcome="accepted" if report.ok else "rejected",
+            reason="ok" if report.ok else "canary_rejected",
+            problem_count=len(report.problems),
+            **facts,
+        )
+        if report.ok:
+            return (candidate, report), findings
+        findings.extend(f"вариант {index + 1}: {problem}" for problem in report.feedback())
+        wide = (
+            self._walk_candidate(candidate, info)
+            if any(finding.code == "empty_result" for finding in report.findings)
+            else None
+        )
+        if wide is not None:
+            # The read answered but its window was empty (a holiday, a control week): the
+            # neighbouring windows may hold the schedule.
+            checked, more = await self._verify_candidate(
+                kind, wide, index, sctx, info, revision, digest, lint_ctx
+            )
+            findings.extend(more)
+            if checked is not None:
+                return checked, findings
         return None, findings
+
+    def _horizon_was_asked(self, kind: Kind) -> bool:
+        asked = self._research.state.horizon_asked if self._research else self._horizon_asked
+        return kind in asked
+
+    async def _horizon_mark_asked(self, kind: Kind) -> None:
+        """Remember the question before it is asked: a restart must not ask it again."""
+        self._horizon_asked.add(kind)
+        if self._research is not None and kind not in self._research.state.horizon_asked:
+            self._research.state.horizon_asked.append(kind)
+            await self._research.save()
+
+    def _walk_candidate(self, candidate: Candidate, info: ConnInfo) -> Candidate | None:
+        wide = horizon.walked(candidate.endpoint, self.services.clock.now(), info.tz)
+        return replace(candidate, endpoint=wide) if wide is not None else None
+
+    async def _thin_horizon(
+        self,
+        kind: Kind,
+        found: Chosen,
+        redactor: Redactor,
+        sctx: SyncContext,
+        info: ConnInfo,
+        revision: int,
+        digest: str,
+        lint_ctx: LintContext,
+    ) -> Chosen | None:
+        """A date window with almost nothing in it is read over its neighbours; if it stays thin,
+        the student is asked in plain words (FR-039). None: the answer sent the search elsewhere."""
+        if self._horizon_was_asked(kind) or not horizon.moves_date(found.candidate.endpoint):
+            return found
+        count = found.report.count(kind)
+        if count > horizon.SPARSE:
+            return found
+        if not horizon.is_walk(found.candidate.endpoint):
+            wide = self._walk_candidate(found.candidate, info)
+            if wide is None:
+                return found  # neighbouring windows cannot be read, so there is nothing to ask
+            stage = await self.ui.stage("Проверяю соседние недели")
+            checked, _ = await self._verify_candidate(
+                kind, wide, 0, sctx, info, revision, digest, lint_ctx
+            )
+            if checked is not None and checked[1].count(kind) >= count:
+                # A walk that the source answers window by window is never worse than one window,
+                # and it keeps reading as the schedule fills up.
+                found = Chosen(kind, checked[0], checked[1], found.comparison)
+                count = found.report.count(kind)
+                await stage.finish("ok", f"Найдено записей: {count}")
+            else:
+                await stage.finish("skipped", "Соседние недели не подтвердились")
+        if count > horizon.SPARSE or kind != "scheduleEvents":
+            return found  # a few deadlines or news are ordinary; a thin timetable is a question
+        await self._horizon_mark_asked(kind)
+        now = self.services.clock.now()
+        endpoint = found.candidate.endpoint
+        per_window: list[int] = []
+        if found.report.result is not None:
+            per_window = next(
+                (
+                    o.window_items
+                    for o in found.report.result.outcomes
+                    if o.kind == kind and o.window_items
+                ),
+                [],
+            )
+        span = horizon.covered(endpoint, now, info.tz)
+        window = endpoint.get("pagination") or {}
+        question = horizon.thin_question(
+            count,
+            kind_forms=("занятие", "занятия", "занятий")
+            if kind == "scheduleEvents"
+            else ("запись", "записи", "записей"),
+            span=span,
+            per_window=per_window,
+            unit="неделям" if window.get("stepDays") == 7 else "периодам",
+        )
+        diagnostic_event(
+            "learn.thin_horizon", kind=kind, record_count=count, window_count=len(per_window)
+        )
+        before = self.intent
+        answer = await self.ui.ask_learning_turn(question)
+        if not answer:
+            return found
+        await self._turn(answer, redactor)
+        redirected = (
+            self.intent.entry_urls != before.entry_urls
+            or self.intent.requested_kinds != before.requested_kinds
+            or self.intent.absent_kinds != before.absent_kinds
+        )
+        return None if redirected else found
 
     async def _pick(self, kind: Kind, verified: list[Chosen], tz: ZoneInfo) -> Chosen:
         """One candidate. A repair prefers the one that reads the confirmed data again; several
@@ -1584,7 +1680,7 @@ class Explorer:
             items = [item("Найдено записей", str(len(records)))]
             for rec in sample_of(records, kind, now):
                 label, value = describe(rec, info.tz)
-                items.append(item(label, value or "—", _safe_url(rec.source_url)))
+                items.append(item(label, value or "—", _safe_url(rec.open_url or "")))
             groups.append(SummaryGroup(title=KIND_LABELS[kind], items=items))
         groups.append(
             SummaryGroup(title="Источник", items=[item("Сайт", info.origin, info.origin)])
@@ -1592,8 +1688,6 @@ class Explorer:
         await self.ui.summary(title, groups)
 
     async def _resume_activation(self, info: ConnInfo) -> dict[str, Any] | None:
-        if not self.services.settings.botai_research_enabled:
-            return None
         async with self.services.db() as db, db.begin():
             conn = await guard_source_write(db, self.ctx, info.user_id, info.connection_id)
             if conn is None or conn.status == "disabled":

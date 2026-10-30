@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { api, call } from "@/api/client";
 import { humanMessage, isApiError } from "@/api/errors";
 import { fieldsHash } from "@/lib/hash";
@@ -315,4 +315,22 @@ export function useJob(
 ): JobSnapshot | undefined {
   useSyncExternalStore(manager.subscribe, manager.getVersion, manager.getVersion);
   return jobId ? manager.get(jobId) : undefined;
+}
+
+/** Снимки нескольких заданий сразу (задачи треда и ход агента); обновляются на каждое событие любого потока. */
+export function useJobs(
+  jobIds: readonly string[],
+  manager: JobManager = jobManager,
+): Map<string, JobSnapshot> {
+  const version = useSyncExternalStore(manager.subscribe, manager.getVersion, manager.getVersion);
+  const key = jobIds.join("|");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: пересчёт по версии менеджера и составу заданий
+  return useMemo(() => {
+    const result = new Map<string, JobSnapshot>();
+    for (const id of key ? key.split("|") : []) {
+      const snapshot = manager.get(id);
+      if (snapshot) result.set(id, snapshot);
+    }
+    return result;
+  }, [version, key, manager]);
 }

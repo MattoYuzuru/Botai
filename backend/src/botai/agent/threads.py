@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import cast
 
 from sqlalchemy import func, select, update
@@ -12,11 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.agent.schemas import ActiveTask, Attention, ThreadOut
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.services import Services
+from botai.core.vault import SecretKind
 from botai.db.models import ChatMessage, ChatThread, Connection, Job
 from botai.jobs import answers
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import TASK_KINDS
 from botai.jobs.tasks import task_title
+from botai.spaces import views
 from botai.spaces.conversations import owned_thread
 
 PREVIEW_CHARS = 120
@@ -97,20 +100,18 @@ async def thread_outs(
         )
     }
     titles = {
-        cid: title
-        for cid, title in (
-            await session.execute(
-                select(Connection.id, Connection.title).where(
-                    Connection.user_id == user_id,
-                    Connection.id.in_(
-                        [
-                            j.connection_id
-                            for jobs in in_flight.values()
-                            for j in jobs
-                            if j.connection_id
-                        ]
-                    ),
-                )
+        c.id: views.display_title(c)
+        for c in await session.scalars(
+            select(Connection).where(
+                Connection.user_id == user_id,
+                Connection.id.in_(
+                    [
+                        j.connection_id
+                        for jobs in in_flight.values()
+                        for j in jobs
+                        if j.connection_id
+                    ]
+                ),
             )
         )
     }
@@ -188,32 +189,63 @@ async def rename_thread(
 
 
 async def mark_read(
-    session: AsyncSession, services: Services, user_id: str, thread_id: str
+    session: AsyncSession,
+    services: Services,
+    user_id: str,
+    thread_id: str,
+    up_to: datetime | None = None,
 ) -> None:
+    """The student has seen the thread: up to `up_to` (the last message the client showed), or
+    everything written so far. A message that arrives after stays unread."""
     thread = await owned_thread(session, user_id, thread_id)
-    thread.last_read_at = services.clock.now()
+    newest = await session.scalar(
+        select(func.max(ChatMessage.created_at)).where(
+            ChatMessage.thread_id == thread.id, ChatMessage.user_id == user_id
+        )
+    )
+    now = services.clock.now()
+    seen = up_to if up_to is not None else max(now, newest) if newest else now
+    if thread.last_read_at is None or seen > thread.last_read_at:
+        thread.last_read_at = seen
     await session.commit()
 
 
 async def delete_thread(
     session: AsyncSession, services: Services, user_id: str, thread_id: str
 ) -> None:
-    """Stops the tasks and the turn of the thread, then removes it with its messages."""
+    """Stops the tasks and the turn of the thread, then removes it with its messages.
+
+    It takes the lock that posting a message takes, so a message cannot start a turn in a thread
+    that is being deleted (the post finds no thread afterwards), and one transaction does it all.
+    A job created for the thread in the meantime is refused by the foreign key; whatever was
+    running is swept before the thread goes."""
+    await owned_thread(session, user_id, thread_id)
+    await session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(f"thread-post:{thread_id}", 0)))
+    )
     thread = await owned_thread(session, user_id, thread_id)
-    running = list(
-        await session.scalars(
-            select(Job.id).where(
-                Job.user_id == user_id, Job.thread_id == thread.id, Job.state.in_(sorted(IN_FLIGHT))
+    secrets: list[str] = []
+    for _ in range(3):  # a stopped job can leave a source unlocking a follow-up: sweep again
+        running = list(
+            await session.scalars(
+                select(Job.id).where(
+                    Job.user_id == user_id,
+                    Job.thread_id == thread.id,
+                    Job.state.in_(sorted(IN_FLIGHT)),
+                )
             )
         )
-    )
-    # Detach first: a stopped task must not write its last words into a thread being deleted.
+        if not running:
+            break
+        for job_id in running:
+            _, found = await answers.stop_job(session, services.clock, user_id, job_id)
+            secrets.extend(found)
+        thread = await owned_thread(session, user_id, thread_id)
+    # Finished tasks keep their record, without a thread (the foreign key does the same).
     await session.execute(
         update(Job).where(Job.user_id == user_id, Job.thread_id == thread.id).values(thread_id=None)
     )
-    await session.commit()
-    for job_id in running:
-        await answers.cancel_job(session, services.vault, services.clock, user_id, job_id)
-    thread = await owned_thread(session, user_id, thread_id)
     await session.delete(thread)
     await session.commit()
+    for block_id in secrets:
+        await services.vault.delete(user_id, block_id, SecretKind.TRANSIENT)

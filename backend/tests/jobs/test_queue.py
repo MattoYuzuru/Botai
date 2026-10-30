@@ -86,8 +86,8 @@ async def test_no_dedupe_when_not_asked_or_without_a_connection(env: Env) -> Non
     q = env.services.queue
     a = await q.enqueue(JobKind.SYNC, user_id=acc.id, connection_id=conn, dedupe=False)
     b = await q.enqueue(JobKind.SYNC, user_id=acc.id, connection_id=conn, dedupe=False)
-    c = await q.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t1")
-    d = await q.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t1")
+    c = await q.enqueue(JobKind.CHAT, user_id=acc.id)
+    d = await q.enqueue(JobKind.CHAT, user_id=acc.id)
     assert len({a, b, c, d}) == 4
 
 

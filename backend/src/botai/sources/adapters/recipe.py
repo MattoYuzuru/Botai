@@ -11,6 +11,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
@@ -44,6 +45,7 @@ from botai.sources.expressions import (
     collect,
     expand_weekly,
     field_value,
+    structured_fields,
 )
 from botai.sources.extract import (
     MISSING,
@@ -57,8 +59,8 @@ from botai.sources.extract import (
 from botai.sources.fetch import SourceClient, origin_host
 from botai.sources.readonly import is_read_only_post
 from botai.sources.rendered import MAX_RENDERED_SECONDS, RenderedPageError, RenderedPageReader
-from botai.sources.templates import MAX_PARAM_VALUE, TemplateError, render
-from botai.sources.vocab import VOCAB
+from botai.sources.templates import MAX_PARAM_VALUE, TemplateError, render, shifted_now
+from botai.sources.vocab import STRUCTURED_FIELDS, VOCAB
 
 ABSOLUTE_MAX_PAGES = 20
 MAX_ITEMS_PER_ENDPOINT = 5000
@@ -153,8 +155,10 @@ class RecipeAdapter:
 
     # --- endpoint ----------------------------------------------------------------------------
 
-    def _url(self, path: str, ctx: SyncContext, params: Mapping[str, str]) -> str:
-        filled = render(path, now=ctx.now, tz=ctx.tz, params=params, in_path=True)
+    def _url(
+        self, path: str, ctx: SyncContext, params: Mapping[str, str], *, at: datetime | None = None
+    ) -> str:
+        filled = render(path, now=at or ctx.now, tz=ctx.tz, params=params, in_path=True)
         if not filled.startswith("/") or filled.startswith("//"):
             raise TemplateError("path")
         url = self.recipe.origin + filled
@@ -184,12 +188,17 @@ class RecipeAdapter:
             req.method != "GET" or not isinstance(endpoint.response, HtmlResponse) or req.body
         ):
             return fail("format")  # Defense in depth in addition to schema/Endpoint validation.
+        pagination = endpoint.pagination
+        window = pagination if pagination is not None and pagination.type == "dateWindow" else None
+
+        def query_at(at: datetime) -> dict[str, str]:
+            return {
+                k: render(v, now=at, tz=ctx.tz, params=params) for k, v in (req.query or {}).items()
+            }
+
         try:
             url = self._url(req.path, ctx, params)
-            query = {
-                k: render(v, now=ctx.now, tz=ctx.tz, params=params)
-                for k, v in (req.query or {}).items()
-            }
+            query = query_at(ctx.now)
             body = (
                 {
                     k: render(v, now=ctx.now, tz=ctx.tz, params=params)
@@ -205,7 +214,6 @@ class RecipeAdapter:
 
         if req.browser_plan is not None:
             return await self._browser_endpoint(endpoint, ctx, reader, url, query, params)
-        pagination = endpoint.pagination
         pages = self._page_count(pagination)
         collected: list[Record] = []
         seen = 0
@@ -213,12 +221,24 @@ class RecipeAdapter:
         cursor: str | None = None
         previous_pages: set[str] = set()
         unique_ids: set[str] = set()
+        window_ids: list[frozenset[str]] = []
         nodes_seen = 0
         leaves_seen = 0
         complete = False
         outcome.source_url = url
         for page_index in range(pages):
+            page_now = ctx.now
             page_query = {**query, **self._page_params(pagination, page_index, offset, cursor)}
+            if window is not None:
+                # Every window is a fresh render of the date templates, not a shifted copy of the
+                # first answer: `{weekStart}` of the moved day is the Monday of that week.
+                page_now = shifted_now(
+                    ctx.now, ctx.tz, (window.first_window + page_index) * (window.step_days or 1)
+                )
+                try:
+                    page_query = query_at(page_now)
+                except TemplateError:
+                    return fail("format")
             if req.render:
                 assert isinstance(endpoint.response, HtmlResponse)
                 request = httpx.Request("GET", url, params=page_query)
@@ -247,6 +267,7 @@ class RecipeAdapter:
             outcome.status = response.status_code
             outcome.transport = "browser" if req.render else "http"
             outcome.binding_id = req.auth_binding
+            outcome.windows = page_index + 1 if window is not None else 0
             if response.status_code in (404, 410):
                 return fail("not_found", str(response.url))
             if response.status_code >= 400:
@@ -266,6 +287,9 @@ class RecipeAdapter:
             if isinstance(parsed, str):
                 return fail(parsed, str(response.url))
             raw_count, page_records, doc, page_nodes, page_leaves = parsed
+            open_url = self._open_url(endpoint, ctx, params, page_now, str(response.url))
+            if open_url is not None:
+                page_records = [replace(rec, open_url=open_url) for rec in page_records]
             nodes_seen += page_nodes
             leaves_seen += page_leaves
             seen += raw_count
@@ -282,17 +306,34 @@ class RecipeAdapter:
                 return fail("limit", str(response.url))
             page_digest = hashlib.sha256(response.content).hexdigest()
             ids = {r.external_id for r in page_records}
-            if (
-                page_index
-                and raw_count
-                and (page_digest in previous_pages or (ids and not ids.difference(unique_ids)))
-            ):
+            if window is not None:
+                # Neighbouring windows may overlap, so only an answer that repeats an earlier
+                # window as a whole shows that the source ignores the moved date.
+                repeated = bool(raw_count) and (
+                    page_digest in previous_pages or (bool(ids) and frozenset(ids) in window_ids)
+                )
+            else:
+                repeated = bool(
+                    page_index
+                    and raw_count
+                    and (page_digest in previous_pages or (ids and not ids.difference(unique_ids)))
+                )
+            if repeated:
                 # Keep usable records, but never mark an unfinished walk as a complete snapshot.
                 outcome.ok, outcome.problem = False, "no_progress"
                 return outcome, collected
+            if window is not None:
+                # Overlapping windows show the same class twice: one record per identity.
+                page_records = [r for r in page_records if r.external_id not in unique_ids]
             previous_pages.add(page_digest)
             unique_ids.update(ids)
+            window_ids.append(frozenset(ids))
+            if window is not None:
+                outcome.window_items.append(len(page_records))
             collected.extend(page_records)
+            if window is not None:
+                complete = page_index + 1 == pages  # an empty window does not end the walk
+                continue
             if pagination is None or pagination.type == "none" or raw_count == 0:
                 complete = True
                 break
@@ -315,7 +356,7 @@ class RecipeAdapter:
         if not complete:
             outcome.ok, outcome.problem = False, "limit"
         elif seen == 0 or (self.recipe.version == 2 and not leaves_seen):
-            outcome.problem = "empty"
+            outcome.problem = "empty"  # also when every window of a date walk was empty
         elif not collected and not (
             self.recipe.version == 2 and endpoint.response.expand is not None
         ):
@@ -381,6 +422,9 @@ class RecipeAdapter:
                 outcome.ok, outcome.problem = False, parsed
                 return outcome, []
             root_count, records, _document, nodes, leaves = parsed
+            open_url = self._open_url(endpoint, ctx, params, ctx.now, snapshot.url)
+            if open_url is not None:
+                records = [replace(row, open_url=open_url) for row in records]
             if records and not {row.external_id for row in records}.difference(identities):
                 outcome.ok, outcome.problem = False, "no_progress"
                 return outcome, []
@@ -400,7 +444,30 @@ class RecipeAdapter:
     def _page_count(pagination: Pagination | None) -> int:
         if pagination is None or pagination.type == "none":
             return 1
+        if pagination.type == "dateWindow":
+            return max(1, min(pagination.windows or 1, ABSOLUTE_MAX_PAGES))
         return max(1, min(pagination.max_pages, ABSOLUTE_MAX_PAGES))
+
+    def _open_url(
+        self,
+        endpoint: Endpoint,
+        ctx: SyncContext,
+        params: Mapping[str, str],
+        at: datetime,
+        source_url: str,
+    ) -> str | None:
+        """The page where the student sees this answer: declared `uiUrl`, else the HTML page."""
+        ui = endpoint.ui_url
+        if ui is None:
+            return source_url if isinstance(endpoint.response, HtmlResponse) else None
+        try:
+            path = self._url(ui.path, ctx, params, at=at)
+            query = {
+                k: render(v, now=at, tz=ctx.tz, params=params) for k, v in (ui.query or {}).items()
+            }
+        except TemplateError:
+            return None  # a personal parameter that could not be read: no link is better than a wrong one
+        return str(httpx.URL(path, params=query)) if query else path
 
     @staticmethod
     def _page_params(
@@ -457,8 +524,10 @@ class RecipeAdapter:
                 fields = {
                     name: field_value(expression, bindings, ctx.tz)
                     for name, expression in spec.fields.items()
-                    if name in VOCAB[endpoint.kind]
+                    if name in VOCAB[endpoint.kind] and name not in STRUCTURED_FIELDS
                 }
+                if spec.links or spec.attributes:
+                    fields.update(structured_fields(spec, bindings, ctx.tz))
                 # In v2 an explicitly declared identity is authoritative, including parent fields.
                 if endpoint.kind == "scheduleEvents" and spec.expand is None:
                     start = parse_datetime(fields.get("startsAt"), ctx.tz)

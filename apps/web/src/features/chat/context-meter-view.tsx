@@ -20,10 +20,11 @@ export function ContextButton({ threadId, nowMs }: { threadId: string | null; no
         aria-label={`Контекст агента: занято ${formatTokens(used)} из ${formatTokens(limit)} токенов`}
         onClick={() => setOpen(true)}
         data-context-button=""
-        className="h-11 flex-col gap-1 px-2"
+        className="h-11 gap-2 px-2"
       >
-        <ContextMeterBar limit={limit} segments={segments} className="w-12" />
-        <span className="type-caption text-fg-muted" data-numeric="">
+        <ContextMeterBar limit={limit} segments={segments} className="w-10 lg:w-12" />
+        {/* На телефоне числа нет: место нужно названию чата; полное значение — в подписи кнопки и в шите. */}
+        <span className="type-caption text-fg-muted max-lg:sr-only" data-numeric="">
           {formatTokens(used)}
         </span>
       </Button>

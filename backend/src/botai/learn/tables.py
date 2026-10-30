@@ -20,7 +20,14 @@ from botai.learn.author import parse_json
 from botai.learn.redact import Redactor
 from botai.sources.documents import Extracted, Table
 from botai.sources.extract import collapse
-from botai.sources.vocab import KIND_LABELS, REQUIRED, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
+from botai.sources.vocab import (
+    KIND_LABELS,
+    REQUIRED,
+    STRUCTURED_FIELDS,
+    TABLE_EXTRA_FIELDS,
+    TABLE_KINDS,
+    VOCAB,
+)
 
 # Columns that hold people or contacts: their cells never go to the model, even redacted.
 PERSON_HEADER = re.compile(
@@ -158,7 +165,9 @@ def schema() -> dict[str, Any]:
 def request(
     observation: str, force: Kind | None = None, feedback: list[str] | None = None
 ) -> LlmRequest:
-    pool = VOCAB[force] if force else set().union(*(VOCAB[k] for k in TABLE_KINDS))
+    pool = (
+        VOCAB[force] if force else set().union(*(VOCAB[k] for k in TABLE_KINDS))
+    ) - STRUCTURED_FIELDS
     fields = ", ".join(f"`{name}`" for name in sorted((pool - {"externalId"}) | TABLE_EXTRA_FIELDS))
     forced = (
         f"Студент сказал, что нужны данные вида `{force}` ({KIND_LABELS[force].lower()})."
@@ -221,7 +230,7 @@ def parse(data: Any, extracted: Extracted) -> Proposal | None:
         else 0
     )
     headers = _header(table, header_row)
-    allowed = (VOCAB[kind] | TABLE_EXTRA_FIELDS) - {"externalId"}
+    allowed = (VOCAB[kind] | TABLE_EXTRA_FIELDS) - {"externalId"} - STRUCTURED_FIELDS
     columns: dict[str, Column] = {}
     raw_columns = data.get("columns")
     for target, raw in (raw_columns if isinstance(raw_columns, dict) else {}).items():

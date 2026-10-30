@@ -1,0 +1,138 @@
+[
+  {
+    "adapter": "recipe",
+    "recipe": {
+      "version": 2,
+      "origin": "https://fakeuni.test",
+      "revision": 1,
+      "learnedAt": "2026-10-27T10:00:00Z",
+      "auth": {
+        "type": "cookie"
+      },
+      "endpoints": [
+        {
+          "id": "schedule",
+          "kind": "scheduleEvents",
+          "request": {
+            "method": "GET",
+            "path": "/api/get-myschedule",
+            "query": {
+              "begin_date": "{weekStart}"
+            }
+          },
+          "pagination": {
+            "type": "dateWindow",
+            "param": "begin_date",
+            "stepDays": 7,
+            "windows": 6,
+            "startOffset": -1
+          },
+          "uiUrl": {
+            "path": "/schedule",
+            "query": {
+              "begin_date": "{weekStart}"
+            }
+          },
+          "response": {
+            "format": "json",
+            "collections": [
+              {
+                "as": "day",
+                "path": ""
+              },
+              {
+                "as": "lesson",
+                "path": "/lessons"
+              }
+            ],
+            "fields": {
+              "title": {
+                "from": "lesson",
+                "path": "/name",
+                "required": true
+              },
+              "startsAt": {
+                "compose": {
+                  "type": "dateTime",
+                  "date": {
+                    "from": "day",
+                    "path": "/date"
+                  },
+                  "time": {
+                    "path": "/begin_time"
+                  },
+                  "timeZone": "Europe/Moscow"
+                },
+                "required": true
+              },
+              "endsAt": {
+                "compose": {
+                  "type": "dateTime",
+                  "date": {
+                    "from": "day",
+                    "path": "/date"
+                  },
+                  "time": {
+                    "path": "/end_time"
+                  },
+                  "timeZone": "Europe/Moscow"
+                },
+                "required": true
+              },
+              "location": {
+                "from": "lesson",
+                "path": "/auditorium"
+              },
+              "kindText": {
+                "from": "lesson",
+                "path": "/lesson_type"
+              },
+              "address": {
+                "from": "lesson",
+                "path": "/building"
+              },
+              "lessonNumber": {
+                "from": "lesson",
+                "path": "/lesson_number",
+                "transform": "number"
+              }
+            },
+            "links": [
+              {
+                "url": {
+                  "from": "lesson",
+                  "path": "/url1"
+                },
+                "label": {
+                  "from": "lesson",
+                  "path": "/url1_description"
+                }
+              }
+            ],
+            "attributes": [
+              {
+                "label": "Корпус",
+                "from": "lesson",
+                "path": "/building"
+              }
+            ],
+            "identity": [
+              "title",
+              "startsAt"
+            ]
+          }
+        }
+      ],
+      "validation": {
+        "requireKinds": [
+          "scheduleEvents"
+        ],
+        "minItems": 1
+      },
+      "freshness": {
+        "syncEveryMinutes": 180,
+        "staleAfterMinutes": 720
+      }
+    }
+  }
+]

@@ -83,7 +83,7 @@ async def test_a_handlers_model_calls_are_recorded_for_its_user_and_job(env: Env
         return {"answer": first.content}
 
     acc = await env.account()
-    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t")
+    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id)
     env.start(env.worker({JobKind.CHAT: handler}, services=services))
     job = await env.wait_for(job_id, {"done"})
 
@@ -128,7 +128,7 @@ async def test_a_user_over_the_budget_gets_a_quota_error_and_no_model_call(env: 
             peak=False,
             now=real_now(),  # DbUsageGate checks against the wall clock
         )
-    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, thread_id="t")
+    job_id = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id)
     env.start(env.worker({JobKind.CHAT: handler}, services=services))
     job = await env.wait_for(job_id, {"failed"})
 
@@ -168,8 +168,8 @@ async def test_one_users_loop_does_not_stop_another_user(env: Env) -> None:
                 peak=False,
                 now=real_now(),
             )
-    bad = await env.services.queue.enqueue(JobKind.CHAT, user_id=runaway.id, thread_id="t1")
-    good = await env.services.queue.enqueue(JobKind.CHAT, user_id=calm.id, thread_id="t2")
+    bad = await env.services.queue.enqueue(JobKind.CHAT, user_id=runaway.id)
+    good = await env.services.queue.enqueue(JobKind.CHAT, user_id=calm.id)
     env.start(env.worker({JobKind.CHAT: handler}, services=services))
     assert (await env.wait_for(good, {"done"})).result == {"user": calm.id}
     failed = await env.wait_for(bad, {"failed"})

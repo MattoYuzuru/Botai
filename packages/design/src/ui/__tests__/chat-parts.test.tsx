@@ -133,21 +133,35 @@ describe("SourceCitation: внутренняя ссылка", () => {
 });
 
 describe("ChatLayout и ScreenHeader narrow", () => {
-  it("шапка, лента и поле ввода в одной колонке; открытая клавиатура убирает отступ под нижнюю панель", () => {
+  it("страница прокручивается целиком: липкая шапка и липкое поле, колонка max-w-chat; клавиатура опускает поле к краю", () => {
     const { container, rerender } = render(
-      <ChatLayout header={<header>Шапка</header>} composer={<div>Поле</div>}>
+      <ChatLayout header={<header>Шапка</header>} composer={<div>Поле</div>} floating={<span>Вниз</span>}>
         <p>Сообщения</p>
       </ChatLayout>,
     );
     const dock = container.querySelector("[data-chat-dock]") as HTMLElement;
-    expect(dock.className).toContain("pb-[calc(4.25rem");
-    expect(container.querySelector("[data-chat-layout]")).toHaveStyle({ height: "calc(100dvh - 0px)" });
+    const root = container.querySelector("[data-chat-layout]") as HTMLElement;
+    // Прокрутка — у страницы: ни фиксированной высоты, ни собственного скролла у ленты.
+    expect(root.style.height).toBe("");
+    expect(container.querySelector("[data-chat-transcript]")?.className).toContain("max-w-chat");
+    expect(container.querySelector("[data-chat-header]")?.className).toContain("sticky");
+    expect(dock.className).toContain("sticky");
+    // Над нижней панелью телефона: поле встаёт выше её, ноутбук — отступ от низа.
+    expect(dock.className).toContain("bottom-[calc(var(--spacing-tabbar)");
+    expect(dock.className).toContain("lg:pb-safe-5");
+    expect(root.className).toContain("pb-[calc(var(--spacing-tabbar)");
+    expect(screen.getByText("Вниз")).toBeInTheDocument();
     rerender(
       <ChatLayout keyboardOpen header={<header>Шапка</header>} composer={<div>Поле</div>}>
         <p>Сообщения</p>
       </ChatLayout>,
     );
-    expect((container.querySelector("[data-chat-dock]") as HTMLElement).className).not.toContain("4.25rem");
+    const open = container.querySelector("[data-chat-dock]") as HTMLElement;
+    expect(open.className).toContain("bottom-0");
+    expect(open.className).not.toContain("--spacing-tabbar");
+    expect((container.querySelector("[data-chat-layout]") as HTMLElement).className).not.toContain(
+      "--spacing-tabbar",
+    );
   });
 
   it("узкая шапка не растягивается до ширины страницы на ноутбуке", () => {

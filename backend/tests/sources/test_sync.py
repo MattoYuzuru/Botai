@@ -11,8 +11,11 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from botai.core.browser import SessionState
 from botai.core.clock import FrozenClock
 from botai.core.errors import BotaiError, ErrorCode
+from botai.core.execution import student_is_needed
+from botai.core.ids import new_id
 from botai.core.jobs import InMemoryJobContext, JobKind
 from botai.core.queue import InMemoryJobQueue
 from botai.core.vault import InMemoryVault, SecretKind
@@ -267,7 +270,9 @@ async def test_session_still_rejected_after_login_needs_the_user_not_a_loop(env:
     assert conn["next_sync_at"] is None  # the scheduler stops polling until a new login
 
 
-@pytest.mark.parametrize("code", [ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION])
+@pytest.mark.parametrize(
+    "code", [ErrorCode.LOGIN_FAILED, ErrorCode.SOURCE_BOT_PROTECTION, ErrorCode.LOGIN_GUARD_REFUSED]
+)
 async def test_login_that_cannot_be_automated_stops_without_retries(
     env: Env, code: ErrorCode
 ) -> None:
@@ -279,6 +284,156 @@ async def test_login_that_cannot_be_automated_stops_without_retries(
     assert conn["error_code"] == code.value
     assert conn["next_sync_at"] is None
     assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
+
+
+class WorkerContext(InMemoryJobContext):
+    """What a claimed job in the worker offers: a row to move and a claim to check."""
+
+    input_revision = 0
+
+    async def assert_current(
+        self, session: AsyncSession, *, input_revision: int | None = None
+    ) -> None:
+        return None
+
+
+async def bound_sync_job(env: Env, *, thread_id: str | None) -> tuple[str, WorkerContext]:
+    """A scheduled sync as the worker holds it: a running job row, with or without a conversation."""
+    job = m.Job(
+        id=new_id(),
+        user_id=env.seeded.user_id,
+        kind="sync",
+        state="running",
+        connection_id=env.seeded.connection_id,
+        thread_id=thread_id,
+        payload={},
+        run_after=NOW,
+    )
+    env.db.add(job)
+    await env.db.commit()
+    ctx = WorkerContext(
+        user_id=env.seeded.user_id, connection_id=env.seeded.connection_id, job_id=job.id
+    )
+    return job.id, ctx
+
+
+async def real_thread(env: Env) -> str:
+    """A conversation that exists: a job can only point at one."""
+    thread = m.ChatThread(user_id=env.seeded.user_id, title="Чат")
+    env.db.add(thread)
+    await env.db.commit()
+    return thread.id
+
+
+async def job_thread(env: Env, job_id: str) -> str | None:
+    env.db.expire_all()
+    return await env.db.scalar(select(m.Job.thread_id).where(m.Job.id == job_id))
+
+
+class AskingSessions(FakeSessions):
+    """A login that needs the student (a code, a push approval) before it succeeds."""
+
+    async def ensure(
+        self, ctx: object, *, user_id: str, connection_id: str, force: bool = False
+    ) -> SessionState:
+        await student_is_needed()
+        return await super().ensure(ctx, user_id=user_id, connection_id=connection_id, force=force)
+
+
+class Threads:
+    """The conversation lookup of the source, injected: it is the conversations' owner's business."""
+
+    def __init__(self, thread_id: str | None) -> None:
+        self.thread_id = thread_id
+        self.asked = 0
+
+    async def __call__(self, db: AsyncSession, user_id: str, connection_id: str) -> str | None:
+        self.asked += 1
+        return self.thread_id
+
+
+async def sync_with(env: Env, ctx: InMemoryJobContext, threads: Threads) -> dict[str, Any]:
+    handler = make_sync_handler(transport=env.transport, retry=FAST, find_thread=threads)
+    return await handler(ctx, env.services, {})
+
+
+async def test_a_login_that_needs_the_student_moves_the_job_to_its_sources_conversation(
+    env: Env,
+) -> None:
+    """The question must appear where the student looks for this source."""
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(await real_thread(env))
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) == threads.thread_id
+    assert threads.asked == 1
+
+
+async def test_without_a_finder_the_job_goes_to_the_thread_of_its_source_or_a_new_one(
+    env: Env,
+) -> None:
+    """The login of a scheduled sync must appear somewhere the student looks, even for a source
+    that was never talked about: its thread is made, and the next sync finds the same one."""
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    handler = make_sync_handler(transport=env.transport, retry=FAST)
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    assert (await handler(ctx, env.services, {}))["status"] == "ok"
+    made = await job_thread(env, job_id)
+    assert made is not None
+    row = await env.db.get(m.ChatThread, made)
+    assert row is not None
+    assert row.user_id == env.seeded.user_id
+    assert row.title == (await env.db.get(m.Connection, env.seeded.connection_id)).title  # type: ignore[union-attr]
+    again, ctx_again = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    assert (await handler(ctx_again, env.services, {}))["status"] == "ok"
+    assert await job_thread(env, again) == made
+
+
+async def test_a_silent_login_from_the_stored_password_does_not_borrow_a_conversation(
+    env: Env,
+) -> None:
+    threads = Threads(await real_thread(env))
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()  # logs in again, asking nobody
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert env.services.sessions.calls == 1  # type: ignore[attr-defined]
+    assert await job_thread(env, job_id) is None
+    assert threads.asked == 0
+
+
+async def test_a_sync_that_needs_no_login_does_not_borrow_a_conversation(env: Env) -> None:
+    threads = Threads(await real_thread(env))
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) is None
+    assert threads.asked == 0
+
+
+async def test_a_job_that_already_has_a_conversation_keeps_it_through_a_login(env: Env) -> None:
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(await real_thread(env))
+    own = await real_thread(env)
+    job_id, ctx = await bound_sync_job(env, thread_id=own)
+    fakeuni_api.expire_sessions()
+    await sync_with(env, ctx, threads)
+    assert await job_thread(env, job_id) == own
+    assert threads.asked == 0
+
+
+async def test_a_source_without_a_conversation_leaves_the_job_where_it_is(env: Env) -> None:
+    env.services.sessions = AskingSessions()  # type: ignore[assignment]
+    env.services.sessions.vault = env.services.vault  # type: ignore[attr-defined]
+    threads = Threads(None)
+    job_id, ctx = await bound_sync_job(env, thread_id=None)
+    fakeuni_api.expire_sessions()
+    assert (await sync_with(env, ctx, threads))["status"] == "ok"
+    assert await job_thread(env, job_id) is None
 
 
 async def test_session_past_its_expiry_hint_costs_no_request_before_login(env: Env) -> None:

@@ -14,6 +14,7 @@ from botai.agent.schemas import (
     MessageAccepted,
     MessageIn,
     MessageOut,
+    ReadIn,
     ThreadCreate,
     ThreadOut,
     ThreadPatch,
@@ -58,9 +59,13 @@ async def delete_thread(
 
 @router.post("/chat/threads/{thread_id}/read", status_code=204)
 async def read_thread(
-    thread_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+    thread_id: str,
+    user: AuthUser,
+    session: DbSession,
+    services: ServicesDep,
+    body: ReadIn | None = None,
 ) -> None:
-    await threads.mark_read(session, services, user.id, thread_id)
+    await threads.mark_read(session, services, user.id, thread_id, body.up_to if body else None)
 
 
 @router.get("/chat/threads/{thread_id}/messages", response_model=list[MessageOut])

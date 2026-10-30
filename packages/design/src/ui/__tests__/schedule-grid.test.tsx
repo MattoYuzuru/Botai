@@ -38,7 +38,11 @@ describe("ScheduleGrid: неделя сеткой для ноутбука", () =
           start: at(27, 11, 10),
           end: at(27, 12, 30),
           title: "Алгоритмы",
-          room: "ауд. 412",
+          badge: "Текущий рубежный контроль",
+          facts: [
+            { key: "room", icon: "room", label: "Аудитория", text: "ауд. 412" },
+            { key: "address", icon: "address", label: "Адрес", text: "Покровский б-р, д.11" },
+          ],
           conflict: true,
           changed: true,
           spaceTitle: "ВШЭ",
@@ -55,6 +59,10 @@ describe("ScheduleGrid: неделя сеткой для ноутбука", () =
     expect(screen.getByText("Изменено")).toBeInTheDocument();
     expect(screen.getByText("ВШЭ")).toBeInTheDocument();
     expect(screen.getByText("ауд. 412")).toBeInTheDocument();
+    expect(screen.getByText("Покровский б-р, д.11")).toBeInTheDocument();
+    expect(screen.getByText("Текущий рубежный контроль")).toBeInTheDocument();
+    // В узкой колонке детали идут столбцом, по строке на деталь.
+    expect(document.querySelector("[data-fact=address] svg")).toHaveAttribute("data-icon", "address");
   });
 
   it("день без пар подписан «Пар нет», а не пустой", () => {

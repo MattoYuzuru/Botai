@@ -418,9 +418,15 @@ def test_task_prompt_lists_the_vocabulary_of_the_kind_and_the_feedback() -> None
 
 
 def test_author_schema_accepts_a_proper_answer_and_forbids_other_kinds_and_methods() -> None:
-    schema = prompting.author_schema("scheduleEvents")
+    schema = prompting.author_schema(
+        "scheduleEvents",
+        request_facts={
+            "r0": ObservedRequest(method="GET", url="https://fakeuni.test/api/v2/timetable")
+        },
+    )
     validator = Draft202012Validator(schema)
     good = json.loads(ls.timetable_answer().content)
+    good["endpoints"][0]["requestEvidenceId"] = "r0"
     assert list(validator.iter_errors(good)) == []
     wrong_kind = json.loads(ls.deadlines_answer().content)
     assert list(validator.iter_errors(wrong_kind)) != []
@@ -446,7 +452,7 @@ def test_workers_handler_table_has_the_new_handlers() -> None:
     from botai.worker import handler_table
 
     table = handler_table()
-    assert {JobKind.SYNC, JobKind.CONNECT, JobKind.LEARN} <= set(table)
+    assert {JobKind.SYNC, JobKind.CONNECT} <= set(table)
 
 
 def test_secrets_do_not_show_up_in_reprs_that_might_reach_a_log() -> None:

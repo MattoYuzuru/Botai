@@ -9,5 +9,6 @@ export { mergeRefs } from "./lib/merge-refs";
 export * from "./lib/preferences";
 export { displayHost, safeHttpUrl } from "./lib/safe-url";
 export * from "./lib/urgency";
+export * from "./lib/use-voice-recorder";
 export * from "./mascot";
 export * from "./ui";

@@ -98,7 +98,7 @@ async def test_a_new_source_gets_the_universitys_space_a_human_title_and_a_task_
         space = await session.scalar(select(Space).where(Space.user_id == user))
         conn = await session.get(Connection, job.connection_id)
     assert space is not None
-    assert (space.university_id, space.title) == (HSE, "Высшая школа экономики")
+    assert (space.university_id, space.title) == (HSE, "НИУ ВШЭ")
     assert conn is not None
     assert (conn.title, conn.kind, conn.status) == ("Smart LMS", "lms", "draft")
     assert (conn.origin, conn.allow_hosts, conn.space_id) == (
@@ -150,8 +150,10 @@ async def test_an_unsafe_or_missing_address_starts_nothing(env: Env, bad: str) -
     assert "eyJ" not in result
     assert await count(env, Connection, Connection.user_id == user) == 0
     assert await jobs_of(env, user) == []
-    missing = await connect_source(chat, {"title": "Кабинет"})
-    assert missing.startswith("Результат: не запущено")
+    # without an address the source is still made, but not without knowing the university
+    unknown = await connect_source(chat, {"title": "Кабинет"})
+    assert unknown.startswith("Результат: нужно уточнение")
+    assert await count(env, Connection, Connection.user_id == user) == 0
 
 
 async def test_the_same_site_is_never_connected_twice(env: Env) -> None:
@@ -415,7 +417,7 @@ async def test_list_universities_shows_sources_statuses_tasks_and_links(env: Env
     )
     (job,) = await jobs_of(env, user, "connect")
     listing = await list_universities(tools(env, user, thread), {})
-    assert "«Высшая школа экономики» (НИУ ВШЭ)" in listing
+    assert "«НИУ ВШЭ»" in listing
     assert "«Единый личный кабинет»" in listing
     assert f"botai://connections/{job.connection_id}" in listing
     assert "Подключение: Единый личный кабинет — в очереди" in listing
@@ -459,7 +461,7 @@ async def test_a_document_of_a_university_goes_to_its_space(env: Env) -> None:
         chat,
         {"url": "https://docs.fakeuni.test/rules.pdf", "title": "Правила", "university_id": HSE},
     )
-    assert "Высшая школа экономики" in result
+    assert "«НИУ ВШЭ»" in result
     async with env.sm() as session:
         space = await session.scalar(select(Space).where(Space.user_id == user))
     assert space is not None
@@ -521,3 +523,27 @@ async def test_task_status_reports_stage_and_what_the_task_waits_for(env: Env) -
     assert "Жду пароль" in text
     assert "защищённый ввод пароля или кода в приложении" in text
     assert job.id not in text
+
+
+async def test_a_source_without_an_address_is_made_and_finds_its_entry_itself(env: Env) -> None:
+    client, user = await student(env)
+    thread = await thread_of(client)
+    chat = tools(env, user, thread)
+    result = await connect_source(
+        chat, {"title": "Smart LMS", "university_query": "Вышка", "kind_hint": "lms"}
+    )
+    assert result.startswith("Результат: запущено")
+    assert "Адреса не было" in result
+    (job,) = await jobs_of(env, user, "connect")
+    assert "url" not in job.payload
+    assert job.payload["learning_intent"]["entry_urls"] == []
+    assert job.thread_id == thread
+    async with env.sm() as session:
+        conn = await session.get(Connection, job.connection_id)
+    assert conn is not None
+    assert (conn.origin, conn.title, conn.status) == ("", "Smart LMS", "draft")
+    again = await connect_source(
+        tools(env, user, thread), {"title": "Smart LMS", "university_query": "ВШЭ"}
+    )
+    assert again.startswith("Результат: уже подключено, ничего не запущено")
+    assert len(await jobs_of(env, user, "connect")) == 1

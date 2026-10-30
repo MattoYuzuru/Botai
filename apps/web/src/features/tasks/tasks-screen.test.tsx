@@ -170,7 +170,7 @@ describe("«Задания»: состояния данных", () => {
     useScenario("reauth");
     renderApp("/tasks");
     const notices = await screen.findByRole("list", { name: "Состояние источников" });
-    expect(within(notices).getByRole("button", { name: "Войти снова" })).toBeInTheDocument();
+    expect(within(notices).getByRole("link", { name: "Войти снова" })).toBeInTheDocument();
     await waitFor(() => expect(screenState()).toBe("reauth"));
     expect(await screen.findByText("Эссе по продуктовой стратегии")).toBeInTheDocument();
   });

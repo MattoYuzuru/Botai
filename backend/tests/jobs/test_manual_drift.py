@@ -154,7 +154,7 @@ async def test_manual_connect_repairs_drift_inline_for_every_final_sync_path(
         fakeuni_api.STATE.timetable_version = "v3"
     env.services.browser = await ls.fake_site(fakeuni_app)
     moved = recipes.timetable_endpoint(path="/api/v3/schedule")
-    llm = ScriptedLlm(
+    llm = ls.EvidenceLlm(
         queue=([ls.answer([recipes.timetable_endpoint()])] if mode == "explore" else [])
         + [ls.answer([moved])]
     )

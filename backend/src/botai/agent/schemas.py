@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -20,6 +20,12 @@ class ThreadCreate(ApiModel):
 
 class ThreadPatch(ApiModel):
     title: str = Field(min_length=1, max_length=200)
+
+
+class ReadIn(ApiModel):
+    """The last message the client showed; without it everything written so far is read."""
+
+    up_to: datetime | None = None
 
 
 class ActiveTask(ApiModel):
@@ -43,9 +49,20 @@ class ThreadOut(ApiModel):
 
 
 class MessageIn(ApiModel):
-    text: str = Field(min_length=1, max_length=8000)
+    """The text may be empty only when files are attached."""
+
+    text: str = Field(default="", max_length=8000)
+    attachment_ids: list[Annotated[str, Field(pattern=ULID)]] = Field(
+        default_factory=list, max_length=10
+    )
     client_message_id: str | None = Field(default=None, pattern=ULID)
     target_job_id: str | None = Field(default=None, pattern=ULID)
+
+    @model_validator(mode="after")
+    def something_is_sent(self) -> MessageIn:
+        if not self.text.strip() and not self.attachment_ids:
+            raise ValueError("a message needs text or files")
+        return self
 
 
 class MessageOut(ApiModel):

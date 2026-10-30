@@ -42,7 +42,12 @@ from botai.browser.forms import (
     safe_label,
     secretish,
 )
-from botai.browser.gateway import CaptureConfig, PlaywrightGateway, PlaywrightHandle
+from botai.browser.gateway import (
+    CaptureConfig,
+    PlaywrightGateway,
+    PlaywrightHandle,
+    guard_refusal_error,
+)
 from botai.browser.presets import (
     MAX_HOSTS,
     ConnectionInfo,
@@ -68,7 +73,7 @@ from botai.core.browser import PageSnapshot, SessionState
 from botai.core.clock import Clock, SystemClock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
-from botai.core.execution import authentication_job, save_secret
+from botai.core.execution import authentication_job, save_secret, student_is_needed
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobContext, JobState
 from botai.core.vault import SecretKind, Vault
@@ -183,6 +188,7 @@ class _Run:
     entry_verified: bool = False
     human_progress: bool = False
     push_confirmed: bool = False
+    guard_fallbacks: int = 0
 
 
 def _avoid_tokens(creds: _Creds) -> list[str]:
@@ -198,6 +204,14 @@ def _ordinary_page(run: _Run, snap: PageSnapshot) -> bool:
     return isinstance(detect(snap), UnknownPage) and (
         urlsplit(snap.url).path not in set(run.recorder.login_paths)
     )
+
+
+def _same_site(host: str, site: str) -> bool:
+    """Does `host` belong to the university's own domain (the origin's last two labels)? A rough
+    answer to a question only asked of the student: whether a refused host is worth asking about."""
+    root = ".".join(site.lower().split(".")[-2:])
+    host = host.lower()
+    return bool(root) and (host == root or host.endswith("." + root))
 
 
 def page_signature(snap: PageSnapshot) -> tuple[str, str, int]:
@@ -344,11 +358,16 @@ class LoginFlow:
                         or len(hosts) >= MAX_HOSTS
                     ):
                         raise
+                    sends = (
+                        "отправляет данные входа на"
+                        if exc.extra.get("post")
+                        else ("перенаправил вход на")
+                    )
                     answer = await job.ask(
                         ConfirmBlock(
                             id=new_id(),
                             at=self._clock.now(),
-                            question=f"Сайт вуза перенаправил вход на {host}. "
+                            question=f"Сайт вуза {sends} {host}. "
                             "Разрешить этому подключению обращаться к этому адресу?",
                             confirm_label="Разрешить и продолжить",
                             cancel_label="Не разрешать",
@@ -646,7 +665,10 @@ class LoginFlow:
                 )
             else:
                 assert isinstance(detection, ErrorPage)
-                raise self._navigation_failure(run)
+                failure = self._navigation_failure(run)
+                if failure.code != ErrorCode.LOGIN_GUARD_REFUSED:
+                    raise failure
+                outcome = await self._guard_fallback(run, failure)
             if isinstance(outcome, SessionState):
                 return outcome
             snap = outcome
@@ -657,6 +679,42 @@ class LoginFlow:
         if failure is not None:
             return failure
         return BotaiError(ErrorCode.SOURCE_UNAVAILABLE, "Страница входа вуза не открылась")
+
+    async def _guard_fallback(self, run: _Run, refusal: BotaiError) -> Outcome:
+        """Our guard stopped a request of the login. The site works; what the page sent is not
+        something we can verify. Say that, and give the human the fallback screen on a fresh copy
+        of the page: the refused submission never reached the site, so nothing there has changed.
+
+        Once per login. A second refusal means the screen did not help (a page that always sends
+        what we do not pass): the student is told so instead of being sent round again."""
+        can_fall_back = (
+            self._screens is not None and run.entry_url is not None and run.guard_fallbacks == 0
+        )
+        diagnostic_event(
+            "auth.guard_refused",
+            connection_id=run.connection_id,
+            error_code=refusal.code.value,
+            fallback=can_fall_back,
+        )
+        if not can_fall_back or run.entry_url is None:
+            raise guard_refusal_error(fallback_used=run.guard_fallbacks > 0)
+        run.guard_fallbacks += 1
+        run.submitted = max(0, run.submitted - 1)  # the refused form was never submitted
+        await run.job.emit(
+            TextBlock(
+                id=new_id(),
+                at=self._clock.now(),
+                markdown="Сайт вуза работает, но отправил форму входа так, что Ботай её не "
+                "пропустил: мы пропускаем только то, что страница отправляет сразу после вашего "
+                "шага. Открываю запасной экран: завершите шаг там.",
+            )
+        )
+        async with run.handle.read_only_entry():
+            snap = await run.handle.goto(run.entry_url)
+        run.last_signature = None  # the site did not refuse anything: not a failed attempt
+        return await self._human(
+            run, snap, hint="Завершите этот шаг входа на экране. Дальше продолжим в полях Ботай."
+        )
 
     # -- success -------------------------------------------------------------------------------
 
@@ -840,10 +898,13 @@ class LoginFlow:
     async def _form(self, run: _Run, step: FormStep) -> Outcome:
         failed = await self._register(run, step)
         try:
-            await self._fill(run, step, failed=failed)
-            return await self._submit(run, step)
+            return await self._enter(run, step, failed=failed, submit=True)
         except _ManualRequested:
             return await self._manual_screen(run)
+        except BotaiError as exc:
+            if exc.code != ErrorCode.LOGIN_GUARD_REFUSED:
+                raise
+            return await self._guard_fallback(run, exc)
 
     async def _register(self, run: _Run, step: FormStep) -> bool:
         """Count this submission; True if the page is the one we just submitted (it refused)."""
@@ -875,16 +936,29 @@ class LoginFlow:
             )
         return failed
 
-    async def _fill(self, run: _Run, step: FormStep, *, failed: bool) -> None:
+    async def _enter(
+        self, run: _Run, step: FormStep, *, failed: bool, submit: bool
+    ) -> PageSnapshot:
+        """Ask for the values of the step and type them, one by one: what the student has given
+        stays on the page when they take the screen. Each value is a step of its own for the
+        guard (the page may react to it); the last one is typed inside the step that sends the
+        form, so the page's login check and the submission share one window."""
         host = urlsplit(step.url).hostname or ""
         attempt = run.attempts.get(step.signature, 1)
-        for f in step.fields:
+        selectors = [f.selector for f in step.fields]
+        run.handle.take_guard_refusals()  # what an earlier step met is not this step's
+        for index, f in enumerate(step.fields):
             value = await self._value_for(run, f, host=host, failed=failed, attempt=attempt)
             if run.manual_requested:
                 raise _ManualRequested
-            await run.handle.fill(f.selector, value)
+            if submit and index == len(step.fields) - 1:
+                return await self._submit(run, step, [(f, value)])
+            async with run.handle.auth_step(fields=selectors):
+                await run.handle.fill(f.selector, value)
+        return await run.handle.snapshot()
 
     async def _native_answer[T](self, run: _Run, ask: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        await student_is_needed()
         if self._screens is None:
             return await ask()
         run.manual_ready = asyncio.get_running_loop().create_future()
@@ -1006,12 +1080,18 @@ class LoginFlow:
             autocomplete=autocomplete,
         )
 
-    async def _submit(self, run: _Run, step: FormStep) -> PageSnapshot:
+    async def _submit(
+        self, run: _Run, step: FormStep, answers: Sequence[tuple[StepField, str]] = ()
+    ) -> PageSnapshot:
+        """Type the step's values and send the form, inside one window of the guard: a check of
+        the login the page runs after typing and the submission itself are both part of the step."""
         if run.manual_requested:
             raise _ManualRequested
         run.submitted += 1
         await run.job.status("Отправляю данные на сайт вуза")
-        async with run.handle.auth_document():
+        async with run.handle.auth_step(fields=[f.selector for f in step.fields]):
+            for f, value in answers:
+                await run.handle.fill(f.selector, value)
             if step.submit:
                 try:
                     await run.handle.click(step.submit)
@@ -1019,11 +1099,45 @@ class LoginFlow:
                     await run.handle.press(step.fields[-1].selector, "Enter")
             else:
                 await run.handle.press(step.fields[-1].selector, "Enter")
-        return await run.handle.snapshot()
+        snap = await run.handle.snapshot()
+        self._check_refusals(run, step, snap)
+        return snap
+
+    def _check_refusals(self, run: _Run, step: FormStep, snap: PageSnapshot) -> None:
+        """A page that stays on the same form after our guard turned away something it posted did
+        not say no to the student's values: the refusal is ours. Counting it as a wrong password
+        would ask again, pause the account and delete the stored password for nothing.
+
+        A host the page posted to is put to the student (the login restarts with it allowed) when it
+        belongs to the site; one that does not (analytics) changes nothing. A page that moved on
+        shrugged the refusal off."""
+        refusals = run.handle.take_guard_refusals()
+        if not refusals:
+            return
+        learned = (
+            replay(run.preset.steps, snap)
+            if run.preset and run.preset.steps and not snap.captcha_suspected
+            else None
+        )
+        again = learned or best_step(snap)
+        if not isinstance(again, FormStep) or again.signature != step.signature:
+            return
+        site = urlsplit(run.info.origin).hostname or ""
+        for reason, host in refusals:
+            if reason == "auth_host_not_allowed" and host and _same_site(host, site):
+                raise BotaiError(
+                    ErrorCode.EGRESS_BLOCKED,
+                    f"Сайт вуза отправляет данные входа на {host}, а этот адрес не входит "
+                    "в разрешённые для подключения",
+                    extra={"host": host, "post": True},
+                )
+        if any(reason != "auth_host_not_allowed" for reason, _ in refusals):
+            raise guard_refusal_error()
 
     # -- push approval -------------------------------------------------------------------------
 
     async def _push(self, run: _Run, snap: PageSnapshot) -> PageSnapshot:
+        await student_is_needed()
         t = self._timing
         run.recorder.push(snap.url)
         expires = self._clock.now() + timedelta(seconds=t.push_wait_s)
@@ -1060,7 +1174,7 @@ class LoginFlow:
             # the student's fields can still be native: fill them, the human does the check
             failed = await self._register(run, found)
             try:
-                await self._fill(run, found, failed=failed)
+                await self._enter(run, found, failed=failed, submit=False)
             except _ManualRequested:
                 return await self._manual_screen(run)
             pending = found
@@ -1097,6 +1211,7 @@ class LoginFlow:
                 ErrorCode.LOGIN_FAILED, "Нужен ручной шаг входа, но запасной экран не настроен"
             )
         t = self._timing
+        await student_is_needed()
         # Both public and private routes can race disconnection or job cancellation.
         await self._store.connection(run.user_id, run.connection_id)
         await run.job.status("Открываю браузер для ручного входа", state=JobState.WAITING_USER)

@@ -18,7 +18,7 @@ from botai.core.llm import LlmResponse, ScriptedLlm
 from botai.learn.author import author_kind, build_spec
 from botai.learn.compiler import CompiledCandidate, FactoryCompileError, compile_candidate
 from botai.learn.lint import LintContext, lint_spec
-from botai.learn.prompting import author_request, author_schema
+from botai.learn.prompting import author_schema
 from tests.sources import recipes
 from tests.sources.helpers import NOW
 
@@ -391,12 +391,8 @@ def test_data_expressions_select_recipe_v2_without_affecting_plain_legacy(featur
 
 
 def test_author_schemas_offer_only_available_refs_and_exclude_unreachable_descriptors() -> None:
-    legacy = author_schema("deadlines")
-    Draft202012Validator.check_schema(legacy)
-    assert not any(name.startswith("v2") or name.endswith("V2") for name in legacy["$defs"])
     schema = author_schema(
         "deadlines",
-        factory_v2=True,
         request_facts={"rDeadlines": observed("/api/v2/tasks/deadlines")},
         browser_plans={"pNews": TrustedPlan()},
         browser_plan_urls={"pNews": ORIGIN + "/news"},
@@ -408,6 +404,7 @@ def test_author_schemas_offer_only_available_refs_and_exclude_unreachable_descri
     assert "authBinding" not in endpoint["properties"]["request"]["properties"]
     assert "browserPlan" not in endpoint["properties"]["request"]["properties"]
     assert "v2BrowserPlan" not in schema["$defs"]
+    assert "uiUrl" not in endpoint["properties"]  # the page address is derived, never authored
     validator = Draft202012Validator(schema)
     assert validator.is_valid({"found": True, "endpoints": [http_endpoint()]})
     assert not validator.is_valid({"found": True, "endpoints": [http_endpoint("invented")]})
@@ -433,7 +430,6 @@ async def test_author_compiles_before_lint_and_retries_static_failures_without_r
         now=NOW,
         digest="a" * 64,
         lint_ctx=LintContext(allowed_hosts=["fakeuni.test"], expected_origin=ORIGIN),
-        factory_v2=True,
         request_facts={"rDeadlines": observed("/api/v2/tasks/deadlines")},
     )
     assert len(llm.requests) == 2
@@ -442,10 +438,3 @@ async def test_author_compiles_before_lint_and_retries_static_failures_without_r
     assert marker not in json.dumps(result.candidates[0].auth)
     assert "evidence_unknown" in llm.requests[1].messages[-1].content
     assert marker not in llm.requests[1].messages[-1].content
-
-
-def test_legacy_author_request_remains_available_without_factory_references() -> None:
-    request = author_request("deadlines", "fixture")
-    assert request.json_schema is not None
-    assert "requestEvidenceId" not in json.dumps(request.json_schema)
-    assert "Проверенные ссылки фабрики" not in request.messages[-1].content

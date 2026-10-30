@@ -16,7 +16,8 @@ from typing import Any
 from sqlalchemy import select
 
 from botai.agent import facts, harness
-from botai.agent.env import ChatEnv
+from botai.agent.attachment_context import attachments_message
+from botai.agent.env import ChatEnv, SeenLinks
 from botai.agent.links import strip_bare_ids
 from botai.agent.memory import (
     RECENT_TOKENS,
@@ -140,6 +141,12 @@ async def handle_chat(
             job_id=ctx.job_id,
         )
 
+    async with services.db() as session:
+        files_msg, file_findings = await attachments_message(session, user_id, question.id)
+    if files_msg is not None:
+        ctx_msg.content += "\n\n" + files_msg.content
+    if file_findings:
+        await harness.audit_injection(services, user_id, ctx.job_id, "attachment", file_findings, 0)
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
     question_msg = LlmMessage(role="user", content=question.text)
@@ -153,7 +160,8 @@ async def handle_chat(
         space_id=thread.space_id,
         public_question=question.text,
         ctx=ctx,
-        public_urls=question_urls(question.text),
+        question_links=question_urls(question.text),
+        seen=SeenLinks.load(thread.seen_links),
     )
     if reader is not None:
         env.reader = reader
@@ -170,8 +178,10 @@ async def handle_chat(
 
     text, done = compose_answer(result, env, now)
     fact_id = await _save_fact(services, env, result, done, thread, question.text, now)
-    if result.findings:
+    if result.findings or file_findings:
         text += INJECTION_NOTE
+    if env.remembered:  # the student sees what the agent keeps about them, and can delete it
+        text += "\n\n" + " ".join(f"Запомнил: «{note}»." for note in env.remembered)
     text = text[:MAX_MARKDOWN]
     block = TextBlock(
         id=new_id(),
@@ -183,7 +193,7 @@ async def handle_chat(
     reply: list[AgentUiBlock] = [block, *env.blocks]
     for item in reply:
         await ctx.emit(item)
-    message_id = await _store_reply(services, ctx, thread, reply, question.text)
+    message_id = await _store_reply(services, ctx, thread, reply, question.text, env.seen)
 
     return {
         "messageId": message_id,
@@ -246,6 +256,7 @@ async def _store_reply(
     thread: ChatThread,
     blocks: list[AgentUiBlock],
     question: str,
+    seen: SeenLinks,
 ) -> str:
     """Persist the reply once per job (a retried job does not answer twice). The plan the turn
     published lives in its own message with the same job id; the reply is the one starting with text."""
@@ -288,6 +299,8 @@ async def _store_reply(
         ).scalar_one()
         if row.title == DEFAULT_TITLE:
             row.title = title_from(question)
+        if seen.changed:
+            row.seen_links = seen.dump()
         await session.commit()
         return message_id
 

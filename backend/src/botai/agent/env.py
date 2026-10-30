@@ -8,6 +8,7 @@ started, quick replies and the plan. Formatting helpers shared by the tool modul
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -17,6 +18,7 @@ import httpx
 from sqlalchemy import select
 
 from botai.agent.reader import DomainReader, RepoReader
+from botai.agent.safety import mask_injections, neutralize_tags
 from botai.agent.sources import SourceBook
 from botai.contracts.agent_ui import AgentUiBlock
 from botai.core.jobs import JobContext
@@ -25,6 +27,7 @@ from botai.core.services import Services
 from botai.db.models import Connection, Space
 from botai.domain.schemas import Provenance
 from botai.search import SearchBudget
+from botai.spaces import views
 
 DEFAULT_TZ = "Europe/Moscow"
 WEEKDAYS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
@@ -62,6 +65,43 @@ def document_link(document_id: str) -> str:
     return f"botai://documents/{document_id}"
 
 
+SEEN_PUBLIC = 30
+SEEN_SOURCE = 60
+
+
+@dataclass(slots=True)
+class SeenLinks:
+    """Links the agent met while reading, oldest first; they persist in the thread (`seen_links`)."""
+
+    public: list[str] = field(default_factory=list)
+    source: list[str] = field(default_factory=list)
+    changed: bool = False
+
+    @classmethod
+    def load(cls, raw: object) -> SeenLinks:
+        data = raw if isinstance(raw, dict) else {}
+
+        def urls(key: str, cap: int) -> list[str]:
+            value = data.get(key)
+            items = [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+            return items[-cap:]
+
+        return cls(urls("public", SEEN_PUBLIC), urls("source", SEEN_SOURCE))
+
+    def dump(self) -> dict[str, list[str]]:
+        return {"public": self.public[-SEEN_PUBLIC:], "source": self.source[-SEEN_SOURCE:]}
+
+    def remember(self, kind: str, urls: Iterable[str]) -> None:
+        bucket = self.public if kind == "public" else self.source
+        cap = SEEN_PUBLIC if kind == "public" else SEEN_SOURCE
+        for url in urls:
+            if url in bucket:
+                bucket.remove(url)
+            bucket.append(url)
+            self.changed = True
+        del bucket[:-cap]
+
+
 @dataclass(slots=True)
 class ConnectionMeta:
     id: str
@@ -94,15 +134,20 @@ class ChatEnv:
     blocks: list[AgentUiBlock] = field(default_factory=list)  # task cards appended to the reply
     quick_replies: list[str] = field(default_factory=list)
     plan_id: str | None = None
-    # Public pages the agent may open: links from the question and from earlier public results.
-    public_urls: set[str] = field(default_factory=set)
+    # Pages the agent may open besides its source's own: the links it has met in this thread (the
+    # last ones are kept with the thread) and the ones the student wrote in this question.
+    seen: SeenLinks = field(default_factory=SeenLinks)
+    question_links: set[str] = field(default_factory=set)
     counters: dict[str, int] = field(default_factory=dict)  # per-turn caps on live page reads
+    # A tool already brought text from outside (a page, a document) into this turn: what the
+    # agent remembers now must come from the student's own words.
+    outside_read: bool = False
+    remembered: list[str] = field(default_factory=list)  # new notes, shown under the answer
     transport: httpx.AsyncBaseTransport | None = None  # tests only
-    _meta: tuple[list[ConnectionMeta], dict[str, str]] | None = None
+    _all: tuple[list[ConnectionMeta], dict[str, str]] | None = None
 
-    async def meta(self) -> tuple[list[ConnectionMeta], dict[str, str]]:
-        """(connections of the student in scope, time zone by space id)."""
-        if self._meta is None:
+    async def _load(self) -> tuple[list[ConnectionMeta], dict[str, str]]:
+        if self._all is None:
             async with self.services.db() as session:
                 rows = (
                     await session.execute(
@@ -119,7 +164,7 @@ class ChatEnv:
             conns = [
                 ConnectionMeta(
                     c.id,
-                    c.title,
+                    views.display_title(c),
                     c.kind,
                     c.status,
                     c.space_id,
@@ -129,14 +174,21 @@ class ChatEnv:
                     c.error_code,
                 )
                 for c, s in rows
-                if self.space_id is None or c.space_id == self.space_id
             ]
-            self._meta = (conns, tz)
-        return self._meta
+            self._all = (conns, tz)
+        return self._all
+
+    async def meta(self) -> tuple[list[ConnectionMeta], dict[str, str]]:
+        """(sources in the thread's scope, time zone by space id): what a data question without
+        an explicit university is about. A thread of one university reads that university."""
+        conns, tz = await self._load()
+        if self.space_id is None:
+            return conns, tz
+        return [c for c in conns if c.space_id == self.space_id], tz
 
     def forget_meta(self) -> None:
         """A tool changed connections: the next read must see them."""
-        self._meta = None
+        self._all = None
 
     async def tz_for(self, space_id: str | None) -> ZoneInfo:
         _, tz = await self.meta()
@@ -147,7 +199,9 @@ class ChatEnv:
             return ZoneInfo(DEFAULT_TZ)
 
     async def titles(self) -> dict[str, ConnectionMeta]:
-        conns, _ = await self.meta()
+        """All the student's sources by id: actions (repair, login, sync, browse) are not tied to
+        the university the thread happens to be about."""
+        conns, _ = await self._load()
         return {c.id: c for c in conns}
 
     async def cite(self, prov: Provenance) -> str:
@@ -189,6 +243,13 @@ def parse_date(value: Any) -> date | None:
 
 def clean(text: str | None, limit: int = 200) -> str:
     return re.sub(r"\s+", " ", text or "").strip()[:limit]
+
+
+def data_text(text: str | None, limit: int = 160) -> str:
+    """A name or a stage line that came from outside (a page title, a student's phrase) shown inside
+    our own text: one line, no look-alike of our wrapper, instruction-like sentences cut out."""
+    one_line = neutralize_tags(clean(text, limit)).replace("<", "‹").replace(">", "›")
+    return mask_injections(one_line)[0]
 
 
 def spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> LlmTool:

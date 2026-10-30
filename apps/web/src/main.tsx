@@ -1,4 +1,6 @@
 import "@fontsource-variable/geist/wght.css";
+// Курсив ответа агента — настоящий начертательный, а не синтетический наклон.
+import "@fontsource-variable/geist/wght-italic.css";
 import "@fontsource-variable/geist-mono/wght.css";
 import "@botai/design/styles.css";
 import { initPreferences } from "@botai/design";

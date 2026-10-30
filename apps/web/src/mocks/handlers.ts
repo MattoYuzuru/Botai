@@ -4,7 +4,15 @@ import { fieldsHash } from "@/lib/hash";
 import { createChatHandlers } from "./chat-handlers";
 import { runConnect } from "./connect-script";
 import { createDataHandlers } from "./data-handlers";
-import { findUser, type MockDb, type MockUser, persistDb, ulid } from "./db";
+import {
+  findUser,
+  type MockConnection,
+  type MockDb,
+  type MockSpace,
+  type MockUser,
+  persistDb,
+  ulid,
+} from "./db";
 import { JobSim } from "./job-sim";
 
 type S = components["schemas"];
@@ -187,9 +195,11 @@ export function createHandlers(
       if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
       const body = (await request.json()) as S["SpaceCreate"];
       const known = body.universityId ? db.universities.find((u) => u.id === body.universityId) : undefined;
-      const created: S["SpaceOut"] = {
+      const created: MockSpace = {
         id: ulid(),
         title: body.title,
+        shortTitle: known?.shortTitle ?? body.title,
+        aliases: [],
         universityId: known?.id ?? null,
         accentHue: known?.accentHue ?? 325,
         timeZone: "Europe/Moscow",
@@ -234,12 +244,16 @@ export function createHandlers(
       if (!space) return problem(404, "not_found", "Пространство не найдено");
       const body = (await request.json()) as S["ConnectionCreate"];
       const university = db.universities.find((item) => item.id === space.universityId);
-      const connection: S["ConnectionOut"] = {
+      const origin = body.url ?? university?.origins[0] ?? "https://lk.fakeuni.test";
+      const connection: MockConnection = {
         id: ulid(),
         spaceId: space.id,
         adapter: null,
         kind: body.kind ?? "portal",
-        origin: body.url ?? university?.origins[0] ?? "https://lk.fakeuni.test",
+        origin,
+        entryUrl: origin,
+        threadId: null,
+        activeTask: null,
         title: body.title ?? "Личный кабинет",
         status: "learning",
         hasPassword: false,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select, update
@@ -21,13 +22,30 @@ CHOICE_CHARS = 60
 TITLE_CHARS = 60
 
 
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", text.casefold()) if len(w) >= 3}
+
+
+def _said_by_the_student(note: str, question: str) -> bool:
+    """Most of the note's own words are in what the student wrote in this question."""
+    wanted = _words(note)
+    return bool(wanted) and len(wanted & _words(question)) >= 0.8 * len(wanted)
+
+
 async def remember(env: ChatEnv, args: dict[str, Any]) -> str:
+    note = str(args.get("note", ""))
+    if env.outside_read and not _said_by_the_student(note, env.public_question):
+        return (
+            "Не запомнено: в этом ходе вы уже читали страницу или документ, а запоминать можно "
+            "только то, что студент сказал сам в этом вопросе."
+        )
     async with env.services.db() as session:
         try:
-            added = await notes.add_note(session, env.user_id, str(args.get("note", "")))
+            added = await notes.add_note(session, env.user_id, note)
         except BotaiError as exc:
             return f"Не запомнено: {exc.detail}."
-    env.used.add("remember")
+    if added.created:
+        env.remembered.append(added.note.note)  # shown under the answer: the student sees it
     return "Запомнено." if added.created else "Эта заметка уже есть в памяти."
 
 
@@ -37,7 +55,6 @@ async def forget(env: ChatEnv, args: dict[str, Any]) -> str:
             await notes.delete_note(session, env.user_id, str(args.get("note_id", "")).strip())
         except BotaiError:
             return "Такой заметки нет. Возьмите note_id из блока «Память» в контексте."
-    env.used.add("forget")
     return "Забыто."
 
 
@@ -101,7 +118,6 @@ async def update_plan(env: ChatEnv, args: dict[str, Any]) -> str:
         await session.commit()
     if env.ctx is not None:
         await env.ctx.emit(block)
-    env.used.add("update_plan")
     return "План показан студенту. Вызывайте update_plan снова, когда меняется состояние шагов."
 
 
@@ -115,7 +131,6 @@ async def offer_choices(env: ChatEnv, args: dict[str, Any]) -> str:
     if not options:
         return "Ошибка аргументов: нужен хотя бы один вариант."
     env.quick_replies = options
-    env.used.add("offer_choices")
     return "Быстрые ответы появятся под вашим ответом. Сам ответ должен задавать вопрос."
 
 
@@ -130,7 +145,6 @@ async def rename_thread(env: ChatEnv, args: dict[str, Any]) -> str:
             .values(title=title)
         )
         await session.commit()
-    env.used.add("rename_thread")
     return "Название чата обновлено."
 
 

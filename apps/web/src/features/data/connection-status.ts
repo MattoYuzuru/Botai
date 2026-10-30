@@ -7,7 +7,7 @@ import {
   type IconName,
   safeHttpUrl,
 } from "@botai/design";
-import type { Connection, ConnectionStatus } from "@/api/types";
+import type { Connection, ConnectionKind, ConnectionStatus, ConnectionTask } from "@/api/types";
 
 export type ConnectionTone = "success" | "info" | "warning" | "danger" | "neutral";
 /** Бизнес-действие рядом со статусом. Кнопки «Повторить» нет: повторы идут в фоне. */
@@ -25,18 +25,57 @@ export interface ConnectionView {
   attention: boolean;
 }
 
-const KIND_TITLES: Record<Connection["kind"], string> = {
+const KIND_TITLES: Record<ConnectionKind, string> = {
+  portal: "Личный кабинет",
   lms: "Учебная платформа",
   schedule: "Расписание",
-  portal: "Личный кабинет",
+  site: "Сайт",
   sheet: "Таблица",
-  document: "Документы",
-  mail: "Почта",
+  doc: "Документация",
+  document: "Документ",
+  calendar: "Календарь",
   other: "Источник",
 };
 
-/** Название вида подключения для подписи под именем. */
-export const connectionKindTitle = (kind: Connection["kind"]): string => KIND_TITLES[kind];
+const KIND_ICONS: Record<ConnectionKind, IconName> = {
+  portal: "university",
+  lms: "course",
+  schedule: "schedule",
+  site: "site",
+  sheet: "table",
+  doc: "document",
+  document: "document",
+  calendar: "today",
+  other: "connection",
+};
+
+/** Значение по собственному ключу: строки бэкенда не должны находить `constructor` и прочее из прототипа. */
+const own = <V>(record: Readonly<Record<string, V>>, key: string, fallback: NoInfer<V>): V =>
+  Object.hasOwn(record, key) ? (record[key] as V) : fallback;
+
+/** Название вида подключения для подписи под именем; неизвестный вид (устаревший `mail`, новый от бэкенда) — «Источник». */
+export const connectionKindTitle = (kind: ConnectionKind): string =>
+  own(KIND_TITLES, kind, KIND_TITLES.other);
+
+/** Иконка вида подключения: источник узнаётся в списке по виду, а не по адресу; неизвестный вид — общая. */
+export const connectionKindIcon = (kind: ConnectionKind): IconName => own(KIND_ICONS, kind, KIND_ICONS.other);
+
+const TASK_KIND: Record<ConnectionTask["kind"], string> = {
+  connect: "Подключение",
+  repair: "Починка",
+  sync: "Обновление данных",
+  ingest: "Чтение документа",
+};
+
+const TASK_STATE: Record<ConnectionTask["state"], string> = {
+  queued: "ждёт очереди",
+  running: "идёт",
+  waiting_user: "ждёт вашего ответа",
+};
+
+/** Что агент делает с источником прямо сейчас: «Обновление данных: идёт». Название задачи бэкенд не присылает. */
+export const describeTask = (task: ConnectionTask): string =>
+  `${own(TASK_KIND, task.kind, "Работа с источником")}: ${own(TASK_STATE, task.state, "идёт")}`;
 
 function snapshotText(lastSyncAt: string | null, nowMs: number, timeZone: string): string | null {
   const at = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;
@@ -158,12 +197,6 @@ export function describeConnection(
         attention: false,
       };
   }
-}
-
-/** Подключения, которым нужно внимание, по списку id из `/today.attention`. */
-export function attentionConnections(ids: readonly string[], all: readonly Connection[]): Connection[] {
-  const wanted = new Set(ids);
-  return all.filter((connection) => wanted.has(connection.id));
 }
 
 /** Адрес источника без схемы: «lk.fakeuni.test». Источник без адреса (документ) — только вид. */

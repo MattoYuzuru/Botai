@@ -410,6 +410,47 @@ class Worker:
             outcome=(result or {}).get("status"),
             error_code=(result or {}).get("detail"),
         )
+        if state == "done":
+            await self._ask_for_login_after(job, result)
+
+    async def _ask_for_login_after(self, job: Claimed, result: dict[str, Any] | None) -> None:
+        """A sync that ended because the student has to log in again opens that login in the
+        thread of the source, where the student will see it (a waiting task, a call for attention).
+        One login at a time: an unfinished login of the same source is the answer, not a second."""
+        if (
+            job.kind != JobKind.SYNC.value
+            or job.connection_id is None
+            or (result or {}).get("status") != "needs_reauth"
+        ):
+            return
+        from botai.spaces import service
+        from botai.spaces.conversations import thread_for_connection
+
+        now = self.services.clock.now()
+        try:
+            async with self.services.db() as session:
+                conn = await session.scalar(
+                    select(Connection).where(
+                        Connection.id == job.connection_id, Connection.user_id == job.user_id
+                    )
+                )
+                # Only a login through the browser is the student's to do; a token or a calendar
+                # link is given in the app, which the status already says.
+                if conn is None or conn.status != "needs_reauth" or conn.adapter != "recipe":
+                    return
+                thread = await thread_for_connection(session, conn, now)
+                await service.enqueue_for_connection(
+                    session,
+                    self.services.queue,
+                    job.user_id,
+                    conn.id,
+                    JobKind.CONNECT,
+                    thread_id=thread.id,
+                    payload={"manual_login": True, "source": "sync"},
+                    now=now,
+                )
+        except Exception:  # the sync itself is done; a missing prompt must not fail it
+            log.exception("could not ask for a login after the sync of %s", job.connection_id)
 
     async def _fail(
         self,

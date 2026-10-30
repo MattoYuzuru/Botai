@@ -68,7 +68,8 @@ async def test_selection_persists_one_row_and_an_alias_reuses_it(
     )
     assert first.status_code == 201
     second = await client.post("/api/v1/spaces", json={"title": suggested.aliases[0]})
-    assert second.status_code == 201
+    assert second.status_code == 200  # the same university: the same space
+    assert first.json()["id"] == second.json()["id"]
     assert first.json()["universityId"] == second.json()["universityId"] == suggested.id
     async with tx_sessionmaker() as session:
         assert await session.scalar(select(func.count()).select_from(University)) == 1

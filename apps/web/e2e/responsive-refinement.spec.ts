@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { expectFitsWidth, freezeClock, open } from "./data-support";
 import { expectSheetReady } from "./support";
 
@@ -30,7 +30,7 @@ test("шапка, предупреждение и пустые данные на
   await expect(title).toBeVisible();
   const notice = page.getByRole("list", { name: "Состояние источников" });
   await expect(notice.getByText(/Вуз отклонил вход/)).toBeVisible();
-  const action = notice.getByRole("button", { name: "Спросить в чате" });
+  const action = notice.getByRole("link", { name: "Спросить в чате" });
   const text = notice.locator("[data-source-state]");
   const a = await action.boundingBox();
   const t = await text.boundingBox();
@@ -50,75 +50,164 @@ test("шапка, предупреждение и пустые данные на
   await page.screenshot({ path: info.outputPath(`today-${width}.png`), fullPage: true });
 });
 
-test("три вуза в шапке: пояснение по фокусу и касанию без фильтрации", async ({ page }, info) => {
-  const phone = info.project.name === "phone";
-  await page.setViewportSize({ width: phone ? 400 : 1512, height: phone ? 775 : 982 });
+/** Три вуза в базе мока: ВШЭ, ЦУ и «Синтетический университет»; «Сегодня» без данных, подключения устарели. */
+async function openWithThreeSpaces(page: Page) {
   await open(page, "/?data=quiet", "stale");
   await page.evaluate(async () => {
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb, ulid } = await import(/* @vite-ignore */ path);
     const db = createDb("stale");
-    const third = { ...db.spaces[0], id: ulid(), title: "Учебный вуз", universityId: null };
+    const third = {
+      ...db.spaces[0],
+      id: ulid(),
+      title: "Синтетический университет",
+      shortTitle: "СУ",
+      universityId: null,
+    };
     db.spaces.push(third);
     db.connections.push({ ...db.connections[0], id: ulid(), spaceId: third.id });
     persistDb(db);
   });
   await page.goto("/?data=quiet&latency=0");
-  const statuses = page.locator("header").getByRole("list", { name: "Свежесть данных" });
-  await expect(statuses.getByRole("button")).toHaveCount(3);
-  const status = statuses.getByRole("button").first();
-  const label = status.locator("span.block");
-  await expect(status).toHaveAttribute("aria-expanded", "false");
-  expect((await label.boundingBox())?.width).toBe(0);
+}
+
+test("три вуза в шапке: пояснение раскрывается плавно, соседи сдвигаются, без фильтрации", async ({
+  page,
+}, info) => {
+  const phone = info.project.name === "phone";
+  await page.setViewportSize({ width: phone ? 400 : 1512, height: phone ? 775 : 982 });
+  await openWithThreeSpaces(page);
+  const statuses = page.locator("header").getByRole("list", { name: "Статусы вузов" });
+  const chips = statuses.getByRole("button");
+  await expect(chips).toHaveCount(3);
+  const status = chips.first();
+  const detail = status.locator("[data-source-detail]");
+  const label = detail.locator("span.block");
+  await expect(status).toHaveAttribute("aria-pressed", "false");
+  expect((await detail.boundingBox())?.width).toBe(0);
+
+  // Плавность проверяем по свойствам перехода, а не по таймингам: ширина идёт через grid-template-columns
+  // на токенах движения, max-width не анимируется, чипы стоят в одной строке и не переносятся.
+  const motion = await detail.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      property: style.transitionProperty,
+      duration: style.transitionDuration,
+      easing: style.transitionTimingFunction,
+      columns: style.gridTemplateColumns,
+    };
+  });
+  expect(motion.property).toContain("grid-template-columns");
+  expect(motion.property).not.toContain("max-width");
+  expect(motion.duration).toContain("0.28s");
+  expect(motion.easing).toContain("cubic-bezier(0.22, 1, 0.36, 1)");
+  expect(motion.columns).toBe("0px");
+  const tops = await chips.evaluateAll((nodes) =>
+    nodes.map((node) => Math.round(node.getBoundingClientRect().top)),
+  );
+  expect(new Set(tops).size, "чипы в одной строке").toBe(1);
+
+  const lefts = () =>
+    chips.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const rest = await lefts();
   await status.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
   await expect(label).toBeVisible();
+  // Раскрытый чип стоит на месте, соседи уехали вправо; при потере фокуса вернулись тем же переходом.
+  await expect.poll(async () => (await lefts())[1]).toBeGreaterThan(rest[1] ?? 0);
+  expect((await lefts())[0]).toBe(rest[0]);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect.poll(lefts).toEqual(rest);
+
   await status.click();
-  await expect(status).toHaveAttribute("aria-expanded", "true");
-  await expect(label.locator("..")).toHaveCSS("opacity", "1");
+  await expect(status).toHaveAttribute("aria-pressed", "true");
+  await expect(detail).toHaveCSS("opacity", "1");
+  await expect(statuses.getByRole("button", { pressed: true })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(status).toHaveAttribute("aria-pressed", "false");
+  await status.click();
   await page.getByRole("heading", { name: "Сегодня", exact: true }).click();
-  await expect(label).toBeVisible();
+  await expect(status).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("[data-screen=today]")).toHaveAttribute("data-state", "stale");
   await expectFitsWidth(page, phone ? 400 : 1512);
+
+  await status.click();
+  await expect(label).toBeVisible();
   await page.screenshot({ path: info.outputPath("freshness-expanded.png"), fullPage: true });
+
+  // Сокращённое движение: переход не 0.28 с, а 1 мс, информация та же.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await detail.evaluate((node) => getComputedStyle(node).transitionDuration)).toContain("0.001s");
 });
 
-test("подключение: поиск с клавиатуры, отдельный повторный вход, обе темы и крупный текст", async ({
+test("320 px: раскрытый чип с длинным пояснением не выходит за экран и не выталкивает соседей", async ({
+  page,
+  context,
+}, info) => {
+  test.skip(info.project.name !== "phone", "узкий экран телефона");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openWithThreeSpaces(page);
+  const chips = page.locator("header").getByRole("list", { name: "Статусы вузов" }).getByRole("button");
+  await expect(chips).toHaveCount(3);
+  // Без сети пояснение самое длинное: «Нет сети. Показан снимок от …».
+  await context.setOffline(true);
+  await expect(chips.first()).toHaveAttribute("data-source-state", "offline");
+  for (const index of [0, 1, 2]) {
+    await chips.nth(index).click();
+    await expect(chips.nth(index)).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(
+        () =>
+          chips.evaluateAll((nodes) =>
+            nodes.every((node) => {
+              const box = node.getBoundingClientRect();
+              return box.left >= 0 && box.right <= 320 && box.width >= 44;
+            }),
+          ),
+        { message: `чипы внутри экрана при раскрытом чипе ${index}` },
+      )
+      .toBe(true);
+    await expectFitsWidth(page, 320, `раскрыт чип ${index}`);
+  }
+});
+
+test("laptop: наведение раскрывает пояснение, уход курсора возвращает; соседние чипы не перепрыгивают", async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== "laptop", "наведение мыши");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await open(page, "/schedule", "connected");
+  await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "ok");
+  const chips = page.locator("header").getByRole("list", { name: "Статусы вузов" }).getByRole("button");
+  const lefts = () =>
+    chips.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const rest = await lefts();
+  await chips.first().hover();
+  await expect(chips.first().locator("[data-source-detail] span.block")).toBeVisible();
+  await expect.poll(async () => (await lefts())[1]).toBeGreaterThan(rest[1] ?? 0);
+  await page.mouse.move(640, 500);
+  await expect.poll(lefts).toEqual(rest);
+  await expect(chips.first()).toHaveAttribute("aria-pressed", "false");
+});
+
+test("«Источники» в чате: панель вузов, обе темы и крупный текст не переполняют экран", async ({
   page,
 }, info) => {
   const width = info.project.name === "phone" ? 400 : 1512;
   await page.setViewportSize({ width, height: 982 });
-  await open(page, "/connect", "connected");
-  await expect(page).toHaveURL(/\/chat\?thread=/);
-  await expect(page.getByText("Пришлите ссылку на источник, который хотите подключить.")).toBeVisible();
-  await page.getByRole("button", { name: "Источник и подключения" }).click();
-  await expectSheetReady(page, "Источник и подключения");
-  await expect(page.getByRole("heading", { name: "Ваши подключения" })).toBeVisible();
-  const input = page.getByRole("combobox", { name: "Вуз" });
-  await input.fill("ВШЭ");
-  await expect(page.getByRole("option", { name: /Высшая школа/ })).toBeVisible();
-  await input.press("ArrowDown");
-  await input.press("Enter");
-  await expect(page.getByText(/Этот вуз уже добавлен/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Начать подключение" })).toHaveCount(0);
-  expect(await page.getByRole("button", { name: "Открыть разговор", exact: true }).count()).toBeGreaterThan(
-    0,
-  );
-  await expect(page.getByRole("link", { name: "Новый источник", exact: true })).toBeVisible();
+  await open(page, "/chat?pace=0", "connected");
+  await page.getByRole("button", { name: "Источники" }).click();
+  await expectSheetReady(page, "Источники");
+  const sheet = page.getByRole("dialog", { name: "Источники" });
+  await expect(sheet.getByRole("heading", { name: "Высшая школа экономики" })).toBeVisible();
+  await expect(sheet.getByRole("link", { name: "Добавить вуз" })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => {
       document.documentElement.dataset.theme = value;
     }, theme);
-    const background = await input.evaluate(
-      (node, value) =>
-        getComputedStyle(node)
-          .getPropertyValue(value === "dark" ? "--palette-slate-950" : "--palette-paper-100")
-          .trim(),
-      theme,
-    );
-    await expect(input.locator("..")).toHaveCSS("background-color", background);
     await expectFitsWidth(page, width);
-    await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
-    await page.screenshot({ path: info.outputPath(`connect-${theme}.png`), fullPage: true });
+    await page.screenshot({ path: info.outputPath(`sources-${theme}.png`), fullPage: true });
   }
   await page.evaluate(() => document.documentElement.style.setProperty("font-size", "200%", "important"));
   await expect
@@ -126,9 +215,8 @@ test("подключение: поиск с клавиатуры, отдельн
       message: "ширина после перераскладки крупного текста",
     })
     .toBeLessThanOrEqual(width);
-  await expect(input).toBeVisible();
-  await expect(page.locator("[data-connection-failure]")).toHaveCount(0);
-  await page.screenshot({ path: info.outputPath("connect-200.png"), fullPage: true });
+  await expect(sheet.getByRole("heading", { name: "Высшая школа экономики" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("sources-200.png"), fullPage: true });
 });
 
 test("навигация уезжает и возвращается плавно; сокращённое движение отключает переход", async ({

@@ -8,12 +8,14 @@ whatever background tasks are running. Nothing here knows what the thread was "f
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent.safety import scrub_secrets
 from botai.agent.schemas import (
     DialogueReceipt,
     MessageAccepted,
@@ -24,7 +26,8 @@ from botai.agent.schemas import (
     ThreadRuntime,
 )
 from botai.agent.threads import primary_task
-from botai.contracts.agent_ui import AgentUiBlock, TextBlock
+from botai.attachments import service as attachments
+from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, TextBlock
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -36,7 +39,7 @@ from botai.jobs.events import IN_FLIGHT
 from botai.jobs.notify import CHANNEL_ANSWERS
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.schemas import JobOut
-from botai.spaces import repo
+from botai.spaces import repo, service
 from botai.spaces.conversations import owned_thread, reject_secret_links, safe_text
 
 _BLOCK = TypeAdapter(AgentUiBlock)
@@ -212,9 +215,34 @@ async def runtime(
 # --- posting ------------------------------------------------------------------------------------
 
 
-def credential_like(text: str) -> bool:
-    """A single token with no spaces: how a password or a one-time code looks in a composer."""
-    return bool(text.strip()) and not re.search(r"\s", text.strip()) and len(text.strip()) <= 128
+_CODE_WORDS = re.compile(r"(?i)\b(?:код\w*|code|otp|смс|sms|пин|pin|парол\w*|password)\b")
+_DIGIT_GROUPS = re.compile(r"\d[\d \-]*\d|\d")
+
+
+def _digits(text: str) -> int:
+    return sum(ch.isdigit() for ch in text)
+
+
+def looks_like_secret(text: str) -> bool:
+    """Whether a message typed while a protected input is open is probably the password or the
+    code meant for it. The words of a conversation ("да", "ок", "Привет!", "2") are not."""
+    value = text.strip()
+    if not value:
+        return False
+    if scrub_secrets(value, typed_by_user=True) != value:
+        return True  # "пароль: …", "код из смс 424242", a token, a cookie line
+    if _CODE_WORDS.search(value) and any(_digits(m) >= 4 for m in _DIGIT_GROUPS.findall(value)):
+        return True  # "код 123 456"
+    if re.fullmatch(r"[\d \-]+", value) and _digits(value) >= 4:
+        return True  # a code typed in groups
+    if len(value) < 4 or len(value) > 128 or re.search(r"\s", value):
+        return False
+    # One token: digits among letters, a symbol inside the word or a capital inside it.
+    return bool(
+        _digits(value) >= 1
+        or re.search(r"\w[^\w\s]\w", value)
+        or re.search(r"[a-zа-яё][A-ZА-ЯЁ]", value)
+    )
 
 
 async def _locked(session: AsyncSession, user_id: str, job_id: str) -> Job | None:
@@ -251,6 +279,7 @@ async def post_message(
     await session.execute(
         select(func.pg_advisory_xact_lock(func.hashtextextended(f"thread-post:{thread.id}", 0)))
     )
+    thread = await owned_thread(session, user_id, thread_id)  # deleted while we waited: not found
     if body.client_message_id:
         replay = await _replay(session, user_id, thread.id, body)
         if replay is not None:
@@ -279,11 +308,12 @@ async def post_message(
                 ErrorCode.STALE_TARGET, "Этот шаг уже заменён. Откройте текущее состояние разговора"
             )
     else:
+        # Files are for the agent: a task's plain question takes only words.
         waiting = next(
             (
                 job
                 for job in sorted(jobs, key=lambda j: (j.created_at, j.id), reverse=True)
-                if job.kind in TASK_KINDS and _waiting_dialogue(job)
+                if job.kind in TASK_KINDS and _waiting_dialogue(job) and not body.attachment_ids
             ),
             None,
         )
@@ -291,6 +321,8 @@ async def post_message(
             target = await _locked(session, user_id, waiting.id)
             if target is not None and not _waiting_dialogue(target):
                 target = None  # answered while we were waiting for the lock
+    if target is not None and body.attachment_ids:
+        raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
     if target is not None:
         if target.connection_id:
@@ -302,22 +334,27 @@ async def post_message(
     else:
         if any(job.kind == JobKind.CHAT.value for job in jobs):
             raise BotaiError(ErrorCode.AGENT_BUSY, "Ассистент ещё отвечает на прошлое сообщение")
-        if credential_like(text) and any(_waiting_secret(job) for job in jobs):
+        if any(_waiting_secret(job) for job in jobs) and looks_like_secret(text):
             raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
     # Appends to a thread are serialized: even two events in one clock tick keep their order.
     now = services.clock.now()
     at = await dialogue.message_time(session, user_id, thread.id, now)
-    block = TextBlock(id=new_id(), at=at, markdown=text)
+    blocks: list[dict[str, Any]] = []
+    if text.strip():
+        block = TextBlock(id=new_id(), at=at, markdown=text)
+        blocks.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
     message = ChatMessage(
         id=new_id(),
         user_id=user_id,
         thread_id=thread.id,
         role="user",
-        blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
+        blocks=blocks,
         client_message_id=body.client_message_id,
         created_at=at,
     )
     session.add(message)
+    if body.attachment_ids:
+        await _attach_files(session, services, user_id, thread, message, body.attachment_ids, at)
     if target is not None:
         message.job_id = target.id
         state = dialogue.state_of(target)
@@ -361,6 +398,43 @@ async def post_message(
     return MessageAccepted(message=message_out(message), job_id=job_id)
 
 
+async def _attach_files(
+    session: AsyncSession,
+    services: Services,
+    user_id: str,
+    thread: ChatThread,
+    message: ChatMessage,
+    ids: list[str],
+    at: datetime,
+) -> None:
+    """The files go with the message: bound to it, shown as `attachment` blocks, and a document
+    starts indexing into the thread's university (or the student's own materials) right away."""
+    await session.flush()  # the message exists before files are bound to it
+    refs = await attachments.bind_to_message(session, user_id, thread.id, message.id, ids)
+    message.blocks = [
+        *message.blocks,
+        *(
+            AttachmentBlock(
+                id=new_id(),
+                at=at,
+                attachment_id=ref.id,
+                name=ref.name,
+                mime=ref.mime,
+                size=ref.size,
+                kind=ref.kind,
+            ).model_dump(by_alias=True, mode="json", exclude_none=True)
+            for ref in refs
+        ),
+    ]
+    documents = [ref for ref in refs if ref.kind == "document"]
+    if not documents:
+        return
+    space_id = thread.space_id or (await service.ensure_space(session, user_id, None)).id
+    for ref in documents:
+        att = await attachments.get(session, user_id, ref.id)
+        await attachments.start_ingest(session, att, space_id, thread.id, now=services.clock.now())
+
+
 async def _continued(session: AsyncSession, job: Job) -> bool:
     """The task handed its work to a newer one (another site of the same chat)."""
     child_id = job.payload.get("continuation_job_id")
@@ -402,8 +476,13 @@ async def _replay(
         if existing_job is not None and existing_job.kind in TASK_KINDS
         else body.text
     )
-    if stored != submitted or (
-        body.target_job_id is not None and body.target_job_id != existing.job_id
+    sent_files = [
+        str(b.get("attachmentId")) for b in existing.blocks if b.get("type") == "attachment"
+    ]
+    if (
+        stored != submitted
+        or sorted(sent_files) != sorted(dict.fromkeys(body.attachment_ids))
+        or (body.target_job_id is not None and body.target_job_id != existing.job_id)
     ):
         raise BotaiError(
             ErrorCode.REQUEST_REUSED, "Этот запрос уже использован для другого сообщения"

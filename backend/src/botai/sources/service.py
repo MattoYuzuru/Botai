@@ -1,37 +1,31 @@
 """User documents: start an ingestion from a link or an upload, list and remove them.
 
-Every document is a connection of its own (`kind=document|sheet`, adapter `document`), so it is
-refreshed, repaired and removed by the same machinery as any source. All reads and writes carry
+Every document is a connection of its own (`kind=document|doc|sheet`, adapter `document`), so it
+is refreshed, repaired and removed by the same machinery as any source. An uploaded file is an
+attachment first (`attachments`), the same as a file sent in chat. All reads and writes carry
 the user's id (NFR-001); a foreign id is reported as not found.
 """
 
 from __future__ import annotations
 
-import base64
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.attachments import service as attachments
+from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
-from botai.core.queue import JobQueue
 from botai.db import models as m
-from botai.sources.documents import detect_format
-from botai.sources.ingest import MAX_UPLOAD, UPLOAD_ORIGIN, check_url, source_for_url
+from botai.jobs.queue import enqueue_in_session
+from botai.sources import public_links
+from botai.sources.ingest import check_url, source_for_url
 from botai.sources.schemas import DocumentFromUrl, DocumentOut, DocumentStarted
-from botai.spaces import repo
+from botai.spaces import repo, views
 
 NOTE_MAX = 1000
-
-
-def _title(raw: str | None, fallback: str) -> str:
-    return " ".join((raw or "").split())[:120] or fallback
-
-
-def _clean_filename(name: str | None) -> str:
-    leaf = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
-    return "".join(ch for ch in leaf if ch.isprintable())[:200]
 
 
 async def list_documents(session: AsyncSession, user_id: str, space_id: str) -> list[DocumentOut]:
@@ -44,62 +38,56 @@ async def list_documents(session: AsyncSession, user_id: str, space_id: str) -> 
     return [DocumentOut.model_validate(doc) for doc in rows]
 
 
-async def _start(
+async def start_url(
     session: AsyncSession,
-    queue: JobQueue,
     user_id: str,
     space_id: str,
+    body: DocumentFromUrl,
     *,
-    origin: str,
-    allow_hosts: list[str],
-    kind: str,
-    title: str,
-    payload: dict[str, Any],
+    thread_id: str | None = None,
+    now: datetime | None = None,
 ) -> DocumentStarted:
+    """A link to a file, a page, or a link-shared Google document: a source and its INGEST job.
+    `thread_id` is the chat that asked for it: the task shows up there from its first block."""
+    host = check_url(body.url)
+    public_links.export_url(body.url)  # a Google link that cannot be exported is refused at once
+    source, hosts = source_for_url(body.url)
     space = await repo.get_space(session, user_id, space_id)
+    if thread_id is not None and not await session.scalar(
+        select(m.ChatThread.id).where(m.ChatThread.id == thread_id, m.ChatThread.user_id == user_id)
+    ):
+        raise BotaiError(ErrorCode.NOT_FOUND, "Чат не найден")
+    kind = "sheet" if source["kind"] == "google_sheet" else "doc"
+    payload: dict[str, Any] = {"source": source, "note": (body.note or "")[:NOTE_MAX]}
     conn = m.Connection(
         user_id=user_id,
         space_id=space.id,
-        origin=origin,
+        origin=f"https://{host}",
         kind=kind,
-        title=title,
+        # the real name comes from the document once it is read
+        title=views.source_title(kind=kind, title=body.title),
+        entry_url=body.url.strip()[:2000],
         status="draft",
-        allow_hosts=allow_hosts,
+        allow_hosts=hosts,
     )
     session.add(conn)
-    await session.commit()  # the queue works in its own transaction
-    try:
-        job_id = await queue.enqueue(
-            JobKind.INGEST, user_id=user_id, connection_id=conn.id, payload=payload, dedupe=True
-        )
-    except Exception:
-        await session.delete(conn)  # no job means nobody would ever finish this document
-        await session.commit()
-        raise
-    return DocumentStarted(document_id=None, connection_id=conn.id, job_id=job_id)
-
-
-async def start_url(
-    session: AsyncSession, queue: JobQueue, user_id: str, space_id: str, body: DocumentFromUrl
-) -> DocumentStarted:
-    host = check_url(body.url)
-    source, hosts = source_for_url(body.url)
-    return await _start(
+    await session.flush()
+    job = await enqueue_in_session(
         session,
-        queue,
-        user_id,
-        space_id,
-        origin=f"https://{host}",
-        allow_hosts=hosts,
-        kind="sheet" if source["kind"] == "google_sheet" else "document",
-        title=_title(body.title, host),
-        payload={"source": source, "note": (body.note or "")[:NOTE_MAX]},
+        JobKind.INGEST,
+        user_id=user_id,
+        connection_id=conn.id,
+        thread_id=thread_id,
+        payload=payload,
+        now=now or SystemClock().now(),
+        dedupe=True,
     )
+    await session.commit()
+    return DocumentStarted(document_id=None, connection_id=conn.id, job_id=job.id)
 
 
 async def start_upload(
     session: AsyncSession,
-    queue: JobQueue,
     user_id: str,
     space_id: str,
     *,
@@ -107,40 +95,40 @@ async def start_upload(
     content_type: str | None,
     data: bytes,
     note: str | None,
+    now: datetime | None = None,
 ) -> DocumentStarted:
-    if not data:
-        raise BotaiError(ErrorCode.VALIDATION, "Файл пустой")
-    if len(data) > MAX_UPLOAD:
-        raise BotaiError(ErrorCode.VALIDATION, "Файл больше 8 МБ", status=413)
-    name = _clean_filename(filename)
-    detect_format(data, name, content_type)  # an unsupported type is refused at once
-    return await _start(
-        session,
-        queue,
-        user_id,
-        space_id,
-        origin=UPLOAD_ORIGIN,
-        allow_hosts=[],
-        kind="document",
-        title=_title(name.rsplit(".", 1)[0] if "." in name else name, "Документ"),
-        payload={
-            "source": {"kind": "upload"},
-            "content_b64": base64.b64encode(data).decode("ascii"),
-            "filename": name,
-            "content_type": (content_type or "")[:120],
-            "note": (note or "")[:NOTE_MAX],
-        },
+    """A file for the library of a space: stored as an attachment and indexed like one."""
+    await repo.get_space(session, user_id, space_id)
+    att = await attachments.create(
+        session, user_id, filename=filename, content_type=content_type, data=data
+    )
+    if att.kind != "document":
+        raise BotaiError(ErrorCode.VALIDATION, "В библиотеку добавляются документы и таблицы")
+    started = await attachments.start_ingest(
+        session, att, space_id, None, note=(note or "")[:NOTE_MAX], now=now
+    )
+    await session.commit()
+    return DocumentStarted(
+        document_id=None, connection_id=started.connection_id, job_id=started.job_id
     )
 
 
 async def delete_document(session: AsyncSession, user_id: str, document_id: str) -> None:
     """Removes the document with its connection (so it is no longer refreshed), its text, rows
-    read from it, its spec revisions and secrets."""
+    read from it, its spec revisions and secrets, and the file it was uploaded as unless a chat
+    message carries that file."""
     doc = await session.scalar(
         select(m.Document).where(m.Document.id == document_id, m.Document.user_id == user_id)
     )
     if doc is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Документ не найден")
+    await session.execute(
+        delete(m.Attachment).where(
+            m.Attachment.user_id == user_id,
+            m.Attachment.document_id == doc.id,
+            m.Attachment.message_id.is_(None),
+        )
+    )
     conn = (
         await session.scalar(
             select(m.Connection).where(
@@ -150,7 +138,7 @@ async def delete_document(session: AsyncSession, user_id: str, document_id: str)
         if doc.connection_id
         else None
     )
-    if conn is not None and conn.kind in {"document", "sheet"}:
+    if conn is not None and conn.kind in {"document", "doc", "sheet"}:
         await repo.purge_connection_secrets(session, user_id, [conn.id])
         await session.execute(
             delete(m.AdapterSpecRow).where(m.AdapterSpecRow.origin == f"doc:{conn.id}")

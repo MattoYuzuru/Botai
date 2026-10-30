@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
-from urllib.parse import urljoin, urlsplit
+from typing import Any, Literal, cast
+from urllib.parse import parse_qsl, urlsplit
 
 from playwright.async_api import (
     Browser,
@@ -80,6 +80,29 @@ SETTLE_MS = 3_000
 READ_VIEW_QUIET_S = 0.2
 MAX_LOG = 500
 AUTH_EVALUATE_S = 0.5
+# One step of the login (an e-mail, a password, a code) opens this window for its auth frame: the
+# page's own scripts may then post to the login hosts of the connection. Never longer: a script that
+# outlives the step is not part of it.
+AUTH_WINDOW_S = 15.0
+# POSTs a window serves once the step is sent (a click or Enter): a check of the login, the
+# submission itself and a spare. What the page posts while the value is still being typed (an
+# `input` handler's telemetry) has a budget of its own and cannot eat this one.
+AUTH_WINDOW_POSTS = 4
+AUTH_TYPING_POSTS = 16
+# A document that is the answer to an approved submission may post once more on its own: an
+# auto-submitted `form_post`/SAML message. It must carry only the fields of those protocols.
+AUTH_FOLLOWUP_S = 10.0
+_PROTOCOL_FIELDS = frozenset(
+    {
+        "samlresponse", "samlrequest", "relaystate", "sigalg", "signature",
+        "id_token", "code", "state", "session_state", "access_token", "token_type",
+        "expires_in", "scope", "iss", "error", "error_description",
+        "wa", "wresult", "wctx", "wtrealm", "wreply",
+    }
+)  # fmt: skip
+_GUARD_REASONS = frozenset(
+    {"auth_host_not_allowed", "auth_window_exhausted", "auth_window_expired", "auth_scan_failed"}
+)
 _AUTH_SCAN_JS = (
     "() => { const result = (" + SCAN_JS + ")(); result.title = document.title; return result; }"
 )
@@ -142,6 +165,15 @@ def _browser_diagnostics(connection_id: str) -> dict[str, object]:
     return {**_EMPTY_DIAGNOSTIC_CONTEXT, **diagnostic_context(), "connection_id": connection_id}
 
 
+def _initiator_url(request: Request) -> str | None:
+    """The document of the frame that issued the request; a worker has no frame."""
+    try:
+        url = cast("object", request.frame.url)
+    except PlaywrightError:
+        return None
+    return url if isinstance(url, str) and url else None
+
+
 def _method(method: str) -> str:
     return (
         method
@@ -159,12 +191,71 @@ class CaptureConfig:
     bearer_key: str | None = None
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class _AuthPermit:
+@dataclass(slots=True, repr=False)
+class _AuthWindow:
+    """What one login step lets its auth frame do: post to `hosts` until `expires`.
+
+    The window belongs to one document of one page. It carries no URL: a login script sets its
+    form's action at submission time and checks a login before it posts, so the address of a
+    submission cannot be known in advance. What can be known is who asked (this frame, right after
+    the step), and where the connection is allowed to log in (`hosts`)."""
+
     page: Page
     epoch: int
     url: str
-    actions: frozenset[str]
+    hosts: frozenset[str]
+    suffixes: tuple[str, ...]
+    selectors: frozenset[str]
+    expires: float
+    posts: int = 0
+    sent: bool = False  # the step's click or Enter has happened: `posts` counts from there
+
+    def allows(self, host: str) -> bool:
+        return host in self.hosts or any(host.endswith("." + suffix) for suffix in self.suffixes)
+
+
+@dataclass(slots=True, repr=False)
+class _Followup:
+    """The one POST navigation the document that answered an approved submission may make."""
+
+    page: Page
+    epoch: int  # the epoch of that document: the one after the submission was made
+    window: _AuthWindow
+    expires: float
+
+
+def _auth_ui_present(snap: PageSnapshot, selectors: frozenset[str] = frozenset()) -> bool:
+    """Does the frame still ask for a login, a code, a captcha or a push approval? `selectors`
+    are the fields the flow was filling: a learned step may use fields a guess would not call
+    credentials. A hidden form asks for nothing."""
+    if has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait):
+        return True
+    live = {
+        field.selector
+        for form in snap.forms
+        for field in form.fields
+        if field.input_type.lower() != "hidden" and getattr(field, "visible", True)
+    }
+    return bool(selectors) and selectors <= live
+
+
+def _protocol_message(request: Request) -> bool:
+    """Is this POST an authentication protocol message (SAML, OpenID `form_post`), not a write?
+    A form-encoded body whose every field is one of the protocols' own. Only the names are read."""
+    try:
+        if (
+            not request.headers.get("content-type", "")
+            .lower()
+            .startswith("application/x-www-form-urlencoded")
+        ):
+            return False
+        body = request.post_data
+        if not body:
+            return False
+        names = {name.lower() for name, _ in parse_qsl(body, keep_blank_values=True)}
+    except (PlaywrightError, ValueError, UnicodeError):
+        return False
+    return bool(names) and names <= _PROTOCOL_FIELDS
 
 
 def in_container() -> bool:
@@ -188,9 +279,28 @@ def scrub_sample(text: str) -> str | None:
     return _JWT.sub("[jwt]", text)[:SAMPLE_CHARS]
 
 
-def map_navigation_error(exc: PlaywrightError, requested: str) -> BotaiError:
-    """Classify a main-frame failure without exposing its URL parameters."""
+def guard_refusal_error(*, fallback_used: bool = False) -> BotaiError:
+    """What the user is told when our own guard stopped a request of the login: not an outage."""
+    return BotaiError(
+        ErrorCode.LOGIN_GUARD_REFUSED,
+        "Ботай остановил отправку формы входа: сайт вуза отправляет её способом, который мы не "
+        "можем безопасно проверить. Это не значит, что сайт недоступен. "
+        + (
+            "Запасной экран уже открывали, и это не помогло: попробуйте позже."
+            if fallback_used
+            else "Повторите шаг или завершите вход на запасном экране."
+        ),
+    )
+
+
+def map_navigation_error(
+    exc: PlaywrightError, requested: str, *, guarded: bool = False
+) -> BotaiError:
+    """Classify a main-frame failure without exposing its URL parameters. `guarded`: the page
+    runs behind the login guard, whose refusal reaches the navigation as BLOCKED_BY_CLIENT."""
     message = str(exc)
+    if guarded and "ERR_BLOCKED_BY_CLIENT" in message:
+        return guard_refusal_error()
     match = _NAV_URL.search(message)
     host = urlsplit(match.group(1) if match else requested).hostname or "?"
     if any(
@@ -259,6 +369,7 @@ class PlaywrightHandle:
         injected_authorizations: dict[Request, str] | None = None,
         confirmed_entry_url: SecretStr | None = None,
         restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
+        suffixes: Sequence[str] = (),
     ) -> None:
         self._gateway = gateway
         self.context = context
@@ -270,6 +381,7 @@ class PlaywrightHandle:
         self._read_capability_registry = ReadCapabilityRegistry(page, now=clock.now)
         self._retired_capability_tasks: set[asyncio.Task[None]] = set()
         self.allow_hosts = tuple(allow_hosts)
+        self._suffixes = tuple(suffix.lower() for suffix in suffixes)
         self.origin = origin
         self._capture = capture
         self._clock = clock
@@ -278,7 +390,12 @@ class PlaywrightHandle:
         self._entry_guarded = False
         self._entry_verifying = 0
         self._auth_epochs: dict[Frame, int] = {}
-        self._auth_permits: dict[Frame, _AuthPermit] = {}
+        self._auth_windows: dict[Frame, _AuthWindow] = {}
+        self._auth_followups: dict[Frame, _Followup] = {}
+        self._steps_open = 0
+        self._guard_refusals: list[tuple[str, str]] = []  # (reason, host) while a step is open
+        self._refused_navigations: dict[Request, tuple[str, str]] = {}
+        self._guard_refused_navigation = False
         self._log: list[ObservedRequest] = []
         self._entries: dict[Request, ObservedRequest] = {}
         self._request_versions: dict[Request, int] = {}
@@ -345,77 +462,146 @@ class PlaywrightHandle:
     def _revoke_auth_document(self, frame: Frame) -> None:
         self._auth_epochs[frame] = self._auth_epochs.get(frame, 0) + 1
         if frame == frame.page.main_frame:
-            self._auth_permits.clear()
+            self._auth_windows.clear()
         else:
-            self._auth_permits.pop(frame, None)
+            self._auth_windows.pop(frame, None)
 
     def _forget_auth_document(self, frame: Frame) -> None:
-        self._auth_permits.pop(frame, None)
+        self._auth_windows.pop(frame, None)
+        self._auth_followups.pop(frame, None)
         self._auth_epochs.pop(frame, None)
 
+    def take_guard_refusals(self) -> list[tuple[str, str]]:
+        """What the guard refused to a window since the last call: `(reason, host)`, the host
+        empty unless the reason is a host. The caller decides which of it matters."""
+        refusals, self._guard_refusals = self._guard_refusals, []
+        return refusals
+
     def _auth_refused(self, request: Request, reason: str) -> bool:
+        host = (urlsplit(request.url).hostname or "").lower()
+        navigation = request.is_navigation_request()
         self._diagnostic(
             "browser.auth_permit_refused",
             outcome="rejected",
             reason=reason,
             method=_method(request.method),
+            navigation=navigation,
             **url_facts(request.url),
         )
+        if navigation and len(self._refused_navigations) < 64:
+            self._refused_navigations[request] = (reason, host)
+        if self._steps_open and reason in _GUARD_REASONS and len(self._guard_refusals) < 32:
+            self._guard_refusals.append((reason, host if reason == "auth_host_not_allowed" else ""))
         return False
 
+    def _refuse_and_close(self, request: Request, frame: Frame, reason: str) -> bool:
+        """The page no longer is what the window was opened for: nothing it posts later is the
+        step's, and the window must not wait for a document submission to be used."""
+        self._auth_windows.pop(frame, None)
+        return self._auth_refused(request, reason)
+
     async def _entry_auth_allowed(self, request: Request) -> bool:
+        """May this POST leave an auth frame behind the entry guard?
+
+        Yes while the frame's window is open (a step just began, see `auth_step`), the host is one
+        the connection logs in at, and the frame still shows an auth UI. Which URL, and whether the
+        form says so, does not matter: login scripts choose both at submission time."""
         if self.read_only or self._entry_verifying:
             return self._auth_refused(request, "auth_read_only")
         try:
             frame = request.frame
-            permit = self._auth_permits.get(frame)
-            if permit is None:
+            window = self._auth_windows.get(frame)
+            if window is None:
+                if request.is_navigation_request() and frame in self._auth_followups:
+                    return self._followup_allowed(request, frame)
                 return self._auth_refused(request, "auth_no_permit")
+            if monotonic() >= window.expires:
+                return self._refuse_and_close(request, frame, "auth_window_expired")
             if (
                 frame.page != self._page
-                or self._page != permit.page
-                or self._auth_epochs.get(frame, 0) != permit.epoch
-                or frame.url != permit.url
+                or self._page != window.page
+                or self._auth_epochs.get(frame, 0) != window.epoch
+                or frame.url != window.url
             ):
-                return self._auth_refused(request, "auth_context_changed")
+                return self._refuse_and_close(request, frame, "auth_context_changed")
+            if not window.allows((urlsplit(request.url).hostname or "").lower()):
+                return self._auth_refused(request, "auth_host_not_allowed")
+            if window.posts >= (AUTH_WINDOW_POSTS if window.sent else AUTH_TYPING_POSTS):
+                return self._auth_refused(request, "auth_window_exhausted")
+            window.posts += 1  # taken before any await: concurrent requests share the budget
             if request.is_navigation_request():
-                # Never inspect a renderer suspended by this document POST.
-                if request.url not in permit.actions:
-                    return self._auth_refused(request, "auth_action_mismatch")
+                # Never inspect a renderer suspended by this document POST. The submission ends
+                # the step: the document it brings has no window of its own, only a follow-up.
+                self._auth_windows.pop(frame, None)
+                self._auth_followups[frame] = _Followup(
+                    page=window.page,
+                    epoch=window.epoch + 1,
+                    window=window,
+                    expires=monotonic() + AUTH_FOLLOWUP_S,
+                )
             else:
-                # GET polling can remove auth UI without changing a SPA's URL.
-                # No snapshot/title/navigation waits or retries inside interception.
+                # Polling can remove the auth UI without changing a SPA's URL: a data page's
+                # script must not inherit a window. No navigation waits inside interception.
                 async with asyncio.timeout(AUTH_EVALUATE_S):
                     raw: Any = await frame.evaluate(_AUTH_SCAN_JS)
-                snap = build_snapshot(permit.url, str(raw.get("title", "")), raw)
+                snap = build_snapshot(window.url, str(raw.get("title", "")), raw)
                 if (
-                    self._page != permit.page
-                    or frame.page != permit.page
-                    or self._auth_epochs.get(frame, 0) != permit.epoch
-                    or frame.url != permit.url
+                    self._auth_windows.get(frame) is not window
+                    or self._page != window.page
+                    or frame.page != window.page
+                    or self._auth_epochs.get(frame, 0) != window.epoch
+                    or frame.url != window.url
                 ):
-                    return self._auth_refused(request, "auth_context_changed")
-                if not (
-                    has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
-                ):
-                    return self._auth_refused(request, "auth_ui_missing")
-            # The scan above yields: another request may consume the permit, or a
-            # navigation may revoke/replace it. Only its current owner can consume it.
-            if self._auth_permits.get(frame) is not permit:
-                return self._auth_refused(request, "auth_permit_used")
-            self._auth_permits.pop(frame)
+                    return self._refuse_and_close(request, frame, "auth_context_changed")
+                if not _auth_ui_present(snap, window.selectors):
+                    return self._refuse_and_close(request, frame, "auth_ui_missing")
             self._diagnostic(
                 "browser.auth_permit",
                 outcome="accepted",
                 phase="response",
                 method=_method(request.method),
+                navigation=request.is_navigation_request(),
+                post_count=window.posts,
                 **url_facts(request.url),
             )
             return True
         except (PlaywrightError, TimeoutError):
+            with contextlib.suppress(PlaywrightError):
+                self._auth_windows.pop(request.frame, None)
             return self._auth_refused(request, "auth_scan_failed")
 
-    async def _arm_auth_document(self, frame: Frame) -> _AuthPermit | None:
+    def _followup_allowed(self, request: Request, frame: Frame) -> bool:
+        """The document that answered an approved submission posts once on its own: an
+        auto-submitted `form_post` or SAML message. Only the document that came right after the
+        submission, only soon, only to a login host, only with the protocol's own fields."""
+        follow = self._auth_followups.pop(frame)
+        if monotonic() >= follow.expires:
+            return self._auth_refused(request, "auth_window_expired")
+        if (
+            frame.page != self._page
+            or self._page != follow.page
+            or self._auth_epochs.get(frame, 0) != follow.epoch
+        ):
+            return self._auth_refused(request, "auth_context_changed")
+        if not follow.window.allows((urlsplit(request.url).hostname or "").lower()):
+            return self._auth_refused(request, "auth_host_not_allowed")
+        if not _protocol_message(request):
+            return self._auth_refused(request, "auth_followup_rejected")
+        self._diagnostic(
+            "browser.auth_permit",
+            outcome="accepted",
+            phase="response",
+            method=_method(request.method),
+            navigation=True,
+            followup=True,
+            **url_facts(request.url),
+        )
+        return True
+
+    async def _scan_auth_window(
+        self, frame: Frame, *, selectors: frozenset[str] = frozenset(), sent: bool = False
+    ) -> _AuthWindow | None:
+        """A window for what `frame` shows now, or None (and why, in the trace). Stores nothing."""
         page = self._page
         epoch = self._auth_epochs.get(frame, 0)
         url = frame.url
@@ -436,9 +622,7 @@ class PlaywrightHandle:
                     **url_facts(url),
                 )
                 return None
-            if not (
-                has_credential_fields(snap) or isinstance(detect(snap), CaptchaPage | PushWait)
-            ):
+            if not _auth_ui_present(snap, selectors):
                 self._diagnostic(
                     "browser.auth_permit",
                     outcome="rejected",
@@ -454,25 +638,48 @@ class PlaywrightHandle:
                 **url_facts(url),
             )
             return None
-        actions = frozenset(
-            urlsplit(urljoin(url, form.action or url))._replace(fragment="").geturl()
-            for form in snap.forms
-            if form.method.lower() == "post"
-            and has_credential_fields(PageSnapshot(url=url, title=snap.title, forms=[form]))
+        # The login hosts the connection already trusts (and, on a first login, the subdomains
+        # its proxy grant follows the site to), and the frame's own: the user is told which one
+        # they are typing into, and the page reached it through the same proxy grant.
+        hosts = set(self.allow_hosts)
+        if frame_host := (urlsplit(url).hostname or "").lower():
+            hosts.add(frame_host)
+        window = _AuthWindow(
+            page=page,
+            epoch=epoch,
+            url=url,
+            hosts=frozenset(hosts),
+            suffixes=self._suffixes,
+            selectors=selectors,
+            expires=monotonic() + AUTH_WINDOW_S,
+            sent=sent,
         )
-        grant = _AuthPermit(page, epoch, url, actions)
-        self._auth_permits[frame] = grant
         self._diagnostic(
             "browser.auth_permit",
             outcome="accepted",
             phase="request",
-            action_count=len(actions),
-            truncated=len(actions) > 8,
+            window_ms=int(AUTH_WINDOW_S * 1000),
+            allow_host_count=len(hosts),
             **url_facts(url),
         )
-        for action in sorted(actions)[:8]:
-            self._diagnostic("browser.auth_action", **url_facts(action))
-        return grant
+        return window
+
+    async def _arm_auth_window(
+        self, frame: Frame, *, selectors: frozenset[str] = frozenset()
+    ) -> _AuthWindow | None:
+        window = await self._scan_auth_window(frame, selectors=selectors)
+        if window is not None:
+            self._auth_windows[frame] = window
+            self._auth_followups.pop(frame, None)  # a new step supersedes the last submission
+        return window
+
+    def _mark_sent(self) -> None:
+        """The click or Enter that sends the step: what the page posts from now on is the step's
+        own, and has the window's real budget."""
+        window = self._auth_windows.get(self._page.main_frame)
+        if window is not None and not window.sent:
+            window.sent = True
+            window.posts = 0
 
     @contextlib.asynccontextmanager
     async def read_only_entry(self) -> AsyncGenerator[None]:
@@ -496,19 +703,33 @@ class PlaywrightHandle:
             await self.context.route_web_socket("**/*", socket_guard)
             self._entry_guarded = True
         self._entry_verifying += 1
-        self._auth_permits.clear()
+        self._auth_windows.clear()
+        self._auth_followups.clear()
         try:
             yield
         finally:
             self._entry_verifying -= 1
 
     @contextlib.asynccontextmanager
-    async def auth_document(self) -> AsyncGenerator[None]:
-        """One native auth POST; never inspect a paused navigation from its route handler."""
+    async def auth_step(self, *, fields: Sequence[str] = ()) -> AsyncGenerator[None]:
+        """One step of the login: the user (or the password they stored) has just given the value.
+
+        Opens the window of the main frame for the length of the step, so the page's own scripts
+        may check the login and submit the form; every step opens its own. `fields` are the
+        selectors being filled. On leaving, waits for the page to settle and reports a navigation
+        our guard stopped as `login_guard_refused` (or, for a host, as `egress_blocked`, which the
+        flow can put to the student), never as a site that does not answer."""
         page = self._page
         frame = page.main_frame
         previous_navigation = self._navigation_request
-        grant = await self._arm_auth_document(frame) if self._entry_guarded else None
+        window = (
+            await self._arm_auth_window(frame, selectors=frozenset(fields))
+            if self._entry_guarded
+            else None
+        )
+        if self._entry_guarded and window is None:
+            self._guard_refusals.append(("auth_scan_failed", ""))  # no window: nothing will post
+        self._steps_open += 1
         deadline = monotonic() + SETTLE_MS / 1000
         try:
             yield
@@ -534,21 +755,28 @@ class PlaywrightHandle:
                         )
                     await asyncio.sleep(min(0.02, remaining))
         finally:
-            permit = self._auth_permits.get(frame)
-            if permit is grant:
-                self._auth_permits.pop(frame, None)
+            self._steps_open -= 1
+            if self._auth_windows.get(frame) is window:
+                self._auth_windows.pop(frame, None)
 
     async def arm_human_auth(self) -> None:
-        """Before a real screen input, grant only recognized auth frames of the selected page."""
+        """Before a real keystroke or click on the screen, open a window on every recognized auth
+        frame of the page. The human's input is the budget: each one opens windows of its own, and
+        they replace the last ones at once, so there is no moment without a window in between."""
         if not self._entry_guarded or self._entry_verifying:
             return
-        self._auth_permits.clear()
+        fresh: dict[Frame, _AuthWindow] = {}
         try:
             async with asyncio.timeout(1.0):
                 for frame in self._page.frames[:32]:
-                    await self._arm_auth_document(frame)
+                    window = await self._scan_auth_window(frame, sent=True)
+                    if window is not None:
+                        fresh[frame] = window
         except TimeoutError:
-            self._auth_permits.clear()
+            self._auth_windows.clear()
+            return
+        self._auth_windows = fresh
+        self._auth_followups.clear()
 
     def on_close(self, callback: Callable[[], None]) -> None:
         self._close_callbacks.append(callback)
@@ -558,7 +786,8 @@ class PlaywrightHandle:
         self._page_callbacks.append(callback)
 
     def _on_page(self, page: Page) -> None:
-        self._auth_permits.clear()
+        self._auth_windows.clear()
+        self._auth_followups.clear()
         page.on("framenavigated", self._revoke_auth_document)
         page.on("framedetached", self._forget_auth_document)
         self._read_view_registry.invalidate()
@@ -605,6 +834,7 @@ class PlaywrightHandle:
             resource_type=request.resource_type,
             request_content_type=request.headers.get("content-type"),
             evidence_id=f"r{serial}",
+            initiator_url=_initiator_url(request),
         )
         self._log.append(entry)
         self._entries[request] = entry
@@ -768,12 +998,35 @@ class PlaywrightHandle:
                 navigation=request is self._navigation_request,
                 **url_facts(request.url),
             )
+        refused = self._refused_navigations.pop(request, None)
+        if refused is not None and "BLOCKED_BY_CLIENT" in failure:
+            self._guard_refused_navigation = True
         if request is self._navigation_request:
-            self._navigation_error = map_navigation_error(PlaywrightError(failure), request.url)
+            self._navigation_error = (
+                self._guard_navigation_error(refused)
+                if refused is not None and "BLOCKED_BY_CLIENT" in failure
+                else map_navigation_error(
+                    PlaywrightError(failure), request.url, guarded=self._entry_guarded
+                )
+            )
         if "TUNNEL" in failure or "PROXY" in failure:
             host = urlsplit(request.url).hostname
             if host:
                 self._blocked.append(host.lower())
+
+    @staticmethod
+    def _guard_navigation_error(refusal: tuple[str, str]) -> BotaiError:
+        """Why our guard stopped a submission, as the flow can act on it: a host it may put to the
+        student for approval, or a refusal it can only report."""
+        reason, host = refusal
+        if reason == "auth_host_not_allowed" and host:
+            return BotaiError(
+                ErrorCode.EGRESS_BLOCKED,
+                f"Сайт вуза отправляет данные входа на {host}, а этот адрес не входит "
+                "в разрешённые для подключения",
+                extra={"host": host, "post": True},
+            )
+        return guard_refusal_error()
 
     def _on_finished(self, request: Request) -> None:
         if request in self._inflight:
@@ -820,7 +1073,22 @@ class PlaywrightHandle:
         self._navigation_request = None
         self._navigation_error = None
         try:
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            refused_before, self._guard_refused_navigation = self._guard_refused_navigation, False
+            try:
+                await self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            except PlaywrightError as exc:
+                if (
+                    not (self._entry_guarded and refused_before)
+                    or "interrupted by another navigation" not in str(exc)
+                    or isinstance(exc, PlaywrightTimeout)
+                ):
+                    raise
+                # The error page of the submission our guard just refused commits late and cuts
+                # ours short. Let it land, then go again.
+                await self._settle(1_500)
+                self._navigation_request = None
+                self._navigation_error = None
+                await self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         except PlaywrightTimeout as exc:
             self._diagnostic(
                 "browser.navigation.failed",
@@ -839,7 +1107,9 @@ class PlaywrightHandle:
                 elapsed_ms=int((monotonic() - started) * 1000),
                 **url_facts(url),
             )
-            raise self._navigation_error or map_navigation_error(exc, url) from exc
+            raise self._navigation_error or map_navigation_error(
+                exc, url, guarded=self._entry_guarded
+            ) from exc
         await self._settle()
         snap = await self.snapshot()
         if self.read_only and (
@@ -998,6 +1268,7 @@ class PlaywrightHandle:
         self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
+        self._mark_sent()
         try:
             await self._page.click(selector, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -1010,6 +1281,7 @@ class PlaywrightHandle:
     async def press(self, selector: str, key: str) -> PageSnapshot:
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
+        self._mark_sent()
         try:
             await self._page.press(selector, key, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -1517,6 +1789,7 @@ class PlaywrightGateway:
             read_only=read_only,
             injected_authorizations=injected_authorizations,
             restored_bearers=restored_bearers,
+            suffixes=suffixes,
             confirmed_entry_url=(
                 session.entry_url
                 if session is not None and auth_origin(primary) == auth_origin(session.origin)

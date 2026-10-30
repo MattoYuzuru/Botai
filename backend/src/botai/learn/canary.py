@@ -29,6 +29,7 @@ from botai.sources.extract import collapse
 from botai.sources.factory import AdapterFactory
 
 MATCH_RATIO = 0.6
+MIN_WINDOWS = 2  # a date walk the canary accepts has read at least this many windows
 
 # Columns of the domain tables that identify a record to a human, per kind.
 KEY_COLUMNS: dict[Kind, tuple[str, ...]] = {
@@ -191,6 +192,24 @@ async def run_canary(
         if outcome.structural or not outcome.ok
     ]
     problems = [f"{o.kind or o.endpoint_id}: {o.problem}" for o in result.structural_problems()]
+    # A date window is only proven when the source answered more than one window.
+    walks = {
+        endpoint["id"]
+        for endpoint in spec.get("recipe", {}).get("endpoints", [])
+        if (endpoint.get("pagination") or {}).get("type") == "dateWindow"
+    }
+    for outcome in result.outcomes:
+        if outcome.endpoint_id in walks and outcome.ok and outcome.windows < MIN_WINDOWS:
+            findings.append(
+                CanaryFinding(
+                    code="no_progress",
+                    kind=outcome.kind,
+                    status=outcome.status,
+                    items_seen=outcome.items_seen,
+                    items_valid=outcome.items_valid,
+                )
+            )
+            problems.append(f"{outcome.kind or outcome.endpoint_id}: windows")
     for kind in sorted(require):
         if not valid.get(kind):
             problems.append(f"{kind}: no valid records")

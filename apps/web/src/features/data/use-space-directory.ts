@@ -2,14 +2,15 @@ import { ALL_SPACES_ID, DEFAULT_TIME_ZONE, useOnline } from "@botai/design";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { connectionsQuery, spacesQuery, universitiesQuery } from "@/api/queries";
-import type { Connection } from "@/api/types";
+import type { Connection, Space, University } from "@/api/types";
 import { useActiveSpaceStore } from "@/app/active-space";
 import { type SpaceHealth, summarizeConnections } from "@/app/space-status";
 
 export interface SpaceInfo {
   id: string;
+  /** «НИУ ВШЭ»: название вуза, по которому названо пространство. */
   title: string;
-  /** «ВШЭ»: короткое имя из справочника вузов, иначе название пространства. */
+  /** «ВШЭ»: короткое имя пространства, иначе из справочника вузов, иначе его название. */
   shortTitle: string;
   timeZone: string;
   hue: number;
@@ -32,6 +33,15 @@ export interface SpaceDirectory {
 }
 
 const CONNECTIONS_REFRESH_MS = 30_000;
+
+/** Короткое имя вуза для чипов и подписей: `shortTitle` пространства, справочник, название. Адрес сайта — не имя. */
+export function spaceShortTitle(space: Space, universities: readonly University[] | undefined): string {
+  return (
+    space.shortTitle ||
+    universities?.find((university) => university.id === space.universityId)?.shortTitle ||
+    space.title
+  );
+}
 
 const combineConnections = (results: readonly { data: Connection[] | undefined; isPending: boolean }[]) => ({
   lists: results.map((result) => result.data),
@@ -58,13 +68,10 @@ export function useSpaceDirectory(): SpaceDirectory {
   return useMemo(() => {
     const infos = (spaces ?? []).map((space, index): SpaceInfo => {
       const list = connections.lists[index] ?? [];
-      const shortTitle =
-        universities.data?.find((university) => university.id === space.universityId)?.shortTitle ??
-        space.title;
       return {
         id: space.id,
         title: space.title,
-        shortTitle,
+        shortTitle: spaceShortTitle(space, universities.data),
         timeZone: space.timeZone || DEFAULT_TIME_ZONE,
         hue: space.accentHue,
         universityId: space.universityId,

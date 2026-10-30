@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Deadline } from "@/api/types";
+import { provenanceFixture } from "@/test/data-fixtures";
 import { toDeadlineView } from "./deadlines";
 import { GROUP_TITLE, groupDeadlines } from "./groups";
 
@@ -24,13 +25,7 @@ function deadline(
     state,
     courseTitle: null,
     url: null,
-    provenance: {
-      connectionId: "c",
-      spaceId: "s",
-      sourceUrl: "https://x.test",
-      fetchedAt: at(-1) as string,
-      stale: false,
-    },
+    provenance: provenanceFixture({ fetchedAt: at(-1) as string }),
   };
 }
 

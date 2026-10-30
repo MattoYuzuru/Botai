@@ -70,9 +70,37 @@ test.describe("«Расписание»", () => {
     await expect(sheet.getByText(/Получено/)).toBeVisible();
   });
 
+  test("карточка пары: тип занятия, адрес, аудитория, здание, группа, онлайн-ссылка; «Открыть» ведёт на страницу, а не на API", async ({
+    page,
+  }) => {
+    await open(page, "/schedule", "connected");
+    await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "ok");
+    // Компактная карточка в списке дня или в колонке недели: детали с иконками, пустых строк нет.
+    const card = page.getByRole("button", { name: /Алгоритмы и структуры данных/ }).first();
+    await expect(card.getByText("Текущий рубежный контроль")).toBeVisible();
+    await expect(card.locator("[data-fact=address] svg")).toHaveAttribute("data-icon", "address");
+    await expect(card.locator("[data-fact=room] svg")).toHaveAttribute("data-icon", "room");
+    await expect(card.locator("[data-fact=group]")).toContainText("ПМ-3 курс 26/27");
+    await card.click();
+    const sheet = page.getByRole("dialog", { name: "Алгоритмы и структуры данных" });
+    await expect(sheet.getByText("ул. Учебная, д. 11")).toBeVisible();
+    await expect(sheet.locator("dl svg[data-icon=building]")).toBeVisible();
+    await expect(sheet.locator("dl svg[data-icon=time]")).toBeVisible();
+    await expect(sheet.getByRole("link", { name: "Материалы занятия" })).toHaveAttribute(
+      "href",
+      "https://lk.fakeuni.test/materials/algorithms",
+    );
+    const cabinet = sheet.getByRole("link", { name: /Открыть в личном кабинете/ });
+    await expect(cabinet).toHaveAttribute(
+      "href",
+      /^https:\/\/lk\.fakeuni\.test\/schedule\?begin_date=\d{4}-\d{2}-\d{2}$/,
+    );
+    expect(await sheet.locator("a[href*='/api/']").count()).toBe(0);
+  });
+
   test("нужен повторный вход: полоса «Войти снова», расписание на месте", async ({ page }) => {
     await open(page, "/schedule", "reauth");
-    await expect(page.getByRole("button", { name: "Войти снова" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
     await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "reauth");
     await expect(page.getByText("Основы продуктового менеджмента").first()).toBeVisible();
   });

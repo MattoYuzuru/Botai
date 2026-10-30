@@ -28,11 +28,13 @@ from pydantic import ValidationError
 from botai.contracts.schemas import errors as schema_errors
 from botai.contracts.specs import Recipe
 from botai.core.errors import BotaiError, ErrorCode
+from botai.learn.addresses import request_literals, ui_segment_ok, ui_value_ok
+from botai.learn.horizon import TIME_FIELD
 from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
 from botai.sources.extract import selector_valid
 from botai.sources.readonly import is_read_only_post
-from botai.sources.vocab import REQUIRED, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
+from botai.sources.vocab import REQUIRED, STRUCTURED_FIELDS, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
 
 SCHEMA = "adapter-spec.schema.json"
 MAX_ISSUES = 50
@@ -374,7 +376,105 @@ def _endpoint(
                     "pagination.cursor", _p(*base, "pagination"), "курсор нужен путь и ответ JSON"
                 )
             )
+        if pagination["type"] == "dateWindow":
+            _date_window(pagination, request, (*base, "pagination"), issues)
+            _window_identity(kind, response, (*base, "response"), issues)
+    if endpoint.get("uiUrl") is not None:
+        _ui_url(endpoint["uiUrl"], request, known, (*base, "uiUrl"), issues)
     _response(kind, response, (*base, "response"), issues)
+
+
+def _date_window(
+    pagination: Mapping[str, Any],
+    request: Mapping[str, Any],
+    base: tuple[Any, ...],
+    issues: list[LintIssue],
+) -> None:
+    """A date window moves one date template of the query; the walk must contain the window the
+    source's own page showed (offset 0), so that the first canary window reproduces a real read."""
+    moved = (request.get("query") or {}).get(pagination["param"])
+    if not isinstance(moved, str) or not templates.is_date_template(moved):
+        issues.append(
+            LintIssue(
+                "pagination.window_param",
+                _p(*base, "param"),
+                "окно двигает шаблон даты из query запроса",
+            )
+        )
+    step = pagination["stepDays"]
+    if (
+        isinstance(moved, str)
+        and step % 7
+        and any(
+            "weekStart" in templates.placeholders(value)
+            for value in (request.get("query") or {}).values()
+        )
+    ):
+        issues.append(
+            LintIssue(
+                "pagination.window_step",
+                _p(*base, "stepDays"),
+                "{weekStart} возвращается к понедельнику: шаг должен быть кратен 7",
+            )
+        )
+    if pagination["windows"] < 2:
+        issues.append(
+            LintIssue("pagination.window_count", _p(*base, "windows"), "нужно не меньше двух окон")
+        )
+    if pagination.get("startOffset", 0) + pagination["windows"] - 1 < 0:
+        issues.append(
+            LintIssue(
+                "pagination.window_range",
+                _p(*base, "startOffset"),
+                "обход должен включать окно, которое показывала страница источника",
+            )
+        )
+
+
+def _window_identity(
+    kind: str, response: Mapping[str, Any], base: tuple[Any, ...], issues: list[LintIssue]
+) -> None:
+    """Weeks of a repeating timetable share source ids: the time must be part of the identity."""
+    wanted = TIME_FIELD.get(kind)
+    if wanted is not None and wanted not in (response.get("identity") or []):
+        issues.append(
+            LintIssue(
+                "pagination.window_identity",
+                _p(*base, "identity"),
+                "в identity окон нужно время записи, иначе недели слипнутся",
+            )
+        )
+
+
+def _ui_url(
+    ui_url: Mapping[str, Any],
+    request: Mapping[str, Any],
+    known: set[str],
+    base: tuple[Any, ...],
+    issues: list[LintIssue],
+) -> None:
+    """The interface address is shared like the request: only structure and the same templates.
+
+    A literal is a structural word (`schedule`, `week`...) or a word the recipe's own API request
+    already states. A login, a surname, a group code or any value with digits is a student."""
+    _check_path(ui_url["path"], _p(*base, "path"), issues)
+    _check_template(ui_url["path"], known, _p(*base, "path"), issues)
+    request_words, request_values = request_literals(request)
+    for segment in unquote(unquote(templates.PLACEHOLDER.sub("", ui_url["path"]))).split("/"):
+        if segment and not ui_segment_ok(segment, request_words):
+            issues.append(
+                LintIssue(
+                    "uiurl.personal", _p(*base, "path"), "сегмент адреса похож на личное значение"
+                )
+            )
+    for key, value in (ui_url.get("query") or {}).items():
+        where = _p(*base, "query", key)
+        if SECRET_NAME.search(key):
+            issues.append(LintIssue("param.secret_name", where, "имя параметра похоже на секрет"))
+        _check_template(value, known, where, issues)
+        literal = templates.PLACEHOLDER.sub("", value)
+        if literal and not ui_value_ok(key, literal, request_values):
+            issues.append(LintIssue("uiurl.personal", where, "значение адреса похоже на личное"))
 
 
 def _browser_plan(node: Any, base: tuple[Any, ...], issues: list[LintIssue]) -> None:
@@ -397,7 +497,7 @@ def _response(
     fields: Mapping[str, Any] = response["fields"]
     vocab = VOCAB[kind]
     for name in fields:
-        if name not in vocab:
+        if name not in vocab or name in STRUCTURED_FIELDS:
             issues.append(
                 LintIssue("field.unknown", _p(*base, "fields", name), "поля нет в словаре вида")
             )
@@ -459,6 +559,14 @@ def _response(
             operand = expansion.get(name)
             if isinstance(operand, Mapping):
                 _data_scalar(operand, response["format"], _p(*base, "expand", name), issues)
+    for index, link in enumerate(response.get("links") or []):
+        _data_scalar(link["url"], response["format"], _p(*base, "links", index, "url"), issues)
+        if isinstance(link.get("label"), Mapping):
+            _data_scalar(
+                link["label"], response["format"], _p(*base, "links", index, "label"), issues
+            )
+    for index, attribute in enumerate(response.get("attributes") or []):
+        _data_scalar(attribute, response["format"], _p(*base, "attributes", index), issues)
     if response.get("itemsPath") is not None:
         _check_pointer(response["itemsPath"], _p(*base, "itemsPath"), issues)
     if response.get("itemsSelector") is not None:
@@ -557,7 +665,7 @@ def _document(spec: Mapping[str, Any], ctx: LintContext, issues: list[LintIssue]
             LintIssue("table.kind", _p("table", "kind"), "вид не поддерживается таблицами")
         )
         return
-    allowed_columns = VOCAB[table["kind"]] | TABLE_EXTRA_FIELDS
+    allowed_columns = (VOCAB[table["kind"]] | TABLE_EXTRA_FIELDS) - STRUCTURED_FIELDS
     for target in table["columns"]:
         if target not in allowed_columns or target == "externalId":
             issues.append(
@@ -651,6 +759,11 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
                 yield from _browser_plan_literals(
                     request["browserPlan"], (*base, "request", "browserPlan")
                 )
+            ui_url = endpoint.get("uiUrl")
+            if ui_url is not None:
+                yield from _path_literals(ui_url["path"], (*base, "uiUrl", "path"))
+                for key, value in (ui_url.get("query") or {}).items():
+                    yield _p(*base, "uiUrl", "query", key), templates.PLACEHOLDER.sub("", value)
             response = endpoint["response"]
             if recipe["version"] == 2:
                 yield from _data_literals(response, (*base, "response"))
@@ -706,6 +819,7 @@ def _data_literals(node: Any, base: tuple[Any, ...]) -> Iterator[tuple[str, str]
                 "pattern",
                 "attr",
                 "as",
+                "label",
             }:
                 yield _p(*where), value
             elif isinstance(value, str) and key in {"path", "fallbackPath", "itemsPath"}:

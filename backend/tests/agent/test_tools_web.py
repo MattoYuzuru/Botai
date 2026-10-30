@@ -13,17 +13,21 @@ from botai.agent.tools import TOOL_SPECS, build_chat_tools
 from botai.agent.tools_web import MAX_BROWSES, question_urls
 from botai.core.llm import ScriptedLlm
 from botai.core.vault import SecretKind
+from botai.learn.sitemap import save_site_map
 from botai.search import SearchService
 from botai.search.service import Provider
 from botai.sources.session import dump_session
 from tests.agent.conftest import add_user, make_settings
 from tests.agent.seed import add_connection, add_document, add_space
-from tests.agent.support import add_thread, make_services
+from tests.agent.support import NOW, add_thread, make_services
 from tests.fakeuni.login import SESSIONS
 from tests.sources.helpers import session_state
 
 Sm = async_sessionmaker[AsyncSession]
 TOKEN = "tok-browse-session-DO-NOT-LEAK"
+ENTRY = "https://fakeuni.test/app"
+# What the saved site map of the fake university says it has.
+ROUTES = ("/api/v2/me", "/api/v2/timetable", "/api/v2/courses", "/news")
 
 
 class Spy(httpx.AsyncBaseTransport):
@@ -55,9 +59,21 @@ async def source_rig(
     session: bool = True,
     registered: bool = True,
     hosts: list[str] | None = None,
+    routes: tuple[str, ...] = ROUTES,
+    inner: httpx.AsyncBaseTransport | None = None,
 ) -> Rig:
     space = await add_space(sm, user_id, "Вуз А")
-    conn = await add_connection(sm, user_id, space, "Личный кабинет", allow_hosts=hosts)
+    conn = await add_connection(
+        sm, user_id, space, "Личный кабинет", allow_hosts=hosts, entry_url=ENTRY
+    )
+    async with sm() as session:
+        await save_site_map(
+            session,
+            "https://fakeuni.test",
+            {"navigation": [], "routes": list(routes), "endpoints": []},
+            NOW,
+        )
+        await session.commit()
     services = make_services(ScriptedLlm(), sm=sm)
     if session:
         state = session_state(TOKEN)
@@ -66,7 +82,7 @@ async def source_rig(
         else:
             SESSIONS.discard(TOKEN)  # the university no longer knows this session
         await services.vault.put(user_id, conn, SecretKind.SESSION, dump_session(state))
-    spy = Spy(httpx.ASGITransport(app=app))
+    spy = Spy(inner or httpx.ASGITransport(app=app))
     env = ChatEnv(
         services=services,
         user_id=user_id,
@@ -219,7 +235,7 @@ def public_rig(env_kwargs: dict[str, Any] | None = None) -> tuple[ChatEnv, list[
 
 async def test_a_link_from_the_question_is_read_without_any_cookie() -> None:
     question = "Что написано тут: https://pages.example.org/rules?"
-    env, seen = public_rig({"public_urls": question_urls(question)})
+    env, seen = public_rig({"question_links": question_urls(question)})
     tools = {t.spec.name: t for t in build_chat_tools(env)}
     text = await tools["fetch_public_page"].run({"url": "https://pages.example.org/rules"})
     assert "Недоверенная публичная страница" in text
@@ -248,7 +264,7 @@ async def test_unsafe_public_addresses_are_never_requested() -> None:
         "https://user:pw@pages.example.org/",
         "https://pages.example.org:8443/x",
     ]
-    env, seen = public_rig({"public_urls": {u for u in urls}})
+    env, seen = public_rig({"question_links": set(urls)})
     tools = {t.spec.name: t for t in build_chat_tools(env)}
     for url in urls:
         text = await tools["fetch_public_page"].run({"url": url})

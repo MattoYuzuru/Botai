@@ -44,6 +44,11 @@ log = logging.getLogger("botai.agent.harness")
 ToolFn = Callable[[dict[str, Any]], Awaitable[str]]
 
 TOOL_TIMEOUT_S = 30.0
+STALE_RESULT = (
+    "[результат этого инструмента убран из переписки, чтобы запрос уместился в окно; "
+    "вызовите инструмент снова, если он нужен]"
+)
+CUT_RESULT_CHARS = 3_000
 WRAP_UP_NOTE = (
     "[система] Лимит шагов исчерпан. Больше инструменты не вызывайте: ответьте по уже "
     "полученным данным или честно скажите, чего не хватает."
@@ -60,6 +65,7 @@ class Budget:
     max_output_tokens: int  # answer tokens per call (reasoning headroom is the provider's)
     tool_result_chars: int  # one tool result is cut to this
     max_calls_per_step: int = 8  # tool calls run from one model answer; the rest are skipped
+    step_result_chars: int = 60_000  # all results of one step together (many calls, one request)
 
 
 BUDGETS: dict[str, Budget] = {
@@ -72,6 +78,35 @@ BUDGETS: dict[str, Budget] = {
     "learn": Budget(40, 1_500_000, None, 4_000, 20_000),
     "bench": Budget(6, 250_000, 32_000, 3_000, 8_000),
 }
+
+
+def _fit_input(convo: list[LlmMessage], tools_tokens: int, limit: int) -> bool:
+    """Make the request fit the input limit by shrinking what is oldest: results of earlier steps
+    are replaced by a stub (oldest first), then the newest results are cut. The conversation, the
+    summary and the question are never touched. False if it does not fit even so."""
+
+    def size() -> int:
+        return estimate_messages(convo) + tools_tokens
+
+    if size() <= limit:
+        return True
+    last_assistant = max((i for i, m in enumerate(convo) if m.role == "assistant"), default=-1)
+    for i, m in enumerate(convo):
+        if m.role == "tool" and i < last_assistant and m.content != STALE_RESULT:
+            convo[i] = m.model_copy(update={"content": STALE_RESULT})
+            if size() <= limit:
+                return True
+    for i, m in enumerate(convo):
+        if m.role == "tool" and len(m.content) > CUT_RESULT_CHARS:
+            convo[i] = m.model_copy(
+                update={
+                    "content": m.content[:CUT_RESULT_CHARS]
+                    + "\n[…обрезано, чтобы уместиться]</source_data>"
+                }
+            )
+            if size() <= limit:
+                return True
+    return size() <= limit
 
 
 @dataclass(slots=True)
@@ -181,7 +216,7 @@ async def _emit_stage(
     )
 
 
-async def _audit_injection(
+async def audit_injection(
     services: Services,
     user_id: str,
     job_id: str | None,
@@ -284,7 +319,7 @@ class _Run:
         clean, findings = mask_injections(scrub_secrets(raw))
         if findings:
             res.findings.extend(findings)
-            await _audit_injection(
+            await audit_injection(
                 self.services, self.user_id, self.job_id, call.name, findings, res.blocked_calls
             )
         wrapped, truncated = wrap_source_data(
@@ -327,14 +362,20 @@ async def run(
             if result.total_tokens >= budget.max_total_tokens:
                 result.stopped = "budget"
                 break
-            if (
-                budget.max_input_tokens is not None
-                and estimate_messages(convo) + tools_tokens > budget.max_input_tokens
-            ):
+            wrap_up = with_tools and step == budget.max_steps - 1 and step > 0
+            limit = budget.max_input_tokens
+            if limit is not None and not _fit_input(convo, tools_tokens, limit):
+                if step == 0:
+                    result.stopped = "budget"  # the question itself does not fit
+                    break
+                # Old results were already dropped and it is still too much: answer with what is
+                # known instead of ending the turn without a word.
+                wrap_up = True
+            if wrap_up and not (convo[-1].role == "user" and convo[-1].content == WRAP_UP_NOTE):
+                convo.append(LlmMessage(role="user", content=WRAP_UP_NOTE))
+            if limit is not None and wrap_up and not _fit_input(convo, tools_tokens, limit):
                 result.stopped = "budget"
                 break
-            if with_tools and step == budget.max_steps - 1 and step > 0:
-                convo.append(LlmMessage(role="user", content=WRAP_UP_NOTE))
             try:
                 response = await services.llm.complete(
                     LlmRequest(
@@ -380,8 +421,15 @@ async def run(
                     tool_calls=response.tool_calls,
                 )
             )
+            room = budget.step_result_chars
             for call in response.tool_calls[: budget.max_calls_per_step]:
                 text = await state.call_tool(call)
+                if len(text) > room:  # many big results in one step: each gets what is left
+                    text = (
+                        text[: max(room, 500)]
+                        + "\n[…обрезано: лимит результатов шага]</source_data>"
+                    )
+                room = max(0, room - len(text))
                 convo.append(LlmMessage(role="tool", tool_call_id=call.id, content=text))
             for call in response.tool_calls[budget.max_calls_per_step :]:
                 convo.append(
@@ -442,6 +490,7 @@ __all__ = [
     "StepTrace",
     "ToolFn",
     "ToolRecord",
+    "audit_injection",
     "build_prefix",
     "run",
 ]

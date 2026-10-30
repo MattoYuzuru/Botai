@@ -1,6 +1,7 @@
 import type { MascotIntent } from "@botai/design";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
+import { CONNECT_DRAFT } from "@/features/chat/drafts";
 import { useReconnect } from "@/features/data/use-reconnect";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { useActiveJob } from "@/features/jobs/active-job";
@@ -36,11 +37,11 @@ export function useMascotIntent(): (intent: MascotIntent) => void {
           return;
         }
         case "connect":
-          void navigate({ to: "/connect" });
+          void navigate({ to: "/chat", search: { draft: CONNECT_DRAFT } });
           return;
         case "open-progress":
-          if (activeJob) void navigate({ to: "/connect/$jobId", params: { jobId: activeJob.jobId } });
-          else void navigate({ to: "/connect" });
+          if (activeJob?.threadId) void navigate({ to: "/chat", search: { thread: activeJob.threadId } });
+          else void navigate({ to: "/chat" });
           return;
         case "open-chat":
           void navigate({ to: "/chat" });

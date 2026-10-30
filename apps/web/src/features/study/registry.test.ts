@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { isStudyKind, SECTION_REGISTRY, visibleSections } from "./registry";
 
 describe("SECTION_REGISTRY", () => {
-  it("порядок фиксирован: Предметы, Оценки, Преподаватели, Аудитории, Новости, Документы, Подключения", () => {
+  it("порядок фиксирован: Предметы, Оценки, Преподаватели, Аудитории, Новости, Документы и вложения, Источники", () => {
     expect(SECTION_REGISTRY.map((def) => def.title)).toEqual([
       "Предметы",
       "Оценки",
       "Преподаватели",
       "Аудитории",
       "Новости",
-      "Документы",
-      "Подключения",
+      "Документы и вложения",
+      "Источники",
     ]);
   });
 
@@ -23,26 +23,23 @@ describe("SECTION_REGISTRY", () => {
 });
 
 describe("visibleSections", () => {
-  it("показывает только виды с данными, в порядке реестра, а «Подключения» — всегда", () => {
-    const result = visibleSections(
-      [
-        { kind: "news", count: 2 },
-        { kind: "courses", count: 6 },
-        { kind: "grades", count: 0 },
-        { kind: "scheduleEvents", count: 40 },
-        { kind: "deadlines", count: 7 },
-      ],
-      3,
-    );
+  it("показывает только виды с данными, в порядке реестра; «Источники» — не строка списка", () => {
+    const result = visibleSections([
+      { kind: "news", count: 2 },
+      { kind: "courses", count: 6 },
+      { kind: "grades", count: 0 },
+      { kind: "scheduleEvents", count: 40 },
+      { kind: "deadlines", count: 7 },
+      { kind: "documents", count: 3 },
+    ]);
     expect(result.map((row) => [row.def.kind, row.count])).toEqual([
       ["courses", 6],
       ["news", 2],
-      ["connections", 3],
+      ["documents", 3],
     ]);
   });
 
-  it("у пространства без данных остаётся только «Подключения»", () => {
-    expect(visibleSections([], 1).map((row) => row.def.kind)).toEqual(["connections"]);
-    expect(visibleSections([], 0).map((row) => row.def.kind)).toEqual(["connections"]);
+  it("у пространства без данных список разделов пуст", () => {
+    expect(visibleSections([])).toEqual([]);
   });
 });

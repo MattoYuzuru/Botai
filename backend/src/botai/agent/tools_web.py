@@ -3,27 +3,34 @@
 `browse_source` is a read-only GET to a page or JSON answer of a source the student connected,
 with the student's own session from the Vault, only to hosts of that source's allowlist. The
 session never leaves the Vault: the tool sees the page, not the cookie. A POST cannot be made
-here at all. `fetch_public_page` opens a public HTTPS page without any cookies, but only a link
-that the student wrote or that a public result returned, so the model cannot be talked into
-sending private data in a made-up address. Everything fetched is data inside `<source_data>`.
+here at all, and a GET is made only to an address the agent was shown or told: the source's own
+entry page and declared endpoints, its saved site map, links of pages it has already opened in
+this thread, and addresses the student wrote. `fetch_public_page` opens a public HTTPS page
+without any cookies, again only for a link that the student wrote or that a public result
+returned, so the model cannot be talked into sending private data in a made-up address.
+Everything fetched is data inside `<source_data>`, with credential-shaped values hidden.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
+import socket
 from dataclasses import replace
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from sqlalchemy import func, select
 
 from botai.agent import webtext
-from botai.agent.env import ChatEnv, clean, connection_link, document_link, spec
+from botai.agent.env import ChatEnv, clean, document_link, spec
+from botai.attachments import service as attachments
 from botai.core.errors import BotaiError
-from botai.db.models import Chunk, Document
+from botai.db.models import AdapterSpecRow, Attachment, Chunk, Connection, Document
 from botai.learn.addresses import url_origin
+from botai.learn.sitemap import get_site_map
 from botai.search.safety import chat_public_query
 from botai.sources.adapter import EndpointOutcome, SessionExpired, SyncContext
 from botai.sources.adapters.document import DocumentAdapter
@@ -38,15 +45,20 @@ MAX_BROWSES = 12  # per turn
 MAX_PUBLIC_PAGES = 6
 READ_CHARS = 8_000
 READ_CHARS_MAX = 20_000
+# What the address itself says it does: leaving, joining, confirming, cancelling, deleting. A GET
+# to such an address can change something on a careless site, so it is never made (matched on the
+# decoded path and query, so `/log%6Fut` is the same as `/logout`).
 _UNSAFE_GET = re.compile(
-    r"(?i)(log-?out|sign-?out|signoff|delete|remove|destroy|unsubscribe|revoke|deactivate)"
+    r"(?i)(?:^|[^a-z])(?:log-?out|sign-?out|sign-?off|exit|quit|delete|remove|destroy|"
+    r"unsubscribe|subscribe|enrol(?:l|ment)?|join|confirm|accept|approve|submit|cancel|revoke|"
+    r"deactivate|sesskey|act|action|do)(?:$|[^a-z])"
 )
 _URL_IN_TEXT = re.compile(r"https://[^\s<>\"'`)\]]+")
 _TRAILING = ".,;:!?»”…"
 
 
 def question_urls(text: str) -> set[str]:
-    """Links the student wrote in the current question; the only ones open to the model at once."""
+    """Links the student wrote in the current question."""
     return {
         webtext.normalize_url(m.group(0).rstrip(_TRAILING)) for m in _URL_IN_TEXT.finditer(text)
     }
@@ -60,7 +72,83 @@ def _count(env: ChatEnv, name: str, limit: int) -> bool:
 def _links_block(links: list[tuple[str, str]]) -> str:
     if not links:
         return ""
-    return "\nСсылки на странице:\n" + "\n".join(f"- {label} — {url}" for label, url in links)
+    return "\nСсылки на странице:\n" + "\n".join(
+        f"- {webtext.mask_text(label)} — {url}" for label, url in links
+    )
+
+
+def _decoded(url: str) -> str:
+    parts = urlsplit(url)
+    text = f"{parts.path}?{parts.query}"
+    for _ in range(3):  # a double-encoded verb is still a verb
+        unquoted = unquote(text)
+        if unquoted == text:
+            break
+        text = unquoted
+    return text
+
+
+def _path_key(url: str) -> str:
+    parts = urlsplit(url)
+    path = unquote(parts.path).rstrip("/") or "/"
+    return f"{parts.scheme}://{parts.netloc.lower()}{path}"
+
+
+def _route_matches(route: str, origin: str, url: str) -> bool:
+    """A saved route (`/courses/{id}` or `/schedule#/week`) against the path of an address."""
+    path = route.partition("#")[0] or "/"
+    pattern = "".join(
+        "[^/]+" if part == "{id}" else re.escape(part) for part in re.split(r"(\{id\})", path)
+    )
+    return re.fullmatch(pattern, _path_key(url).removeprefix(origin).rstrip("/") or "/") is not None
+
+
+async def _declared_pages(
+    env: ChatEnv, connection_id: str, url: str
+) -> tuple[bool, Connection | None]:
+    """Whether the source itself points at this address: its entry page, its declared endpoints,
+    its saved site map. Query values are free (another week, another page number)."""
+    async with env.services.db() as session:
+        conn = await session.scalar(
+            select(Connection).where(
+                Connection.id == connection_id, Connection.user_id == env.user_id
+            )
+        )
+        if conn is None:
+            return False, None
+        want = _path_key(url)
+        known = {_path_key(conn.origin + "/")}
+        if conn.entry_url:
+            known.add(_path_key(conn.entry_url))
+        recipe_paths: list[str] = []
+        if conn.spec_id:
+            row = await session.get(AdapterSpecRow, conn.spec_id)
+            recipe = (row.spec if row else {}).get("recipe") or {}
+            for endpoint in recipe.get("endpoints", []):
+                request = endpoint.get("request") or {}
+                if request.get("method", "GET") == "GET" and isinstance(request.get("path"), str):
+                    recipe_paths.append(request["path"])
+                ui = endpoint.get("uiUrl") or {}
+                if isinstance(ui.get("path"), str):
+                    recipe_paths.append(ui["path"])
+        known.update(_path_key(conn.origin + p.partition("?")[0]) for p in recipe_paths)
+        if want in known:
+            return True, conn
+        sitemap = await get_site_map(session, conn.origin)
+    routes = [
+        *(r for r in (sitemap or {}).get("routes", []) if isinstance(r, str)),
+        *(
+            n["path"]
+            for n in (sitemap or {}).get("navigation", [])
+            if isinstance(n, dict) and isinstance(n.get("path"), str)
+        ),
+        *(
+            e["path"]
+            for e in (sitemap or {}).get("endpoints", [])
+            if isinstance(e, dict) and isinstance(e.get("path"), str)
+        ),
+    ]
+    return any(_route_matches(r, conn.origin, url) for r in routes), conn
 
 
 # --- browse_source ------------------------------------------------------------------------------
@@ -75,18 +163,20 @@ def _needs_login(title: str) -> str:
 
 async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     connection_id = str(args.get("connection_id", "")).strip()
-    conn = (await env.titles()).get(connection_id)
-    if conn is None:
+    conn_meta = (await env.titles()).get(connection_id)
+    if conn_meta is None:
         return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
     url = webtext.normalize_url(str(args.get("url", "")))
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         return "Результат: не выполнено. Нужен обычный HTTPS-адрес страницы источника."
-    if _UNSAFE_GET.search(f"{parts.path}?{parts.query}"):
+    if _UNSAFE_GET.search(_decoded(url)):
         return (
-            "Результат: не выполнено. Адрес похож на действие (выход, удаление), а не на чтение "
-            "страницы; такие адреса не открываются."
+            "Результат: не выполнено. Адрес похож на действие (выход, запись, подтверждение, "
+            "удаление), а не на чтение страницы; такие адреса не открываются."
         )
+    if webtext.has_secret_address(url):
+        return "Результат: не выполнено. В адресе есть ключ сессии или токен; так страницы не открываются."
     if not _count(env, "browse", MAX_BROWSES):
         return (
             f"Результат: не выполнено. За один ответ можно открыть не больше {MAX_BROWSES} страниц."
@@ -96,8 +186,20 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     host = parts.hostname.lower()
     if host not in {h.lower() for h in info.allow_hosts}:
         return (
-            f"Результат: не выполнено. Адрес {host} не входит в разрешённые для «{conn.title}»; "
-            "открываются только страницы самого источника."
+            f"Результат: не выполнено. Адрес {host} не входит в разрешённые для "
+            f"«{conn_meta.title}»; открываются только страницы самого источника."
+        )
+    declared, _ = await _declared_pages(env, connection_id, url)
+    opened = (
+        declared
+        or _path_key(url) in {_path_key(u) for u in env.seen.source}
+        or url in env.question_links
+    )
+    if not opened:
+        return (
+            "Результат: не выполнено. Открываются страницы, на которые указывает сам источник: "
+            "его входная страница и карта разделов (site_map), ссылки уже открытых страниц "
+            "и адреса, которые написал студент. Начните с входной страницы источника."
         )
     state = await load_session(env.services.vault, env.user_id, connection_id)
     now = env.services.clock.now()
@@ -117,24 +219,23 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         async with SourceClient(sctx, auth_type="session") as client:
             response = await client.request("GET", url, auth_binding=binding)
     except SessionExpired:
-        return _needs_login(conn.title)
+        return _needs_login(conn_meta.title)
     except BotaiError as exc:
         return f"Результат: ошибка. {exc.detail}."
-    env.used.add("browse_source")
     if response.status_code >= 400:
         return f"Результат: ошибка. Источник ответил HTTP {response.status_code}."
     content_type = response.headers.get("content-type", "").lower()
+    links: list[tuple[str, str]] = []
     if "json" in content_type:
         body = webtext.json_text(response.content)
         if body is None:
             return "Результат: ошибка. Ответ объявлен как JSON, но не разобран."
         title = "JSON"
-        extra = ""
     elif "html" in content_type or response.content.lstrip()[:15].lower().startswith(b"<!doctype"):
         if webtext.has_login_form(response.content):
-            return _needs_login(conn.title)  # a site without 401 answers an expired session so
+            return _needs_login(conn_meta.title)  # a site without 401 answers an expired session so
         extracted = await asyncio.to_thread(extract, response.content, "html")
-        body = extracted.text[: webtext.TEXT_CHARS]
+        body = webtext.mask_text(extracted.text[: webtext.TEXT_CHARS])
         title = extracted.title or parts.path or host
         allowed = {h.lower() for h in info.allow_hosts}
         links = [
@@ -142,25 +243,107 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
             for label, link in webtext.page_links(response.content, url)
             if (urlsplit(link).hostname or "").lower() in allowed
         ]
-        extra = _links_block(links)
+        env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
     elif content_type.startswith("text/"):
-        body = response.text[: webtext.TEXT_CHARS]
+        body = webtext.mask_text(response.text[: webtext.TEXT_CHARS])
         title = parts.path or host
-        extra = ""
     else:
         return (
             f"Результат: не показано. Тип ответа {content_type or 'неизвестен'} читается не здесь."
         )
+    env.outside_read = True
     key = env.sources.add(
-        title=f"{conn.title}: {clean(title, 120)}", url=url, kind="page", fetched_at=now
+        title=f"{conn_meta.title}: {clean(title, 120)}", url=url, kind="page", fetched_at=now
     )
     return (
-        f"Страница источника «{conn.title}» {url} [{key}], получена сейчас сессией студента. "
-        f"Название: {clean(title, 160)}\n{body}{extra}"
+        f"Страница источника «{conn_meta.title}» {url} [{key}], получена сейчас сессией студента. "
+        f"Название: {webtext.mask_text(clean(title, 160))}\n{body}{_links_block(links)}"
     )
+
+
+# --- site_map -----------------------------------------------------------------------------------
+
+
+async def site_map(env: ChatEnv, args: dict[str, Any]) -> str:
+    connection_id = str(args.get("connection_id", "")).strip()
+    conn = (await env.titles()).get(connection_id)
+    if conn is None:
+        return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
+    async with env.services.db() as session:
+        row = await session.scalar(
+            select(Connection).where(
+                Connection.id == connection_id, Connection.user_id == env.user_id
+            )
+        )
+        sitemap = await get_site_map(session, row.origin) if row else None
+    if row is None:
+        return "Такого подключения у студента нет. Возьмите connection_id из list_universities."
+    lines = [
+        f"Карта разделов «{conn.title}» ({row.origin}). Адреса можно открыть через browse_source."
+    ]
+    if row.entry_url:
+        lines.append(f"Входная страница данных: {row.entry_url}")
+    if not sitemap:
+        lines.append("Карта пока не собрана: исследование источника её ещё не сохранило.")
+        return "\n".join(lines)
+    navigation = sitemap.get("navigation") or []
+    if navigation:
+        lines.append("Разделы:")
+        lines.extend(
+            f"- {webtext.mask_text(str(n.get('label', '')))} — {row.origin}{n.get('path', '')}"
+            for n in navigation
+            if isinstance(n, dict)
+        )
+    routes = [r for r in sitemap.get("routes") or [] if isinstance(r, str)]
+    if routes:
+        lines.append("Маршруты (`{id}` — подставляется нужное значение): " + ", ".join(routes[:40]))
+    endpoints = sitemap.get("endpoints") or []
+    if endpoints:
+        lines.append("Поиск и FAQ:")
+        lines.extend(
+            f"- {e.get('kind')}: {row.origin}{e.get('path', '')}"
+            + (f" (параметры: {', '.join(e.get('queryKeys') or [])})" if e.get("queryKeys") else "")
+            for e in endpoints
+            if isinstance(e, dict)
+        )
+    env.sources.add(
+        title=f"{conn.title}: карта разделов",
+        url=f"botai://connections/{connection_id}",
+        kind="connection",
+        fetched_at=None,
+    )
+    return "\n".join(lines)
 
 
 # --- fetch_public_page --------------------------------------------------------------------------
+
+
+def _www_pair(host: str) -> tuple[str, ...]:
+    """A site and its `www.` twin: the redirect between them stays on the same site."""
+    return (host, host[4:]) if host.startswith("www.") else (host, f"www.{host}")
+
+
+def _private_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return not ip.is_global or ip.is_multicast
+
+
+async def _resolve(host: str) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    return [str(info[4][0]) for info in infos]
+
+
+async def _resolves_to_public_hosts(hosts: tuple[str, ...]) -> bool:
+    """Without the egress proxy (a development box) nothing else keeps a page from naming a
+    private address: resolve first and refuse if any of the site's hosts is not a public one."""
+    for name in hosts:
+        try:
+            addresses = await _resolve(name)
+        except OSError:
+            continue  # it does not resolve: the fetch itself will say so
+        if any(_private_address(address) for address in addresses):
+            return False
+    return True
 
 
 async def fetch_public_page(env: ChatEnv, args: dict[str, Any]) -> str:
@@ -170,20 +353,29 @@ async def fetch_public_page(env: ChatEnv, args: dict[str, Any]) -> str:
     except BotaiError as exc:
         return f"Результат: не выполнено. {exc.detail}."
     url = webtext.normalize_url(raw)
-    if url not in env.public_urls:
+    if url not in env.question_links and url not in {
+        webtext.normalize_url(u) for u in env.seen.public
+    }:
         return (
             "Результат: не выполнено. Открываются только ссылки, которые написал студент в этом "
-            "вопросе, или ссылки из публичной выдачи и открытых публичных страниц."
+            "вопросе, или ссылки из публичной выдачи и открытых публичных страниц этого чата."
         )
     if not _count(env, "public_page", MAX_PUBLIC_PAGES):
-        return f"Результат: не выполнено. За один ответ можно открыть не больше {MAX_PUBLIC_PAGES} публичных страниц."
-    source, hosts = source_for_url(raw)
+        return (
+            f"Результат: не выполнено. За один ответ можно открыть не больше "
+            f"{MAX_PUBLIC_PAGES} публичных страниц."
+        )
+    source, _ = source_for_url(raw)
+    hosts = _www_pair(host)
+    proxied = bool(env.services.settings.egress_proxy_url)
+    if not proxied and env.transport is None and not await _resolves_to_public_hosts(hosts):
+        return "Результат: не выполнено. Адрес ведёт во внутреннюю сеть, а не на публичный сайт."
     now = env.services.clock.now()
     sctx = SyncContext(
         user_id=env.user_id,
         connection_id="",
         origin=f"https://{host}",
-        allow_hosts=tuple(hosts),
+        allow_hosts=hosts,
         now=now,
         vault=env.services.vault,
         proxy_url=env.services.settings.egress_proxy_url,
@@ -203,23 +395,33 @@ async def fetch_public_page(env: ChatEnv, args: dict[str, Any]) -> str:
         extracted = await asyncio.to_thread(extract, data, fmt)
     except BotaiError as exc:
         return f"Результат: не показано. {exc.detail}."
-    env.used.add("fetch_public_page")
+    env.outside_read = True
     links: list[tuple[str, str]] = []
     if fmt == "html":
         links = webtext.page_links(data, raw)
-        env.public_urls.update(webtext.normalize_url(link) for _, link in links)
+        env.seen.remember("public", (webtext.normalize_url(link) for _, link in links))
     title = extracted.title or urlsplit(raw).path or host
     key = env.sources.add(title=clean(title, 160), url=raw, kind="page", fetched_at=now)
     return (
         f"Недоверенная публичная страница {raw} [{key}], открыта без входа. "
-        f"Название: {clean(title, 160)}\n{extracted.text[: webtext.TEXT_CHARS]}{_links_block(links)}"
+        f"Название: {webtext.mask_text(clean(title, 160))}\n"
+        f"{webtext.mask_text(extracted.text[: webtext.TEXT_CHARS])}{_links_block(links)}"
     )
 
 
 # --- read_document ------------------------------------------------------------------------------
 
 
+def _slice(full: str, offset: int, limit: int) -> tuple[str, str]:
+    piece = full[offset : offset + limit]
+    end = offset + len(piece)
+    more = f" Дальше: offset={end}." if end < len(full) else " Это конец документа."
+    return piece, f"показано {offset}–{end}.{more}"
+
+
 async def read_document(env: ChatEnv, args: dict[str, Any]) -> str:
+    """A saved document of the student, or a file of a chat message (its text, once indexed or
+    straight from the file)."""
     document_id = str(args.get("document_id", "")).strip()
     offset = max(0, int(args.get("offset", 0) or 0))
     limit = max(500, min(int(args.get("max_chars", READ_CHARS) or READ_CHARS), READ_CHARS_MAX))
@@ -227,8 +429,51 @@ async def read_document(env: ChatEnv, args: dict[str, Any]) -> str:
         doc = await session.scalar(
             select(Document).where(Document.id == document_id, Document.user_id == env.user_id)
         )
-        if doc is None:
+        att = (
+            None
+            if doc is not None
+            else await session.scalar(
+                select(Attachment).where(
+                    Attachment.id == document_id, Attachment.user_id == env.user_id
+                )
+            )
+        )
+        if doc is None and att is not None and att.document_id:
+            doc = await session.get(Document, att.document_id)
+        if doc is None and att is None:
             return "Такого документа у студента нет. Возьмите document_id из результата поиска."
+        if doc is None and att is not None:
+            if att.kind != "document":
+                what = (
+                    "изображение"
+                    if att.kind == "image"
+                    else "аудио"
+                    if att.kind == "audio"
+                    else "файл"
+                )
+                return (
+                    f"Вложение «{clean(att.name, 120)}» — {what}: распознавание пока недоступно, "
+                    "прочитать содержимое я не могу. Скажите об этом студенту честно."
+                )
+            extract_ = await attachments.extract_text(session, env.user_id, att.id, 400_000)
+            if extract_.error:
+                return f"Вложение не прочитано: {extract_.error}."
+            full = extract_.text
+            if not full:
+                return f"В вложении «{clean(att.name, 120)}» нет текста."
+            piece, where = _slice(full, offset, limit)
+            key = env.sources.add(
+                title=att.name,
+                url=f"botai://attachments/{att.id}",
+                kind="document",
+                fetched_at=att.created_at,
+            )
+            env.outside_read = True
+            return (
+                f"Вложение «{clean(att.name, 160)}» botai://attachments/{att.id} [{key}]: "
+                f"{where}\n---\n{webtext.mask_text(piece)}"
+            )
+        assert doc is not None
         texts = list(
             await session.scalars(
                 select(Chunk.text)
@@ -241,22 +486,23 @@ async def read_document(env: ChatEnv, args: dict[str, Any]) -> str:
                 Chunk.document_id == doc.id, Chunk.user_id == env.user_id
             )
         )
-    full = "\n\n".join(texts)
-    piece = full[offset : offset + limit]
     if not texts:
-        return f"У документа «{doc.title}» пока нет прочитанного текста: индексация ещё идёт или не удалась."
+        return (
+            f"У документа «{clean(doc.title, 120)}» пока нет прочитанного текста: "
+            "индексация ещё идёт или не удалась."
+        )
+    full = "\n\n".join(texts)
+    piece, where = _slice(full, offset, limit)
     key = env.sources.add(
         title=doc.title,
         url=doc.url or document_link(doc.id),
         kind="page" if doc.kind == "page" else "document",
         fetched_at=doc.fetched_at,
     )
-    env.used.add("read_document")
-    end = offset + len(piece)
-    more = f" Дальше: offset={end}." if end < len(full) else " Это конец документа."
+    env.outside_read = True
     return (
-        f"Документ «{doc.title}» {document_link(doc.id)} [{key}]: знаков {int(total or 0)}, "
-        f"показано {offset}–{end}.{more}\n---\n{piece}"
+        f"Документ «{clean(doc.title, 160)}» {document_link(doc.id)} [{key}]: "
+        f"знаков {int(total or 0)}, {where}\n---\n{webtext.mask_text(piece)}"
     )
 
 
@@ -293,8 +539,8 @@ async def search_public_web(env: ChatEnv, args: dict[str, Any]) -> str:
         "не доказательство доступа к кабинету или личному расписанию. Страницы из выдачи "
         "можно открыть через fetch_public_page."
     ]
+    env.seen.remember("public", (webtext.normalize_url(hit.url) for hit in response.results))
     for hit in response.results:
-        env.public_urls.add(webtext.normalize_url(hit.url))
         key = env.sources.add(
             title=f"{hit.title} (поиск {hit.provider})",
             url=hit.url,
@@ -311,14 +557,23 @@ SPECS = {
     "browse_source": spec(
         "browse_source",
         "Прочитать страницу или JSON-ответ ПОДКЛЮЧЁННОГО источника вживую сессией студента: "
-        "только чтение (GET) и только адреса самого источника, например раздел, FAQ или другую "
-        "неделю расписания. Результат — недоверенный текст страницы со ссылками. Если сессия "
-        "истекла, вернёт needs_login: предложите войти (request_login).",
+        "только чтение (GET) и только страницы, на которые указывает сам источник — его входная "
+        "страница, карта разделов (site_map), ссылки уже открытых страниц и адреса из сообщения "
+        "студента. Для другой недели расписания или страницы меняйте значения в запросе той же "
+        "страницы. Результат — недоверенный текст страницы со ссылками. Если сессия истекла, "
+        "вернёт needs_login: предложите войти (request_login).",
         {
             "connection_id": {"type": "string"},
             "url": {"type": "string", "description": "HTTPS-адрес на хосте этого источника"},
         },
         ["connection_id", "url"],
+    ),
+    "site_map": spec(
+        "site_map",
+        "Сохранённая карта разделов подключённого источника: навигация, маршруты приложения, "
+        "поиск и FAQ. Адреса оттуда можно открыть через browse_source.",
+        {"connection_id": {"type": "string"}},
+        ["connection_id"],
     ),
     "fetch_public_page": spec(
         "fetch_public_page",
@@ -329,8 +584,9 @@ SPECS = {
     ),
     "read_document": spec(
         "read_document",
-        "Читать текст документа или вложения кусками: document_id из результата поиска или "
-        "ссылки botai://documents/…; offset и max_chars (до 20000) — для продолжения.",
+        "Читать текст документа или вложения сообщения кусками: document_id из результата поиска, "
+        "ссылки botai://documents/… или id вложения из контекста; offset и max_chars (до 20000) — "
+        "для продолжения.",
         {
             "document_id": {"type": "string"},
             "offset": {"type": "integer", "description": "С какого знака, по умолчанию 0"},
@@ -350,15 +606,15 @@ SPECS = {
 }
 STAGES = {
     "browse_source": "Открываю страницу источника",
+    "site_map": "Смотрю карту разделов",
     "fetch_public_page": "Открываю публичную страницу",
     "read_document": "Читаю документ",
     "search_public_web": "Ищу публичные источники",
 }
 IMPLS = {
     "browse_source": browse_source,
+    "site_map": site_map,
     "fetch_public_page": fetch_public_page,
     "read_document": read_document,
     "search_public_web": search_public_web,
 }
-
-__all__ = ["IMPLS", "SPECS", "STAGES", "connection_link", "question_urls"]

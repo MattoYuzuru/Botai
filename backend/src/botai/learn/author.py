@@ -213,11 +213,11 @@ async def author_kind(
     previous: dict[str, Any] | None = None,
     problem: str | None = None,
     verification_feedback: list[str] | None = None,
-    factory_v2: bool = False,
     request_facts: Mapping[str, ObservedRequest] | None = None,
     browser_plans: Mapping[str, object] | None = None,
     browser_plan_urls: Mapping[str, str] | None = None,
     time_zone: ZoneInfo | None = None,
+    observed_at: datetime | None = None,
 ) -> Authored:
     """Ask for candidates of one kind; lint each; retry once on a rejection or a broken answer.
     With `previous` (the endpoint that stopped working) it is a repair."""
@@ -239,7 +239,6 @@ async def author_kind(
             feedback,
             previous=previous,
             problem=problem,
-            factory_v2=factory_v2,
             request_facts=request_facts,
             browser_plans=browser_plans,
             browser_plan_urls=browser_plan_urls,
@@ -298,22 +297,23 @@ async def author_kind(
         good: list[Candidate] = []
         findings: list[str] = []
         for i, cand in enumerate(candidates):
-            if factory_v2:
-                try:
-                    compiled = compile_candidate(
-                        cand.endpoint,
-                        cand.bootstrap,
-                        origin=origin,
-                        request_facts=request_facts or {},
-                        browser_plans=browser_plans or {},
-                        browser_plan_urls=browser_plan_urls or {},
-                        now=now,
-                        time_zone=time_zone or ZoneInfo("Europe/Moscow"),
-                    )
-                except FactoryCompileError as exc:
-                    findings.append(f"вариант {i + 1}: {exc.code}")
-                    continue
-                cand = Candidate(kind, compiled.endpoint, compiled.bootstrap, compiled.auth)
+            try:
+                compiled = compile_candidate(
+                    cand.endpoint,
+                    cand.bootstrap,
+                    origin=origin,
+                    request_facts=request_facts or {},
+                    browser_plans=browser_plans or {},
+                    browser_plan_urls=browser_plan_urls or {},
+                    # date templates are certified against the day the browser asked, which
+                    # can differ from the day the candidate is compiled
+                    now=observed_at or now,
+                    time_zone=time_zone or ZoneInfo("Europe/Moscow"),
+                )
+            except FactoryCompileError as exc:
+                findings.append(f"вариант {i + 1}: {exc.code}")
+                continue
+            cand = Candidate(kind, compiled.endpoint, compiled.bootstrap, compiled.auth)
             spec = candidate_spec(
                 cand, origin=origin, revision=revision, now=now, digest=digest, index=i
             )

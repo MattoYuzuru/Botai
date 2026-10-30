@@ -8,6 +8,8 @@ import { api, call } from "@/api/client";
 import { isUnauthorized } from "@/api/errors";
 import { onDataReset, onQueueReset } from "@/features/auth/data-reset";
 import { jobManager } from "@/features/jobs/job-manager";
+import { clientId } from "@/lib/client-id";
+import { chatApi } from "./api";
 import { useChatJobs } from "./chat-jobs";
 import { Outbox, type OutboxDeps, type OutboxItem } from "./outbox";
 
@@ -35,24 +37,15 @@ export function createChatDeps(): OutboxDeps {
     now: () => Date.now(),
     online: () => navigator.onLine,
     currentUserId,
-    createThread: (spaceId) =>
-      call(api.POST("/api/v1/chat/threads", { body: { spaceId, title: null, purpose: "chat" } })),
-    postMessage: (threadId, text) =>
-      call(
-        api.POST("/api/v1/chat/threads/{thread_id}/messages", {
-          params: { path: { thread_id: threadId } },
-          body: { text },
-        }),
-      ),
-    listMessages: (threadId) =>
-      call(
-        api.GET("/api/v1/chat/threads/{thread_id}/messages", { params: { path: { thread_id: threadId } } }),
-      ),
+    createThread: (spaceId, clientRequestId) =>
+      chatApi.createThread({ spaceId, title: null, clientRequestId }),
+    postMessage: (threadId, post) => chatApi.postMessage(threadId, post),
+    listMessages: (threadId) => chatApi.messages(threadId),
     storage: safeStorage(),
     setTimer: (run, ms) => window.setTimeout(run, ms),
     clearTimer: (handle) => window.clearTimeout(handle as number),
-    newId: () =>
-      typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `m-${Date.now()}-${Math.random()}`,
+    // ULID: он же уходит на сервер как `clientMessageId` и `clientRequestId`.
+    newId: clientId,
   };
 }
 

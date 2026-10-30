@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEMO, type Scenario } from "@/mocks/db";
+import { hrefOf } from "@/test/data-fixtures";
 import { renderApp } from "@/test/render-app";
 import { createTestServer } from "@/test/server";
 
@@ -48,7 +49,9 @@ describe("вход и регистрация", () => {
     expect(router.state.location.pathname).toBe("/");
     const nav = screen.getByRole("navigation", { name: "Основная навигация" });
     expect(within(nav).getAllByRole("link")).toHaveLength(5);
-    expect(await screen.findByRole("link", { name: "Подключить вуз" })).toHaveAttribute("href", "/connect");
+    const link = hrefOf(await screen.findByRole("link", { name: "Подключить вуз" }));
+    expect(link.pathname).toBe("/chat");
+    expect(link.draft).toBeTruthy();
     expect(screen.getByText("Вузов пока нет")).toBeInTheDocument();
   });
 
@@ -115,7 +118,10 @@ describe("онбординг", () => {
     expect(screen.getByText(/в зашифрованном виде/)).toBeInTheDocument();
     expect(screen.getByText(/проходит через сервер BotAI/)).toBeInTheDocument();
     expect(screen.getByText(/обходить такие защиты мы не будем/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Подключить вуз" })).toHaveAttribute("href", "/connect");
+    expect(screen.getByRole("link", { name: "Подключить вуз" })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/^\/chat\?draft=/),
+    );
     expect(screen.getByRole("link", { name: "Позже" })).toHaveAttribute("href", "/");
   });
 
@@ -150,7 +156,8 @@ describe("каркас приложения", () => {
     for (const [name, title] of [
       ["Расписание", "Расписание"],
       ["Задания", "Задания"],
-      ["Чат", "Чат"],
+      // У чата заголовок — название открытого треда, а «Чат» стоит подписью под ним.
+      ["Чат", "Что сегодня по расписанию?"],
       ["Учёба", "Учёба"],
       ["Сегодня", "Сегодня"],
     ] as const) {
