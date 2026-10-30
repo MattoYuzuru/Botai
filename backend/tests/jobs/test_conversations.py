@@ -1251,7 +1251,7 @@ async def test_known_university_adds_connection_to_existing_owned_space(
                 Space(
                     id=second_space,
                     user_id=user,
-                    university_id=university_id,
+                    university_id=None,  # a user has one space per university: this is "materials"
                     title="Явное",
                     created_at=env.clock.now() - timedelta(days=1),
                 ),

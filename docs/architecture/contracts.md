@@ -225,8 +225,8 @@ type ActionProposal = {
 |---|---|
 | `POST /api/v1/auth/invite/redeem` | Активация приглашения |
 | `GET /api/v1/me` | Профиль, пространства, квоты |
-| `POST /api/v1/spaces` · `GET /api/v1/spaces` | Пространства вузов |
-| `POST /api/v1/spaces/{id}/connections` | Начать подключение (создаёт job) |
+| `POST /api/v1/spaces` · `GET /api/v1/spaces` | Пространство вуза студента (повтор возвращает то же, `200`) · все его вузы с `shortTitle` и `aliases` |
+| `GET /api/v1/spaces/{id}/connections` | Источники вуза: человеческий `title`, `kind`, `entryUrl`, `threadId`, `activeTask`. Источник создаёт агент в треде, а не REST |
 | `GET /api/v1/connections/{id}` · `DELETE` | Состояние, отключение |
 | `POST /api/v1/connections/{id}/login-session` | Открыть сессию входа (вернёт `wsUrl`) |
 | `POST /api/v1/connections/{id}/sync` | Ручная синхронизация |
@@ -234,7 +234,8 @@ type ActionProposal = {
 | `GET /api/v1/deadlines` · `/courses` · `/grades` · `/people` | Домен |
 | `POST /api/v1/chat/threads` · `POST /api/v1/chat/threads/{id}/messages` | Чат |
 | `POST /api/v1/chat/threads/{id}/answers` | Ответ на `AgentUiBlock` |
-| `POST /api/v1/documents` | Подключить таблицу/документ/ссылку |
+| `POST /api/v1/spaces/{id}/documents/url` · `/documents/upload` · `DELETE /api/v1/documents/{id}` | Подключить таблицу/документ/ссылку (в том числе Google по ссылке) или файл |
+| `POST /api/v1/attachments` · `GET /{id}` · `GET /{id}/content` · `DELETE /{id}` | Файлы чата до 20 МиБ: тип по байтам, отдача без исполнения HTML |
 | `POST /api/v1/actions/{id}/approve` · `/reject` | Write-действия |
 | `GET /api/v1/jobs/{id}/events` | SSE потока задания |
 | `GET /api/v1/usage` | Расход токенов и квота |

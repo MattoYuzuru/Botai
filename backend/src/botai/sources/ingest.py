@@ -1,17 +1,18 @@
 """User sources (priority 2): a link or an uploaded file becomes a `document` connection.
 
 The type of the file is detected from its bytes. Its text is split into chunks for full-text
-search. When it holds a table (an exam list, a deadline sheet), the agent proposes which columns
-mean what, asks the student about every column that is not clear and about how to find their rows
-(never guessing a student), shows what would be read, and only then saves a `document` spec. The
+search and stored at once: from that moment the document is found and read, whatever happens
+next. Only then, when it holds a table (an exam list, a deadline sheet), the agent proposes which
+columns mean what, asks the student about every column that is not clear and about how to find
+their rows (never guessing a student), shows what would be read, and saves a `document` spec. The
 model sees a redacted sample; free-form documents are not sent to a model at all.
+
+An uploaded file is an attachment (`attachments`): the job reads its bytes from there.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import ipaddress
 import logging
 from dataclasses import dataclass
@@ -19,8 +20,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import update
 
+from botai.attachments import service as attachments
 from botai.contracts.agent_ui import SummaryGroup
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import Handler
@@ -33,9 +34,10 @@ from botai.learn.lint import LintContext, lint_spec
 from botai.learn.prompting import FIELD_HELP
 from botai.learn.redact import Redactor
 from botai.learn.ui import Ui, describe, item, sample_of
-from botai.sources import schedule
+from botai.sources import normalize, public_links, schedule
 from botai.sources.adapter import EndpointOutcome, NeedsUserInput, Record, SyncContext
 from botai.sources.adapters.document import DocumentAdapter, LoadedDocument
+from botai.sources.documents import MAX_UPLOAD
 from botai.sources.factory import AdapterFactory
 from botai.sources.runner import (
     ConnInfo,
@@ -46,12 +48,10 @@ from botai.sources.runner import (
     set_connection,
 )
 from botai.sources.vocab import KIND_LABELS, TABLE_KINDS
+from botai.spaces import views
 
 log = logging.getLogger(__name__)
 
-UPLOAD_ORIGIN = "https://upload.botai.local"  # uploads have no host; the allowlist stays empty
-GOOGLE_HOST = "docs.google.com"
-MAX_UPLOAD = 8 * 1024 * 1024
 REFRESH_URL_MINUTES = 720
 PROFILE_KEYS = {
     "fullName": "fullName",
@@ -71,12 +71,12 @@ def source_for_url(url: str) -> tuple[dict[str, Any], list[str]]:
     """The `source` of a document spec and the hosts it may use, from a link."""
     parts = urlsplit(url.strip())
     host = (parts.hostname or "").lower()
-    if host == GOOGLE_HOST and "/spreadsheets/d/" in parts.path:
+    if host == public_links.GOOGLE_DOCS and "/spreadsheets/d/" in parts.path:
         kind = "google_sheet"
-    elif host == GOOGLE_HOST and "/document/d/" in parts.path:
+    elif host == public_links.GOOGLE_DOCS and "/document/d/" in parts.path:
         kind = "google_doc"
     else:
-        kind = "url"
+        kind = "url"  # a slide deck or a Drive file of Google are links like any other
     source: dict[str, Any] = {
         "kind": kind,
         "url": url.strip(),
@@ -121,6 +121,15 @@ class TableChoice:
     profile: dict[str, str]
 
 
+@dataclass(slots=True)
+class Published:
+    """What is known of a document after its text is stored (it is usable from then on)."""
+
+    spec: dict[str, Any]
+    loaded: LoadedDocument
+    sctx: SyncContext
+
+
 class Ingestor:
     def __init__(
         self,
@@ -133,35 +142,63 @@ class Ingestor:
         self.ctx, self.services = ctx, services
         self.ui = Ui(ctx, services.clock)
         self.transport, self.retry = transport, retry
+        self._attachment_id: str | None = None
+        self._published: Published | None = None
 
     async def _set(self, connection_id: str, **values: Any) -> None:
         await set_connection(self.services, connection_id, self.ctx.user_id, **values)
 
     async def run(self, connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.services.db() as db:
-            info = await load_conn_info(db, self.ctx.user_id, connection_id)
-        if info.status == "disabled":
-            return {"status": "skipped", "detail": "disabled"}
-        await self._set(connection_id, status="learning", clear_error=True)
+        self._attachment_id = str(payload.get("attachment_id") or "") or None
+        try:
+            async with self.services.db() as db:
+                info = await load_conn_info(db, self.ctx.user_id, connection_id)
+            if info.status == "disabled":
+                return {"status": "skipped", "detail": "disabled"}
+            await self._set(connection_id, status="learning", clear_error=True)
+            return await self._run(info, payload)
+        finally:
+            if self._attachment_id and self._published is None:
+                await self._mark_attachment("failed")
+
+    async def _run(self, info: ConnInfo, payload: dict[str, Any]) -> dict[str, Any]:
+        connection_id = info.connection_id
         try:
             return await self._ingest(info, payload)
         except (JobCancelled, asyncio.CancelledError):  # unanswered, or stopped by the student
-            await self._set(connection_id, status="draft")
+            await self._settle(info)
             raise
         except BotaiError as err:
-            await self.ui.say(f"Не получилось добавить документ: {err.detail or 'ошибка'}.")
+            lead = (
+                "Документ прочитан и доступен для поиска, но закончить его настройку не вышло"
+                if self._published
+                else "Не получилось добавить документ"
+            )
+            await self.ui.say(f"{lead}: {err.detail or 'ошибка'}.")
             await self._set(connection_id, status="error", error=(err.code.value, err.detail))
             return {"status": "error", "detail": err.code.value}
-        finally:
-            await self._strip_payload(payload)
 
-    async def _strip_payload(self, payload: dict[str, Any]) -> None:
-        """The uploaded bytes ride in the job payload; once read they are not kept there."""
-        if "content_b64" not in payload:
+    async def _settle(self, info: ConnInfo) -> None:
+        """A job that ends unanswered keeps a document that is already readable as a plain text
+        source; before that it leaves a draft."""
+        done = self._published
+        if done is not None:
+            try:
+                await self._save(info, done.spec, done.loaded, None, done.sctx)
+                return
+            except Exception:  # the document stays searchable either way
+                log.warning("ingest: finishing a text-only document failed", exc_info=True)
+        await self._set(info.connection_id, status="draft")
+
+    async def _mark_attachment(self, state: str, document_id: str | None = None) -> None:
+        if self._attachment_id is None:
             return
-        slim = {k: v for k, v in payload.items() if k != "content_b64"}
         async with self.services.db() as db, db.begin():
-            await db.execute(update(m.Job).where(m.Job.id == self.ctx.job_id).values(payload=slim))
+            att = await db.get(m.Attachment, self._attachment_id)
+            if att is not None and att.user_id == self.ctx.user_id:
+                att.ingest_state = state
+                if document_id is not None:
+                    att.document_id = document_id
 
     # --- the job -----------------------------------------------------------------------------
 
@@ -179,12 +216,7 @@ class Ingestor:
         sctx = context_for(svc, info, None, transport=self.transport, retry=self.retry)
         sctx.filename = str(payload.get("filename") or "") or None
         if source["kind"] == "upload":
-            try:
-                sctx.content = base64.b64decode(str(payload.get("content_b64", "")), validate=True)
-            except (binascii.Error, ValueError):
-                raise BotaiError(ErrorCode.VALIDATION, "Файл повреждён при передаче") from None
-            if not sctx.content or len(sctx.content) > MAX_UPLOAD:
-                raise BotaiError(ErrorCode.VALIDATION, "Файл пустой или больше 8 МБ")
+            sctx.content, sctx.filename = await self._attachment_bytes(payload)
         adapter = AdapterFactory().create(base_spec)
         assert isinstance(adapter, DocumentAdapter)
 
@@ -192,6 +224,8 @@ class Ingestor:
         raw = await adapter.fetch_bytes(sctx)
         if isinstance(raw, EndpointOutcome):
             await stage.finish("failed", "Файл по ссылке не скачался")
+            if raw.status in (401, 403):
+                raise BotaiError(ErrorCode.FORBIDDEN, public_links.PRIVATE_MESSAGE)
             code = (
                 ErrorCode.NOT_FOUND if raw.problem == "not_found" else ErrorCode.SOURCE_UNAVAILABLE
             )
@@ -201,19 +235,30 @@ class Ingestor:
         doc = loaded.document
         await stage.finish("ok", f"Тип: {loaded.format}; фрагментов для поиска: {len(doc.chunks)}")
 
+        # The text is searchable and readable from here on, before any question about a table.
+        spec: dict[str, Any] = {**base_spec, "format": loaded.format}
+        if not await self._publish(info, loaded):  # the source is gone or switched off meanwhile
+            return {"status": "skipped", "detail": "disabled"}
+        self._published = Published(spec, loaded, sctx)
+
         table: TableChoice | None = None
         if loaded.extracted.tables:
-            table = await self._table(info, loaded, payload.get("note"), sctx)
-
-        spec: dict[str, Any] = {**base_spec, "format": loaded.format}
+            await ui.say(
+                "Текст документа уже можно искать и читать. Теперь разберу таблицу в нём: "
+                "понадобятся ваши ответы."
+            )
+            try:
+                table = await self._table(info, loaded, payload.get("note"), sctx)
+            except BotaiError as err:  # the text stays; only the rows are given up
+                await ui.note("Таблицу как данные прочитать не удалось", err.detail, "failed")
         if table is not None:
-            spec["table"] = table.spec
+            spec = {**spec, "table": table.spec}
         verdict = lint_spec(
             spec,
             LintContext(
                 allowed_hosts=[
                     *info.allow_hosts,
-                    *([GOOGLE_HOST] if "google" in source["kind"] else []),
+                    *([public_links.GOOGLE_DOCS] if "google" in source["kind"] else []),
                 ],
                 observed=tables.all_data_cells(loaded.extracted),
             ),
@@ -227,6 +272,38 @@ class Ingestor:
             spec.pop("table")
             table = None
         return await self._save(info, spec, loaded, table, sctx)
+
+    async def _attachment_bytes(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+        attachment_id = str(payload.get("attachment_id") or "")
+        if not attachment_id:
+            raise BotaiError(ErrorCode.VALIDATION, "Не указан файл документа")
+        async with self.services.db() as db:
+            att = await attachments.get(db, self.ctx.user_id, attachment_id, with_data=True)
+            content, name = att.data, att.name
+        if not content or len(content) > MAX_UPLOAD:
+            raise BotaiError(ErrorCode.VALIDATION, "Файл пустой или больше 20 МБ")
+        return content, name
+
+    async def _publish(self, info: ConnInfo, loaded: LoadedDocument) -> bool:
+        """Stores the document, its text and its search fragments, in one short transaction.
+        False when nothing was stored because the source is gone or switched off."""
+        async with self.services.db() as db, db.begin():
+            conn = await db.get(m.Connection, info.connection_id)
+            if conn is None or conn.status == "disabled":
+                return False
+            document_id = await normalize.store_document(
+                db,
+                user_id=info.user_id,
+                space_id=info.space_id,
+                connection_id=info.connection_id,
+                doc=loaded.document,
+                now=self.services.clock.now(),
+            )
+            if self._attachment_id:
+                att = await db.get(m.Attachment, self._attachment_id)
+                if att is not None and att.user_id == info.user_id:
+                    att.document_id, att.ingest_state = document_id, "indexed"
+        return True
 
     # --- the table ---------------------------------------------------------------------------
 
@@ -405,11 +482,16 @@ class Ingestor:
             conn = await db.get(m.Connection, info.connection_id)
             if conn is not None and conn.status != "disabled":
                 conn.adapter, conn.spec_id, conn.spec_revision = "document", row.id, row.revision
-                conn.kind = "sheet" if doc.kind == "sheet" else "document"
-                if source["kind"] != "upload":
+                uploaded = source["kind"] == "upload"
+                conn.kind = "sheet" if doc.kind == "sheet" else "document" if uploaded else "doc"
+                if not uploaded:
                     conn.origin = f"https://{urlsplit(source['url']).hostname}"
-                if not conn.title or conn.title in {"Источник", "Документ"}:
-                    conn.title = doc.title[:120]
+                if (
+                    not conn.title
+                    or conn.title in views.KIND_TITLES.values()
+                    or views.looks_like_address(conn.title)
+                ):
+                    conn.title = views.source_title(kind=conn.kind, title=doc.title)
                 conn.status = "active"
         async with svc.db() as db:
             snap = await load_snapshot(db, info.user_id, info.connection_id)

@@ -10,7 +10,7 @@ from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
 from botai.db.session import DbSession
 from botai.sources import service
-from botai.sources.ingest import MAX_UPLOAD
+from botai.sources.documents import MAX_UPLOAD
 from botai.sources.schemas import DocumentFromUrl, DocumentOut, DocumentStarted
 
 router = APIRouter(prefix="/api/v1", tags=["sources"])
@@ -30,7 +30,7 @@ async def add_document_url(
     services: ServicesDep,
 ) -> DocumentStarted:
     """A link to a file, a page, or a link-shared Google document or sheet."""
-    return await service.start_url(session, services.queue, user.id, space_id, body)
+    return await service.start_url(session, user.id, space_id, body, now=services.clock.now())
 
 
 @router.post("/spaces/{space_id}/documents/upload", response_model=DocumentStarted, status_code=201)
@@ -42,17 +42,17 @@ async def upload_document(
     services: ServicesDep,
     note: Annotated[str | None, Form(max_length=1000)] = None,
 ) -> DocumentStarted:
-    """PDF, DOCX, XLSX, CSV, HTML or text, up to 8 MB."""
+    """PDF, DOCX, XLSX, CSV, HTML or text, up to 20 MiB."""
     data = await file.read(MAX_UPLOAD + 1)
     return await service.start_upload(
         session,
-        services.queue,
         user.id,
         space_id,
         filename=file.filename,
         content_type=file.content_type,
         data=data,
         note=note,
+        now=services.clock.now(),
     )
 
 

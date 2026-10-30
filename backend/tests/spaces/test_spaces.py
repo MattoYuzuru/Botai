@@ -118,11 +118,13 @@ async def test_create_space_learns_the_university(
     new_client: Make, tx_sessionmaker: Sm, clock: FrozenClock
 ) -> None:
     c, _ = await _login(new_client, tx_sessionmaker, clock, "a@example.com")
-    r = await c.post("/api/v1/spaces", json={"title": "  Высшая   школа экономики "})
+    r = await c.post("/api/v1/spaces", json={"title": "  Технологический   институт "})
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["title"] == "Высшая школа экономики"
-    assert body["universityId"] == universities.slugify("Высшая школа экономики")
+    assert body["title"] == "Технологический институт"
+    assert body["shortTitle"] == "ТИ"
+    assert body["aliases"] == []
+    assert body["universityId"] == universities.slugify("Технологический институт")
     assert 235 <= body["accentHue"] <= 345
     assert body["timeZone"] == "Europe/Moscow"
 
@@ -133,6 +135,20 @@ async def test_create_space_learns_the_university(
     assert uni.accent_verified is False
     assert uni.third_party_warning is None  # filled by the learning agent, not by us
     assert uni.origins == []
+
+
+async def test_a_university_known_by_its_short_name_gives_the_space_its_name(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
+) -> None:
+    await signup(client, tx_sessionmaker, clock)
+    r = await client.post("/api/v1/spaces", json={"title": "вышка"})
+    assert r.status_code == 201
+    body = r.json()
+    assert (body["title"], body["shortTitle"]) == ("НИУ ВШЭ", "НИУ ВШЭ")
+    assert "Высшая школа экономики" in body["aliases"]
+    assert "Вышка" in body["aliases"]
+    assert body["title"] not in body["aliases"]
+    assert (await client.get("/api/v1/spaces")).json()[0]["aliases"] == body["aliases"]
 
 
 async def test_a_second_student_of_the_same_university_shares_the_registry_row(
@@ -202,9 +218,9 @@ async def test_explicit_university_id(
     await signup(client, tx_sessionmaker, clock)
     known = (await client.post("/api/v1/spaces", json={"title": "Академия"})).json()["universityId"]
     ok = await client.post("/api/v1/spaces", json={"title": "Моя академия", "universityId": known})
-    assert ok.status_code == 201
+    assert ok.status_code == 200  # the student's space of this university already exists
     assert ok.json()["universityId"] == known
-    assert ok.json()["title"] == "Моя академия"
+    assert ok.json()["title"] == "Академия"
     missing = await client.post(
         "/api/v1/spaces", json={"title": "X", "universityId": "no-such-uni"}
     )
@@ -287,7 +303,6 @@ async def test_user_b_cannot_see_or_touch_user_a_spaces(
         ("DELETE", f"/api/v1/spaces/{sid}", {}),
         ("GET", f"/api/v1/spaces/{sid}/sections", {}),
         ("GET", f"/api/v1/spaces/{sid}/connections", {}),
-        ("POST", f"/api/v1/spaces/{sid}/connections", {"json": {"url": "https://x.example.org"}}),
     ):
         r = await b.request(method, path, **kwargs)
         assert r.status_code == 404, (method, path, r.status_code)

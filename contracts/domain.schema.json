@@ -51,8 +51,11 @@
         "id": { "$ref": "#/$defs/id" },
         "spaceId": { "$ref": "#/$defs/id" },
         "origin": { "type": "string", "pattern": "^https://[a-z0-9.-]+$" },
-        "kind": { "enum": ["lms", "schedule", "portal", "sheet", "document", "mail", "other"] },
+        "kind": {
+          "enum": ["portal", "lms", "schedule", "site", "sheet", "doc", "document", "calendar", "other"]
+        },
         "title": { "type": "string", "maxLength": 120 },
+        "entryUrl": { "type": ["string", "null"] },
         "status": {
           "enum": ["draft", "learning", "active", "syncing", "stale", "needs_reauth", "error", "disabled"]
         },

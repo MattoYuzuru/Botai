@@ -26,7 +26,7 @@ from botai.core.llm import ScriptedLlm
 from botai.core.queue import InMemoryJobQueue
 from botai.core.services import Services
 from botai.core.vault import generate_kek_b64, load_kek
-from botai.db.models import Connection, Space, User
+from botai.db.models import Connection, Space, University, User
 from botai.db.session import db_session
 from botai.main import create_app
 from botai.settings import Settings, get_settings
@@ -206,9 +206,24 @@ async def signup(
 
 
 async def make_space(sm: Sm, user_id: str, title: str = "Университет") -> str:
+    """A space of its own university (a user has at most one space per university)."""
     space_id = new_id()
     async with sm() as session:
-        session.add(Space(id=space_id, user_id=user_id, title=title))
+        session.add(
+            University(
+                id=f"uni-{space_id.lower()}",
+                title=title,
+                short_title=title[:16],
+                origins=[],
+                accent_hue=262.2,
+            )
+        )
+        await session.flush()
+        session.add(
+            Space(
+                id=space_id, user_id=user_id, university_id=f"uni-{space_id.lower()}", title=title
+            )
+        )
         await session.commit()
     return space_id
 

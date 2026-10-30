@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.ids import new_id
-from botai.db.models import Chunk, Connection, Document, Fact, Space
+from botai.db.models import Chunk, Connection, Document, Fact, Space, University
 from botai.domain.schemas import (
     DeadlineOut,
     GradeOut,
@@ -31,9 +31,23 @@ async def add_space(
     profile: dict[str, Any] | None = None,
 ) -> str:
     space_id = new_id()
+    university_id = f"uni-{space_id.lower()}"  # a user has at most one space per university
     async with sm() as session:
         session.add(
-            Space(id=space_id, user_id=user_id, title=title, time_zone=tz, profile=profile or {})
+            University(
+                id=university_id, title=title, short_title=title[:16], origins=[], accent_hue=262.2
+            )
+        )
+        await session.flush()
+        session.add(
+            Space(
+                id=space_id,
+                user_id=user_id,
+                university_id=university_id,
+                title=title,
+                time_zone=tz,
+                profile=profile or {},
+            )
         )
         await session.commit()
     return space_id
