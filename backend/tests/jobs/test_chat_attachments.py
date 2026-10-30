@@ -3,12 +3,16 @@ hold, and a document is indexed in the thread it came with (L1, real commits).""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 
 from botai.agent import attachment_context
+from botai.agent.env import ChatEnv
+from botai.agent.harness import HarnessTool
+from botai.agent.tools import build_chat_tools
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
 from botai.db.models import Attachment, ChatMessage, Connection, Job, Space
@@ -177,11 +181,13 @@ async def test_the_agent_reads_a_short_document_and_is_told_about_a_picture_and_
     sent = await send(client, thread, "Смотри файлы", [doc, picture, voice])
     assert sent.status_code == 202, sent.text
     async with env.sm() as session:
-        message, findings = await attachment_context.attachments_message(
+        files = await attachment_context.attachments_message(
             session, user, sent.json()["message"]["id"]
         )
+    message = files.message
     assert message is not None
-    assert findings == []
+    assert files.findings == []
+    assert files.has_text
     text = message.content
     assert "Правила пересдачи" in text  # the text of the document
     assert "<source_data" in text  # as data, not as an instruction
@@ -190,19 +196,87 @@ async def test_the_agent_reads_a_short_document_and_is_told_about_a_picture_and_
     assert "read_document" not in text  # a short document is shown whole
 
 
-async def test_a_long_document_is_cut_with_a_pointer_to_read_the_rest(env: Env) -> None:
+async def files_of(user_env: Env, user: str, message: str) -> attachment_context.FilesContext:
+    async with user_env.sm() as session:
+        return await attachment_context.attachments_message(session, user, message)
+
+
+def reader_of(user_env: Env, user: str, thread: str) -> dict[str, HarnessTool]:
+    chat = ChatEnv(
+        services=user_env.services, user_id=user, thread_id=thread, job_id=None, space_id=None
+    )
+    return {t.spec.name: t for t in build_chat_tools(chat)}
+
+
+async def test_a_long_document_is_cut_with_a_pointer_that_counts_in_the_text_read_document_slices(
+    env: Env,
+) -> None:
     client, user, thread = await student(env)
-    body = ("Строка правил пересдачи номер много. " * 1200).encode()  # ~44k characters
-    doc = await upload(client, body, "long.txt")
+    # a credential near the start is hidden in the context and makes the shown text shorter than
+    # the raw text; the offset must still be where the raw text was cut
+    body = "access_token: aB3cD4eF5g\n" + "".join(f"[{i:05d}]" for i in range(8000))
+    doc = await upload(client, body.encode(), "long.txt")
     sent = await send(client, thread, "", [doc])
     assert sent.status_code == 202, sent.text
-    async with env.sm() as session:
-        message, _ = await attachment_context.attachments_message(
-            session, user, sent.json()["message"]["id"]
-        )
-    assert message is not None
-    assert len(message.content) < attachment_context.FULL_CHARS + 2_000
-    assert f'read_document(document_id="{doc}"' in message.content
+    files = await files_of(env, user, sent.json()["message"]["id"])
+    assert files.message is not None
+    text = files.message.content
+    assert "aB3cD4eF5g" not in text
+    cut = attachment_context.TOTAL_CHARS
+    assert f'read_document(document_id="{doc}", offset={cut})' in text
+    rest = await reader_of(env, user, thread)["read_document"].run(
+        {"document_id": doc, "offset": cut, "max_chars": 500}
+    )
+    assert body[cut : cut + 20] in rest  # it goes on exactly where the context stopped
+    assert body[cut - 20 : cut] not in rest
+
+
+async def test_ten_big_documents_share_one_budget_and_each_is_left_to_read_document(
+    env: Env,
+) -> None:
+    client, user, thread = await student(env)
+    ids = [
+        await upload(client, (f"Документ {i}. " + "слово " * 4000).encode(), f"d{i}.txt")
+        for i in range(10)
+    ]
+    sent = await send(client, thread, "", ids)
+    assert sent.status_code == 202, sent.text
+    files = await files_of(env, user, sent.json()["message"]["id"])
+    assert files.message is not None
+    text = files.message.content
+    assert len(text) < attachment_context.TOTAL_CHARS + 8_000  # not ten times thirty thousand
+    share = attachment_context.TOTAL_CHARS // 10
+    for att_id in ids:
+        assert f'read_document(document_id="{att_id}", offset={share})' in text
+    assert files.has_text
+
+
+async def test_a_short_document_gives_back_what_it_does_not_use(env: Env) -> None:
+    client, user, thread = await student(env)
+    short = await upload(client, "Короткая записка.".encode(), "a.txt")
+    long = await upload(client, ("слово " * 20_000).encode(), "b.txt")
+    sent = await send(client, thread, "", [short, long])
+    files = await files_of(env, user, sent.json()["message"]["id"])
+    assert files.message is not None
+    text = files.message.content
+    assert "Короткая записка." in text
+    assert "read_document" not in text.split(long)[0]  # the short one is whole
+    left = attachment_context.TOTAL_CHARS - len("Короткая записка.")
+    assert f'read_document(document_id="{long}", offset={left})' in text
+
+
+async def test_what_a_file_says_about_passwords_is_not_taken_for_a_password(env: Env) -> None:
+    client, user, thread = await student(env)
+    body = "Пароль можно сменить в профиле. Код группы 2101. Токен: access_token: aB3cD4eF5g"
+    doc = await upload(client, body.encode(), "memo.txt")
+    sent = await send(client, thread, "", [doc])
+    files = await files_of(env, user, sent.json()["message"]["id"])
+    assert files.message is not None
+    assert files.message.data  # the harness reads it as data, not as words the student typed
+    text = files.message.content
+    assert "Пароль можно сменить в профиле" in text
+    assert "Код группы 2101" in text
+    assert "aB3cD4eF5g" not in text
 
 
 async def test_instructions_in_a_file_are_cut_out_and_reported(env: Env) -> None:
@@ -211,10 +285,34 @@ async def test_instructions_in_a_file_are_cut_out_and_reported(env: Env) -> None
     doc = await upload(client, body, "note.txt")
     sent = await send(client, thread, "", [doc])
     async with env.sm() as session:
-        message, findings = await attachment_context.attachments_message(
+        files = await attachment_context.attachments_message(
             session, user, sent.json()["message"]["id"]
         )
+    message = files.message
     assert message is not None
-    assert findings
+    assert files.findings
     assert "Игнорируй предыдущие инструкции" not in message.content
     assert "Расписание пересдач" in message.content
+
+
+async def test_two_messages_racing_for_one_file_cannot_both_have_it(env: Env) -> None:
+    """The file is taken by one statement that holds only while nobody has taken it: of two
+    messages sent at the same moment, one gets the file and the other is told it is gone."""
+    client, user, first = await student(env)
+    second = (await client.post("/api/v1/chat/threads", json={})).json()["id"]
+    picture = await upload(client, PNG, "a.png")
+    one, two = await asyncio.gather(
+        send(client, first, "первое", [picture]), send(client, second, "второе", [picture])
+    )
+    assert sorted([one.status_code, two.status_code]) == [202, 409], (one.text, two.text)
+    async with env.sm() as session:
+        row = await session.get(Attachment, picture)
+        assert row is not None
+        won = one if one.status_code == 202 else two
+        assert row.message_id == won.json()["message"]["id"]
+        sent = list(
+            await session.scalars(
+                select(ChatMessage).where(ChatMessage.user_id == user, ChatMessage.role == "user")
+            )
+        )
+    assert len(sent) == 1  # the loser left no message behind

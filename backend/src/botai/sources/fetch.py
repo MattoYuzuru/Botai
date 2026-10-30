@@ -7,7 +7,7 @@ connection was not granted.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urlsplit
@@ -61,8 +61,10 @@ class SourceClient:
         use_session: bool = True,
         headers: Mapping[str, str] | None = None,
         follow_redirects: bool = True,
+        request_guard: Callable[[httpx.Request], Awaitable[None]] | None = None,
     ) -> None:
         self._ctx = ctx
+        self._request_guard = request_guard
         self._follow_redirects = follow_redirects
         self._requests = 0
         self._auth_type = auth_type
@@ -110,6 +112,9 @@ class SourceClient:
         )
         self._client.follow_redirects = self._follow_redirects
         self._client.event_hooks["request"].append(self._scope_credentials)
+        if self._request_guard is not None:
+            # Runs for the first request and for every redirect hop, before it leaves.
+            self._client.event_hooks["request"].append(self._request_guard)
         await self._client.__aenter__()
         return self
 

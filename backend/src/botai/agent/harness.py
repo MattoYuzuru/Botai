@@ -155,6 +155,7 @@ class HarnessResult:
     tool_calls: list[ToolRecord] = field(default_factory=list)
     findings: list[InjectionFinding] = field(default_factory=list)
     blocked_calls: int = 0  # calls to tools that do not exist for this purpose
+    overflow: bool = False  # the request did not fit the input limit even before a step
 
     @property
     def total_tokens(self) -> int:
@@ -192,7 +193,9 @@ def _scrub_messages(messages: Sequence[LlmMessage], *, keep_reasoning: bool) -> 
     for m in messages:
         update: dict[str, Any] = {}
         if m.role != "system" and m.content:
-            update["content"] = scrub_secrets(m.content, typed_by_user=m.role == "user")
+            update["content"] = scrub_secrets(
+                m.content, typed_by_user=m.role == "user" and not m.data
+            )
         if not keep_reasoning and m.reasoning_content is not None:
             update["reasoning_content"] = None
         out.append(m.model_copy(update=update) if update else m)
@@ -367,6 +370,7 @@ async def run(
             if limit is not None and not _fit_input(convo, tools_tokens, limit):
                 if step == 0:
                     result.stopped = "budget"  # the question itself does not fit
+                    result.overflow = True
                     break
                 # Old results were already dropped and it is still too much: answer with what is
                 # known instead of ending the turn without a word.

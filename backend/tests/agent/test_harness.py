@@ -207,6 +207,7 @@ async def test_step_budget_stops_the_loop_and_warns_the_model_on_the_last_step()
     )
     res = await run_chat(llm, [tool("t")])
     assert res.stopped == "budget"
+    assert not res.overflow
     assert res.steps == steps == len(llm.requests)
     assert llm.requests[-1].messages[-1].content == WRAP_UP_NOTE
     assert not any(m.content == WRAP_UP_NOTE for m in llm.requests[0].messages)
@@ -227,6 +228,7 @@ async def test_input_budget_stops_before_sending_an_oversized_request() -> None:
     llm = ScriptedLlm(queue=[answer()])
     res = await run_chat(llm, [], ask("слово " * 80_000))
     assert res.stopped == "budget"
+    assert res.overflow  # told apart from running out of steps: no step was made
     assert llm.requests == []
 
 

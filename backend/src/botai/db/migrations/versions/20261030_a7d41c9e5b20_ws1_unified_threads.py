@@ -1,7 +1,7 @@
 """One conversation kind: threads lose purpose/connect_context and gain read state; agent memory.
 
 Downgrade restores the columns but not their values: every thread comes back as a plain chat
-without a connection context.
+without a connection context, and the cancelled tasks stay cancelled.
 
 Revision ID: a7d41c9e5b20
 Revises: b5d1c8e7a42f
@@ -69,6 +69,17 @@ def upgrade() -> None:
         ["thread_id"],
         ["id"],
         ondelete="SET NULL",
+    )
+    # Two kinds of task no longer exist as such: the learning job (its work is a step of CONNECT
+    # now) and a connect task that was never attached to a source (it asked which site to connect).
+    # A worker that still found one in the queue would fail it; they end as cancelled instead.
+    op.execute(
+        sa.text(
+            "UPDATE jobs SET state = 'cancelled', finished_at = now(), "
+            "locked_by = NULL, locked_at = NULL "
+            "WHERE state IN ('queued', 'running', 'waiting_user') "
+            "AND (kind = 'learn' OR (kind = 'connect' AND connection_id IS NULL))"
+        )
     )
     op.create_table(
         "user_memory",

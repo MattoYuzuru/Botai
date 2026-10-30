@@ -6,7 +6,10 @@ Three small, deterministic defences used by the harness around every tool result
 * `mask_injections` - sentences that address the assistant (override the rules, exfiltrate a
   token) are cut out before the model sees them, and reported so that the caller can write the
   `injection_blocked` audit record and tell the student;
-* `scrub_secrets` - password/cookie/token shaped strings never reach the model (NFR-004).
+* `scrub_secrets` - password/cookie/token shaped strings never reach the model (NFR-004), by
+  shape (Bearer, JWT, cookie lines) and by name: the value after a key that names a credential
+  (`access_token: …`, `"sesskey":"…"`, `var sesskey = '…'`, `MoodleSession=…`) is hidden
+  however short it is, and so is a whole object or list under such a key.
 
 These are defence in depth. The structural guarantees are elsewhere: the chat agent has read-only
 tools, no arbitrary outbound address, and a separate public-query gate before search (T5).
@@ -15,6 +18,7 @@ tools, no arbitrary outbound address, and a separate public-query gate before se
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from dataclasses import dataclass
 
@@ -64,28 +68,162 @@ _STRUCTURAL_RULES: _Rules = (
 
 # Natural-language secrets: only for text the student typed (a document may legitimately say
 # "the password can be changed in the profile").
-_NATURAL_RULES: _Rules = (
-    (re.compile(r"(?i)\b(парол\w*|password|passwd|pwd)\b\s*[:=—-]?\s*\S+"), rf"\1: {HIDDEN}"),
-    (
-        re.compile(
-            r"(?i)\b(код\w*|code|otp|смс|sms|одноразов\w+|пин|pin)\b[^\n\d]{0,16}\b\d{4,8}\b"
-        ),
-        rf"\1 {HIDDEN}",
-    ),
+_PASSWORD_RULE = (
+    re.compile(r"(?i)\b(парол\w*|password|passwd|pwd)\b\s*[:=—-]?\s*\S+"),
+    rf"\1: {HIDDEN}",
+)
+_CODE_RULE = (
+    re.compile(r"(?i)\b(код\w*|code|otp|смс|sms|одноразов\w+|пин|pin)\b[^\n\d]{0,16}\b\d{4,8}\b"),
+    rf"\1 {HIDDEN}",
+)
+# The same without the bare words "код"/"code": "Код группы 2101" is a fact, "код из смс 4242" is not.
+_ONE_TIME_RULE = (
+    re.compile(r"(?i)\b(otp|смс|sms|одноразов\w+|пин|pin)\b[^\n\d]{0,16}\b\d{4,8}\b"),
+    rf"\1 {HIDDEN}",
 )
 
+# --- names that mean a credential --------------------------------------------------------------
 
-def scrub_secrets(text: str, *, typed_by_user: bool = False) -> str:
-    """Mask password/cookie/token shaped strings (Bearer, JWT, cookie lines, `token=…`).
+NOT_SECRET, WEAK, STRONG = 0, 1, 2
 
-    With `typed_by_user` also "пароль: …" and one-time codes, which a student may paste by mistake.
+_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+_STRONG_WORDS = frozenset(
+    {
+        "token", "tokens", "secret", "secrets", "password", "passwords", "passwd", "passphrase",
+        "passcode", "pwd", "credential", "credentials", "cookie", "cookies", "bearer", "jwt",
+        "csrf", "xsrf", "sesskey", "sessid", "sessionid", "sessionkey", "phpsessid", "jsessionid",
+        "sid", "otp", "pin", "authorization", "apikey", "signature",
+    }
+)  # fmt: skip
+_STRONG_PAIRS = frozenset(
+    {
+        ("api", "key"), ("private", "key"), ("access", "key"), ("secret", "key"),
+        ("session", "id"), ("session", "key"), ("session", "token"), ("auth", "key"),
+    }
+)  # fmt: skip
+_WEAK_WORDS = frozenset({"session", "sessions", "sess", "key", "auth"})
+
+
+def key_class(name: str) -> int:
+    """Whether a field name means a credential: STRONG (its whole value is hidden, an object or a
+    list too), WEAK (a plain value is hidden: `session`, `sortKey`), or NOT_SECRET. Whole words
+    only: `Tokenization` and `authors` are not credentials, `access_token` and `userSid` are."""
+    words = [w.lower() for w in _WORD.findall(name)]
+    if not words:
+        return NOT_SECRET
+    if any(w in _STRONG_WORDS for w in words) or any(
+        pair in _STRONG_PAIRS for pair in itertools.pairwise(words)
+    ):
+        return STRONG
+    if words[-1] == "auth":
+        return STRONG
+    return WEAK if any(w in _WEAK_WORDS for w in words) else NOT_SECRET
+
+
+_KEY_VALUE = re.compile(
+    r"(?<![\w.\-])(?P<kq>[\"']?)(?P<key>[A-Za-z_][\w.\-]{0,63})(?P=kq)(?P<sep>[ \t]*[:=][ \t]*)"
+)
+_BARE_VALUE = re.compile(
+    r"(?:(?:Bearer|Basic|Token)[ \t]+)?(?:\[скрыто\]|[^\s,;&<>\"'`)\]}]+)", re.IGNORECASE
+)
+# `{"name": "csrf_token", "value": "…"}` and `name="csrf" value="…"`: the name sits beside the value.
+_NAMED_PAIR = re.compile(
+    r"(?P<head>\b(?:name|key|field|header|param)[\"']?[ \t]*[:=][ \t]*[\"'](?P<name>[\w.\-]{1,64})[\"']"
+    r"[ \t,;]*[\"']?(?:value|val|content)[\"']?[ \t]*[:=][ \t]*)"
+    r"(?P<value>\[скрыто\]|\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+    re.IGNORECASE,
+)
+_MAX_NESTED = 4_000
+
+
+def _value_end(text: str, start: int) -> int:
+    """Where the value that begins at `start` ends: a quoted string, a balanced object or list, or
+    a bare word. `start` itself when there is no value."""
+    if start >= len(text):
+        return start
+    if text.startswith(HIDDEN, start):
+        return start + len(HIDDEN)
+    ch = text[start]
+    if ch in "\"'":
+        i = start + 1
+        while i < len(text) and text[i] != ch and text[i] != "\n":
+            i += 2 if text[i] == "\\" else 1
+        return min(i + 1, len(text)) if i < len(text) and text[i] == ch else i
+    if ch in "{[":
+        depth, quote, i = 0, "", start
+        limit = min(len(text), start + _MAX_NESTED)
+        while i < limit:
+            c = text[i]
+            if quote:
+                if c == "\\":
+                    i += 1
+                elif c == quote:
+                    quote = ""
+            elif c in "\"'":
+                quote = c
+            elif c in "{[":
+                depth += 1
+            elif c in "}]":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        end = text.find("\n", start)
+        return len(text) if end < 0 else end  # not closed: the rest of the line
+    bare = _BARE_VALUE.match(text, start)
+    return bare.end() if bare else start
+
+
+def _mask_key_values(text: str) -> str:
+    """`key: value`, `key = value`, `"key":"value"` for a key that names a credential."""
+    if not any(sep in text for sep in ":="):
+        return text
+    out: list[str] = []
+    last = 0
+    for m in _KEY_VALUE.finditer(text):
+        if m.start() < last:
+            continue  # inside a value that is already hidden
+        cls = key_class(m.group("key"))
+        if cls == NOT_SECRET:
+            continue
+        sep = m.group("sep")
+        # Prose says "Session: Lecture"; code and cookies say `session=…` or `"session":"…"`.
+        if cls == WEAK and "=" not in sep and not m.group("kq"):
+            continue
+        end = _value_end(text, m.end())
+        if end == m.end():
+            continue
+        out.append(text[last : m.end()])
+        out.append(HIDDEN)
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _mask_named_pairs(text: str) -> str:
+    def hide(m: re.Match[str]) -> str:
+        return m.group("head") + HIDDEN if key_class(m.group("name")) else m.group(0)
+
+    return _NAMED_PAIR.sub(hide, text)
+
+
+def scrub_secrets(text: str, *, typed_by_user: bool = False, codes: bool = True) -> str:
+    """Mask password/cookie/token shaped strings (Bearer, JWT, cookie lines, `token=…`, the value of
+    a credential-named field).
+
+    With `typed_by_user` also "пароль: …" and one-time codes, which a student may paste by mistake;
+    `codes=False` leaves the bare words "код"/"code" alone ("Код группы 2101").
     """
     out = redact(text)  # Bearer … and JWTs
     assert isinstance(out, str)
-    rules = (*_STRUCTURAL_RULES, *_NATURAL_RULES) if typed_by_user else _STRUCTURAL_RULES
+    rules = list(_STRUCTURAL_RULES)
+    if typed_by_user:
+        rules.append(_PASSWORD_RULE)
+        rules.append(_CODE_RULE if codes else _ONE_TIME_RULE)
     for pattern, replacement in rules:
         out = pattern.sub(replacement, out)
-    return out.replace(REDACTED, HIDDEN)
+    out = out.replace(REDACTED, HIDDEN)
+    return _mask_named_pairs(_mask_key_values(out))
 
 
 # --- injections ---------------------------------------------------------------------------------

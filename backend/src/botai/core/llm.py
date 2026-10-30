@@ -36,6 +36,10 @@ class LlmMessage(BaseModel):
     # DeepSeek thinking mode: with tools, reasoning_content of every previous assistant turn
     # must be sent back, otherwise the API returns 400 (docs/architecture/agent-harness.md §1).
     reasoning_content: str | None = None
+    # Put together by us from stored data (the turn context, a summary, the text of a file):
+    # third-party words inside, and nothing the student typed. The harness hides credential
+    # shapes in it but does not read «пароль можно сменить в профиле» as a pasted password.
+    data: bool = False
 
 
 class LlmTool(BaseModel):

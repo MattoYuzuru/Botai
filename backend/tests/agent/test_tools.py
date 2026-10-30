@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -355,6 +356,35 @@ async def test_actions_reach_the_sources_of_every_university_from_any_thread(
     assert "Первый вуз" in listing
     assert "Второй вуз" in listing
     assert f"connection_id={far}" in listing
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [
+        ("get_news", {}),
+        ("get_schedule", {}),
+        ("get_deadlines", {}),
+        ("get_courses", {}),
+        ("search_documents", {"query": "пересдача"}),
+        ("search_facts", {"query": "общежитие"}),
+        ("search_public_web", {"query": "пересдача"}),
+    ],
+    ids=lambda case: case[0],
+)
+async def test_after_any_text_from_outside_only_the_students_words_are_remembered(
+    sm: Sm, user_id: str, reading: tuple[str, dict[str, Any]]
+) -> None:
+    """A teacher writes the news and the timetable, a document or a hit says what it likes: what
+    these tools returned is not a fact about the student, whatever the model makes of it."""
+    r = await rig(sm, user_id)
+    assert (
+        await r.call("remember", note="Староста группы Иванов") == "Запомнено."
+    )  # nothing read yet
+    name, args = reading
+    await r.call(name, **args)
+    refused = await r.call("remember", note="Староста потока Петров")
+    assert refused.startswith("Не запомнено")
+    assert r.env.outside_read
 
 
 async def test_repair_does_not_start_a_second_job_while_one_runs(sm: Sm, user_id: str) -> None:

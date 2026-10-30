@@ -115,6 +115,25 @@ async def thread_outs(
             )
         )
     }
+    # A source whose saved login stopped working waits for the student in the thread of its
+    # newest task, even though no task is running there.
+    awaiting_login = {
+        thread_id
+        for thread_id in await session.scalars(
+            select(Job.thread_id)
+            .where(
+                Job.user_id == user_id,
+                Job.thread_id.is_not(None),
+                Job.connection_id.in_(
+                    select(Connection.id).where(
+                        Connection.user_id == user_id, Connection.status == "needs_reauth"
+                    )
+                ),
+            )
+            .ext(distinct_on(Job.connection_id))
+            .order_by(Job.connection_id, Job.created_at.desc(), Job.id.desc())
+        )
+    }
     outs: list[ThreadOut] = []
     for thread in threads:
         jobs = in_flight.get(thread.id, [])
@@ -127,6 +146,8 @@ async def thread_outs(
             attention = "waiting_user"
         elif jobs:
             attention = "running"
+        elif thread.id in awaiting_login:
+            attention = "waiting_user"
         elif (
             failed is not None
             and failed.state == "failed"

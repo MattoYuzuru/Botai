@@ -63,6 +63,11 @@ async def test_thread_migration_backfills_read_state_and_can_roll_back(database_
             "INSERT INTO jobs (id,user_id,kind,state,thread_id,payload,attempts,run_after) VALUES "
             "('j-ok','u1','connect','done','t-old','{}',0,now()),"
             "('j-lost','u1','connect','done','t-gone','{}',0,now())",
+            "INSERT INTO jobs (id,user_id,kind,state,payload,attempts,run_after) VALUES "
+            "('j-learn','u1','learn','queued','{}',0,now()),"
+            "('j-learn-done','u1','learn','done','{}',0,now()),"
+            "('j-bare-connect','u1','connect','waiting_user','{}',0,now()),"
+            "('j-sync','u1','sync','queued','{}',0,now())",
         ):
             await execute(sql)
         await asyncio.to_thread(command.upgrade, cfg, REVISION)
@@ -81,9 +86,21 @@ async def test_thread_migration_backfills_read_state_and_can_roll_back(database_
             ("{}",)
         ]
         # a task keeps its thread; one that pointed at nothing is detached instead of failing
-        assert await execute("SELECT id, thread_id FROM jobs ORDER BY id") == [
+        assert await execute(
+            "SELECT id, thread_id FROM jobs WHERE id IN ('j-ok','j-lost') ORDER BY id"
+        ) == [
             ("j-lost", None),
             ("j-ok", "t-old"),
+        ]
+        # leftovers of the removed kinds are cancelled; finished work and other kinds are not touched
+        assert await execute(
+            "SELECT id, state, finished_at IS NOT NULL FROM jobs "
+            "WHERE id IN ('j-learn','j-learn-done','j-bare-connect','j-sync') ORDER BY id"
+        ) == [
+            ("j-bare-connect", "cancelled", True),
+            ("j-learn", "cancelled", True),
+            ("j-learn-done", "done", False),
+            ("j-sync", "queued", False),
         ]
         assert await columns("user_memory") == {"id", "user_id", "note", "created_at"}
         await execute(

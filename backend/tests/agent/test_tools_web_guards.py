@@ -76,10 +76,13 @@ async def test_only_pages_the_source_points_at_are_opened(
     assert r.spy.requests == []
     # the entry page is the source's own; its links become openable, others do not
     await r.call("browse_source", connection_id=r.conn_id, url=ENTRY)
-    opened = await r.call(
-        "browse_source", connection_id=r.conn_id, url="https://fakeuni.test/news?page=2"
-    )
+    opened = await r.call("browse_source", connection_id=r.conn_id, url="https://fakeuni.test/news")
     assert not opened.startswith("Результат: не выполнено")
+    # a link as the page showed it, not the same page with other parameters
+    other_query = "https://fakeuni.test/news?page=2&sort=old"
+    assert (await r.call("browse_source", connection_id=r.conn_id, url=other_query)).startswith(
+        "Результат: не выполнено"
+    )
     assert (await r.call("browse_source", connection_id=r.conn_id, url=undeclared)).startswith(
         "Результат: не выполнено"
     )
@@ -108,6 +111,22 @@ async def test_only_pages_the_source_points_at_are_opened(
         "/x?do=remove",
         "/x?action=confirm",
         "/account/sign-out",
+        # words glued by case or underscore are still words
+        "/api/deleteItem",
+        "/doLogout",
+        "/user/logoutAll",
+        "/log_out",
+        "/cancelBooking/5",
+        "/unsubscribeAll",
+        "/api/items/toggle/4",
+        "/messages/mark/read",
+        "/polls/vote",
+        "/register",
+        "/signUp",
+        "/account/reset",
+        "/sessions/terminate",
+        "/x?op=removeAll",
+        "/LOGOUT",
     ],
 )
 async def test_hidden_verbs_in_an_address_are_refused_even_when_the_source_lists_it(
@@ -168,3 +187,46 @@ async def test_without_the_egress_proxy_a_private_address_is_not_fetched(
     text = await tools["fetch_public_page"].run({"url": "https://internal-looking.example.org/x"})
     assert "внутренн" in text
     assert seen == []
+
+
+@pytest.mark.parametrize("path", ["/address-book", "/examinations/schedule", "/news?author=Ivanov"])
+async def test_ordinary_words_that_contain_a_verb_are_not_actions(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI, path: str
+) -> None:
+    r = await source_rig(sm, user_id, fakeuni_app, routes=(path.split("?")[0],))
+    text = await r.call("browse_source", connection_id=r.conn_id, url="https://fakeuni.test" + path)
+    assert "похож на действие" not in text, path
+    assert len(r.spy.requests) == 1  # the address was asked for
+
+
+async def test_a_redirect_to_an_action_is_not_followed(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI
+) -> None:
+    """A page that answers with a redirect to `/logout` must not be allowed to do what the agent
+    was forbidden to ask for: each hop is judged before it leaves."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/app":
+            return httpx.Response(302, headers={"location": "https://fakeuni.test/auth/logout"})
+        return httpx.Response(200, text="вы вышли", headers={"content-type": "text/plain"})
+
+    r = await source_rig(sm, user_id, fakeuni_app, inner=httpx.MockTransport(handler))
+    text = await r.call("browse_source", connection_id=r.conn_id, url=ENTRY)
+    assert text.startswith("Результат: ошибка")
+    assert "перенаправил на адрес, похожий на действие" in text
+    assert requested == ["/app"]  # the second hop never left
+
+
+async def test_a_redirect_to_an_ordinary_page_is_followed(
+    sm: Sm, user_id: str, fakeuni_app: FastAPI
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/app":
+            return httpx.Response(302, headers={"location": "https://fakeuni.test/news"})
+        return httpx.Response(200, text="Новости", headers={"content-type": "text/plain"})
+
+    r = await source_rig(sm, user_id, fakeuni_app, inner=httpx.MockTransport(handler))
+    text = await r.call("browse_source", connection_id=r.conn_id, url=ENTRY)
+    assert "Новости" in text

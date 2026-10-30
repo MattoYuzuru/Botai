@@ -47,6 +47,10 @@ log = logging.getLogger("botai.agent.chat")
 
 DEFAULT_TITLE = "Новый чат"
 MAX_MARKDOWN = 7_500  # TextBlock.markdown is limited to 8000 characters
+TOO_LARGE = (
+    "Сообщение вместе с вложениями слишком большое для одного ответа, и я его не разобрал. "
+    "Отправьте файлы по несколько штук или короче: я прочитаю их по частям."
+)
 UNKNOWN_BUDGET = (
     "Не знаю: мне не хватило шагов, чтобы найти ответ. Уточните вопрос, например дату, курс "
     "или название документа, и я поищу снова."
@@ -63,6 +67,8 @@ def compose_answer(
     """The text for the student and the citations behind it, whatever the run ended with."""
     if result.stopped in ("quota", "error"):
         return result.error_detail or "Не удалось получить ответ. Попробуйте позже.", None
+    if result.overflow:
+        return TOO_LARGE, None  # not «не хватило шагов»: no step was made
     if not result.content.strip():
         return UNKNOWN_BUDGET, None
     done = finalize(result.content.strip(), env.sources, now=now)
@@ -142,11 +148,13 @@ async def handle_chat(
         )
 
     async with services.db() as session:
-        files_msg, file_findings = await attachments_message(session, user_id, question.id)
-    if files_msg is not None:
-        ctx_msg.content += "\n\n" + files_msg.content
-    if file_findings:
-        await harness.audit_injection(services, user_id, ctx.job_id, "attachment", file_findings, 0)
+        files = await attachments_message(session, user_id, question.id)
+    if files.message is not None:
+        ctx_msg.content += "\n\n" + files.message.content
+    if files.findings:
+        await harness.audit_injection(
+            services, user_id, ctx.job_id, "attachment", files.findings, 0
+        )
     summary_msg = summary_message(summary_text)
     recent_msgs = history_messages(recent)
     question_msg = LlmMessage(role="user", content=question.text)
@@ -162,6 +170,7 @@ async def handle_chat(
         ctx=ctx,
         question_links=question_urls(question.text),
         seen=SeenLinks.load(thread.seen_links),
+        outside_read=files.has_text,  # a file's words are not the student's
     )
     if reader is not None:
         env.reader = reader
@@ -178,7 +187,7 @@ async def handle_chat(
 
     text, done = compose_answer(result, env, now)
     fact_id = await _save_fact(services, env, result, done, thread, question.text, now)
-    if result.findings or file_findings:
+    if result.findings or files.findings:
         text += INJECTION_NOTE
     if env.remembered:  # the student sees what the agent keeps about them, and can delete it
         text += "\n\n" + " ".join(f"Запомнил: «{note}»." for note in env.remembered)

@@ -215,34 +215,72 @@ async def runtime(
 # --- posting ------------------------------------------------------------------------------------
 
 
-_CODE_WORDS = re.compile(r"(?i)\b(?:код\w*|code|otp|смс|sms|пин|pin|парол\w*|password)\b")
-_DIGIT_GROUPS = re.compile(r"\d[\d \-]*\d|\d")
+# A word for a code, then (at most three filler words) digits: «код 123 456», «код из смс 424242»,
+# «код подтверждения 1234». «Код группы 2101» has a word that is no filler, so it is a fact.
+_CODE_WITH_DIGITS = re.compile(
+    r"(?i)\b(?:код\w*|code|otp|смс|sms|пин|pin)\b"
+    r"(?:\s+(?:из|от|для|в|на|с|смс|sms|почты|письма|подтвержден\w+|доступ\w*|вход\w*|"
+    r"безопасност\w+|авторизаци\w+|верификаци\w+|приложени\w+|телефон\w*|сообщени\w+|"
+    r"одноразов\w+|лк|кабинет\w*)){0,3}"
+    r"\s*[:=—-]?\s*(?P<digits>\d[\d \-]*\d|\d)"
+)
+_PASSWORD_WORD = re.compile(r"(?i)\b(?:парол\w*|password|passwd|pwd|пасс\w*|pass)\b")
+_PASSWORD_FILLER = re.compile(r"(?i)^(?:(?:от|для|к|from|for)\s+\S+(?:\s+|$)|(?:is|это|такой)\s+)")
+_GROUP_CODE = re.compile(r"^[A-ZА-ЯЁ]{2,6}[- ]?\d{1,3}$")  # ИВТ-21, БПМ231
+_WORD_AND_YEAR = re.compile(r"^[А-Яа-яЁё]+(?:19|20)\d\d$")  # Москва2024
+_EDGE_PUNCTUATION = ".,;:!?\"'()«»[]"
 
 
 def _digits(text: str) -> int:
     return sum(ch.isdigit() for ch in text)
 
 
+def _password_like(word: str) -> bool:
+    """One word that has the look of a password: letters and digits together, a symbol or a capital
+    inside it. A group («ИВТ-21»), a word with a year («Москва2024») and a plain word are not."""
+    token = word.strip(_EDGE_PUNCTUATION)
+    if len(token) < 4 or len(token) > 64 or _GROUP_CODE.match(token) or _WORD_AND_YEAR.match(token):
+        return False
+    if any(ch.isalpha() for ch in token) and _digits(token) >= 1 and len(token) >= 5:
+        return True
+    if len(token) >= 16 and token.count("-") + token.count("_") >= 2:
+        return True  # a passphrase, a generated key
+    return bool(re.search(r"\w[^\w\s\-'’.,]\w", token) or re.search(r"[a-zа-яё][A-ZА-ЯЁ]", token))
+
+
+def _follows_password_word(value: str) -> bool:
+    """«пароль: x», «мой пасс Qwerty123», «пароль от ЛК qwerty12»: a word follows the word for a
+    password. «Где мой пароль?» has nothing after it, and a long question is a question."""
+    tokens = value.split()
+    for found in _PASSWORD_WORD.finditer(value):
+        rest = value[found.end() :]
+        separated = bool(re.match(r"\s*[:=—-]", rest))
+        rest = _PASSWORD_FILLER.sub("", re.sub(r"^[\s:=—-]+", "", rest))
+        following = rest.split(None, 1)[0] if rest.strip() else ""
+        if not re.search(r"\w", following):
+            continue
+        if separated or _password_like(following) or len(tokens) <= 3:
+            return True
+    return False
+
+
 def looks_like_secret(text: str) -> bool:
     """Whether a message typed while a protected input is open is probably the password or the
-    code meant for it. The words of a conversation ("да", "ок", "Привет!", "2") are not."""
+    code meant for it. The words of a conversation («да», «ок», «Привет!», «?», «2», «ИВТ-21»,
+    «Код группы 2101») are not."""
     value = text.strip()
     if not value:
         return False
-    if scrub_secrets(value, typed_by_user=True) != value:
-        return True  # "пароль: …", "код из смс 424242", a token, a cookie line
-    if _CODE_WORDS.search(value) and any(_digits(m) >= 4 for m in _DIGIT_GROUPS.findall(value)):
-        return True  # "код 123 456"
-    if re.fullmatch(r"[\d \-]+", value) and _digits(value) >= 4:
-        return True  # a code typed in groups
-    if len(value) < 4 or len(value) > 128 or re.search(r"\s", value):
-        return False
-    # One token: digits among letters, a symbol inside the word or a capital inside it.
-    return bool(
-        _digits(value) >= 1
-        or re.search(r"\w[^\w\s]\w", value)
-        or re.search(r"[a-zа-яё][A-ZА-ЯЁ]", value)
-    )
+    if scrub_secrets(value) != value:
+        return True  # a token, a cookie line, «token=…», a credential-named field
+    if any(_digits(m["digits"]) >= 4 for m in _CODE_WITH_DIGITS.finditer(value)):
+        return True  # «код 123 456», «код из смс 424242»
+    if _follows_password_word(value):
+        return True
+    if re.fullmatch(r"[\d \-]+", value) and _digits(value) >= 6:
+        return True  # a code typed in groups; a group number («2101») is not one
+    words = value.split()
+    return len(words) <= 4 and any(_password_like(w) for w in words)
 
 
 async def _locked(session: AsyncSession, user_id: str, job_id: str) -> Job | None:
