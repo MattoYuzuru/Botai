@@ -19,6 +19,11 @@ x-app: &app
     SEARCH_MAX_CALLS: "${SEARCH_MAX_CALLS:-4}"
     SEARCH_MAX_COST_USD: "${SEARCH_MAX_COST_USD:-0.03}"
     SEARCH_COOLDOWN_S: "${SEARCH_COOLDOWN_S:-60}"
+    # Dictation (docs/development/speech-to-text.md). The Groq key arrives with app.secrets (env_file).
+    STT_PROVIDER: "${STT_PROVIDER:-groq}"
+    STT_MODEL: "${STT_MODEL:-whisper-large-v3-turbo}"
+    STT_REQUESTS_PER_HOUR: "${STT_REQUESTS_PER_HOUR:-60}"
+    STT_SECONDS_PER_DAY: "${STT_SECONDS_PER_DAY:-7200}"
     BOTAI_DIAGNOSTICS: "${BOTAI_DIAGNOSTICS:-false}"
     BOTAI_DIAGNOSTICS_DIR: /var/log/botai/diagnostics
     BOTAI_DIAGNOSTICS_RETENTION_HOURS: "${BOTAI_DIAGNOSTICS_RETENTION_HOURS:-24}"

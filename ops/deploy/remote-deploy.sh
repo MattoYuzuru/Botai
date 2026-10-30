@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs on mnema as botai-deploy, called by .github/workflows/deploy.yml.
-# stdin: GHCR user, GHCR token, DeepSeek key, Exa key (one per line).
+# stdin: GHCR user, GHCR token, DeepSeek key, Exa key, Groq key (one per line). The last two may be
+# missing or empty: a key that is not sent stays as it is on the server.
 # Touches only the `botai` compose project; Mnema containers, images and volumes are never touched.
 set -euo pipefail
 umask 077
@@ -43,19 +44,21 @@ IFS= read -r GHCR_USER
 IFS= read -r GHCR_TOKEN
 IFS= read -r DEEPSEEK_KEY
 IFS= read -r EXA_KEY || EXA_KEY=''
+IFS= read -r SPEECH_KEY || SPEECH_KEY=''
 
-if [ -n "$DEEPSEEK_KEY" ]; then
-  grep -v '^DEEPSEEK_API_KEY=' app.secrets > app.secrets.tmp || true
-  printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_KEY" >> app.secrets.tmp
+# NAME=value replaces the NAME line of app.secrets (or adds it); an empty value changes nothing.
+# Values are never printed and never appear in a command line.
+set_secret() {
+  local name="$1" value="$2"
+  [ -n "$value" ] || return 0
+  grep -v "^${name}=" app.secrets > app.secrets.tmp || true
+  printf '%s=%s\n' "$name" "$value" >> app.secrets.tmp
   mv app.secrets.tmp app.secrets
-fi
-unset DEEPSEEK_KEY
-if [ -n "$EXA_KEY" ]; then
-  grep -v '^EXA_API_KEY=' app.secrets > app.secrets.tmp || true
-  printf 'EXA_API_KEY=%s\n' "$EXA_KEY" >> app.secrets.tmp
-  mv app.secrets.tmp app.secrets
-fi
-unset EXA_KEY
+}
+set_secret DEEPSEEK_API_KEY "$DEEPSEEK_KEY"
+set_secret EXA_API_KEY "$EXA_KEY"
+set_secret GROQ_API_KEY "$SPEECH_KEY"
+unset DEEPSEEK_KEY EXA_KEY SPEECH_KEY
 chmod 600 app.secrets
 
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null

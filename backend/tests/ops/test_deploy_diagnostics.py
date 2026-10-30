@@ -58,17 +58,25 @@ sys.exit(1 if failure == 'rollback_health' or failure == 'health' and count == 1
 """
 
 
+# GHCR user, GHCR token, then the model, search and speech keys.
+STDIN = (
+    "fixture-user\nfixture-registry-secret\nfixture-model-secret\n"
+    "fixture-search-secret\nfixture-speech-secret\n"
+)
+
+
 @dataclass
 class Deployment:
     root: Path
     script: Path
     env: dict[str, str]
     original: str
+    stdin: str = STDIN
 
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(  # noqa: S603 - controlled script and fake subprocess environment
             ["/bin/bash", str(self.script), *args],
-            input="fixture-user\nfixture-registry-secret\nfixture-model-secret\nfixture-search-secret\n",
+            input=self.stdin,
             env=self.env,
             capture_output=True,
             text=True,
@@ -130,6 +138,7 @@ def test_toggle_preserves_or_changes_server_mode(
     assert "fixture-registry-secret" not in result.stdout + result.stderr
     assert "fixture-model-secret" not in result.stdout + result.stderr
     assert "fixture-search-secret" not in result.stdout + result.stderr
+    assert "fixture-speech-secret" not in result.stdout + result.stderr
     assert not list(deployment.root.glob(".compose.vars.rollback.*"))
 
 
@@ -142,10 +151,46 @@ def test_search_key_is_delivered_without_overwriting_vault_or_duplicate_keys(
     assert result.returncode == 0, result.stderr
     assert secrets.read_text() == (
         "BOTAI_KEK=fixture-key\nDEEPSEEK_API_KEY=fixture-model-secret\n"
-        "EXA_API_KEY=fixture-search-secret\n"
+        "EXA_API_KEY=fixture-search-secret\nGROQ_API_KEY=fixture-speech-secret\n"
     )
     assert secrets.stat().st_mode & 0o777 == 0o600
     assert "fixture-search-secret" not in result.stdout + result.stderr
+
+
+def test_speech_key_replaces_the_old_one_once_and_keeps_the_rest(deployment: Deployment) -> None:
+    secrets = deployment.root / "app.secrets"
+    secrets.write_text("GROQ_API_KEY=old-speech-secret\nBOTAI_KEK=fixture-key\n")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    lines = secrets.read_text().splitlines()
+    assert lines.count("GROQ_API_KEY=fixture-speech-secret") == 1
+    assert "BOTAI_KEK=fixture-key" in lines
+    assert "old-speech-secret" not in secrets.read_text()
+    assert "fixture-speech-secret" not in (deployment.root / "commands.jsonl").read_text()
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # an empty speech key (the GitHub secret is not set): the server keeps what it has
+        "fixture-user\nfixture-registry-secret\nfixture-model-secret\nfixture-search-secret\n\n",
+        # the older order of four lines: no speech line at all
+        "fixture-user\nfixture-registry-secret\nfixture-model-secret\nfixture-search-secret\n",
+    ],
+    ids=["empty", "four-lines"],
+)
+def test_a_missing_or_empty_speech_key_leaves_the_server_key_alone(
+    deployment: Deployment, lines: str
+) -> None:
+    secrets = deployment.root / "app.secrets"
+    secrets.write_text("BOTAI_KEK=fixture-key\nGROQ_API_KEY=kept-speech-secret\n")
+    deployment.stdin = lines
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    assert secrets.read_text() == (
+        "BOTAI_KEK=fixture-key\nGROQ_API_KEY=kept-speech-secret\n"
+        "DEEPSEEK_API_KEY=fixture-model-secret\nEXA_API_KEY=fixture-search-secret\n"
+    )
 
 
 def test_image_revision_must_match_checked_source_before_migration(deployment: Deployment) -> None:
