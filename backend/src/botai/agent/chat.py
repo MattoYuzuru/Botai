@@ -10,6 +10,7 @@ Failures become a human answer, never a stack trace or a bare error code.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -59,6 +60,20 @@ INJECTION_NOTE = (
     "\n\nВ найденном тексте был фрагмент, похожий на инструкцию для ассистента. "
     "Я его не выполнял и убрал из рассмотрения."
 )
+
+
+SHORT_WITH_BUTTONS = (
+    "Ответ слишком короткий: под ним кнопки, но студент не знает, о чём выбор. Напишите ответ "
+    "заново: сначала по существу — что вы нашли или сделали и в каком состоянии источник или "
+    "задача, — и только последней фразой вопрос, к которому относятся кнопки."
+)
+
+
+def too_short(text: str) -> bool:
+    """A lone question (one sentence, a few words) is not an answer to put buttons under."""
+    plain = text.strip()
+    sentences = [part for part in re.split(r"(?<=[.!?…])\s+", plain) if part.strip()]
+    return len(sentences) < 2 or len(plain) < 60
 
 
 def compose_answer(
@@ -183,6 +198,7 @@ async def handle_chat(
         services=services,
         user_id=user_id,
         job_id=ctx.job_id,
+        review=lambda text: SHORT_WITH_BUTTONS if env.quick_replies and too_short(text) else None,
     )
 
     text, done = compose_answer(result, env, now)

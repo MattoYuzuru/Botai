@@ -241,6 +241,45 @@ async def _university(
     )
 
 
+# A source that never finished connecting (cancelled, failed or abandoned before its recipe): the
+# student asking again means «finish it», not «choose what to do with it».
+_UNFINISHED = frozenset({"draft", "learning", "error"})
+
+
+async def _exists_or_resume(
+    env: ChatEnv,
+    session: AsyncSession,
+    conn: Connection,
+    intent: dict[str, Any],
+    url: str | None,
+) -> str:
+    busy = any(t.connection_id == conn.id for t in await active_tasks(session, env.user_id))
+    if busy or conn.spec_id is not None or conn.status not in _UNFINISHED:
+        return await _exists(env, session, conn)
+    payload: dict[str, Any] = {"learning_intent": intent, "source": "chat"}
+    if url is not None:
+        payload["url"] = url
+    job = await enqueue_in_session(
+        session,
+        JobKind.CONNECT,
+        user_id=env.user_id,
+        connection_id=conn.id,
+        thread_id=env.thread_id,
+        payload=payload,
+        now=env.services.clock.now(),
+        dedupe=True,
+    )
+    await session.commit()
+    title = views.display_title(conn)
+    env.forget_meta()
+    _task_card(env, job, "connect", task_title("connect", title), conn.id)
+    return (
+        f"Результат: продолжено. Источник «{data_text(title)}» уже был добавлен, но подключение "
+        f"не завершилось — оно запущено снова {_where(env, job)} {connection_link(conn.id)}. "
+        "Скажите студенту, что продолжаете прежнее подключение; вход и вопросы появятся в чате."
+    )
+
+
 async def _exists(env: ChatEnv, session: AsyncSession, conn: Connection) -> str:
     space = await session.scalar(select(Space).where(Space.id == conn.space_id))
     task = next(
@@ -306,7 +345,7 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
         if origin is not None:
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists(env, session, existing)
+                return await _exists_or_resume(env, session, existing, intent, url)
         chosen = await _university(
             session,
             env,
@@ -322,7 +361,7 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
             # Two turns asking for one site at once end with one source: the second finds the first.
             existing = await service.find_source(session, env.user_id, origin)
             if existing is not None:
-                return await _exists(env, session, existing)
+                return await _exists_or_resume(env, session, existing, intent, url)
             conn, _ = await service.ensure_source(
                 session, env.user_id, space.id, url=url, kind=kind, title=title
             )

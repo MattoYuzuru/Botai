@@ -95,11 +95,20 @@ async def test_quick_replies_and_a_title_come_with_the_answer(sm: Sm, user_id: s
                 call("rename_thread", call_id="c2", title="Подключение Smart LMS"),
             ),
             final("«Вышка» — это НИУ ВШЭ?"),
+            final(
+                "По запросу «Вышка» в справочнике нашёлся НИУ ВШЭ. Smart LMS подключу к нему. "
+                "«Вышка» — это НИУ ВШЭ?"
+            ),
         ]
     )
     r = await make_rig(sm, user_id, llm)
     ctx, _ = await r.ask("добавь для Вышки smart lms")
     block = text_block(ctx)
+    # a lone question under buttons goes back once: the student first reads what was found
+    assert block.markdown.startswith("По запросу «Вышка»")
+    assert "просто вопрос" not in block.markdown
+    assert len(llm.requests) == 3
+    assert "слишком короткий" in (llm.requests[-1].messages[-1].content or "")
     assert block.quick_replies is not None
     assert block.quick_replies[:2] == ["Да, это он", "Нет, другой вуз"]
     assert all(len(q) <= 60 for q in block.quick_replies)
@@ -109,6 +118,21 @@ async def test_quick_replies_and_a_title_come_with_the_answer(sm: Sm, user_id: s
         thread = await session.get(ChatThread, r.thread_id)
     assert thread is not None
     assert thread.title == "Подключение Smart LMS"  # the agent's name wins over the question
+
+
+async def test_a_full_answer_with_buttons_is_not_sent_back(sm: Sm, user_id: str) -> None:
+    llm = ScriptedLlm(
+        queue=[
+            step(call("offer_choices", options=["Продолжить", "Позже"])),
+            final(
+                "Подключение «Расписание» не завершилось: вход прервался на странице вуза. "
+                "Продолжить подключение сейчас?"
+            ),
+        ]
+    )
+    r = await make_rig(sm, user_id, llm)
+    await r.ask("давай подключим расписание")
+    assert len(llm.requests) == 2  # no extra step: the answer explains itself
 
 
 async def test_the_title_comes_from_the_question_when_the_agent_gives_none(
