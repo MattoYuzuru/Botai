@@ -13,7 +13,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, LargeBinary, delete, exists, func, not_, select, text
+from sqlalchemy import (
+    ColumnElement,
+    LargeBinary,
+    delete,
+    exists,
+    func,
+    not_,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -228,9 +239,23 @@ async def bind_to_message(
     for att in rows.values():
         if att.message_id is not None or att.thread_id not in (None, thread_id):
             raise BotaiError(ErrorCode.CONFLICT, "Вложение уже отправлено")
+    # The check above is only for a clear error; the file is taken by one statement that is true
+    # only while nobody has taken it: of two messages racing for one file, one gets it.
+    bound = await session.execute(
+        update(Attachment)
+        .where(
+            Attachment.id.in_(unique),
+            Attachment.user_id == user_id,
+            Attachment.message_id.is_(None),
+            or_(Attachment.thread_id.is_(None), Attachment.thread_id == thread_id),
+        )
+        .values(thread_id=thread_id, message_id=message_id)
+        .returning(Attachment.id)
+    )
+    if len(bound.all()) != len(unique):
+        raise BotaiError(ErrorCode.CONFLICT, "Вложение уже отправлено")
     for att in rows.values():
-        att.thread_id, att.message_id = thread_id, message_id
-    await session.flush()
+        await session.refresh(att)
     return [ref(rows[i]) for i in unique]
 
 

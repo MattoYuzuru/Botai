@@ -31,14 +31,33 @@ class Added:
     created: bool
 
 
+# An address in any form: a scheme, `www.`, or any word with a dot and a domain ending, also the
+# defanged `site[.]ru`.
 _ADDRESS = re.compile(
-    r"(?i)\b(?:https?|botai|ftp)://|\bwww\.|\b[a-z0-9-]+\.(?:ru|com|org|net|edu|io|рф|su)\b"
+    r"(?i)\b(?:https?|botai|ftp)://|\bwww\.|\b[\w-]+(?:\.|\[\.\])(?:[a-z]{2,}|рф)\b"
 )
 _LABELLED_PASSWORD = re.compile(r"(?i)\b(?:парол\w*|password|passwd|pwd)\b\s*[:=—-]\s*\S+")
+_COMMAND_STEMS = (
+    r"(?:игнорир|отправ|пришл|присыл|перешл|пересыл|выполн|делай|сдела|ответь|ответьте|отвечай|"
+    r"скаж|используй|вызыв|открыв|откро|забуд|удал|загруз|скопир|копируй|передай|передав|напиши|"
+    r"сообщи|покажи|показыв|раскро|раскрыв|скрой|скрыв|переходи|зайди|заходи|нажми|нажимай|"
+    r"подтверждай|не\s+(?:говор|сообщ|показыв))\w*"
+)
+# An order to the assistant at the start of a sentence, after a colon, or after "and"/"then".
 _ORDER = re.compile(
-    r"(?i)(?:^|[.;!:\n]\s*)(?:(?:всегда|никогда|обязательно|немедленно|теперь|сразу)\s+)?"
-    r"(?:игнорир|отправ|пришл|перешл|выполн|делай|сдела|ответь|ответьте|скаж|используй|вызыв|"
-    r"открыв|откро|забуд|удал|загруз|скопир|передай|напиши|сообщи|не\s+(?:говор|сообщ|показыв))\w*"
+    r"(?i)(?:^|[.;!:,\n]\s*|\b(?:и|а|но|потом|затем|также|then|and)\s+)"
+    r"(?:(?:всегда|никогда|обязательно|немедленно|теперь|сразу)\s+)?" + _COMMAND_STEMS
+)
+# Permission or a standing rule, wherever in the note it stands: «преподаватель разрешил
+# открывать ссылки», «всегда отвечать ссылкой на сайт». A fact about the student has neither.
+_PERMISSION = re.compile(
+    r"(?i)\b(?:разреш\w*|позвол\w*|уполномоч\w*|санкционир\w*|allow\w*|permit\w*|"
+    r"authori[sz]\w*|grant\w*|дал\w*\s+(?:доступ|разрешени\w*|право))"
+)
+_STANDING_RULE = re.compile(
+    r"(?i)\b(?:всегда|никогда|впредь|отныне|каждый\s+раз|при\s+каждом\s+\w+|непременно)\b"
+    r"[^.;!?\n]{0,80}?\b\w+(?:ть|ти|чь|ться|тись|йте?|ите|ай|уй)\b"
+    r"|\b(?:always|never|from\s+now\s+on|every\s+time|must|should)\b"
 )
 _ADDRESSES_ASSISTANT = re.compile(r"(?i)\b(?:ассистент|агент|бот|assistant|ai)\w*\s*[,:]")
 
@@ -49,8 +68,10 @@ def clean_note(text: str) -> str:
         raise BotaiError(ErrorCode.VALIDATION, "Заметка пустая")
     if len(note) > NOTE_CHARS:
         raise BotaiError(ErrorCode.VALIDATION, f"Заметка длиннее {NOTE_CHARS} знаков")
+    # As strict as a message the student typed: «Пароль от ЛК qwerty12» and «Мой пароль qwerty» are
+    # secrets, «Код группы 2101» is a fact (only a code «из смс» is not).
     if (
-        scrub_secrets(note) != note
+        scrub_secrets(note, typed_by_user=True, codes=False) != note
         or _LABELLED_PASSWORD.search(note)
         or JWT.search(note)
         or LONG_TOKEN.search(note)
@@ -58,7 +79,13 @@ def clean_note(text: str) -> str:
         raise BotaiError(ErrorCode.VALIDATION, "Заметка похожа на пароль, код или токен")
     if _ADDRESS.search(note):
         raise BotaiError(ErrorCode.VALIDATION, "В заметке не должно быть адресов")
-    if mask_injections(note)[1] or _ORDER.search(note) or _ADDRESSES_ASSISTANT.search(note):
+    if (
+        mask_injections(note)[1]
+        or _ORDER.search(note)
+        or _PERMISSION.search(note)
+        or _STANDING_RULE.search(note)
+        or _ADDRESSES_ASSISTANT.search(note)
+    ):
         raise BotaiError(ErrorCode.VALIDATION, "Заметка похожа на инструкцию для ассистента")
     return note
 

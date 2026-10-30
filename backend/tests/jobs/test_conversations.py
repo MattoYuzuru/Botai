@@ -441,7 +441,20 @@ async def test_password_like_message_is_refused_while_a_secret_question_is_open(
 
 @pytest.mark.parametrize(
     "secret",
-    ["Qwerty123", "пароль Qwerty123", "код 123 456", "123456", "424 242", "P@ssw0rd", "мойПароль"],
+    [
+        "Qwerty123",
+        "пароль Qwerty123",
+        "код 123 456",
+        "123456",
+        "424 242",
+        "P@ssw0rd",
+        "мойПароль",
+        "это Qwerty123",
+        "ivanov / Qwerty123",
+        "мой пасс Qwerty123",
+        "код из смс 424242",
+        "пароль от ЛК qwerty12",
+    ],
 )
 async def test_what_looks_like_a_password_or_a_code_is_refused_while_a_secret_field_is_open(
     env: Env, secret: str
@@ -471,7 +484,22 @@ async def test_what_looks_like_a_password_or_a_code_is_refused_while_a_secret_fi
 
 @pytest.mark.parametrize(
     "words",
-    ["да", "ок", "спасибо", "Привет!", "?", "2", "Какое расписание на завтра?", "Привет, как дела"],
+    [
+        "да",
+        "ок",
+        "спасибо",
+        "Привет!",
+        "?",
+        "2",
+        "Какое расписание на завтра?",
+        "Привет, как дела",
+        "ИВТ-21",
+        "2101",
+        "Москва2024",
+        "Код группы 2101",
+        "Где мой пароль?",
+        "что-то не так",
+    ],
 )
 async def test_plain_words_pass_while_a_secret_field_is_open(env: Env, words: str) -> None:
     client, user, thread, job_id = await start(env)

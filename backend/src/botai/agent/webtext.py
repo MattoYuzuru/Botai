@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from botai.agent.safety import HIDDEN, scrub_secrets
+from botai.agent.safety import HIDDEN, NOT_SECRET, STRONG, key_class, scrub_secrets
 from botai.learn.redact import JWT, LONG_TOKEN, secret_query_key
 from botai.sources.extract import collapse, node_text
 
@@ -20,12 +19,10 @@ LABEL_CHARS = 80
 _JSON_LIST_ITEMS = 8
 _JSON_STRING_CHARS = 300
 _JSON_DEPTH = 6
-# A key that names a credential: its value is hidden whatever it looks like.
-_SECRET_KEY = re.compile(
-    r"(?i:token|session|sesskey|sessid|(?:^|[_-])sid$|csrf|xsrf|secret|passw|pwd|auth(?!ors?$)|"
-    r"api[_-]?key|private[_-]?key|credential|cookie|bearer|jwt|signature|(?:^|[_-])otp$|"
-    r"^pin$|(?:^|[_-])key$)|[a-z](?:Key|Sid)$"
-)
+# The value of a field that names a credential is hidden whatever it looks like (`key_class`),
+# and so is everything under a field that surely does (`STRONG`: an object, a list).
+_VALUE_FIELDS = frozenset({"value", "val", "content", "values"})
+_NAME_FIELDS = ("name", "key", "id", "field", "param", "header", "label", "attr")
 
 
 def has_login_form(data: bytes) -> bool:
@@ -38,7 +35,10 @@ def has_secret_address(url: str) -> bool:
     values = [*parse_qsl(parts.query, keep_blank_values=True), *parse_qsl(parts.fragment)]
     return (
         any(
-            secret_query_key(k) or _SECRET_KEY.search(k) or JWT.search(v) or LONG_TOKEN.search(v)
+            secret_query_key(k)
+            or key_class(k) != NOT_SECRET
+            or JWT.search(v)
+            or LONG_TOKEN.search(v)
             for k, v in values
         )
         or JWT.search(parts.path) is not None
@@ -73,20 +73,39 @@ def page_links(data: bytes, base_url: str, *, limit: int = MAX_LINKS) -> list[tu
 
 
 def mask_text(text: str) -> str:
-    """Credential-shaped strings out of page text: tokens, JWTs, `token=…`, cookie lines."""
+    """Credential-shaped strings out of page text: tokens, JWTs, `token=…`, cookie lines, and the
+    value after a field that names a credential (`access_token: …`, `var sesskey = '…'`)."""
     return LONG_TOKEN.sub(HIDDEN, JWT.sub(HIDDEN, scrub_secrets(text)))
+
+
+def _is_secret_pair(value: dict[Any, Any]) -> bool:
+    """`{"name": "csrf_token", "value": "…"}`: the name is on one field, the secret on the next."""
+    if not any(str(k).lower() in _VALUE_FIELDS for k in value):
+        return False
+    return any(
+        isinstance(value.get(field), str) and key_class(value[field]) != NOT_SECRET
+        for field in _NAME_FIELDS
+    )
 
 
 def shrink_json(value: Any, depth: int = 0, key: str = "") -> Any:
     """Keep the shape of a JSON answer and a few items of every list: enough to see what is there.
-    The value of a key that names a credential (`access_token`, `sesskey`) and any string that
-    looks like a token are hidden: the answer of a source is data for the model, not a keyring."""
+    Everything under a key that names a credential (`access_token`, `cookies`) is hidden, the
+    plain value of a doubtful one (`session`) too, and any string that looks like a token: the
+    answer of a source is data for the model, not a keyring."""
     if depth >= _JSON_DEPTH:
         return "…"
-    if key and _SECRET_KEY.search(key) and not isinstance(value, (dict, list)):
+    cls = key_class(key) if key else NOT_SECRET
+    if cls == STRONG or (cls != NOT_SECRET and not isinstance(value, (dict, list))):
         return HIDDEN
     if isinstance(value, dict):
-        return {str(k): shrink_json(v, depth + 1, str(k)) for k, v in list(value.items())[:60]}
+        pair = _is_secret_pair(value)
+        return {
+            str(k): HIDDEN
+            if pair and str(k).lower() in _VALUE_FIELDS
+            else shrink_json(v, depth + 1, str(k))
+            for k, v in list(value.items())[:60]
+        }
     if isinstance(value, list):
         head: list[Any] = [shrink_json(v, depth + 1, key) for v in value[:_JSON_LIST_ITEMS]]
         if len(value) > _JSON_LIST_ITEMS:
@@ -98,12 +117,32 @@ def shrink_json(value: Any, depth: int = 0, key: str = "") -> Any:
     return value
 
 
-def json_text(raw: bytes) -> str | None:
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return None
+def _outline(value: Any) -> str:
     text = json.dumps(shrink_json(value), ensure_ascii=False, separators=(",", ":"))
     if len(text) > JSON_CHARS:
         text = text[:JSON_CHARS] + "…[обрезано]"
     return text
+
+
+def json_text(raw: bytes | str, *, declared: bool = True) -> str | None:
+    """The outline of a JSON body. A body that merely looks like JSON (served as text/html or
+    text/plain: `declared=False`) counts only if it is an object or a list. None: not JSON."""
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not declared and not isinstance(value, (dict, list)):
+        return None
+    return _outline(value)
+
+
+def data_body(text: str, *, limit: int = TEXT_CHARS) -> str:
+    """Text of a page or file for the model. If the whole of it is a JSON object or list (a `<pre>`
+    around an API answer, `text/plain` with JSON), it gets the outline with its credentials hidden;
+    anything else is masked by shape and by field name."""
+    stripped = text.strip()
+    if stripped[:1] in ("{", "["):
+        outline = json_text(stripped, declared=False)
+        if outline is not None:
+            return outline
+    return mask_text(text[:limit])

@@ -82,6 +82,26 @@ DOCUMENT_TOOLS = frozenset(
 )
 
 
+# Whatever these return was written by someone else (a teacher in a timetable or a news item, a
+# document, a page, a search hit): after any of them `remember` takes only what the student said.
+OUTSIDE_TEXT = frozenset(
+    {
+        "get_schedule",
+        "get_deadlines",
+        "get_courses",
+        "get_grades",
+        "get_people",
+        "get_news",
+        "search_documents",
+        "search_facts",
+        "search_public_web",
+        "fetch_public_page",
+        "read_document",
+        "browse_source",
+    }
+)
+
+
 async def _empty_note(env: ChatEnv, what: str) -> str:
     """Honest empty result: say what was checked, with the connections as citable sources."""
     conns, tz = await env.meta()
@@ -507,6 +527,8 @@ def build_chat_tools(env: ChatEnv) -> list[HarnessTool]:
             except (ValueError, TypeError, KeyError) as exc:
                 return f"Ошибка аргументов вызова {name}: {type(exc).__name__}."
             env.used.add(name)
+            if name in OUTSIDE_TEXT:
+                env.outside_read = True
             return text
 
         return HarnessTool(

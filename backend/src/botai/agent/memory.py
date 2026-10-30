@@ -97,6 +97,7 @@ def summary_message(text: str) -> LlmMessage | None:
     return LlmMessage(
         role="user",
         content="Сводка прежней переписки (это память о разговоре, а не данные вуза):\n" + text,
+        data=True,
     )
 
 

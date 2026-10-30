@@ -16,7 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock
+from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock, TextBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.execution import guard_job
 from botai.core.ids import new_id
@@ -30,6 +30,7 @@ from botai.learn.addresses import navigation_url, url_origin
 from botai.learn.intent import prepare_turn
 from botai.learn.redact import JWT, LONG_TOKEN, secret_query_key
 from botai.sources.vocab import KIND_LABELS
+from botai.spaces.views import display_title
 
 _BLOCK = TypeAdapter(AgentUiBlock)
 
@@ -199,6 +200,70 @@ async def thread_for_connection(
         session.add(thread)
         await session.flush()
     return thread
+
+
+LOGIN_NEEDED = "Нужно войти заново"
+_QUICK_REPLY_CHARS = 60
+
+
+def _plain_title(title: str) -> str:
+    return " ".join(title.replace("[", "(").replace("]", ")").split())
+
+
+async def announce_login_needed(session: AsyncSession, conn: Connection, now: datetime) -> bool:
+    """Tells the student, in the thread of the source, that its saved login stopped working, with
+    a button that asks the agent to log in again. Once per expiry: nothing is written while a
+    task of the source is in flight, or when this thread already asked since the last good sync.
+    Returns whether a message was written. Commits."""
+    if await session.scalar(
+        select(Job.id)
+        .where(
+            Job.user_id == conn.user_id,
+            Job.connection_id == conn.id,
+            Job.state.in_(sorted(IN_FLIGHT)),
+        )
+        .limit(1)
+    ):
+        return False
+    thread = await thread_for_connection(session, conn, now)
+    link = f"botai://connections/{conn.id}"
+    asked = select(ChatMessage.id).where(
+        ChatMessage.user_id == conn.user_id,
+        ChatMessage.thread_id == thread.id,
+        ChatMessage.role == "agent",
+        ChatMessage.blocks[0]["markdown"].astext.like(f"{LOGIN_NEEDED}%{link}%"),
+    )
+    if conn.last_sync_at is not None:
+        asked = asked.where(ChatMessage.created_at > conn.last_sync_at)
+    if await session.scalar(asked.limit(1)):
+        return False
+    title = _plain_title(display_title(conn))
+    reply = f"Войди снова в «{title}»"
+    if len(reply) > _QUICK_REPLY_CHARS:
+        reply = reply[: _QUICK_REPLY_CHARS - 2].rstrip() + "…»"
+    at = await dialogue.message_time(session, conn.user_id, thread.id, now)
+    block = TextBlock(
+        id=new_id(),
+        at=at,
+        markdown=(
+            f"{LOGIN_NEEDED} в [«{title}»]({link}): сохранённый вход перестал действовать, "
+            "данные не обновляются. Нажмите кнопку ниже, и откроется окно входа. "
+            "Пароль и коды вводятся только в нём, не в чат."
+        ),
+        quick_replies=[reply],
+    )
+    session.add(
+        ChatMessage(
+            id=new_id(),
+            user_id=conn.user_id,
+            thread_id=thread.id,
+            role="agent",
+            blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
+            created_at=at,
+        )
+    )
+    await session.commit()
+    return True
 
 
 async def attach_conversation(

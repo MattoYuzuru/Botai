@@ -53,6 +53,7 @@ RETRYABLE = frozenset({ErrorCode.SOURCE_UNAVAILABLE, ErrorCode.SOURCE_RATE_LIMIT
 RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
 SYNC_STATUSES = ("active", "stale")
 ACTIVE_STATES = ("running", "waiting_user")
+MANUAL_LOGIN = {"manual_login": True}
 
 
 def retry_failures(payload: dict[str, Any], attempt: int) -> int:
@@ -77,6 +78,9 @@ BUDGETS: dict[str, float] = {
 class RunnerConfig:
     poll_seconds: float = 2.0
     concurrency: int = 4
+    # A login in a browser window holds a worker for as long as the student takes (up to 30
+    # minutes): no more than this many at once in the whole system, whatever the queue holds.
+    max_manual_logins: int = 2
     heartbeat_seconds: float = 15.0
     lease: timedelta = timedelta(minutes=2)
     maintenance_seconds: float = 30.0
@@ -153,6 +157,8 @@ class Worker:
     async def claim(self) -> Claimed | None:
         now = self.services.clock.now()
         skipped_users: set[str] = set()
+        skipped_jobs: set[str] = set()
+        manual_cap = max(1, min(self.config.max_manual_logins, self.config.concurrency - 1))
         async with self.services.db() as session:
             while True:
                 compatible = or_(
@@ -160,6 +166,18 @@ class Worker:
                     Job.payload.contains({"_research_engine": 1}),
                 )
                 active = aliased(Job)
+                holding = aliased(Job)
+                manual = and_(Job.kind == JobKind.CONNECT.value, Job.payload.contains(MANUAL_LOGIN))
+                manual_active = (
+                    select(func.count())
+                    .select_from(holding)
+                    .where(
+                        holding.kind == JobKind.CONNECT.value,
+                        holding.payload.contains(MANUAL_LOGIN),
+                        holding.state.in_(ACTIVE_STATES),
+                    )
+                    .scalar_subquery()
+                )
                 busy = exists(
                     select(active.id).where(
                         active.user_id == Job.user_id,
@@ -176,8 +194,10 @@ class Worker:
                         User.disabled.is_(False),
                         compatible,
                         or_(Job.kind.not_in(SOURCE_KINDS), ~busy),
+                        or_(~manual, manual_active < manual_cap),
                         Job.user_id.not_in(skipped_users),
                         Job.id.not_in(self._tasks),
+                        Job.id.not_in(skipped_jobs),
                     )
                     .order_by(Job.run_after, Job.id)
                     .limit(1)
@@ -185,6 +205,15 @@ class Worker:
                 )
                 if job is None:
                     return None
+                # Two workers must not both see a free place for a login: one at a time takes it.
+                if (
+                    job.kind == JobKind.CONNECT.value
+                    and job.payload.get("manual_login") is True
+                    and not await self._manual_login_place(session, manual_cap)
+                ):
+                    skipped_jobs.add(job.id)
+                    await session.rollback()
+                    continue
                 if job.kind in SOURCE_KINDS:
                     acquired = await session.scalar(
                         select(
@@ -231,6 +260,23 @@ class Worker:
                 )
                 self._claims[claimed.id] = claimed
                 return claimed
+
+    async def _manual_login_place(self, session: AsyncSession, cap: int) -> bool:
+        taken = await session.scalar(
+            select(func.pg_try_advisory_xact_lock(func.hashtextextended("manual-logins", 0)))
+        )
+        if not taken:
+            return False
+        busy = await session.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(
+                Job.kind == JobKind.CONNECT.value,
+                Job.payload.contains(MANUAL_LOGIN),
+                Job.state.in_(ACTIVE_STATES),
+            )
+        )
+        return (busy or 0) < cap
 
     # --- running one job --------------------------------------------------------------------
 
@@ -414,17 +460,19 @@ class Worker:
             await self._ask_for_login_after(job, result)
 
     async def _ask_for_login_after(self, job: Claimed, result: dict[str, Any] | None) -> None:
-        """A sync that ended because the student has to log in again opens that login in the
-        thread of the source, where the student will see it (a waiting task, a call for attention).
-        One login at a time: an unfinished login of the same source is the answer, not a second."""
+        """A sync that ended because the student has to log in again says so in the thread of the
+        source, where the student will see it (an unread message with a button, a call for
+        attention). It starts no task: a login window waits for the student for up to half an hour
+        and holds a worker all that time, so many sources expiring at once would stop the queue.
+        The student's «Войди снова» (or the source plate) starts the login, within the cap on
+        simultaneous logins."""
         if (
             job.kind != JobKind.SYNC.value
             or job.connection_id is None
             or (result or {}).get("status") != "needs_reauth"
         ):
             return
-        from botai.spaces import service
-        from botai.spaces.conversations import thread_for_connection
+        from botai.spaces.conversations import announce_login_needed
 
         now = self.services.clock.now()
         try:
@@ -434,21 +482,11 @@ class Worker:
                         Connection.id == job.connection_id, Connection.user_id == job.user_id
                     )
                 )
-                # Only a login through the browser is the student's to do; a token or a calendar
-                # link is given in the app, which the status already says.
+                # Only a login through the browser is the student's to do here; a token or a
+                # calendar link is given in the app, which the status already says.
                 if conn is None or conn.status != "needs_reauth" or conn.adapter != "recipe":
                     return
-                thread = await thread_for_connection(session, conn, now)
-                await service.enqueue_for_connection(
-                    session,
-                    self.services.queue,
-                    job.user_id,
-                    conn.id,
-                    JobKind.CONNECT,
-                    thread_id=thread.id,
-                    payload={"manual_login": True, "source": "sync"},
-                    now=now,
-                )
+                await announce_login_needed(session, conn, now)
         except Exception:  # the sync itself is done; a missing prompt must not fail it
             log.exception("could not ask for a login after the sync of %s", job.connection_id)
 

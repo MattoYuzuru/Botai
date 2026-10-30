@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import itertools
 import re
 import socket
 from dataclasses import replace
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import httpx
 from sqlalchemy import func, select
@@ -27,7 +28,7 @@ from sqlalchemy import func, select
 from botai.agent import webtext
 from botai.agent.env import ChatEnv, clean, document_link, spec
 from botai.attachments import service as attachments
-from botai.core.errors import BotaiError
+from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import AdapterSpecRow, Attachment, Chunk, Connection, Document
 from botai.learn.addresses import url_origin
 from botai.learn.sitemap import get_site_map
@@ -45,14 +46,31 @@ MAX_BROWSES = 12  # per turn
 MAX_PUBLIC_PAGES = 6
 READ_CHARS = 8_000
 READ_CHARS_MAX = 20_000
-# What the address itself says it does: leaving, joining, confirming, cancelling, deleting. A GET
-# to such an address can change something on a careless site, so it is never made (matched on the
-# decoded path and query, so `/log%6Fut` is the same as `/logout`).
-_UNSAFE_GET = re.compile(
-    r"(?i)(?:^|[^a-z])(?:log-?out|sign-?out|sign-?off|exit|quit|delete|remove|destroy|"
-    r"unsubscribe|subscribe|enrol(?:l|ment)?|join|confirm|accept|approve|submit|cancel|revoke|"
-    r"deactivate|sesskey|act|action|do)(?:$|[^a-z])"
-)
+# What the address itself says it does: leaving, joining, confirming, cancelling, deleting,
+# voting, marking. A GET to such an address can change something on a careless site, so it is
+# never made. The address (decoded, path and query) is cut into whole words at case changes and at
+# `_ - . / & = ?`, so `/api/deleteItem`, `/doLogout`, `/log_out` and `/cancelBooking/5` are caught
+# and `/address` or `/exam` are not.
+_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
+_ACTION_WORDS = frozenset(
+    {
+        "logout", "signout", "signoff", "logoff", "exit", "quit", "delete", "remove", "destroy",
+        "unsubscribe", "subscribe", "enrol", "enroll", "enrolment", "enrollment", "unenrol",
+        "unenroll", "join", "leave", "confirm", "accept", "approve", "reject", "decline",
+        "submit", "cancel", "revoke", "deactivate", "activate", "disable", "toggle", "mark",
+        "vote", "register", "signup", "reset", "terminate", "drop", "withdraw", "send", "pay",
+        "purchase", "buy", "publish", "ban", "kick", "purge", "wipe", "sesskey", "act",
+        "action", "do",
+    }
+)  # fmt: skip
+_ACTION_PAIRS = frozenset(
+    {
+        ("log", "out"), ("sign", "out"), ("log", "off"), ("sign", "off"), ("sign", "up"),
+        ("opt", "out"), ("check", "out"), ("un", "subscribe"), ("un", "enrol"), ("un", "enroll"),
+    }
+)  # fmt: skip
+# A verb glued to the rest in lower case (`logoutall`, `unsubscribeme`) is still that verb.
+_ACTION_PREFIXES = ("logout", "signout", "logoff", "signoff", "unsubscribe", "unenrol")
 _URL_IN_TEXT = re.compile(r"https://[^\s<>\"'`)\]]+")
 _TRAILING = ".,;:!?»”…"
 
@@ -86,6 +104,21 @@ def _decoded(url: str) -> str:
             break
         text = unquoted
     return text
+
+
+def looks_like_action(url: str) -> bool:
+    """Whether the address names an action rather than a page (see `_ACTION_WORDS`)."""
+    words = [w.lower() for w in _WORD.findall(_decoded(url))]
+    return any(w in _ACTION_WORDS or w.startswith(_ACTION_PREFIXES) for w in words) or any(
+        pair in _ACTION_PAIRS for pair in itertools.pairwise(words)
+    )
+
+
+def _exact_key(url: str) -> str:
+    """The address with its query, the order of parameters aside: what a page showed as a link."""
+    parts = urlsplit(url)
+    query = "&".join(sorted(f"{k}={v}" for k, v in parse_qsl(parts.query, keep_blank_values=True)))
+    return f"{_path_key(url)}?{query}" if query else _path_key(url)
 
 
 def _path_key(url: str) -> str:
@@ -161,6 +194,17 @@ def _needs_login(title: str) -> str:
     )
 
 
+async def _refuse_action_hop(request: httpx.Request) -> None:
+    """A page may answer with a redirect to an address that does something (`/logout`): every hop
+    is judged like the address the agent asked for, before it is requested."""
+    if looks_like_action(str(request.url)):
+        raise BotaiError(
+            ErrorCode.EGRESS_BLOCKED,
+            "Источник перенаправил на адрес, похожий на действие (выход, запись, удаление); "
+            "такие адреса не открываются",
+        )
+
+
 async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     connection_id = str(args.get("connection_id", "")).strip()
     conn_meta = (await env.titles()).get(connection_id)
@@ -170,7 +214,7 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         return "Результат: не выполнено. Нужен обычный HTTPS-адрес страницы источника."
-    if _UNSAFE_GET.search(_decoded(url)):
+    if looks_like_action(url):
         return (
             "Результат: не выполнено. Адрес похож на действие (выход, запись, подтверждение, "
             "удаление), а не на чтение страницы; такие адреса не открываются."
@@ -192,7 +236,7 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
     declared, _ = await _declared_pages(env, connection_id, url)
     opened = (
         declared
-        or _path_key(url) in {_path_key(u) for u in env.seen.source}
+        or _exact_key(url) in {_exact_key(u) for u in env.seen.source}
         or url in env.question_links
     )
     if not opened:
@@ -216,7 +260,9 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         else "none",
     }
     try:
-        async with SourceClient(sctx, auth_type="session") as client:
+        async with SourceClient(
+            sctx, auth_type="session", request_guard=_refuse_action_hop
+        ) as client:
             response = await client.request("GET", url, auth_binding=binding)
     except SessionExpired:
         return _needs_login(conn_meta.title)
@@ -226,16 +272,18 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         return f"Результат: ошибка. Источник ответил HTTP {response.status_code}."
     content_type = response.headers.get("content-type", "").lower()
     links: list[tuple[str, str]] = []
-    if "json" in content_type:
-        body = webtext.json_text(response.content)
-        if body is None:
-            return "Результат: ошибка. Ответ объявлен как JSON, но не разобран."
-        title = "JSON"
+    # JSON is JSON whatever the server calls it: an answer sent as text/html or text/plain still
+    # gets the outline with its credentials hidden, not the raw text.
+    outline = webtext.json_text(response.content, declared="json" in content_type)
+    if outline is not None:
+        body, title = outline, "JSON"
+    elif "json" in content_type:
+        return "Результат: ошибка. Ответ объявлен как JSON, но не разобран."
     elif "html" in content_type or response.content.lstrip()[:15].lower().startswith(b"<!doctype"):
         if webtext.has_login_form(response.content):
             return _needs_login(conn_meta.title)  # a site without 401 answers an expired session so
         extracted = await asyncio.to_thread(extract, response.content, "html")
-        body = webtext.mask_text(extracted.text[: webtext.TEXT_CHARS])
+        body = webtext.data_body(extracted.text)
         title = extracted.title or parts.path or host
         allowed = {h.lower() for h in info.allow_hosts}
         links = [
@@ -245,7 +293,7 @@ async def browse_source(env: ChatEnv, args: dict[str, Any]) -> str:
         ]
         env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
     elif content_type.startswith("text/"):
-        body = webtext.mask_text(response.text[: webtext.TEXT_CHARS])
+        body = webtext.data_body(response.text)
         title = parts.path or host
     else:
         return (
@@ -405,7 +453,7 @@ async def fetch_public_page(env: ChatEnv, args: dict[str, Any]) -> str:
     return (
         f"Недоверенная публичная страница {raw} [{key}], открыта без входа. "
         f"Название: {webtext.mask_text(clean(title, 160))}\n"
-        f"{webtext.mask_text(extracted.text[: webtext.TEXT_CHARS])}{_links_block(links)}"
+        f"{webtext.data_body(extracted.text)}{_links_block(links)}"
     )
 
 
@@ -438,8 +486,6 @@ async def read_document(env: ChatEnv, args: dict[str, Any]) -> str:
                 )
             )
         )
-        if doc is None and att is not None and att.document_id:
-            doc = await session.get(Document, att.document_id)
         if doc is None and att is None:
             return "Такого документа у студента нет. Возьмите document_id из результата поиска."
         if doc is None and att is not None:
@@ -559,8 +605,8 @@ SPECS = {
         "Прочитать страницу или JSON-ответ ПОДКЛЮЧЁННОГО источника вживую сессией студента: "
         "только чтение (GET) и только страницы, на которые указывает сам источник — его входная "
         "страница, карта разделов (site_map), ссылки уже открытых страниц и адреса из сообщения "
-        "студента. Для другой недели расписания или страницы меняйте значения в запросе той же "
-        "страницы. Результат — недоверенный текст страницы со ссылками. Если сессия истекла, "
+        "студента. Для другой недели расписания или страницы меняйте значения в запросе страницы "
+        "из карты разделов или входной страницы. Результат — недоверенный текст страницы со ссылками. Если сессия истекла, "
         "вернёт needs_login: предложите войти (request_login).",
         {
             "connection_id": {"type": "string"},
