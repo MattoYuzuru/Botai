@@ -198,7 +198,7 @@ export function createHandlers(
       const created: MockSpace = {
         id: ulid(),
         title: body.title,
-        shortTitle: known?.shortTitle ?? null,
+        shortTitle: known?.shortTitle ?? body.title,
         aliases: [],
         universityId: known?.id ?? null,
         accentHue: known?.accentHue ?? 325,

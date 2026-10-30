@@ -73,6 +73,7 @@ export function seedUniversities(): S["UniversityOut"][] {
       id: "u-hse",
       title: "Высшая школа экономики",
       shortTitle: "ВШЭ",
+      aliases: ["Вышка"],
       accentHue: 262.2,
       origins: [HSE_ORIGIN],
       thirdPartyWarning: null,
@@ -81,6 +82,7 @@ export function seedUniversities(): S["UniversityOut"][] {
       id: "u-cu",
       title: "Центральный университет",
       shortTitle: "ЦУ",
+      aliases: [],
       accentHue: 292,
       origins: ["https://my.fakeuni.test"],
       thirdPartyWarning:
