@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Collection, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast
@@ -194,6 +194,8 @@ class _Run:
     push_confirmed: bool = False
     guard_fallbacks: int = 0
     entry_clicks: int = 0
+    # hosts the student was asked about (or declined) as sources of page files in this login
+    asked_assets: set[str] = field(default_factory=lambda: set[str]())
 
 
 def _avoid_tokens(creds: _Creds) -> list[str]:
@@ -334,6 +336,7 @@ class LoginFlow:
                             )
                         diagnostic_event("auth.session.reused", connection_id=connection_id)
                         return refreshed
+            declined_assets: set[str] = set()
             for added in range(MAX_ADDITIONAL_LOGIN_HOSTS + 1):
                 try:
                     diagnostic_event(
@@ -352,6 +355,7 @@ class LoginFlow:
                         entry_url=entry_url,
                         force=force,
                         manual=manual,
+                        declined_assets=declined_assets,
                     )
                     diagnostic_event("auth.session.ready", connection_id=connection_id)
                     return state
@@ -363,8 +367,11 @@ class LoginFlow:
                         or len(hosts) >= MAX_HOSTS
                     ):
                         raise
+                    assets = bool(exc.extra.get("assets"))
                     sends = (
-                        "отправляет данные входа на"
+                        "загружает файлы с"
+                        if assets
+                        else "отправляет данные входа на"
                         if exc.extra.get("post")
                         else ("перенаправил вход на")
                     )
@@ -378,6 +385,11 @@ class LoginFlow:
                             cancel_label="Не разрешать",
                         )
                     )
+                    if answer.values is not True and assets:
+                        # Files of a page are not worth the login: go on without that host (the
+                        # page may still work), and do not ask about it again.
+                        declined_assets.add(host)
+                        continue
                     if answer.values is not True:
                         raise BotaiError(
                             ErrorCode.EGRESS_BLOCKED,
@@ -542,6 +554,7 @@ class LoginFlow:
         entry_url: str | None = None,
         force: bool = False,
         manual: bool = False,
+        declined_assets: Collection[str] = (),
     ) -> SessionState:
         username = (
             None if manual else await self._vault.get(user_id, connection_id, SecretKind.LOGIN)
@@ -586,6 +599,7 @@ class LoginFlow:
                 force_relogin=force,
                 manual=manual,
                 manual_requested=manual,
+                asked_assets=set(declined_assets),
             )
             try:
                 session = await self._drive(run)
@@ -611,6 +625,7 @@ class LoginFlow:
         if run.entry_url is not None and requires_authentication(snap):
             run.entry_form_path = urlsplit(snap.url).path
         for _ in range(self._timing.max_pages):
+            self._ask_for_asset_host(run)
             if run.manual:
                 if isinstance(detect(snap), ErrorPage):
                     raise self._navigation_failure(run)
@@ -678,6 +693,24 @@ class LoginFlow:
                 return outcome
             snap = outcome
         raise BotaiError(ErrorCode.LOGIN_FAILED, "Вход занял слишком много шагов, остановились")
+
+    def _ask_for_asset_host(self, run: _Run) -> None:
+        """A page of the site wanted files from a sibling host under the cookie domain of the site
+        itself: the gate refused (the session cookie would have gone along), and the page may be
+        dead without them. The cookie domain already proves the host is the site's own, so the
+        student is asked like for any host of the login (see `_ensure`): «Разрешить» makes it a
+        host of the connection, and the login restarts with it allowed."""
+        site = urlsplit(run.info.origin).hostname or ""
+        for host in run.handle.credentialed_asset_hosts():
+            if host in run.asked_assets or host in run.hosts or not _same_site(host, site):
+                continue
+            run.asked_assets.add(host)
+            raise BotaiError(
+                ErrorCode.EGRESS_BLOCKED,
+                f"Сайт вуза загружает файлы с {host}, а этот адрес не входит в разрешённые "
+                "для подключения",
+                extra={"host": host, "assets": True},
+            )
 
     def _navigation_failure(self, run: _Run) -> BotaiError:
         failure = run.handle.navigation_failure()
@@ -949,6 +982,10 @@ class LoginFlow:
         guard (the page may react to it); the last one is typed inside the step that sends the
         form, so the page's login check and the submission share one window."""
         host = urlsplit(step.url).hostname or ""
+        if not run.handle.is_connection_host(host):
+            # A page of a host that only served page files (it got here by a redirect the proxy
+            # cannot tell from an image): nothing of the student's or of the Vault goes into it.
+            raise run.handle.refusal_error(host)
         attempt = run.attempts.get(step.signature, 1)
         selectors = [f.selector for f in step.fields]
         run.handle.take_guard_refusals()  # what an earlier step met is not this step's
@@ -1018,6 +1055,8 @@ class LoginFlow:
         self, run: _Run, f: StepField, *, host: str, failed: bool, attempt: int
     ) -> str:
         creds = run.creds
+        if not run.handle.is_connection_host(host):
+            raise run.handle.refusal_error(host)  # (`_enter` checked already: defence in depth)
         if f.role == "username" and creds.username is not None and not failed:
             return creds.username
         if f.role == "password" and creds.password is not None and not failed:
@@ -1260,7 +1299,14 @@ class LoginFlow:
             await asyncio.sleep(t.poll_s)
             if link.closed or run.handle.closed:
                 raise JobCancelled("the login screen was closed")
-            now = await run.handle.snapshot()
+            try:
+                now = await run.handle.snapshot()
+            except BotaiError as exc:
+                if exc.code == ErrorCode.EGRESS_BLOCKED:
+                    # the page left for a host that is not the connection's: end the screen and
+                    # put the host to the student, like a failed navigation
+                    await link.close("navigation_failed")
+                raise
             found = detect(now)
             # A human's CDP click does not pass through handle.goto(), which maps
             # navigation errors. Do not leave a failed page waiting for 30 minutes

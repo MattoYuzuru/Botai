@@ -2,11 +2,12 @@
 
 An identity provider or a cabinet loads its style sheets, scripts, fonts and images from CDN and
 static hosts that are not the login host. With exact-host allowlists such a page renders without CSS
-and JS. The gate lets those *assets* through and nothing else (security.md §4.3):
+and JS. The gate lets those *assets* through and nothing else (security.md §4.4):
 
 * a request to a host outside `allow_hosts` (and outside the login-mode `suffixes`) passes only if it
-  is a GET of a style sheet, script, font, image or media file, with no `Authorization` and no
-  cookie of the source that the browser would send to that host;
+  is a GET over https of a style sheet, script, font, image or media file, made by a document of the
+  connection, with no `Authorization`, no cookie of the source that the browser would send to that
+  host and no Referer that carries a query;
 * every other request (a document, XHR/fetch, a beacon, an event stream, a WebSocket, any non-GET)
   is refused here, and a refused document is reported like a proxy-refused one, so that the
   student is still asked about a login redirect;
@@ -15,6 +16,10 @@ and JS. The gate lets those *assets* through and nothing else (security.md §4.3
   public addresses only, DNS pinning, port 443, a cap of hosts per token. A host nobody armed,
   such as the target of a server redirect (Playwright's `route` does not see redirect hops), stays
   refused by the proxy.
+
+An armed host is open to every kind of request at the proxy, and a redirect hop never reaches this
+gate. So the handle watches the hops that do land on an armed host (`hop_reason`) and stops the
+connection's flow when one is a document or something an asset is not.
 
 Nothing here touches the session: the gate adds no cookie and no header, a host it admits never
 becomes part of `allow_hosts`, and `PlaywrightHandle` leaves admitted hosts out of the hosts it
@@ -28,7 +33,7 @@ import contextlib
 import logging
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from playwright.async_api import BrowserContext, Request, Route, WebSocketRoute
@@ -43,7 +48,10 @@ ASSET_TYPES = frozenset({"stylesheet", "script", "font", "image", "media"})
 # What `PlaywrightHandle` maps to an EGRESS_BLOCKED navigation error (an approval question).
 NAVIGATION_REFUSED = "navigation_host_not_allowed"
 MAX_REMEMBERED = 64  # refused documents / hosts kept for the handle to read
-MAX_ARM_FAILURES = 8  # a proxy that does not answer ARM must not slow every asset of a page
+# A proxy that answers ARM with 405 (an older one) or not at all must not slow down every asset of
+# a page: after this many failures the context behaves as it did before the allowance existed.
+MAX_ARM_FAILURES = 3
+ARM_TIMEOUT_S = 2.0
 _LOGGED_TYPES = frozenset(
     {"xhr", "fetch", "document", "stylesheet", "script", "font", "image", "media", "websocket"}
 )
@@ -56,6 +64,13 @@ def host_of(url: str) -> str:
     """Lower-case host name of a URL without trailing dot, or '' when it has none."""
     try:
         return (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def scheme_of(url: str) -> str:
+    try:
+        return urlsplit(url).scheme.lower()
     except ValueError:
         return ""
 
@@ -98,6 +113,20 @@ def asset_refusal(method: str, resource_type: str, headers: Mapping[str, str]) -
     return None
 
 
+def referer_leaks(headers: Mapping[str, str]) -> bool:
+    """Does the Referer carry a query? Chromium sends the origin only by default; a page with a
+    legacy policy (`unsafe-url`, `no-referrer-when-downgrade`) sends its whole address, and the
+    address of a login step holds codes (`code`, `ticket`, `session_code`). Chromium ignores a
+    Referer set through `route` headers, so it cannot be cut: the request is refused."""
+    for name, value in headers.items():
+        if name.lower() == "referer":
+            try:
+                return bool(urlsplit(value).query)
+            except ValueError:
+                return True
+    return False
+
+
 class AssetGate:
     def __init__(
         self,
@@ -108,6 +137,7 @@ class AssetGate:
         cap: int,
         arm: Arm,
         diagnostic_facts: Mapping[str, object],
+        only: Collection[str] | None = None,
     ) -> None:
         self._context = context
         self._allow = frozenset(h.lower() for h in allow_hosts)
@@ -116,11 +146,13 @@ class AssetGate:
         self.socket_pattern = _foreign_pattern("wss?", self._allow, self._suffixes)
         self._cap = cap
         self._arm = arm
+        self._only = None if only is None else frozenset(h.lower() for h in only)
         self._facts = dict(diagnostic_facts)
-        self._lock = asyncio.Lock()
+        self._arming: dict[str, asyncio.Task[bool]] = {}
         self._arm_failures = 0
         self._full = False  # the cap is spent: no more new hosts, nothing to ask the proxy
         self.hosts: dict[str, None] = {}  # admitted asset hosts, first-admitted order
+        self.credentialed: dict[str, None] = {}  # hosts a cookie of the source would have reached
         self.refused: list[str] = []  # hosts of refused requests (bounded)
         self.refused_navigations: dict[Request, tuple[str, str]] = {}
         self.counts: Counter[str] = Counter()
@@ -140,7 +172,7 @@ class AssetGate:
         if self.local(host):  # an odd spelling of the URL (userinfo, trailing dot) of our own host
             await route.fallback()
             return
-        reason = asset_refusal(request.method, request.resource_type, request.headers)
+        reason = self._static_refusal(request)
         if reason is None:
             reason = await self._credential_refusal(host)
         if reason is None:
@@ -153,6 +185,36 @@ class AssetGate:
         self.allowed_requests += 1
         with contextlib.suppress(PlaywrightError):
             await route.fallback()  # on to the rest of the chain (bearer injection)
+
+    def _static_refusal(self, request: Request) -> str | None:
+        """What can be told from the request alone."""
+        if scheme_of(request.url) != "https":
+            return "asset_scheme"  # the proxy takes CONNECT to 443 only: do not spend a slot
+        if self._foreign_frame(request):
+            return "asset_frame"
+        reason = asset_refusal(request.method, request.resource_type, request.headers)
+        if reason is None and referer_leaks(request.headers):
+            return "asset_referer"
+        if (
+            reason is None
+            and self._only is not None
+            and host_of(request.url) not in self._only
+            and host_of(request.url) not in self.hosts
+        ):
+            return "asset_unlisted"
+        return reason
+
+    def _foreign_frame(self, request: Request) -> bool:
+        """Is the document that makes the request one of a foreign host? Such a document got there
+        by a redirect no `route` saw (the host had been armed for an asset): nothing it asks for
+        is an asset of the connection. A worker has no frame; about:, data: and blob: documents
+        take their origin from the page that made them."""
+        try:
+            url = request.frame.url
+        except PlaywrightError:
+            return False
+        host = host_of(url)
+        return scheme_of(url) in {"http", "https"} and bool(host) and not self.local(host)
 
     def take_refused_navigation(self, request: Request) -> tuple[str, str] | None:
         return self.refused_navigations.pop(request, None)
@@ -178,7 +240,9 @@ class AssetGate:
     async def _credential_refusal(self, host: str) -> str | None:
         """The browser sends cookies by domain. A sibling of a login host (same registered domain)
         may be inside the Domain= of a cookie of the source: then the request would carry the
-        session to a host that is not the connection's, and it is refused."""
+        session to a host that is not the connection's, and it is refused. The match is the proof
+        that the host is under the source's own cookie domain, which is why the student may be
+        asked about it (`credentialed`)."""
         if not any(_tail(host) == _tail(allowed) for allowed in self._allow):
             return None  # no cookie of the source can reach a host with another registered domain
         try:
@@ -192,6 +256,8 @@ class AssetGate:
                 and cookie_reaches(domain, host)
                 and any(cookie_reaches(domain, allowed) for allowed in self._allow)
             ):
+                if len(self.credentialed) < MAX_REMEMBERED:
+                    self.credentialed[host] = None
                 return "asset_credentials"
         return None
 
@@ -201,23 +267,32 @@ class AssetGate:
         normalized = normalize_host(host)
         if normalized is None or is_ip_literal(normalized):
             return "asset_unavailable"
-        async with self._lock:
-            if host in self.hosts:
-                return None
-            if self._full or len(self.hosts) >= self._cap:
+        pending = self._arming.get(host)
+        if pending is None:
+            # taken before any await: concurrent requests share the cap, and ask the proxy once
+            if self._full or len(self.hosts) + len(self._arming) >= self._cap:
                 self._full = True
                 return "asset_cap"
             if self._arm_failures >= MAX_ARM_FAILURES:
                 return "asset_unavailable"
-            try:
+            pending = self._arming[host] = asyncio.get_running_loop().create_task(
+                self._ask_proxy(host, normalized, request)
+            )
+        return None if await asyncio.shield(pending) else "asset_unavailable"
+
+    async def _ask_proxy(self, host: str, normalized: str, request: Request) -> bool:
+        try:
+            async with asyncio.timeout(ARM_TIMEOUT_S):
                 armed = await self._arm(normalized)
-            except Exception:
-                log.exception("arming an asset host failed")
-                armed = False
-            if not armed:
-                self._arm_failures += 1
-                return "asset_unavailable"
-            self.hosts[host] = None
+        except Exception:
+            log.warning("arming an asset host failed", exc_info=True)
+            armed = False
+        finally:
+            self._arming.pop(host, None)
+        if not armed:
+            self._arm_failures += 1
+            return False
+        self.hosts[host] = None
         self._event(
             "browser.asset_host_allowed",
             resource_type=self._type_code(request.resource_type),
@@ -225,7 +300,37 @@ class AssetGate:
             asset_host_cap=self._cap,
             **url_facts(request.url),
         )
-        return None
+        return True
+
+    # -- redirect hops: seen after the fact, never by `route` ----------------------------------
+
+    def hop_reason(self, request: Request) -> str | None:
+        """A request that is a redirect hop and landed on an armed host. None when it is what an
+        asset is (a GET of a file); otherwise why it is not. The proxy let it through because the
+        host is armed for assets; the connection's flow must not go on as if nothing happened."""
+        if request.redirected_from is None:
+            return None
+        host = host_of(request.url)
+        if host not in self.hosts or self.local(host):
+            return None  # an unarmed host is refused by the proxy; ours are not the gate's business
+        if request.is_navigation_request():
+            return "asset_redirect"
+        return (
+            "asset_redirect" if asset_refusal(request.method, request.resource_type, {}) else None
+        )
+
+    def note_hop(self, request: Request) -> None:
+        self.counts["asset_redirect"] += 1
+        self._remember_refused(host_of(request.url))
+        method = request.method if request.method in _METHODS else "OTHER"
+        self._event(
+            "browser.asset_refused",
+            reason="asset_redirect",
+            method=method,
+            resource_type=self._type_code(request.resource_type),
+            navigation=request.is_navigation_request(),
+            **url_facts(request.url),
+        )
 
     # -- bookkeeping -------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-"""The asset allowance of the EgressProxy (security.md §4.3). No Chromium: raw `ARM` and CONNECT.
+"""The asset allowance of the EgressProxy (security.md §4.4). No Chromium: raw `ARM` and CONNECT.
 
 The proxy cannot see what a request is, so it never decides what an asset is. The browser guard
 does, and *arms* a host; the proxy then spends one of the token's asset slots and keeps what only it
@@ -330,3 +330,97 @@ async def test_the_grant_event_names_the_allowance_only_when_there_is_one(
     plain, assets = (facts for _, facts in events)
     assert "asset_host_cap" not in plain
     assert assets["asset_host_cap"] == ASSET_HOSTS
+
+
+# ------------------------------------------------------------------- how ARM is spelled
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://cdn.test:443/",  # the absolute form Chromium uses for an http:// URL
+        "https://cdn.test:443/x.js",
+        "cdn.test",
+        "cdn.test:",
+        "cdn.test:44a",
+        ":443",
+        "cdn.test:443/path",
+    ],
+)
+async def test_arm_takes_a_host_and_port_and_nothing_else(lab: Lab, target: str) -> None:  # noqa: F811
+    token = lab.token(["fakeuni.test"], max_asset_hosts=ASSET_HOSTS)
+    status, _, _, writer = await send(lab.proxy, f"ARM {target} HTTP/1.1", token)
+    writer.close()
+    assert status == 400
+    assert lab.proxy.stats["allow:asset_armed"] == 0
+
+
+async def test_a_plain_http_request_through_the_proxy_is_not_a_connect_and_not_an_arm(
+    lab: Lab,  # noqa: F811
+) -> None:
+    """For an http:// URL Chromium sends the absolute form (`GET http://host/ HTTP/1.1`) to a
+    proxy; this one speaks CONNECT (and the private ARM) only."""
+    token = lab.token(["fakeuni.test"], max_asset_hosts=ASSET_HOSTS)
+    status, headers, _, writer = await send(lab.proxy, "GET http://cdn.test/x.js HTTP/1.1", token)
+    writer.close()
+    assert status == 405
+    assert headers["allow"] == "CONNECT"
+
+
+def test_a_proxy_url_is_plain_http_and_its_port_is_taken_as_chromium_takes_it() -> None:
+    for bad in ("https://proxy:3128", "proxy:3128", "socks5://proxy:1080", "http://", ""):
+        with pytest.raises(ValueError, match=r"http://host"):
+            ProxyEgress(SECRET, server_url=bad)
+    ProxyEgress(SECRET, server_url="http://proxy:3128")  # (accepted)
+
+
+async def test_a_proxy_url_without_a_port_means_port_80() -> None:
+    seen: list[bytes] = []
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        seen.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        # no port: Chromium would go to 80, so must we (nothing listens there in this test)
+        assert (
+            await egress_module._arm_remote(  # pyright: ignore[reportPrivateUsage]
+                "http://127.0.0.1", "token", "cdn.test", timeout_s=0.5
+            )
+            is False
+        )
+        assert seen == []
+        assert (
+            await egress_module._arm_remote(  # pyright: ignore[reportPrivateUsage]
+                f"http://127.0.0.1:{port}", "token", "cdn.test"
+            )
+            is True
+        )
+        assert seen[0].startswith(b"ARM cdn.test:443 HTTP/1.1\r\n")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_the_in_process_arm_is_counted_and_logged_like_the_one_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "botai.browser.proxy.diagnostic_event", lambda e, **f: events.append((e, f))
+    )
+    proxy = EgressProxy(SECRET)
+    token = mint_token(SECRET, hosts=["fakeuni.test"], ttl_s=60, max_asset_hosts=1)
+    assert proxy.arm_asset_host(token, "cdn.test") is None
+    assert proxy.arm_asset_host(token, "other.test") is not None
+    assert proxy.stats["allow:asset_armed"] == 1
+    assert proxy.stats["deny:too_many_hosts"] == 1
+    assert [(f["decision"], f["reason"], f["status"]) for _, f in events] == [
+        ("allow", "asset_armed", 204),
+        ("deny", "too_many_hosts", 403),
+    ]
+    assert "cdn.test" not in repr(events)

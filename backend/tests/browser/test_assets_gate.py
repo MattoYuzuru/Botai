@@ -1,4 +1,4 @@
-"""The asset gate's decisions that need no browser (security.md §4.3)."""
+"""The asset gate's decisions that need no browser (security.md §4.4)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from botai.browser.assets import (
     asset_refusal,
     cookie_reaches,
     host_of,
+    referer_leaks,
 )
 
 ALLOWED = ("fakeuni.test", "id.fakeuni.test", "my-site.example")
@@ -162,6 +163,21 @@ def test_only_the_browser_gateway_asks_for_an_allowance() -> None:
     askers = {
         str(path.relative_to(root))
         for path in root.rglob("*.py")
-        if "assets=" in path.read_text(encoding="utf-8")
+        if re.search(r"(?<![A-Za-z_])assets=", path.read_text(encoding="utf-8"))
     }
     assert askers == {"browser/gateway.py"}, askers
+
+
+@pytest.mark.parametrize(
+    ("headers", "leaks"),
+    [
+        ({"referer": "https://fakeuni.test/"}, False),  # the default policy: the origin only
+        ({"referer": "https://fakeuni.test/login/step"}, False),  # a path is not a code
+        ({"referer": "https://fakeuni.test/login?code=x"}, True),
+        ({"Referer": "https://fakeuni.test/?ticket=ST-1"}, True),
+        ({"referer": "https://fakeuni.test/cb?"}, False),
+        ({}, False),
+    ],
+)
+def test_a_referer_with_a_query_is_a_leak(headers: dict[str, str], leaks: bool) -> None:
+    assert referer_leaks(headers) is leaks

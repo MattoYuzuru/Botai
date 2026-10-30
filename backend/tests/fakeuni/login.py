@@ -10,8 +10,9 @@
 * `/blocked`: the site refuses the visit (bot protection page).
 * `/cu/app` → `id.fakeuni.test/cu/realms/...` → `/cu/login-actions/authenticate`: a Keycloak-like
   JS login in three steps (e-mail, password, SMS code); see the section below.
-* `/assets/login`, `/assets/plain`, `/sso-assets/start`: pages whose CSS and JS come from another host
-  (`cdn.fakeuni-assets.test`); see the last section.
+* `/assets/login`, `/assets/plain`, `/assets/legacy`, `/sso-assets/start`, `/sibling/login`: pages whose
+  CSS and JS come from another host (`cdn.fakeuni-assets.test`, or a sibling `static.fakeuni.test`);
+  `/redirect/open` is an open redirect. See the last section.
 
 Wrong credentials re-render the same form with an error, like real sites. Every successful path
 ends with the `FAKEUNI_SESSION` cookie on fakeuni.test. Nothing here resembles a real university.
@@ -910,13 +911,15 @@ class AssetStats:
 ASSETS = AssetStats()
 
 
-def _note(request: Request | WebSocket) -> None:
+def _note(request: Request | WebSocket, body: bytes | None = None) -> None:
     host = (request.headers.get("host") or "").split(":")[0].lower()
     ASSETS.requests.append(
         {
             "host": host,
             "method": request.scope.get("method", "WS"),
             "path": request.url.path,
+            "query": request.url.query,
+            "body": None if body is None else body.decode("utf-8", "replace"),
             "cookie": request.headers.get("cookie"),
             "authorization": request.headers.get("authorization"),
             "referer": request.headers.get("referer"),
@@ -1044,7 +1047,7 @@ async def assets_data(request: Request) -> JSONResponse:
 
 @router.post("/assets/data")
 async def assets_data_post(request: Request) -> JSONResponse:
-    _note(request)
+    _note(request, await request.body())
     return JSONResponse({"ok": True}, headers={"access-control-allow-origin": "*"})
 
 
@@ -1104,3 +1107,58 @@ async def sso_assets_login(request: Request) -> str:
         '<input id="pw" name="password" type="password" autocomplete="current-password">'
         '<button id="go" type="submit" disabled>Продолжить</button></form></body></html>'
     )
+
+
+@router.get("/assets/arm.js")
+async def assets_arm_js(request: Request) -> Response:
+    """A script from any host: asking for it is what makes the host an asset host of a context."""
+    _note(request)
+    return _asset_response("/* an asset */", "application/javascript")
+
+
+@router.get("/assets/x.png")
+async def assets_exfil_pixel(request: Request) -> Response:
+    """An image whose address carries data: what a page uses to send a value out by GET."""
+    _note(request)
+    return await assets_pixel(request)
+
+
+@router.api_route("/redirect/open", methods=["GET", "POST"])
+async def redirect_open(to: str, code: int = 302) -> RedirectResponse:
+    """An open redirect, as some sites have: to anywhere, with the status the caller asks for."""
+    return RedirectResponse(to, status_code=code)
+
+
+@router.get("/assets/legacy", response_class=HTMLResponse)
+async def assets_legacy(request: Request) -> HTMLResponse:
+    """A page with a legacy referrer policy: its whole address (with the query) goes to a CDN."""
+    _note(request)
+    return HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход</title>"
+        + _ASSET_HEAD
+        + f'<script src="{_CDN}/assets/login.js" defer></script></head>'
+        "<body><div id='app'></div></body></html>",
+        headers={"referrer-policy": "unsafe-url"},
+    )
+
+
+@router.get("/sibling/login", response_class=HTMLResponse)
+async def sibling_login(request: Request, needed: int = 0) -> HTMLResponse:
+    """A form whose files come from a sibling under the domain of a session cookie the page itself
+    sets (`Domain=.fakeuni.test`): a browser would send that cookie to the sibling. With `needed`,
+    the submit button stays disabled until the script from the sibling runs."""
+    _note(request)
+    sibling = f"https://{SIBLING_HOST}"
+    script = f'<script src="{sibling}/assets/enable.js" defer></script>' if needed else ""
+    button = '<button id="go" type="submit"' + (" disabled" if needed else "") + ">Войти</button>"
+    response = HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><title>Вход</title>"
+        f'<link rel="stylesheet" href="{sibling}/assets/login.css">{script}</head><body>'
+        '<form id="plain" method="post" action="/plain/login">'
+        '<label for="u">Логин</label><input id="u" name="login" type="text" autocomplete="username">'
+        '<label for="p">Пароль</label>'
+        '<input id="p" name="pass" type="password" autocomplete="current-password">'
+        f"{button}</form></body></html>"
+    )
+    response.set_cookie("SRC_DOMAIN", "1", domain="fakeuni.test", secure=True, httponly=True)
+    return response

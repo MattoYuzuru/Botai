@@ -444,14 +444,26 @@ class EgressProxy:
     def arm_asset_host(self, token: str, host: str) -> Denial | None:
         """In-process twin of the `ARM` request: the same checks, for a proxy in this process."""
         grant = self._grant_from_token(token)
-        if grant is None:
-            return Denial(407, "auth_failed")
         normalized = normalize_host(host)
-        if normalized is None:
-            return Denial(400, "bad_request")
-        if is_ip_literal(normalized):
-            return Denial(403, "ip_literal")
-        return self._arm(grant, normalized)
+        denial: Denial | None
+        if grant is None:
+            denial = Denial(407, "auth_failed")
+        elif normalized is None:
+            denial = Denial(400, "bad_request")
+        elif is_ip_literal(normalized):
+            denial = Denial(403, "ip_literal")
+        else:
+            denial = self._arm(grant, normalized)
+        shown = _LOG_UNSAFE.sub("?", normalized or "-")[:100]
+        self._record(
+            decision="deny" if denial else "allow",
+            reason=denial.reason if denial else "asset_armed",
+            status=denial.status if denial else 204,
+            grant=grant,
+            host=normalized,
+            host_for_log=shown,
+        )
+        return denial
 
     def url_for(self, token: str) -> str:
         return proxy_url_with_token(self.url, token)
@@ -733,42 +745,66 @@ class EgressProxy:
                 reason, status = "internal", 500
                 await self._reply(writer, status)
         finally:
-            self.stats[f"{decision}:{reason}"] += 1
-            facts: dict[str, object] = {}
-            if grant is not None:
-                facts["grant_hash"] = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
-            if diagnostic_host is not None:
-                host_hash = url_facts("https://" + diagnostic_host).get("host_hash")
-                if host_hash is not None:
-                    facts["host_hash"] = host_hash
-            diagnostic_event(
-                "egress.decision",
-                # An embedded server may inherit the starter job's context. A tunnel belongs
-                # to its verified grant, never to that old task; the reader joins the digest.
-                job_id=None,
-                thread_id=None,
-                connection_id=None,
-                request_id=None,
-                message_id=None,
-                block_id=None,
-                job_kind=None,
+            self._record(
                 decision=decision,
                 reason=reason,
                 status=status,
-                up_bytes=up,
-                down_bytes=down,
-                **facts,
-            )
-            log.info(
-                "egress host=%s decision=%s reason=%s status=%d up=%d down=%d",
-                host_for_log,
-                decision,
-                reason,
-                status,
-                up,
-                down,
+                grant=grant,
+                host=diagnostic_host,
+                host_for_log=host_for_log,
+                up=up,
+                down=down,
             )
             _close(writer)
+
+    def _record(
+        self,
+        *,
+        decision: str,
+        reason: str,
+        status: int,
+        grant: Grant | None,
+        host: str | None,
+        host_for_log: str,
+        up: int = 0,
+        down: int = 0,
+    ) -> None:
+        """Count and log one decision: host, verdict and sizes only, never a path or a token."""
+        self.stats[f"{decision}:{reason}"] += 1
+        facts: dict[str, object] = {}
+        if grant is not None:
+            facts["grant_hash"] = hashlib.sha256(grant.jti.encode()).hexdigest()[:16]
+        if host is not None:
+            host_hash = url_facts("https://" + host).get("host_hash")
+            if host_hash is not None:
+                facts["host_hash"] = host_hash
+        diagnostic_event(
+            "egress.decision",
+            # An embedded server may inherit the starter job's context. A tunnel belongs
+            # to its verified grant, never to that old task; the reader joins the digest.
+            job_id=None,
+            thread_id=None,
+            connection_id=None,
+            request_id=None,
+            message_id=None,
+            block_id=None,
+            job_kind=None,
+            decision=decision,
+            reason=reason,
+            status=status,
+            up_bytes=up,
+            down_bytes=down,
+            **facts,
+        )
+        log.info(
+            "egress host=%s decision=%s reason=%s status=%d up=%d down=%d",
+            host_for_log,
+            decision,
+            reason,
+            status,
+            up,
+            down,
+        )
 
     async def _reply(
         self, writer: asyncio.StreamWriter, status: int, extra: Sequence[tuple[str, str]] = ()

@@ -337,6 +337,11 @@ _CODES: dict[str, set[str]] = {
         "asset_credentials",  # the request would carry the source's cookie or authorization
         "asset_cap",
         "asset_unavailable",
+        "asset_scheme",  # not https: the proxy takes CONNECT to 443 only
+        "asset_frame",  # the requesting document is of a host that is not the connection's
+        "asset_referer",  # the Referer carries a query (a legacy referrer policy)
+        "asset_unlisted",  # a read may use only the hosts that served assets at the login
+        "asset_redirect",  # a redirect landed on an armed host with a document or a non-asset
         "connect_timeout",
         "connect_failed",
         "connection_lost",

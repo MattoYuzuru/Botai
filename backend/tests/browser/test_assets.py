@@ -1,4 +1,4 @@
-"""Page assets from other hosts (security.md §4.3), with real Chromium on the fakeuni stand.
+"""Page assets from other hosts (security.md §4.4), with real Chromium on the fakeuni stand.
 
 An identity provider or a cabinet loads its style sheets and scripts from a CDN or a static host.
 The stand serves a login page whose form is built by a script from `cdn.fakeuni-assets.test` (not a
@@ -93,6 +93,14 @@ async def load_script(handle: PlaywrightHandle, url: str) -> str:
         })""",
         url,
     )
+
+
+def assert_session_leaves_the_asset_host_out(state: SessionState) -> None:
+    """The asset host is named in `asset_hosts` (what a later read may load) and nowhere else."""
+    assert state.asset_hosts == [ASSET_HOST]
+    kept = state.model_dump_json(exclude={"asset_hosts"})
+    assert ASSET_HOST not in kept
+    assert "CDN_TRACK" not in kept
 
 
 def gate(handle: PlaywrightHandle) -> Any:
@@ -304,7 +312,7 @@ async def test_the_exported_session_and_the_visited_hosts_leave_the_asset_host_o
     state = await handle.export_session()
     assert {c.domain for c in state.cookies} == {"fakeuni.test"}
     assert "CDN_TRACK" not in {c.name for c in state.cookies}
-    assert ASSET_HOST not in state.model_dump_json()
+    assert_session_leaves_the_asset_host_out(state)
     assert ASSET_HOST not in handle.visited_hosts()
     assert ASSET_HOST in gate(handle).hosts
     assert handle.allow_hosts == ("fakeuni.test",)
@@ -384,7 +392,7 @@ async def test_sso_host_approved_by_the_student_renders_with_its_cdn_assets(
         assert ASSET_HOST not in json.dumps(preset)
     info = rig.store.connections[(rig.user, rig.conn)]
     assert info.allow_hosts == ("fakeuni.test", "id.fakeuni.test")
-    assert ASSET_HOST not in session.model_dump_json()
+    assert_session_leaves_the_asset_host_out(session)
     assert "CDN_TRACK" not in {c.name for c in session.cookies}
 
 
@@ -400,7 +408,7 @@ async def test_a_first_login_on_a_page_with_cdn_assets_does_not_widen_the_allowl
     for preset in rig.store.presets[ORIGIN]:
         assert preset["allowHosts"] == ["fakeuni.test"]
         assert ASSET_HOST not in json.dumps(preset)
-    assert ASSET_HOST not in session.model_dump_json()
+    assert_session_leaves_the_asset_host_out(session)
 
 
 async def test_a_proxy_in_another_process_is_armed_over_the_wire(egress: EgressProxy) -> None:

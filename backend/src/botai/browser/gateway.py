@@ -40,7 +40,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import SecretStr
 
-from botai.browser.assets import NAVIGATION_REFUSED, AssetGate
+from botai.browser.assets import NAVIGATION_REFUSED, AssetGate, host_of
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.forms import CaptchaPage, PushWait, detect, has_credential_fields
 from botai.browser.pagescan import SCAN_JS, build_snapshot
@@ -385,9 +385,15 @@ class PlaywrightHandle:
         restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
         suffixes: Sequence[str] = (),
         assets: AssetGate | None = None,
+        restored_asset_hosts: Sequence[str] = (),
     ) -> None:
         self._gateway = gateway
         self._assets = assets
+        self._restored_asset_hosts = tuple(restored_asset_hosts)
+        # A document of a host that is not the connection's has been met (security.md §4.4): what
+        # the flow was told, as the host and the reason `_guard_navigation_error` understands.
+        self._tainted: tuple[str, str] | None = None
+        self._quarantines: set[asyncio.Task[None]] = set()
         self.context = context
         self._page = page
         self.user_id = user_id
@@ -444,7 +450,7 @@ class PlaywrightHandle:
         self._reaper: asyncio.Task[None] | None = None
         self._closing: asyncio.Task[None] | None = None
         context.on("page", self._on_page)
-        page.on("framenavigated", self._revoke_auth_document)
+        page.on("framenavigated", self._on_frame_navigated)
         page.on("framedetached", self._forget_auth_document)
         context.on("request", self._on_request)
         context.on("response", self._on_response)
@@ -476,9 +482,84 @@ class PlaywrightHandle:
         refused = self._assets.refused if self._assets is not None else []
         return list(dict.fromkeys([*self._blocked, *refused]))
 
+    def credentialed_asset_hosts(self) -> list[str]:
+        """Hosts the asset gate refused because a cookie of the source would have reached them
+        (a sibling under the cookie domain of the site), in first-seen order."""
+        return list(self._assets.credentialed) if self._assets is not None else []
+
     def navigation_failure(self) -> BotaiError | None:
-        """Only the current main-page navigation, never a blocked image or an old request."""
+        """Only the current main-page navigation, never a blocked image or an old request. A
+        foreign document met (or a request sent on to one) outranks it: that stays."""
+        if self._tainted is not None:
+            return self._guard_navigation_error(self._tainted)
         return self._navigation_error
+
+    # -- documents of hosts that are not the connection's ---------------------------------------
+
+    def is_connection_host(self, host: str) -> bool:
+        """A host the connection logs in at: `allow_hosts`, or a subdomain a first login may
+        follow. A host that only served page assets is not one."""
+        host = host.lower().rstrip(".")
+        return host in self.allow_hosts or any(host.endswith("." + s) for s in self._suffixes)
+
+    def _foreign_document_host(self, url: str) -> str | None:
+        try:
+            parts = urlsplit(url)
+        except (ValueError, TypeError, AttributeError):  # (a stand-in page of a test has no URL)
+            return None
+        host = (parts.hostname or "").lower().rstrip(".")
+        if parts.scheme in {"http", "https"} and host and not self.is_connection_host(host):
+            return host
+        return None
+
+    def refusal_error(self, host: str) -> BotaiError:
+        """The question the student is asked about a document of a host that is not the connection's."""
+        return self._guard_navigation_error((NAVIGATION_REFUSED, host))
+
+    def _taint(self, host: str, *, post: bool = False, navigation: bool = False) -> None:
+        """A document of a foreign host is on a page, or a request of the page went out to one that
+        is not an asset. It reached an armed host by a redirect that `route` does not see (the
+        proxy cannot tell a document from an image), so the flow must not go on as if it were the
+        connection's page: no value is typed, no step is taken, the student is asked about the
+        host (an approval makes it a login host; anything else stops the login)."""
+        first = self._tainted is None
+        if first:
+            self._tainted = ("auth_host_not_allowed" if post else NAVIGATION_REFUSED, host)
+            self._diagnostic(
+                "browser.foreign_document",
+                navigation=navigation,
+                **url_facts(f"https://{host}/"),
+            )
+        if navigation and self._tainted is not None:
+            self._navigation_error = self._guard_navigation_error(self._tainted)
+        if first and not self.closed:
+            task = asyncio.get_running_loop().create_task(self._quarantine())
+            self._quarantines.add(task)
+            task.add_done_callback(self._quarantines.discard)
+
+    async def _quarantine(self) -> None:
+        """Take every page of the context off the foreign document. Best effort: the checks in
+        `snapshot`, `fill`, `click` and the asset gate hold whether or not this succeeds."""
+        for page in list(self.context.pages):
+            with contextlib.suppress(PlaywrightError, TimeoutError):
+                async with asyncio.timeout(5):
+                    await page.goto("about:blank")
+
+    def _check_clean(self) -> None:
+        """Refuse to work on a page that is a foreign document, or after one was met."""
+        if self._tainted is None:
+            host = self._foreign_document_host(self._page.url)
+            if host is None:
+                return
+            self._taint(host, navigation=True)
+        assert self._tainted is not None
+        raise self._guard_navigation_error(self._tainted)
+
+    def _on_frame_navigated(self, frame: Frame) -> None:
+        self._revoke_auth_document(frame)
+        host = self._foreign_document_host(frame.url)
+        if host is not None:
+            self._taint(host, navigation=frame == frame.page.main_frame)
 
     def _revoke_auth_document(self, frame: Frame) -> None:
         self._auth_epochs[frame] = self._auth_epochs.get(frame, 0) + 1
@@ -663,6 +744,15 @@ class PlaywrightHandle:
         # its proxy grant follows the site to), and the frame's own: the user is told which one
         # they are typing into, and the page reached it through the same proxy grant.
         hosts = set(self.allow_hosts)
+        if self._foreign_document_host(url) is not None:
+            # a page that only got there through an armed asset host: it gets no window
+            self._diagnostic(
+                "browser.auth_permit",
+                outcome="rejected",
+                reason="auth_host_not_allowed",
+                **url_facts(url),
+            )
+            return None
         if frame_host := (urlsplit(url).hostname or "").lower():
             hosts.add(frame_host)
         window = _AuthWindow(
@@ -807,7 +897,7 @@ class PlaywrightHandle:
     def _on_page(self, page: Page) -> None:
         self._auth_windows.clear()
         self._auth_followups.clear()
-        page.on("framenavigated", self._revoke_auth_document)
+        page.on("framenavigated", self._on_frame_navigated)
         page.on("framedetached", self._forget_auth_document)
         self._read_view_registry.invalidate()
         old = self._read_capability_registry
@@ -823,6 +913,15 @@ class PlaywrightHandle:
             callback()
 
     def _on_request(self, request: Request) -> None:
+        if self._assets is not None and self._assets.hop_reason(request) is not None:
+            # A redirect landed on an armed host, as a document or as something an asset is not
+            # (an XHR, a POST kept by a 307). The request is already on its way: the flow stops.
+            self._assets.note_hop(request)
+            self._taint(
+                host_of(request.url),
+                post=request.method != "GET",
+                navigation=request.is_navigation_request(),
+            )
         if request.resource_type in _SETTLE_TYPES:
             self._inflight.add(request)
             self._last_activity = monotonic()
@@ -942,6 +1041,10 @@ class PlaywrightHandle:
             self._secret_inventory_failed = True
 
     def _on_response(self, response: Response) -> None:
+        if response.request.is_navigation_request():
+            host = self._foreign_document_host(response.url)
+            if host is not None:
+                self._taint(host, navigation=True)
         entry = self._entries.get(response.request)
         if entry is None:
             return
@@ -1105,6 +1208,8 @@ class PlaywrightHandle:
             **url_facts(url),
         )
         self._check_url(url)
+        if self._tainted is not None:
+            self._check_clean()
         self._navigation_request = None
         self._navigation_error = None
         try:
@@ -1142,7 +1247,7 @@ class PlaywrightHandle:
                 elapsed_ms=int((monotonic() - started) * 1000),
                 **url_facts(url),
             )
-            raise self._navigation_error or map_navigation_error(
+            raise self.navigation_failure() or map_navigation_error(
                 exc, url, guarded=self._entry_guarded
             ) from exc
         await self._settle()
@@ -1163,6 +1268,7 @@ class PlaywrightHandle:
         return snap
 
     async def snapshot(self) -> PageSnapshot:
+        self._check_clean()
         self._read_view_registry.invalidate()
         self._read_capability_registry.invalidate()
         last: PlaywrightError | None = None
@@ -1197,6 +1303,7 @@ class PlaywrightHandle:
         self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
+        self._check_clean()  # never a value into a page of a host that is not the connection's
         try:
             await self._page.fill(selector, value, timeout=ACTION_TIMEOUT_MS)
         except PlaywrightError:
@@ -1215,6 +1322,7 @@ class PlaywrightHandle:
     ) -> ReadActionResult:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Действие недоступно для чтения")
+        self._check_clean()
         self._read_view_registry.invalidate()
         return await self._read_capability_registry.apply(ref, value_ref=value_ref)
 
@@ -1223,6 +1331,7 @@ class PlaywrightHandle:
     ) -> list[PageSnapshot]:
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "План недоступен для чтения")
+        self._check_clean()
         self._read_view_registry.invalidate()
         return await self._read_capability_registry.replay(
             plan, values=values, items_selector=items_selector
@@ -1237,6 +1346,7 @@ class PlaywrightHandle:
         self._read_capability_registry.invalidate()
         if not self.read_only or self.closed:
             raise BotaiError(ErrorCode.CONFLICT, "Представление недоступно для чтения")
+        self._check_clean()
         panel_id = self._read_view_registry.panel_id(self._page, ref)
         # A SPA's earlier `networkidle` lifecycle may already be satisfied. Observe *new*
         # DOM mutations and in-flight read requests instead of reusing that old load state.
@@ -1303,6 +1413,7 @@ class PlaywrightHandle:
         self._read_capability_registry.invalidate()
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
+        self._check_clean()
         self._mark_sent()
         try:
             await self._page.click(selector, timeout=ACTION_TIMEOUT_MS)
@@ -1316,6 +1427,7 @@ class PlaywrightHandle:
     async def press(self, selector: str, key: str) -> PageSnapshot:
         if self.read_only:
             raise BotaiError(ErrorCode.CONFLICT, "Этот браузер открыт только для чтения")
+        self._check_clean()
         self._mark_sent()
         try:
             await self._page.press(selector, key, timeout=ACTION_TIMEOUT_MS)
@@ -1423,6 +1535,7 @@ class PlaywrightHandle:
         """Cookies of the capture hosts plus a bearer the browser itself sent (or the single
         explicitly named key). Bounded browser storage stays only in the encrypted session,
         separate from bearer discovery and from observations supplied to the model."""
+        self._check_clean()
         if self._auth_captures:
             await asyncio.wait(list(self._auth_captures), timeout=2.0)
         hosts = self._cookie_hosts()
@@ -1492,7 +1605,15 @@ class PlaywrightHandle:
             expires_hint=hint,
             browser_storage=browser_storage,
             entry_url=self._confirmed_entry_url,
+            asset_hosts=self._session_asset_hosts(),
         )
+
+    def _session_asset_hosts(self) -> list[str]:
+        """Hosts a later read of this connection may load page assets from: those that served them
+        during this login. A read does not add to the list (it keeps what it was given)."""
+        if self.read_only or self._assets is None:
+            return list(self._restored_asset_hosts)
+        return list(self._assets.hosts)[:16]
 
     def _bearer_expiry(self, origin: str, token: str) -> datetime | None:
         expiries = [jwt_expiry(token)]
@@ -1548,7 +1669,7 @@ class PlaywrightHandle:
             self.closed = True
             if self._reaper is not None and self._reaper is not asyncio.current_task():
                 self._reaper.cancel()
-            for task in list(self._samples | self._auth_captures):
+            for task in list(self._samples | self._auth_captures | self._quarantines):
                 task.cancel()
             self._closing = asyncio.create_task(self._finish_close())
         # A fetch deadline may stop waiting for cleanup. The context and its pool slot still
@@ -1601,7 +1722,7 @@ class PlaywrightGateway:
         self._egress = egress
         # How many hosts outside a connection's allowlist one context may load page assets from
         # (0: none, the exact-host allowlist alone). Every context of this gateway is a login or a
-        # rendered read; API fetches never go through here (security.md §4.3).
+        # rendered read; API fetches never go through here (security.md §4.4).
         self._asset_hosts = asset_hosts
         self._headless = headless
         self._sandbox = sandbox if sandbox is not None else sandbox_default()
@@ -1648,6 +1769,9 @@ class PlaywrightGateway:
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-features=Translate,MediaRouter,OptimizationHints",
+                    # A shared worker's requests do not pass the context's routes (the asset gate
+                    # among them) and do not carry its proxy credentials: there is none to use.
+                    "--disable-blink-features=SharedWorker",
                 ],
             )
             self._browser.on("disconnected", self._on_disconnected)
@@ -1768,9 +1892,19 @@ class PlaywrightGateway:
         except TimeoutError as exc:
             raise BrowserBusy("Браузер сейчас занят, попробуйте через минуту") from exc
         context: BrowserContext | None = None
+        listed = tuple(session.asset_hosts) if session is not None else ()
+        # A login may load page assets from other hosts (up to the cap). A read of the connection
+        # only from those that served them during its last login; the chat agent's live read from
+        # none (security.md §4.4).
+        if agent_read:
+            asset_cap = 0
+        elif read_only:
+            asset_cap = min(self._asset_hosts, len(listed))
+        else:
+            asset_cap = self._asset_hosts
         try:
             credentials = await self._egress.credentials(
-                hosts, ttl_s=LOGIN_TOKEN_TTL_S, suffixes=suffixes, assets=self._asset_hosts
+                hosts, ttl_s=LOGIN_TOKEN_TTL_S, suffixes=suffixes, assets=asset_cap
             )
             browser = await self._ensure_browser(credentials.server)
             context = await browser.new_context(
@@ -1795,7 +1929,7 @@ class PlaywrightGateway:
                 injected_authorizations = await self._restore(
                     context, session, allow_hosts=hosts, clock=self._clock
                 )
-            if self._asset_hosts > 0:
+            if asset_cap > 0:
                 # After restore, so the gate runs before bearer injection; before the read-only
                 # guard, which stays the newest route (and so the first to see a request).
                 token = credentials.token
@@ -1807,9 +1941,10 @@ class PlaywrightGateway:
                     context=context,
                     allow_hosts=hosts,
                     suffixes=suffixes,
-                    cap=self._asset_hosts,
+                    cap=asset_cap,
                     arm=arm,
                     diagnostic_facts=_browser_diagnostics(connection_id),
+                    only=listed if read_only else None,
                 )
                 await context.route(assets.http_pattern, assets.route)
                 await context.route_web_socket(assets.socket_pattern, assets.close_socket)
@@ -1862,6 +1997,7 @@ class PlaywrightGateway:
             restored_bearers=restored_bearers,
             suffixes=suffixes,
             assets=assets,
+            restored_asset_hosts=listed,
             confirmed_entry_url=(
                 session.entry_url
                 if session is not None and auth_origin(primary) == auth_origin(session.origin)
@@ -1994,7 +2130,7 @@ class PlaywrightGateway:
                 # The application may have refreshed its token since restoration. Its own
                 # credentials take precedence over the saved fallback, including other schemes.
                 audience = auth_origin(route.request.url) or ""
-                # Only hosts of the connection: a page-asset host (security.md §4.3) never gets
+                # Only hosts of the connection: a page-asset host (security.md §4.4) never gets
                 # the source's authorization, whatever `scoped` was built from.
                 bearer = (
                     scoped.get(audience)

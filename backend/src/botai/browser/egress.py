@@ -76,6 +76,11 @@ class ProxyEgress:
     ) -> None:
         if (server_url is None) == (proxy is None):
             raise ValueError("give either server_url (external proxy) or proxy (in-process)")
+        if server_url is not None:
+            parts = urlsplit(server_url)
+            if parts.scheme != "http" or not parts.hostname:
+                # the proxy speaks plain HTTP CONNECT; Chromium would take `https://` as a TLS proxy
+                raise ValueError("EGRESS_PROXY_URL must be http://host[:port]")
         self._secret = secret
         self._server_url = server_url
         self._proxy = proxy
@@ -121,7 +126,7 @@ class ProxyEgress:
             await self._proxy.close()
 
 
-async def _arm_remote(server_url: str, token: str, host: str, *, timeout_s: float = 3.0) -> bool:
+async def _arm_remote(server_url: str, token: str, host: str, *, timeout_s: float = 2.0) -> bool:
     """`ARM host:443` against a proxy in another process: the answer is 204 or a refusal."""
     parts = urlsplit(server_url)
     if not parts.hostname:
@@ -133,7 +138,8 @@ async def _arm_remote(server_url: str, token: str, host: str, *, timeout_s: floa
     )
     try:
         async with asyncio.timeout(timeout_s):
-            reader, writer = await asyncio.open_connection(parts.hostname, parts.port or 3128)
+            # the port as Chromium takes it for a proxy `http://host`: 80
+            reader, writer = await asyncio.open_connection(parts.hostname, parts.port or 80)
             try:
                 writer.write(request.encode("ascii"))
                 await writer.drain()
