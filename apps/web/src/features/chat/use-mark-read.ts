@@ -12,7 +12,13 @@ function visible(): boolean {
  * Отметка прочтения: тред открыт, лента прокручена до конца и вкладка на виду — `POST /read`, точка
  * непрочитанного гаснет сразу (оптимистично), а новое сообщение агента зажжёт её снова.
  */
-export function useMarkRead(threadId: string | null, unread: boolean, atBottom: boolean, ready: boolean) {
+export function useMarkRead(
+  threadId: string | null,
+  unread: boolean,
+  atBottom: boolean,
+  ready: boolean,
+  upTo: string | null = null,
+) {
   const queryClient = useQueryClient();
   const [seen, setSeen] = useState(visible);
   useEffect(() => {
@@ -26,9 +32,9 @@ export function useMarkRead(threadId: string | null, unread: boolean, atBottom: 
     queryClient.setQueryData<ThreadOut[]>(chatKeys.threads, (rows) =>
       rows?.map((thread) => (thread.id === threadId ? { ...thread, unread: false } : thread)),
     );
-    void chatApi.markRead(threadId).catch(() => {
+    void chatApi.markRead(threadId, upTo).catch(() => {
       // Не отметилось: список обновится сам и точка вернётся, пока человек не дочитает ещё раз.
       void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
     });
-  }, [threadId, unread, atBottom, ready, seen, queryClient]);
+  }, [threadId, unread, atBottom, ready, seen, upTo, queryClient]);
 }

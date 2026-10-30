@@ -310,16 +310,21 @@ export function ChatScreen() {
   const changeKey = `${timeline.turns.length}|${jobs.map((job) => `${job.snapshot.blocks.length}${job.snapshot.state}`).join(",")}`;
   const stick = useStickToBottom(changeKey, activeId);
   // Прочитанным тред отмечается, когда история дозагружена и самое новое сообщение треда уже показано на экране.
-  const lastShownAt = messages.reduce(
-    (latest, message) => Math.max(latest, Date.parse(message.createdAt) || 0),
-    0,
+  const lastShown = messages.reduce<(typeof messages)[number] | null>(
+    (latest, message) =>
+      !latest || (Date.parse(message.createdAt) || 0) > (Date.parse(latest.createdAt) || 0)
+        ? message
+        : latest,
+    null,
   );
+  const lastShownAt = lastShown ? Date.parse(lastShown.createdAt) || 0 : 0;
   const newestAt = activeThread ? Date.parse(activeThread.lastMessageAt) || 0 : 0;
   useMarkRead(
     activeId,
     activeThread?.unread ?? false,
     stick.atBottom,
     activeId !== null && !messagesResult.isPending && !messagesResult.isFetching && lastShownAt >= newestAt,
+    lastShown?.createdAt ?? null,
   );
 
   // Варя: на сцене, пока чат пуст, на насесте — когда разговор идёт. Сообщений чата она не получает.

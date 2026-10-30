@@ -335,7 +335,7 @@ export async function runReply(
           steps: steps.map((item, index) => ({
             ...item,
             state: index < done ? "done" : index === done ? "active" : "pending",
-          })),
+          })) as PlanBlock["steps"],
         } satisfies PlanBlock);
       showPlan(0);
       await step("Читаю расписание", 400);

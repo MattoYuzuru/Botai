@@ -4,24 +4,13 @@
  * он превращается в `UnknownBlock` и показывается текстом с пометкой.
  */
 import type { AgentUiBlock, Text } from "@/api/agent-ui.gen";
-import {
-  type AttachmentBlock,
-  MAX_QUICK_REPLIES,
-  MAX_QUICK_REPLY_CHARS,
-  type PlanBlock,
-  type TaskBlock,
-} from "@/api/v3";
+import { MAX_QUICK_REPLIES, MAX_QUICK_REPLY_CHARS } from "@/api/v3";
 
-/** Текст ответа: в v3 к нему могут прилагаться быстрые ответы (кнопки под последним ответом). */
-export type TextBlock = Text & { quickReplies?: string[] };
+/** Текст ответа с быстрыми ответами (кнопки под последним ответом). */
+export type TextBlock = Text;
 
-/** Блоки контракта: схема `agent-ui` плюс `plan`, `attachment`, `task` и быстрые ответы v3 (§3.3). */
-export type KnownBlock =
-  | Exclude<AgentUiBlock, { type: "text" }>
-  | TextBlock
-  | PlanBlock
-  | AttachmentBlock
-  | TaskBlock;
+/** Блоки контракта целиком: `contracts/agent-ui.schema.json` (§3.3 плана). */
+export type KnownBlock = AgentUiBlock;
 export type BlockType = KnownBlock["type"];
 
 export interface UnknownBlock {
@@ -62,6 +51,8 @@ const optStr = (value: unknown) => value === undefined || isStr(value);
 const optBool = (value: unknown) => value === undefined || isBool(value);
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const PLAN_STATES = ["pending", "active", "done", "skipped"];
+/** Не больше шагов, чем разрешает схема (`plan.steps.maxItems`). */
+const MAX_PLAN_STEPS = 12;
 const ATTACHMENT_KINDS = ["image", "document", "audio", "other"];
 const TASK_KIND_NAMES = ["connect", "repair", "sync", "ingest"];
 const isId = (value: unknown): value is string => isStr(value) && ULID.test(value);
@@ -166,11 +157,13 @@ function isValidKnown(o: Rec): boolean {
         isStr(o.title) &&
         Array.isArray(o.steps) &&
         o.steps.length >= 1 &&
-        o.steps.length <= 20 &&
+        o.steps.length <= MAX_PLAN_STEPS &&
         o.steps.every(
           (step) =>
             isRecord(step) &&
             isStr(step.id) &&
+            step.id.length >= 1 &&
+            step.id.length <= 40 &&
             isStr(step.title) &&
             PLAN_STATES.includes(step.state as string),
         )
@@ -180,7 +173,8 @@ function isValidKnown(o: Rec): boolean {
         isStr(o.attachmentId) &&
         isStr(o.name) &&
         isStr(o.mime) &&
-        typeof o.size === "number" &&
+        Number.isInteger(o.size) &&
+        (o.size as number) >= 0 &&
         ATTACHMENT_KINDS.includes(o.kind as string)
       );
     case "task":

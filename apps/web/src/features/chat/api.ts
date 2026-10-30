@@ -17,8 +17,9 @@ export const chatApi = {
   createThread: (body: ThreadCreateIn) => v3<ThreadOut>("POST", base, { body }),
   renameThread: (id: string, title: string) => v3<ThreadOut>("PATCH", thread(id), { body: { title } }),
   deleteThread: (id: string) => v3<void>("DELETE", thread(id)),
-  /** `last_read_at = now`: точка непрочитанного гаснет. */
-  markRead: (id: string) => v3<void>("POST", `${thread(id)}/read`),
+  /** Прочитано до `upTo` (`createdAt` последнего показанного сообщения): пришедшее позже остаётся непрочитанным. */
+  markRead: (id: string, upTo?: string | null) =>
+    v3<void>("POST", `${thread(id)}/read`, upTo ? { body: { upTo } } : {}),
   messages: (id: string, signal?: AbortSignal) =>
     v3<Message[]>("GET", `${thread(id)}/messages`, { signal, cache: "no-store" }),
   postMessage: (id: string, body: MessageIn) =>

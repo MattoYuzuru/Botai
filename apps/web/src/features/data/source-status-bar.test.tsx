@@ -109,12 +109,12 @@ describe("spaceShortTitle: чем подписан вуз", () => {
     expect(
       spaceShortTitle(spaceFixture({ shortTitle: "НИУ ВШЭ", universityId: "u-hse" }), universities),
     ).toBe("НИУ ВШЭ");
-    expect(spaceShortTitle(spaceFixture({ shortTitle: null, universityId: "u-hse" }), universities)).toBe(
+    expect(spaceShortTitle(spaceFixture({ shortTitle: "", universityId: "u-hse" }), universities)).toBe(
       "ВШЭ",
     );
     expect(
-      spaceShortTitle(spaceFixture({ shortTitle: null, title: "Синтетический университет" }), universities),
+      spaceShortTitle(spaceFixture({ shortTitle: "", title: "Синтетический университет" }), universities),
     ).toBe("Синтетический университет");
-    expect(spaceShortTitle(spaceFixture({ shortTitle: null }), undefined)).toBe("Синтетический университет");
+    expect(spaceShortTitle(spaceFixture({ shortTitle: "" }), undefined)).toBe("Синтетический университет");
   });
 });

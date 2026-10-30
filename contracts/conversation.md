@@ -97,7 +97,7 @@ type ThreadRuntime = {
 - `text` + `quickReplies?: string[]` (≤4, ≤60 знаков) — кнопки быстрых ответов под последним ответом; нажатие отправляет текст как сообщение студента.
 - `plan` `{id, title, steps: [{id, title, state: pending|active|done|skipped}]}` — план ответа; блок с тем же `id` заменяет предыдущий (upsert в истории); повторный запуск того же задания продолжает свой план.
 - `task` `{id, jobId, kind, title, state, threadId, connectionId?}` — карточка задачи; `threadId` — тред, где она живёт.
-- `attachment` `{id, attachmentId, name, mime, size, kind: image|audio|document}` — вложение сообщения студента; содержимое отдаёт `GET /api/v1/attachments/{id}/content` (`botai://attachments/{id}` в тексте открывает вьюер).
+- `attachment` `{id, attachmentId, name, mime, size, kind: image|audio|document|other}` — вложение сообщения студента; содержимое отдаёт `GET /api/v1/attachments/{id}/content` (`botai://attachments/{id}` в тексте открывает вьюер).
 - Markdown в `text.markdown`: GFM-таблицы, `**жирный**`, ссылки, списки, код и блок ` ```chart ` с JSON `{type: "bar"|"line", title?, labels: string[], series: [{name, values: number[]}]}`.
 
 Ссылки между сущностями приложения — только `botai://threads|connections|documents|attachments/{id}`; клиент превращает их в `/chat?thread=…` и т. п. Голые идентификаторы в тексте для студента не пишутся.

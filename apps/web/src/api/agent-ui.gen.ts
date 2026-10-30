@@ -259,7 +259,7 @@ export interface Task {
   connectionId?: Id;
 }
 /**
- * Вложение сообщения студента (схема; загрузку реализует поток вложений).
+ * Вложение сообщения студента; содержимое отдаёт GET /api/v1/attachments/{id}/content.
  */
 export interface Attachment {
   type: "attachment";

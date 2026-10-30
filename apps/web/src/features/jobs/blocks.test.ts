@@ -23,7 +23,17 @@ describe("блоки из контракта", () => {
 
   it("невалидные примеры контракта не рисуются как известные блоки", () => {
     for (const raw of invalid) {
-      expect(parseBlock(raw)?.type, JSON.stringify(raw).slice(0, 80)).toBe("unknown");
+      const block = parseBlock(raw);
+      if ((raw as { type: string }).type === "text" && "quickReplies" in (raw as object)) {
+        // Единственное исключение: ответ не пропадает из-за лишних кнопок. Клиент показывает текст,
+        // а кнопки сводит к тому, что разрешает схема (до 4, до 60 знаков); сервер лишнего не шлёт.
+        expect(block?.type, JSON.stringify(raw).slice(0, 80)).toBe("text");
+        const replies = (block as { quickReplies?: string[] }).quickReplies ?? [];
+        expect(replies.length).toBeLessThanOrEqual(4);
+        for (const reply of replies) expect(reply.length).toBeLessThanOrEqual(60);
+        continue;
+      }
+      expect(block?.type, JSON.stringify(raw).slice(0, 80)).toBe("unknown");
     }
   });
 });

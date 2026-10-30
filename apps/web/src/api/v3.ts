@@ -1,8 +1,9 @@
 /**
- * Контракт агент-хаба v3 (docs/plan/agent-hub-v3.md §3.2, §3.3, §3.6), объявленный вручную: схема бэкенда
- * меняется параллельно в других потоках, а `schema.gen.ts` и `agent-ui.gen.ts` не правятся руками. Когда
- * интеграция пересоберёт сгенерированные типы, эти объявления заменяются на них без изменения экранов.
+ * Контракт агент-хаба v3 (docs/plan/agent-hub-v3.md §3.2, §3.3, §3.6). Типы данных берутся из сгенерированной
+ * схемы (`schema.gen.ts`, `agent-ui.gen.ts`: они не правятся руками, их пересобирает `scripts/gen.sh`); здесь
+ * только тонкие алиасы под привычные имена, константы пределов и запросы.
  */
+import type { AgentUiBlock } from "./agent-ui.gen";
 import { NetworkError, parseProblem } from "./errors";
 import type { components } from "./schema.gen";
 
@@ -16,76 +17,29 @@ export type DialogueReceipt = S["DialogueReceipt"];
 
 // ---------- Треды (§3.2) ----------
 
-export type ThreadAttention = "waiting_user" | "running" | "failed";
-export type TaskKind = "connect" | "repair" | "sync" | "ingest";
+export type ThreadOut = S["ThreadOut"];
+export type ActiveTask = S["ActiveTask"];
+export type ThreadAttention = NonNullable<ThreadOut["attention"]>;
+export type TaskKind = ActiveTask["kind"];
 export const TASK_KINDS: readonly TaskKind[] = ["connect", "repair", "sync", "ingest"];
 export const isTaskKind = (kind: string): kind is TaskKind =>
   (TASK_KINDS as readonly string[]).includes(kind);
 
-export interface ActiveTask {
-  jobId: string;
-  kind: TaskKind;
-  connectionId: string | null;
-  state: string;
-  title: string;
-}
+export type ThreadCreateIn = S["ThreadCreate"];
 
-export interface ThreadOut {
-  id: string;
-  spaceId: string | null;
-  title: string;
-  createdAt: string;
-  lastMessageAt: string;
-  /** Есть сообщение агента новее `last_read_at`. */
-  unread: boolean;
-  /** По активной задаче или ходу агента. */
-  attention: ThreadAttention | null;
-  activeTask: ActiveTask | null;
-  /** Начало последнего текстового сообщения, не длиннее 120 знаков. */
-  preview: string | null;
-}
+/** `text`: 0..8000 знаков; пустой текст допустим только вместе с вложениями (сервер заполняет его по умолчанию). */
+export type MessageIn = Omit<S["MessageIn"], "text"> & { text?: string };
+export type MessageAccepted = Omit<S["MessageAccepted"], "message"> & { message: MessageOut };
+export type ThreadRuntime = S["ThreadRuntime"];
 
-export interface ThreadCreateIn {
-  spaceId?: string | null;
-  title?: string | null;
-  clientRequestId?: string;
-}
-
-export interface MessageIn {
-  /** 0..8000 знаков; пустой текст допустим только вместе с вложениями. */
-  text: string;
-  attachmentIds?: string[];
-  clientMessageId?: string;
-  targetJobId?: string;
-}
-
-export interface MessageAccepted {
-  message: MessageOut;
-  jobId: string;
-}
-
-export interface ThreadRuntime {
-  activeJob: JobOut | null;
-  tasks: JobOut[];
-  pending: PendingRef[];
-  receipts: DialogueReceipt[];
-}
+/** Машинные коды 409 при отправке сообщения (`contracts/conversation.md`). */
+export type MessageConflictCode = "agent_busy" | "secret_in_chat" | "stale_target" | "request_reused";
 
 // ---------- Вложения (§3.6) ----------
 
-export type AttachmentKind = "image" | "document" | "audio" | "other";
-export type IngestState = "none" | "queued" | "indexed" | "failed";
-
-export interface AttachmentOut {
-  id: string;
-  name: string;
-  mime: string;
-  size: number;
-  kind: AttachmentKind;
-  createdAt: string;
-  documentId: string | null;
-  ingest: IngestState;
-}
+export type AttachmentOut = S["AttachmentOut"];
+export type AttachmentKind = AttachmentOut["kind"];
+export type IngestState = AttachmentOut["ingest"];
 
 /** Предел одного файла (§3.6). */
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -97,51 +51,14 @@ export const attachmentContentUrl = (id: string): string =>
 
 // ---------- Блоки интерфейса агента, добавленные в v3 (§3.3) ----------
 
-export type PlanStepState = "pending" | "active" | "done" | "skipped";
-
-export interface PlanBlock {
-  type: "plan";
-  id: string;
-  at: string;
-  title: string;
-  steps: { id: string; title: string; state: PlanStepState }[];
-}
-
-export interface AttachmentBlock {
-  type: "attachment";
-  id: string;
-  at: string;
-  attachmentId: string;
-  name: string;
-  mime: string;
-  size: number;
-  kind: AttachmentKind;
-}
-
-export interface TaskBlock {
-  type: "task";
-  id: string;
-  at: string;
-  jobId: string;
-  kind: TaskKind;
-  title: string;
-  state: string;
-  threadId: string;
-  connectionId?: string;
-}
+export type PlanBlock = Extract<AgentUiBlock, { type: "plan" }>;
+export type PlanStepState = PlanBlock["steps"][number]["state"];
+export type AttachmentBlock = Extract<AgentUiBlock, { type: "attachment" }>;
+export type TaskBlock = Extract<AgentUiBlock, { type: "task" }>;
 
 /** Быстрые ответы к тексту: до четырёх кнопок, каждая до 60 знаков. */
 export const MAX_QUICK_REPLIES = 4;
 export const MAX_QUICK_REPLY_CHARS = 60;
-
-// ---------- Расширения источников, которых ещё нет в сгенерированной схеме (§3.5) ----------
-
-/** Поля `ConnectionOut`, которые добавляет WS4: UI-адрес, тред источника и активная задача. */
-export interface ConnectionExtras {
-  entryUrl?: string | null;
-  threadId?: string | null;
-  activeTask?: ActiveTask | null;
-}
 
 // ---------- Запросы ----------
 

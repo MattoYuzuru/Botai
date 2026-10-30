@@ -45,6 +45,16 @@ export interface ChatHandlerOptions {
 const CONTEXT_LIMIT = 1_000_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** Грубая копия серверной защиты: слово без пробелов с цифрой или символом внутри, строка из цифр, «пароль: …». */
+function looksLikeSecret(text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  if (/(?:парол\w*|password|код\w*)\s*[:=]?\s*\S+/i.test(value) && /\d{4}|[:=]/.test(value)) return true;
+  if (/^[\d -]+$/.test(value)) return value.replace(/\D/g, "").length >= 4;
+  if (value.length < 4 || value.length > 128 || /\s/.test(value)) return false;
+  return /\d/.test(value) || /\w[^\w\s]\w/u.test(value) || /[a-zа-яё][A-ZА-ЯЁ]/u.test(value);
+}
+
 function problem(status: number, code: string, detail: string) {
   return new HttpResponse(
     JSON.stringify({ type: `https://botai.mnema.app/errors/${code}`, title: code, status, code, detail }),
@@ -287,12 +297,19 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       return new HttpResponse(null, { status: 204 });
     }),
 
-    http.post("*/api/v1/chat/threads/:threadId/read", async ({ params }) => {
+    http.post("*/api/v1/chat/threads/:threadId/read", async ({ params, request }) => {
       await wait();
       if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
       const thread = find(String(params.threadId));
       if (!thread) return problem(404, "not_found", "Чат не найден");
-      thread.readCount = (state().messages[thread.id] ?? []).length;
+      // Как у сервера: `upTo` — время последнего показанного сообщения, без тела прочитано всё написанное.
+      const { upTo } = (await request.json().catch(() => ({}))) as { upTo?: string };
+      const shown = upTo ? Date.parse(upTo) : Number.NaN;
+      const all = state().messages[thread.id] ?? [];
+      const count = Number.isNaN(shown)
+        ? all.length
+        : all.filter((message) => Date.parse(message.createdAt) <= shown).length;
+      thread.readCount = Math.max(thread.readCount, count);
       save();
       return new HttpResponse(null, { status: 204 });
     }),
@@ -363,20 +380,32 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       if (text.length > 8000 || ids.length > 10 || (text.length < 1 && ids.length === 0))
         return problem(422, "validation", "Сообщение пустое или слишком длинное");
       const files = ids.map((fileId) => state().attachments[fileId]);
-      if (files.some((file) => !file || file.attached))
-        return problem(404, "not_found", "Вложение не найдено");
+      if (files.some((file) => !file)) return problem(404, "not_found", "Вложение не найдено");
+      if (files.some((file) => file?.attached))
+        return problem(409, "conflict", "Файл уже отправлен в другом сообщении");
       const acceptedKey = body.clientMessageId ? `${id}:${body.clientMessageId}` : null;
       const again = acceptedKey ? state().accepted[acceptedKey] : undefined;
       if (again) return HttpResponse.json(again satisfies MessageAccepted, { status: 202 });
 
       const runtime = runtimeFor(id);
-      const dialogue = runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
+      // Файлы идут агенту, а не ответом на вопрос задачи (как на сервере).
+      if (body.targetJobId && ids.length > 0)
+        return problem(422, "validation", "Файлы отправляются обычным сообщением в чат");
+      const dialogue =
+        ids.length > 0
+          ? undefined
+          : runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
       if (body.targetJobId && body.targetJobId !== dialogue?.jobId)
-        return problem(409, "conflict", "Этот вопрос уже закрыт");
+        return problem(409, "stale_target", "Этот шаг уже завершён. Откройте текущее состояние разговора");
+      const secretOpen = runtime.pending.some((item) => item.channel === "native" && item.secret);
+      if (secretOpen && looksLikeSecret(text))
+        return problem(409, "secret_in_chat", "Пароль и код вводятся только в защищённое поле, не в чат");
       const turn = state().busy[id];
       const now = iso();
       const attached = files.filter((file): file is MockAttachment => Boolean(file));
+      // Порядок сервера: текст, затем вложения.
       const blocks: Message["blocks"] = [
+        ...(text ? [asStored(textBlock(text, now))] : []),
         ...attached.map((file) => ({
           type: "attachment",
           id: ulid(),
@@ -387,7 +416,6 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
           size: file.size,
           kind: file.kind,
         })),
-        ...(text ? [asStored(textBlock(text, now))] : []),
       ];
 
       // Несекретный вопрос задачи, ждущий ответа в диалоге, получает сообщение; иначе отвечает агент.

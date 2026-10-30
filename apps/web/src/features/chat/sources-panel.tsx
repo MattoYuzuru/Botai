@@ -1,6 +1,5 @@
 import { Badge, Button, EmptyState, Icon, Sheet, SkeletonText } from "@botai/design";
 import { Link } from "@tanstack/react-router";
-import type { ConnectionExtras } from "@/api/v3";
 import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { addSourceDraft } from "./drafts";
@@ -79,7 +78,7 @@ export function SourcesPanel({
                       shortTitle: space.shortTitle,
                       timeZone: space.timeZone,
                     });
-                    const threadId = (connection as ConnectionExtras).threadId;
+                    const threadId = connection.threadId;
                     const body = (
                       <>
                         <Icon name={view.icon} size={20} className="mt-1 shrink-0 text-fg-muted" />
