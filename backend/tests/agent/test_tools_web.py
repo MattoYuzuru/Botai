@@ -78,6 +78,7 @@ async def source_rig(
     routes: tuple[str, ...] = ROUTES,
     inner: httpx.AsyncBaseTransport | None = None,
     pages: dict[str, FakePage] | None = None,
+    browser: FakeBrowserGateway | None = None,
 ) -> Rig:
     space = await add_space(sm, user_id, "Вуз А")
     conn = await add_connection(
@@ -92,7 +93,7 @@ async def source_rig(
         )
         await session.commit()
     services = make_services(ScriptedLlm(), sm=sm)
-    browser = FakeBrowserGateway(
+    browser = browser or FakeBrowserGateway(
         {ENTRY: APP_DRAWN} if pages is None else pages, NOW, "https://fakeuni.test"
     )
     services.browser = browser

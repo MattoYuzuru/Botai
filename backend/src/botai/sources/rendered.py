@@ -39,6 +39,7 @@ MAX_RENDERED_HTML = 2 * 1024 * 1024
 # the load, how long its text must stand still, and what counts as a page with next to no text.
 PAGE_WAIT_SECONDS = 10.0
 PAGE_QUIET_SECONDS = 0.5
+PAGE_IDLE_SECONDS = 2.0  # a thin page that asked its site for nothing is final after this long
 SHELL_TEXT_CHARS = 160
 MAX_PAGE_DATA = 8
 _DATA_TYPES = frozenset({"xhr", "fetch"})
@@ -249,7 +250,9 @@ class RenderedPageReader:
     ) -> tuple[PageSnapshot, list[ObservedRequest]]:
         """Poll until the text of the page has stood still for a moment, nothing the app asked of
         its own site is still on the way, and there is something to read (text, or data it
-        fetched). An app that draws nothing is waited for `PAGE_WAIT_SECONDS`, not for ever."""
+        fetched). A thin page that asked for nothing is final after `PAGE_IDLE_SECONDS`; an app
+        that is still on the way, or a request that never comes back, is waited for
+        `PAGE_WAIT_SECONDS`, not for ever."""
         loop = asyncio.get_running_loop()
         give_up = min(loop.time() + PAGE_WAIT_SECONDS, self._deadline - 1.0)
         origin = auth_origin(self.ctx.origin)
@@ -261,11 +264,22 @@ class RenderedPageReader:
             now = loop.time()
             if text != previous:
                 previous, still_since = text, now
-            own = [r for r in requests if r.resource_type in _DATA_TYPES and _is_own(r, origin)]
+            # A POST of the page never completes (the read-only guard refuses it): only its GETs
+            # are waited for.
+            reads = [
+                r
+                for r in requests
+                if r.method == "GET" and r.resource_type in _DATA_TYPES and _is_own(r, origin)
+            ]
+            still = now - still_since
             if (
-                now - still_since >= PAGE_QUIET_SECONDS
-                and all(r.status is not None for r in own)
-                and (len(text) >= SHELL_TEXT_CHARS or _page_data(own))
+                still >= PAGE_QUIET_SECONDS
+                and all(r.status is not None for r in reads)
+                and (
+                    len(text) >= SHELL_TEXT_CHARS
+                    or _page_data(reads)
+                    or (not reads and still >= PAGE_IDLE_SECONDS)
+                )
             ) or now >= give_up:
                 return snapshot, requests
             await asyncio.sleep(min(POLL_SECONDS, max(0.0, give_up - now)))

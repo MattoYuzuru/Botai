@@ -164,7 +164,7 @@ async def test_an_application_that_draws_nothing_is_not_taken_for_an_empty_sourc
     browser: PlaywrightGateway,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(rendered, "PAGE_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(rendered, "PAGE_IDLE_SECONDS", 1.0)
     r = await source_rig(sm, user_id, fakeuni_app, stored=stored(), routes=ROUTES)
     r.env.services.browser = browser
     text = await r.call("browse_source", connection_id=r.conn_id, url=QUIET)

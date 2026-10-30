@@ -396,15 +396,24 @@ async def _html_page(
 
     markup = snapshot.html.encode()
     shown = await asyncio.to_thread(extract, markup, "html")
-    links = _own_links(info, markup, snapshot.url)
+    links = [(hide(label), link) for label, link in _own_links(info, markup, snapshot.url)]
     env.seen.remember("source", (webtext.normalize_url(link) for _, link in links))
     data, addresses = _data_block(drawn, hide)
     env.seen.remember("source", addresses)
     await _learn_routes(env, info, state, snapshot, links, drawn.requests, redactor)
-    lead = " Страница строится скриптами: прочитана в браузере (только чтение, ничего не отправляется)."
-    if webtext.normalize_url(snapshot.url) != url:
-        lead += f" Открылась страница {snapshot.url}."
-    if not drawn.drawn:
+    # A short page that the scripts did not change is simply a short page ("Занятий нет"): it is the
+    # answer. A page that stays blank, or thin after the scripts ran, is not the answer.
+    plain = bool(
+        not drawn.drawn and shown.text.strip() and len(shown.text) <= len(extracted.text) + 20
+    )
+    lead = ""
+    if not plain:
+        lead = " Страница строится скриптами: прочитана в браузере (только чтение, ничего не отправляется)."
+        if webtext.normalize_url(snapshot.url) != url:
+            # an address that carries a key (a callback with a token) is not shown
+            where = "" if webtext.has_secret_address(snapshot.url) else f" {snapshot.url}"
+            lead += f" Открылась другая страница{where}."
+    if not drawn.drawn and not plain:
         lead += (
             " Приложение почти ничего не показало: не делайте вывода, что данных нет, "
             "скажите студенту, что страницу прочитать не удалось."
@@ -413,7 +422,7 @@ async def _html_page(
         "chat.browse_render",
         thread_id=env.thread_id,
         connection_id=info.connection_id,
-        outcome="ok" if drawn.drawn else "empty",
+        outcome="ok" if drawn.drawn or plain else "empty",
         rendered=True,
         text_chars=len(shown.text),
         response_count=len(drawn.data),
@@ -528,7 +537,7 @@ async def _learn_routes(
     conversation finds the FAQ or the requests without reading the site again. The map is shared,
     so it keeps only what `build_sitemap` allows: generalised routes, labels with nothing personal,
     the names of query keys. Reading never fails because of it."""
-    if url_origin(page.url) != info.origin:
+    if url_origin(page.url) != info.origin or webtext.has_secret_address(page.url):
         return
     try:
         async with env.services.db() as session:
@@ -567,7 +576,10 @@ async def site_map(env: ChatEnv, args: dict[str, Any]) -> str:
     if row.entry_url:
         lines.append(f"Входная страница данных: {row.entry_url}")
     if not sitemap:
-        lines.append("Карта пока не собрана: исследование источника её ещё не сохранило.")
+        lines.append(
+            "Карта пока не собрана: исследование источника её ещё не сохранило. Откройте входную "
+            "страницу через browse_source — разделы сайта запомнятся."
+        )
         return "\n".join(lines)
     navigation = sitemap.get("navigation") or []
     if navigation:
