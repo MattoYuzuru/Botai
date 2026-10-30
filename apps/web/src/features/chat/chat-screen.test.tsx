@@ -214,6 +214,20 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     await waitFor(() => expect(screen.queryByRole("group", { name: "Быстрые ответы" })).toBeNull(), wait);
   });
 
+  it("пока агент думает, «Думает» последний в ленте; ответил — свёрнутый «Думал · N» остаётся над ответом", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Какая следующая пара?");
+    const turns = () =>
+      [...document.querySelectorAll<HTMLElement>("[data-timeline] > li")].map((li) => li.dataset.turn);
+    // Ответ пришёл целиком: перед ним — «Думал», а не пустота и не блок выше сообщений.
+    await screen.findByRole("group", { name: "Быстрые ответы" }, wait);
+    await waitFor(() => expect(turns()).toEqual(["user", "thinking", "block"]), wait);
+    const thought = document.querySelector<HTMLElement>("[data-turn='thinking']");
+    expect(thought).toHaveTextContent(/^Думал · /);
+    // Блок свёрнут: шаги по клику.
+    expect(within(thought as HTMLElement).getByRole("button", { expanded: false })).toBeInTheDocument();
+  });
+
   it("кнопка быстрого ответа уходит с цитатой: в ленте видно, на какой вопрос отвечено", async () => {
     const { user } = await openNewChat();
     await ask(user, "Какая следующая пара?");

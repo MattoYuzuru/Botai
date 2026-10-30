@@ -96,6 +96,21 @@ export function observe(ctx: AgentCtx, sim: JobSim, threadId: string): void {
       const existing = messages.find(
         (message) => message.jobId === sim.jobId && message.blocks.some((item) => item.id === block.id),
       );
+      if (sim.kind === "chat" && block.type === "text" && !existing) {
+        // Ход агента оставляет в треде шаги, через которые прошёл, прямо перед ответом: «Думал · N» остаётся над ним.
+        const steps = new Map<string, KnownBlock>();
+        for (const item of sim.events)
+          if (item.event === "block" && (item.data as KnownBlock).type === "thinking")
+            steps.set((item.data as KnownBlock).id, item.data as KnownBlock);
+        if (steps.size > 0)
+          messages.push({
+            id: ulid(),
+            role: "agent",
+            jobId: sim.jobId,
+            blocks: [...steps.values()] as never,
+            createdAt: new Date(Date.parse(block.at) - 1).toISOString(),
+          });
+      }
       if (existing) {
         existing.blocks = existing.blocks.map((item) => (item.id === block.id ? (block as never) : item));
       } else {

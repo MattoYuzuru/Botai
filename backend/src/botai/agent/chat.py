@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent import facts, harness
 from botai.agent.attachment_context import attachments_message
@@ -41,7 +42,7 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobContext
 from botai.core.llm import LlmMessage
 from botai.core.services import Services
-from botai.db.models import ChatMessage, ChatThread
+from botai.db.models import ChatMessage, ChatThread, JobEvent
 from botai.jobs.dialogue import message_time
 
 log = logging.getLogger("botai.agent.chat")
@@ -285,7 +286,8 @@ async def _store_reply(
     seen: SeenLinks,
 ) -> str:
     """Persist the reply once per job (a retried job does not answer twice). The plan the turn
-    published lives in its own message with the same job id; the reply is the one starting with text."""
+    published and the steps it went through ("Думал · 12 с") live in their own messages with the
+    same job id, stored just before the reply; the reply is the one starting with text."""
     async with services.db() as session:
         existing = (
             await session.execute(
@@ -300,6 +302,22 @@ async def _store_reply(
         ).scalar_one_or_none()
         if existing:
             return existing
+        steps = await _thinking_steps(session, ctx)
+        if steps:
+            session.add(
+                ChatMessage(
+                    id=new_id(),
+                    user_id=ctx.user_id,
+                    thread_id=thread.id,
+                    role="agent",
+                    blocks=steps,
+                    job_id=ctx.job_id,
+                    created_at=await message_time(
+                        session, ctx.user_id, thread.id, services.clock.now()
+                    ),
+                )
+            )
+            await session.flush()  # the reply is ordered after the steps
         message_id = new_id()
         session.add(
             ChatMessage(
@@ -329,6 +347,27 @@ async def _store_reply(
             row.seen_links = seen.dump()
         await session.commit()
         return message_id
+
+
+MAX_STEPS = 40
+
+
+async def _thinking_steps(session: AsyncSession, ctx: JobContext) -> list[dict[str, Any]]:
+    """The stages the turn showed while it worked, as they ended (a stage re-sent under its id is
+    taken in its last state). They stay in the thread, so "Думал · N" remains above the answer."""
+    rows = await session.scalars(
+        select(JobEvent.data)
+        .where(
+            JobEvent.job_id == ctx.job_id,
+            JobEvent.type == "block",
+            JobEvent.data["type"].astext == "thinking",
+        )
+        .order_by(JobEvent.seq)
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for data in rows:
+        by_id[str(data["id"])] = dict(data)
+    return list(by_id.values())[:MAX_STEPS]
 
 
 def title_from(question: str) -> str:

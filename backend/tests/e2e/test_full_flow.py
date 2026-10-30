@@ -362,7 +362,9 @@ async def test_chat_source_url_native_login_clarification_sync_and_reply_share_o
         reply = next(
             message
             for message in history
-            if message["jobId"] == chat.job_id and message["role"] == "agent"
+            if message["jobId"] == chat.job_id
+            and message["role"] == "agent"
+            and message["blocks"][0]["type"] == "text"
         )
         assert "Математический анализ" in reply["blocks"][0]["markdown"]
         cited = reply["blocks"][0]["sources"][0]["url"]
@@ -722,8 +724,14 @@ async def check_chat_answer(
 ) -> None:
     assert chat.asked == []
     messages = (await client.get(f"/api/v1/chat/threads/{thread_id}/messages")).json()
-    assert [msg["role"] for msg in messages] == ["user", "agent"]
-    (reply,) = messages[1]["blocks"]
+    # The turn leaves the steps it went through just before its reply: "Думал · N" stays above it.
+    assert [msg["role"] for msg in messages] == ["user", "agent", "agent"]
+    thought, answer = messages[1], messages[2]
+    assert [(b["type"], b["state"]) for b in thought["blocks"]] == [("thinking", "ok")]
+    assert thought["blocks"][0]["stage"] == "Ищу в расписании"
+    assert thought["jobId"] == answer["jobId"] == chat.job_id
+    assert thought["createdAt"] < answer["createdAt"]
+    (reply,) = answer["blocks"]
     assert reply["type"] == "text"
     assert reply["markdown"] == (
         "Первая пара в понедельник — «Математический анализ» в 09:30, ауд. А-101 [1]."
