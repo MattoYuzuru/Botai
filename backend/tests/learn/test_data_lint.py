@@ -230,7 +230,11 @@ def tasks_spec(states: list[str]) -> dict[str, Any]:
     endpoint = {
         "id": "deadlines",
         "kind": "deadlines",
-        "request": {"method": "GET", "path": "/api/tasks", "query": {"state": states}},
+        "request": {
+            "method": "GET",
+            "path": "/api/tasks",
+            "query": {"state": states if len(states) > 1 else states[0]},
+        },
         "response": {
             "format": "json",
             "itemsPath": "",
@@ -250,24 +254,54 @@ def test_a_repeated_key_of_filter_values_passes_lint() -> None:
     assert lint_spec(tasks_spec(STATES), CTX).ok
 
 
-def test_status_constants_seen_in_the_responses_are_not_personal() -> None:
-    seen = LintContext(
-        allowed_hosts=CTX.allowed_hosts,
-        expected_origin=CTX.expected_origin,
-        observed=[*STATES, "IN_PROGRESS"],
+def seen_ctx(*values: str) -> LintContext:
+    return LintContext(
+        allowed_hosts=CTX.allowed_hosts, expected_origin=CTX.expected_origin, observed=list(values)
     )
-    assert lint_spec(tasks_spec(STATES), seen).ok
-    assert lint_spec(tasks_spec(["IN_PROGRESS", "backlog"]), seen).ok
 
 
-@pytest.mark.parametrize("value", ["Ivanov", "ГРП-26", "ABC12", "Evaluated", "group7", "IVANOV"])
-def test_a_name_or_a_code_of_the_student_is_still_refused_in_a_list(value: str) -> None:
-    seen = LintContext(
-        allowed_hosts=CTX.allowed_hosts, expected_origin=CTX.expected_origin, observed=[value]
-    )
-    result = lint_spec(tasks_spec(["backlog", value]), seen)
-    assert "observed.value" in result.codes()
-    assert value not in str(result.reasons())
+@pytest.mark.parametrize(
+    "status",
+    ["inProgress", "IN_PROGRESS", "notEvaluated", "awaiting-review", "Backlog", "hasSolution"],
+)
+def test_a_filter_made_of_status_words_is_not_a_personal_value(status: str) -> None:
+    seen = seen_ctx(*STATES, status)
+    assert lint_spec(tasks_spec([*STATES[:2], status]), seen).ok
+    assert lint_spec(tasks_spec([status, "backlog"]), seen).ok
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Ivanov",
+        "ГРП-26",
+        "ABC12",
+        "Evaluated2",
+        "group7",
+        "IVANOV",
+        # camel and snake case do not make a status of a login or a name
+        "jSmith",
+        "ivanPetrov",
+        "deLaCruz",
+        "PETROV_AA",
+        "smithJohn",
+        "WHITE_FOX",
+    ],
+)
+def test_a_name_or_a_code_of_the_student_is_still_refused_in_a_query(value: str) -> None:
+    seen = seen_ctx(value)
+    for states in ([value], ["backlog", value], [value, "inProgress"]):
+        result = lint_spec(tasks_spec(states), seen)
+        assert "observed.value" in result.codes(), (value, states)
+        assert value not in str(result.reasons())
+
+
+def test_the_exemption_is_for_a_query_not_for_a_path_or_a_body() -> None:
+    seen = seen_ctx("inProgress")
+    spec = tasks_spec(["backlog", "inProgress"])
+    assert lint_spec(spec, seen).ok
+    spec["recipe"]["endpoints"][0]["request"]["path"] = "/api/tasks/inProgress"
+    assert "observed.value" in lint_spec(spec, seen).codes()
 
 
 def test_lint_checks_every_value_of_a_repeated_key() -> None:

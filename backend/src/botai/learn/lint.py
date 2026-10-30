@@ -34,6 +34,7 @@ from botai.sources import rxsafe, templates
 from botai.sources.adapters.moodle_ws import ALLOWED_FUNCTIONS
 from botai.sources.extract import selector_valid
 from botai.sources.readonly import is_read_only_post
+from botai.sources.states import is_status
 from botai.sources.vocab import REQUIRED, STRUCTURED_FIELDS, TABLE_EXTRA_FIELDS, TABLE_KINDS, VOCAB
 
 SCHEMA = "adapter-spec.schema.json"
@@ -135,15 +136,9 @@ class LintResult:
             raise self.to_error()
 
 
-# A constant of the source's own vocabulary, such as a status of a task (`inProgress`,
-# `IN_PROGRESS`): words joined by case or an underscore, no digit. It names a state, not a person,
-# and the author sees it unmasked in the observation, so copying it into a filter is not a leak.
-ENUM_TOKEN = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+|[A-Z]+(?:_[A-Z]+)+")
-
-
 def sensitive(value: str) -> bool:
     """Would this observed value be personal or identifying if it ended up in a shared spec?"""
-    if len(value) < 4 or ENUM_TOKEN.fullmatch(value):
+    if len(value) < 4:
         return False
     return any(c.isdigit() for c in value) or any(c.isupper() for c in value)
 
@@ -764,10 +759,13 @@ def _literals(spec: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
             for section in ("query", "body"):
                 for key, value in (request.get(section) or {}).items():
                     for item in value if isinstance(value, list) else [value]:
-                        yield (
-                            _p(*base, "request", section, key),
-                            templates.PLACEHOLDER.sub("", item),
-                        )
+                        literal = templates.PLACEHOLDER.sub("", item)
+                        # A filter on a status (`inProgress`) is made of words every learning system
+                        # shares; the author sees it unmasked and the compiler has proved it equal
+                        # to what the page sent. A name or a code in a query is still a value.
+                        if section == "query" and is_status(literal):
+                            continue
+                        yield _p(*base, "request", section, key), literal
             if request.get("browserPlan") is not None:
                 yield from _browser_plan_literals(
                     request["browserPlan"], (*base, "request", "browserPlan")

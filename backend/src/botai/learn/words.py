@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from urllib.parse import urlsplit
 
 from botai.contracts.specs import Kind
 from botai.sources.vocab import KIND_LABELS
@@ -44,6 +43,10 @@ REASONS: dict[str, str] = {
     "evidence_path_mismatch": "адрес запроса в описании не совпал с адресом, который открывала страница",
     "evidence_path_literal_replaced": (
         "в адрес запроса подставили постороннее значение вместо слова, по которому кабинет "
+        "сам узнаёт вас"
+    ),
+    "evidence_query_literal_replaced": (
+        "в параметр запроса подставили постороннее значение вместо слова, по которому кабинет "
         "сам узнаёт вас"
     ),
     "evidence_unknown": "описание опиралось на запрос, которого страница не отправляла",
@@ -132,10 +135,10 @@ def labels(kinds: Iterable[Kind]) -> str:
 _ERROR_PAGE = re.compile(r"(?i)not found|\b404\b|\b50\d\b|forbidden|ошибка|не найден")
 
 
-def page_name(url: str, title: str) -> str:
-    """A page for a human: its title, else the path (no query, no address of the site). A page
-    that only said "not found" was not a place to look at."""
-    name = " ".join(title.split())[:40] or urlsplit(url).path[:40]
+def page_name(title: str) -> str:
+    """A page for a human is named by its title. A page without one is not named at all (its
+    address is not for the student), and a page that only said "not found" was no place to look."""
+    name = " ".join(title.split())[:40]
     return f"«{name}»" if name and not _ERROR_PAGE.search(name) else ""
 
 

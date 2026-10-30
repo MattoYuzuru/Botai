@@ -45,12 +45,16 @@ def test_no_records_is_told_only_when_nothing_more_specific_is_known() -> None:
     assert words.why(["empty_result"]) == words.reason("empty_result")
 
 
-def test_a_page_is_named_by_its_title_or_its_path_and_an_error_page_is_not_a_place() -> None:
-    assert words.page_name("/learn/tasks", "Задания") == "«Задания»"
-    assert words.page_name("/learn/tasks?x=1", "") == "«/learn/tasks»"
-    assert words.page_name("/api/docs", "Not Found") == ""
-    assert words.page_name("/x", "  Мои   пары  ") == "«Мои пары»"
-    assert len(words.page_name("/x", "я" * 200)) == 42
+def test_a_page_is_named_by_its_title_never_by_its_address() -> None:
+    assert words.page_name("Задания") == "«Задания»"
+    assert words.page_name("  Мои   пары  ") == "«Мои пары»"
+    assert len(words.page_name("я" * 200)) == 42
+    # no title: the page is not named, and the student is not shown an address
+    assert words.page_name("") == ""
+    assert words.page_name("   ") == ""
+    # a page that only said "not found" was no place to look
+    assert words.page_name("Not Found") == ""
+    assert words.page_name("Страница не найдена") == ""
 
 
 def test_seen_names_pages_and_kinds_only() -> None:

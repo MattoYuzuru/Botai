@@ -91,7 +91,10 @@ bearer; названия, аудитории и люди выдуманы. `lms.
 |---|---|
 | Путь целиком: настоящий Chromium видит повторяющийся ключ и правила → автор → canary → sync → домен | `tests/learn/test_lms_browser.py` (модель скриптована, `-m browser`) |
 | Тот же путь без Chromium: рецепт (weekly, `intervalWeeks` из поля, ключ-список), 36 занятий с карточкой без почты, статусы заданий, названия курсов; ошибки автора из инцидента (один `state` вместо пяти, `{accountId}` вместо `me`) возвращаются словами; удалённое правило снимает будущие занятия, добавленное появляется, сдвиг времени и интервала; слова для студента (что видела, чем остановилась, почему не вышло, что можно сделать) | `tests/learn/test_lms_story.py` (записанные ответы автора L2, `ScriptedLlm`-очередь) |
-| Названия дней, интервал из источника, список ключа в compiler/lint/schema/typed-модели, probe не подменяет повторяющийся ключ, статус-константа не «личное значение» | `tests/sources/test_recipe_expressions.py`, `tests/learn/test_auth_bindings.py`, `test_data_lint.py`, `test_factory_compile.py`, `test_probe.py`, `tests/core/test_recipe_v2_contract.py` (+ `contracts/examples/*/weekly-rules-recipe.json`) |
+| Названия дней, интервал из источника, список ключа в compiler/lint/schema/typed-модели, probe не подменяет повторяющийся ключ, статус-фильтр query не «личное значение», а логин в camelCase — личное; слово `me` внутри сегмента и в значении query | `tests/sources/test_recipe_expressions.py`, `tests/learn/test_auth_bindings.py`, `test_data_lint.py`, `test_factory_compile.py`, `test_probe.py`, `tests/core/test_recipe_v2_contract.py` (+ `contracts/examples/*/weekly-rules-recipe.json`) |
+| Экземпляры правила: скользящий горизонт не снимает то, мимо чего скользнул; сокращённый `horizon.days` не снимает дальние; внутри окна исчезнувший день снимается; неполный и «неверимый» sync ничего не снимает | `tests/sources/test_occurrences.py` (настоящий адаптер + normalizer на стенде), `test_normalize.py`, `test_lms_story.py` |
+| Статусы заданий по целым словам: `notEvaluated`, `pendingEvaluation`, `awaiting_evaluation`, `reviewed`, `preview`, `failed` | `tests/sources/test_normalize.py` |
+| Промпты, подсказки и описания схемы не содержат ключей стенда (`eventRows`, `calendarEvent`, `hosts`...): пример в них был бы ответом | `tests/learn/test_recipe_rules_prompt.py` |
 | Фразы для студента: у каждого кода canary/compiler есть своя | `tests/learn/test_words.py` |
 
 **L2 на этом стенде** — `tests/learn/test_lms_live.py` (`live_llm` + `browser`, без `BOTAI_LIVE_LLM=1`
@@ -110,8 +113,8 @@ BOTAI_LIVE_RECORD_DIR=/куда/сложить/обмены \
 30.10.2026 (DeepSeek, профили из настроек): до исправлений провал воспроизвёлся (день недели словом
 → `fields`, один `state` вместо пяти → `evidence_query_mismatch`, затем `observed.value` на
 `inProgress`; автор собрал `startsAt` из `startDate` и получил 5 записей из сентября); после —
-расписание 36 занятий, курсы 3, задания 5, дедлайны 5, преподаватели 5. Шесть прогонов, по 11–13
-вызовов модели, **≈ $0.13 суммарно** (счётчик `MeteredLlm` по ответам API; $0.013–0.034 на прогон,
+расписание 36 занятий, курсы 3, задания 5, дедлайны 5, преподаватели 5. Семь прогонов, по 11–13
+вызовов модели, **≈ $0.15 суммарно** (счётчик `MeteredLlm` по ответам API; $0.013–0.034 на прогон,
 лимит задачи $1.5). Вид «аудитории» из этого ответа не собирается (в онлайн-занятии нет аудитории,
 а пропущенное обязательное поле отклоняет весь ответ), студенту это объясняется словами. Живой
 кабинет настоящего вуза этим не проверен.

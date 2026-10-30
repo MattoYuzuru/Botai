@@ -1602,7 +1602,7 @@ class Explorer:
     def _remember_observation(self, obs: Observations) -> None:
         """Keep where research looked and what it saw for the words said at the end."""
         for page in obs.pages:
-            name = words.page_name(page.url, page.title)
+            name = words.page_name(page.title)
             if name and name not in self._seen_pages:
                 self._seen_pages.append(name)
         for kind in obs.discovered_kinds:

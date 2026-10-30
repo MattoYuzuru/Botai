@@ -35,6 +35,29 @@ SUBMITTED = frozenset({"submitted", "done", "completed", "sent"})
 SUBMITTED_STEMS = ("сдан", "выполнен", "проверк")  # `на проверке`: handed in, being checked
 
 
+# Every word a status of a task is made of, in any learning system: the words above and the glue
+# and the few others that statuses share. A status filter is words from here and nothing else.
+STATUS_WORDS = (
+    NEGATIONS
+    | WAITING
+    | PROCESS
+    | GRADED
+    | MISSED
+    | OPEN
+    | SUBMITTED
+    | frozenset(
+        {
+            "in", "on", "to", "for", "of", "by", "with", "has", "have", "is", "was", "need",
+            "needs", "solution", "revision", "rejected", "accepted", "approved", "declined",
+            "returned", "reopened", "resubmitted", "draft", "closed", "active", "archived",
+            "published", "hidden", "finished", "ready", "late", "expired", "cancelled",
+            "canceled", "skipped", "excused", "waiting",
+        }
+    )
+)  # fmt: skip
+_PLAIN = re.compile(r"[A-Za-z]+(?:[ _-]?[A-Za-z]+)*")
+
+
 def words_of(value: str) -> list[str]:
     return [word.casefold() for word in _WORD.findall(value)]
 
@@ -66,3 +89,14 @@ def task_state(value: object) -> State:
     if submitted or process:
         return "submitted"
     return "unknown"
+
+
+def is_status(value: str) -> bool:
+    """A value that is only words of the status vocabulary (`inProgress`, `IN_PROGRESS`,
+    `awaiting-review`). A name, a code or a login is not, whatever its letters look like."""
+    words = words_of(value)
+    return (
+        bool(words)
+        and _PLAIN.fullmatch(value) is not None
+        and all(w in STATUS_WORDS for w in words)
+    )

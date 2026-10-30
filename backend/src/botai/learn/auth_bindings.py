@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from botai.core.browser import ObservedRequest, auth_origin
+from botai.learn.lint import SECRET_NAME
 
 _PARAM = re.compile(r"\{(?:[A-Za-z][A-Za-z0-9]{0,30}|(?:plusDays|minusDays):[0-9]{1,3})\}")
 # Words that stand for the signed-in student in an address (`/students/me/timetables`). The
@@ -52,13 +53,29 @@ def _query(value: object) -> dict[str, list[str]]:
     return out
 
 
-def _assign(templates: Sequence[str], observed: Sequence[str]) -> bool:
+def _absorbed(template: str, observed: str) -> str | None:
+    """The part of `observed` that the one placeholder of `template` stands for."""
+    params = list(_PARAM.finditer(template))
+    if len(params) != 1:
+        return None
+    param = params[0]
+    return observed[param.start() : len(observed) - len(template) + param.end()]
+
+
+def _assign(key: str, templates: Sequence[str], observed: Sequence[str]) -> bool:
     """Every authored value stands for a different observed value of the same key. Exact literals
-    claim theirs first, so a placeholder takes only what is left."""
+    claim theirs first, so a placeholder takes only what is left. A placeholder never stands for a
+    word that names the current student."""
     left = list(observed)
     for template in sorted(templates, key=lambda t: "{" in t):
         for index, value in enumerate(left):
             if _matches(template, value):
+                taken = _absorbed(template, value)
+                if taken is not None and taken.casefold() in CURRENT_USER_ALIASES:
+                    raise BindingEvidenceError(
+                        "evidence_query_literal_replaced",
+                        f"значение ключа {_shown(key)} в наблюдении — «{taken}»",
+                    )
                 del left[index]
                 break
         else:
@@ -66,8 +83,17 @@ def _assign(templates: Sequence[str], observed: Sequence[str]) -> bool:
     return not left
 
 
+_CLEAN_KEY = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+
+
+def _shown(key: str) -> str:
+    """A query key may be told to the author only when the lint would accept it as a name: a
+    key that looks like a secret or a value is not repeated in a finding."""
+    return key if _CLEAN_KEY.fullmatch(key) and not SECRET_NAME.search(key) else "<ключ>"
+
+
 def _key_counts(counts: Counter[str]) -> str:
-    return ", ".join(f"{key}×{number}" for key, number in sorted(counts.items())) or "нет"
+    return ", ".join(f"{_shown(key)}×{number}" for key, number in sorted(counts.items())) or "нет"
 
 
 def _matches(template: str, observed: str, *, path: bool = False) -> bool:
@@ -106,13 +132,16 @@ def _matches(template: str, observed: str, *, path: bool = False) -> bool:
 
 
 def _aliases_kept(template: str, observed: str) -> None:
-    """A placeholder never takes the place of a word that names the current student."""
+    """A placeholder never takes the place of a word that names the current student, whether it
+    is the whole segment (`me`) or what is left of it between a prefix and a suffix (`me.json`,
+    `user-me`)."""
     for index, (expected, actual) in enumerate(
         zip(unquote(template).split("/"), unquote(observed).split("/"), strict=False)
     ):
-        if _PARAM.search(expected) and actual.casefold() in CURRENT_USER_ALIASES:
+        taken = _absorbed(expected, actual)
+        if taken is not None and taken.casefold() in CURRENT_USER_ALIASES:
             raise BindingEvidenceError(
-                "evidence_path_literal_replaced", f"сегмент пути №{index} в наблюдении — «{actual}»"
+                "evidence_path_literal_replaced", f"сегмент пути №{index} в наблюдении — «{taken}»"
             )
 
 
@@ -165,7 +194,7 @@ def compile_auth_binding(
             f"в наблюдённом запросе ключи query: {_key_counts(seen_keys)}; "
             f"в описании: {_key_counts(wanted_keys)}",
         )
-    if any(not _assign(values, observed[key]) for key, values in requested.items()):
+    if any(not _assign(key, values, observed[key]) for key, values in requested.items()):
         raise BindingEvidenceError(
             "evidence_query_mismatch", "значения query не совпали с наблюдёнными"
         )

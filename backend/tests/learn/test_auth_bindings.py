@@ -186,3 +186,99 @@ def test_a_placeholder_still_generalises_an_identifier() -> None:
         method="GET",
         path="/api/lms/students/{accountId}/timetables",
     )
+
+
+@pytest.mark.parametrize(
+    ("observed_path", "template"),
+    [
+        ("/api/students/me.json", "/api/students/{accountId}.json"),  # a suffix stays
+        ("/api/user-me/timetable", "/api/user-{accountId}/timetable"),  # a prefix stays
+        ("/api/u-Self-v1/x", "/api/u-{accountId}-v1/x"),  # both stay, case does not matter
+        ("/api/%6De/x", "/api/{accountId}/x"),  # `me` written with a percent code
+    ],
+)
+def test_a_placeholder_does_not_absorb_the_word_between_a_prefix_and_a_suffix(
+    observed_path: str, template: str
+) -> None:
+    fact = observed(
+        url=ORIGIN + observed_path, has_authorization=False, authorization_scheme="none"
+    )
+    with pytest.raises(BindingEvidenceError) as error:
+        compile_auth_binding({"r1": fact}, "r1", origin=ORIGIN, method="GET", path=template)
+    assert error.value.code == "evidence_path_literal_replaced"
+    # the same address with the word kept is the page's own
+    kept = template.replace("{accountId}", "x")
+    assert kept != template
+    with pytest.raises(BindingEvidenceError, match="evidence_path_mismatch"):
+        compile_auth_binding({"r1": fact}, "r1", origin=ORIGIN, method="GET", path=kept)
+
+
+@pytest.mark.parametrize(
+    ("observed_path", "template"),
+    [
+        ("/api/students/4f2a9c.json", "/api/students/{accountId}.json"),
+        ("/api/user-4f2a9c/timetable", "/api/user-{accountId}/timetable"),
+        ("/api/user-me/timetable", "/api/user-me/timetable"),  # the literal itself
+    ],
+)
+def test_a_placeholder_for_an_identifier_inside_a_segment_is_still_fine(
+    observed_path: str, template: str
+) -> None:
+    fact = observed(
+        url=ORIGIN + observed_path, has_authorization=False, authorization_scheme="none"
+    )
+    assert compile_auth_binding({"r1": fact}, "r1", origin=ORIGIN, method="GET", path=template) == {
+        "cookies": True,
+        "bearer": "none",
+    }
+
+
+def test_a_query_value_that_names_the_current_student_is_kept_as_it_is() -> None:
+    fact = observed(
+        url=ORIGIN + "/api/tasks?student=me&state=open&state=done",
+        has_authorization=False,
+        authorization_scheme="none",
+    )
+
+    def policy(query: dict[str, Any]) -> dict[str, Any]:
+        return compile_auth_binding(
+            {"r1": fact}, "r1", origin=ORIGIN, method="GET", path="/api/tasks", query=query
+        )
+
+    states = ["open", "done"]
+    assert policy({"student": "me", "state": states}) == {"cookies": True, "bearer": "none"}
+    with pytest.raises(BindingEvidenceError) as error:
+        policy({"student": "{studentId}", "state": states})
+    assert error.value.code == "evidence_query_literal_replaced"
+    assert error.value.detail == "значение ключа student в наблюдении — «me»"
+    with pytest.raises(BindingEvidenceError, match="evidence_query_mismatch"):
+        policy({"student": "x-{studentId}", "state": states})  # does not even match `me`
+    # a date template over a date is the ordinary case and stays
+    dated = observed(
+        url=ORIGIN + "/api/x?from=2026-10-26", has_authorization=False, authorization_scheme="none"
+    )
+    assert compile_auth_binding(
+        {"r1": dated},
+        "r1",
+        origin=ORIGIN,
+        method="GET",
+        path="/api/x",
+        query={"from": "{weekStart}"},
+    )
+
+
+def test_a_key_that_looks_like_a_secret_or_a_value_is_not_repeated_in_a_finding() -> None:
+    fact = observed(
+        url=ORIGIN + "/api/x?sessionToken=aaaa&Иванов+Петр=1&state=a&state=b",
+        has_authorization=False,
+        authorization_scheme="none",
+    )
+    with pytest.raises(BindingEvidenceError) as error:
+        compile_auth_binding(
+            {"r1": fact}, "r1", origin=ORIGIN, method="GET", path="/api/x", query={"state": "a"}
+        )
+    detail = error.value.detail or ""
+    assert "state×2" in detail
+    assert "<ключ>×1" in detail
+    for hidden in ("sessionToken", "Иванов", "Петр"):
+        assert hidden not in detail
