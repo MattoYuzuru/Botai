@@ -93,6 +93,7 @@ from botai.sources.runner import (
 from botai.sources.scope import scoped_spec
 from botai.sources.session import load_session, recipe_requires_session
 from botai.sources.vocab import KIND_LABELS, VOCAB
+from botai.spaces.views import source_title
 
 log = logging.getLogger(__name__)
 
@@ -572,7 +573,10 @@ class Explorer:
         host = urlsplit(origin).hostname or ""
         hosts = sorted({*info.allow_hosts, host})
         await self._set(
-            info.connection_id, origin=origin, allow_hosts=hosts, title=info.title or host
+            info.connection_id,
+            origin=origin,
+            allow_hosts=hosts,
+            title=info.title or source_title(kind=info.kind),
         )
         return origin
 
