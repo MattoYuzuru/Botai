@@ -229,7 +229,8 @@ describe("диктовка: речь в текст в поле ввода", () =
     await user.click(screen.getByRole("button", { name: "Готово" }));
 
     await waitFor(() => expect(composer()).toHaveValue(MOCK_DICTATION), wait);
-    expect(composer()).toHaveFocus();
+    // Focus follows the value by a frame; a loaded CI runner may see the value first.
+    await waitFor(() => expect(composer()).toHaveFocus(), wait);
     expect(track.stop).toHaveBeenCalled();
     // Ни вложения, ни сообщения: звук ушёл только на распознавание.
     expect(chips()).toBeNull();
