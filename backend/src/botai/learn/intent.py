@@ -31,10 +31,13 @@ _LABELLED_SECRET = re.compile(
 )
 
 
+DEFAULT_KINDS: tuple[Kind, ...] = ("scheduleEvents",)  # what a bare "connect this site" asks for
+
+
 @dataclass(frozen=True, slots=True)
 class LearningIntent:
     entry_urls: tuple[str, ...] = field(default=(), repr=False)
-    requested_kinds: tuple[Kind, ...] = ("scheduleEvents",)
+    requested_kinds: tuple[Kind, ...] = DEFAULT_KINDS
     absent_kinds: tuple[Kind, ...] = ()
     user_note: str = ""
     discovery_mode: Literal["auto", "requested"] = "requested"
@@ -79,6 +82,40 @@ class LearningIntent:
             _note(data.get("user_note")),
             "auto" if data.get("discovery_mode") == "auto" else "requested",
         )
+
+
+def merge_intent(stale: LearningIntent, fresh: LearningIntent) -> LearningIntent:
+    """The intent of a source that the student asks for again.
+
+    What is asked now wins and what was said before survives where it does not contradict it:
+
+    - the note is the new one (the old one only stands in for an empty one);
+    - the entry pages are the new ones first, then the old ones (never more than `MAX_LINKS`);
+    - kinds the student named are joined, so a second ask adds to the first and does not erase it;
+    - a kind the student excluded stays excluded unless this ask names it again.
+
+    Kinds an auto-mode research found on its own are findings, not wishes: they are not carried over.
+    """
+    asked_now: tuple[Kind, ...] = (
+        fresh.requested_kinds if fresh.discovery_mode == "requested" else ()
+    )
+    absent: tuple[Kind, ...] = tuple(
+        k
+        for k in dict[Kind, None].fromkeys((*stale.absent_kinds, *fresh.absent_kinds))
+        if k not in asked_now
+    )
+    named: tuple[Kind, ...] = (
+        *(stale.requested_kinds if stale.discovery_mode == "requested" else ()),
+        *asked_now,
+    )
+    kinds: tuple[Kind, ...] = tuple(k for k in dict[Kind, None].fromkeys(named) if k not in absent)
+    return LearningIntent(
+        tuple(dict.fromkeys((*fresh.entry_urls, *stale.entry_urls)))[:MAX_LINKS],
+        kinds or DEFAULT_KINDS,
+        absent,
+        fresh.user_note or stale.user_note,
+        "requested" if kinds else "auto",
+    )
 
 
 @dataclass(frozen=True, slots=True)

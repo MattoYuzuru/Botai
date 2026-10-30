@@ -27,6 +27,7 @@ from botai.agent.env import (
 )
 from botai.agent.tasks import TaskView, active_tasks
 from botai.contracts.agent_ui import TaskBlock
+from botai.contracts.specs import Kind
 from botai.core.errors import BotaiError
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
@@ -34,10 +35,12 @@ from botai.db.models import Connection, Document, Job, Space, University
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import TASK_KINDS, enqueue_in_session
 from botai.jobs.tasks import task_title
+from botai.learn.intent import LearningIntent, merge_intent
 from botai.sources import calendar
 from botai.sources import service as documents_service
 from botai.sources.ingest import check_url
 from botai.sources.schemas import DocumentFromUrl
+from botai.sources.vocab import KIND_LABELS
 from botai.spaces import repo, service, universities, views
 from botai.spaces.conversations import (
     intent_of,
@@ -247,6 +250,32 @@ async def _university(
 _UNFINISHED = frozenset({"draft", "learning", "error"})
 
 
+async def _previous_intent(session: AsyncSession, conn: Connection) -> LearningIntent | None:
+    """What the newest connect task of this source was asked to learn, as the student and the
+    research left it (the pages and kinds named in the dialogue, what the student excluded)."""
+    previous = await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == conn.user_id,
+            Job.connection_id == conn.id,
+            Job.kind == JobKind.CONNECT.value,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    stored = service.same_origin_intent(
+        previous.payload.get("learning_intent") if previous else None, conn.origin
+    )
+    return LearningIntent.restore(stored) if stored is not None else None
+
+
+def _wanted_text(intent: LearningIntent) -> str:
+    """What is being connected, in the words of the student."""
+    if intent.discovery_mode != "requested":
+        return "то, что найдётся в кабинете"
+    return ", ".join(KIND_LABELS[kind].lower() for kind in intent.requested_kinds)
+
+
 async def _exists_or_resume(
     env: ChatEnv,
     session: AsyncSession,
@@ -257,7 +286,16 @@ async def _exists_or_resume(
     busy = any(t.connection_id == conn.id for t in await active_tasks(session, env.user_id))
     if busy or conn.spec_id is not None or conn.status not in _UNFINISHED:
         return await _exists(env, session, conn)
-    payload: dict[str, Any] = {"learning_intent": intent, "source": "chat"}
+    # The task continues what the student wants NOW: this ask is merged into what the earlier
+    # attempt was told, so a new wish (tasks as well as the timetable) is never lost to an old note
+    # and a page or an exclusion from the earlier dialogue is not forgotten either.
+    fresh = LearningIntent.restore(intent)
+    stale = await _previous_intent(session, conn)
+    merged = merge_intent(stale, fresh) if stale is not None else fresh
+    payload: dict[str, Any] = {
+        "learning_intent": {**merged.checkpoint(), "discovery_mode": merged.discovery_mode},
+        "source": "chat",
+    }
     if url is not None:
         payload["url"] = url
     job = await enqueue_in_session(
@@ -277,7 +315,8 @@ async def _exists_or_resume(
     return (
         f"Результат: продолжено. Источник «{data_text(title)}» уже был добавлен, но подключение "
         f"не завершилось — оно запущено снова {_where(env, job)} {connection_link(conn.id)}. "
-        "Скажите студенту, что продолжаете прежнее подключение; вход и вопросы появятся в чате."
+        f"Читается: {_wanted_text(merged)}. Скажите студенту, что продолжаете прежнее "
+        "подключение и что именно читается; вход и вопросы появятся в чате."
     )
 
 
@@ -322,6 +361,24 @@ async def _exists(env: ChatEnv, session: AsyncSession, conn: Connection) -> str:
     return "\n".join(lines)
 
 
+def _kinds_arg(raw: object) -> list[Kind] | str:
+    """The kinds of data the agent says the student asked for, or a message for the model."""
+    if raw is None or raw == "":
+        return []
+    values = raw if isinstance(raw, list) else [raw]
+    kinds: list[Kind] = []
+    for value in values:  # pyright: ignore[reportUnknownVariableType]
+        if not isinstance(value, str) or value not in KIND_LABELS:
+            return (
+                "Результат: не запущено. kinds — список видов данных из: "
+                + ", ".join(KIND_LABELS)
+                + "."
+            )
+        if value not in kinds:
+            kinds.append(value)  # type: ignore[arg-type]  # a key of KIND_LABELS
+    return kinds
+
+
 async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
     raw_url = args.get("url")
     url: str | None = None
@@ -335,8 +392,14 @@ async def connect_source(env: ChatEnv, args: dict[str, Any]) -> str:
         return _NEEDS_TITLE
     kind = views.normalize_kind(args.get("kind_hint"))
     note = clean(str(args.get("note") or ""), 500)
+    kinds = _kinds_arg(args.get("kinds"))
+    if isinstance(kinds, str):
+        return kinds
     try:
-        context = {"entry_urls": [url] if url else [], "user_note": note}
+        context: dict[str, Any] = {"entry_urls": [url] if url else [], "user_note": note}
+        if kinds:
+            # What the student named is a request, not a hint: discovery does not widen it.
+            context.update(requested_kinds=kinds, discovery_mode="requested")
         intent = intent_of(normalize_context(context))
     except BotaiError as exc:
         return f"Результат: не запущено. {exc.detail}."
@@ -803,7 +866,10 @@ SPECS = {
         "вопросы и результат появятся здесь. Сам находит или создаёт пространство вуза. "
         "Если такой адрес уже подключён, ничего не запускает и возвращает статус и ссылки. "
         "Нужен человеческий title источника; url — если адрес известен (без него подключение само "
-        "поищет входную страницу и спросит студента); вуз — university_id или university_query.",
+        "поищет входную страницу и спросит студента); вуз — university_id или university_query. "
+        "Что именно читать, передавайте в kinds, если студент это назвал. Источник, подключение "
+        "которого не завершилось, этот вызов продолжает с новой просьбой: она дополняет прежнюю, "
+        "а не теряется.",
         {
             "url": {
                 **_TEXT,
@@ -816,6 +882,18 @@ SPECS = {
                 **_TEXT,
                 "enum": list(views.CONNECTION_KINDS),
                 "description": "Вид источника, если ясен из слов студента",
+            },
+            "kinds": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(KIND_LABELS)},
+                "description": (
+                    "Что студент просит читать из источника, если он это назвал: scheduleEvents — "
+                    "расписание, deadlines — задания со сроками (дедлайны), assignments — условия "
+                    "и описания заданий, courses — курсы, grades — оценки, news — новости, "
+                    "people — преподаватели, locations — аудитории. «Расписание и задания» — "
+                    "scheduleEvents и deadlines. Не называл — не передавайте: подключение само "
+                    "найдёт, что есть в кабинете"
+                ),
             },
             "note": {**_TEXT, "description": "Пожелание студента: что именно нужно из источника"},
         },

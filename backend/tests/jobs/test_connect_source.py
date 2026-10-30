@@ -27,6 +27,7 @@ from tests.jobs.env import Env
 pytestmark = pytest.mark.db
 LMS = "https://smart.fakeuni.test/courses?tab=current"
 PORTAL = "https://lk.fakeuni.test/schedule"
+PORTAL_TASKS = "https://lk.fakeuni.test/tasks"
 SHEET = "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit"
 HSE = "vysshaya-shkola-ekonomiki"
 
@@ -569,3 +570,158 @@ async def test_an_unfinished_source_is_continued_not_offered_as_a_choice(env: En
     assert await count(env, Connection, Connection.user_id == user) == 1
     (card,) = asking.blocks
     assert isinstance(card, TaskBlock)
+
+
+# --- an unfinished source asked for again: the current ask is applied (the incident) --------------
+
+
+async def cancel_first_attempt(env: Env, user: str, **dialogue: Any) -> Job:
+    """The only connect task of the user ends as the student left it: cancelled, with what the
+    dialogue of that attempt added to its learning intent."""
+    (job,) = await jobs_of(env, user, "connect")
+    async with env.sm() as session:
+        stored = await session.get(Job, job.id)
+        assert stored is not None
+        stored.state = "cancelled"
+        stored.payload = {
+            **stored.payload,
+            "learning_intent": {**stored.payload["learning_intent"], **dialogue},
+        }
+        await session.commit()
+    return stored
+
+
+async def test_asking_again_for_schedule_and_tasks_reads_both_not_the_old_timetable_note(
+    env: Env,
+) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(
+        tools(env, user, first),
+        {
+            "url": PORTAL,
+            "title": "Единый кабинет",
+            "university_query": "Вышка",
+            "note": "Подключение по ссылке на расписание",
+        },
+    )
+    old = await cancel_first_attempt(env, user)
+    assert old.payload["learning_intent"]["requested_kinds"] == ["scheduleEvents"]
+
+    result = await connect_source(
+        tools(env, user, again),
+        {
+            "url": PORTAL,
+            "title": "Единый кабинет",
+            "university_query": "Вышка",
+            "kinds": ["scheduleEvents", "deadlines"],
+            "note": "Переподключи: прочитай расписание и задания заново",
+        },
+    )
+
+    assert result.startswith("Результат: продолжено")
+    assert "Читается: расписание, дедлайны" in result  # what the agent may promise, in words
+    (_, resumed) = await jobs_of(env, user, "connect")
+    assert resumed.thread_id == again
+    assert resumed.connection_id == old.connection_id
+    assert resumed.payload["learning_intent"] == {
+        "entry_urls": [PORTAL],
+        "requested_kinds": ["scheduleEvents", "deadlines"],
+        "absent_kinds": [],
+        "user_note": "Переподключи: прочитай расписание и задания заново",
+        "discovery_mode": "requested",
+    }
+    assert await count(env, Connection, Connection.user_id == user) == 1
+
+
+async def test_resuming_keeps_the_pages_and_exclusions_of_the_earlier_dialogue(env: Env) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    await connect_source(
+        tools(env, user, first),
+        {
+            "url": PORTAL,
+            "title": "Единый кабинет",
+            "university_query": "Вышка",
+            "note": "Расписание",
+        },
+    )
+    # in the dialogue the student named deadlines, excluded rooms and gave the page of the tasks
+    await cancel_first_attempt(
+        env,
+        user,
+        entry_urls=[PORTAL, PORTAL_TASKS],
+        requested_kinds=["deadlines"],
+        absent_kinds=["locations"],
+        discovery_mode="requested",
+    )
+
+    await connect_source(
+        tools(env, user, again),
+        {
+            "url": PORTAL,
+            "title": "Единый кабинет",
+            "university_query": "Вышка",
+            "kinds": ["scheduleEvents"],
+            "note": "Ещё раз с начала",
+        },
+    )
+
+    (_, resumed) = await jobs_of(env, user, "connect")
+    intent = resumed.payload["learning_intent"]
+    assert intent["requested_kinds"] == ["deadlines", "scheduleEvents"]  # the new ask adds
+    assert intent["absent_kinds"] == ["locations"]
+    assert intent["entry_urls"] == [PORTAL, PORTAL_TASKS]
+    assert intent["user_note"] == "Ещё раз с начала"
+    assert intent["discovery_mode"] == "requested"
+
+
+async def test_resuming_with_only_a_new_note_updates_the_note_and_leaves_discovery_open(
+    env: Env,
+) -> None:
+    client, user = await student(env)
+    first, again = await thread_of(client), await thread_of(client)
+    ask = {"url": PORTAL, "title": "Единый кабинет", "university_query": "Вышка"}
+    await connect_source(tools(env, user, first), {**ask, "note": "Подключение по ссылке"})
+    await cancel_first_attempt(env, user, requested_kinds=["scheduleEvents", "people", "courses"])
+
+    await connect_source(tools(env, user, again), {**ask, "note": "Посмотри всё, что есть"})
+
+    (_, resumed) = await jobs_of(env, user, "connect")
+    intent = resumed.payload["learning_intent"]
+    assert intent["user_note"] == "Посмотри всё, что есть"
+    assert intent["discovery_mode"] == "auto"  # nothing was named: what discovery saw is no wish
+    assert intent["requested_kinds"] == ["scheduleEvents"]
+
+
+async def test_a_new_source_with_named_kinds_requests_exactly_those(env: Env) -> None:
+    client, user = await student(env)
+    chat = tools(env, user, await thread_of(client))
+    result = await connect_source(
+        chat,
+        {
+            "url": LMS,
+            "title": "Smart LMS",
+            "university_query": "Вышка",
+            "kinds": ["deadlines", "deadlines", "courses"],
+        },
+    )
+    assert result.startswith("Результат: запущено")
+    (job,) = await jobs_of(env, user, "connect")
+    intent = job.payload["learning_intent"]
+    assert (intent["requested_kinds"], intent["discovery_mode"]) == (
+        ["deadlines", "courses"],
+        "requested",
+    )
+
+
+async def test_an_unknown_kind_is_a_message_to_the_model_and_starts_nothing(env: Env) -> None:
+    client, user = await student(env)
+    chat = tools(env, user, await thread_of(client))
+    result = await connect_source(
+        chat,
+        {"url": LMS, "title": "Smart LMS", "university_query": "Вышка", "kinds": ["timetable"]},
+    )
+    assert result.startswith("Результат: не запущено. kinds")
+    assert "scheduleEvents" in result
+    assert await jobs_of(env, user, "connect") == []

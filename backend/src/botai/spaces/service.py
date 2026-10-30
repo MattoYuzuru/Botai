@@ -420,7 +420,7 @@ async def delete_connection(session: AsyncSession, user_id: str, connection_id: 
     await session.commit()
 
 
-def _same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
+def same_origin_intent(data: object, origin: str) -> dict[str, Any] | None:
     """Only the source's own explicit learning context may enter a retry payload."""
     from botai.spaces.conversations import intent_of, normalize_context
 
@@ -459,7 +459,7 @@ async def _connect_retry_payload(
         .limit(1)
     )
     prior = previous.payload if previous else {}
-    intent = _same_origin_intent(prior.get("learning_intent"), conn.origin)
+    intent = same_origin_intent(prior.get("learning_intent"), conn.origin)
     result = {
         key: value
         for key, value in (payload or {}).items()
