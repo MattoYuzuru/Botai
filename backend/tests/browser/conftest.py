@@ -25,8 +25,12 @@ from botai.browser.egress import ProxyEgress
 from botai.browser.gateway import PlaywrightGateway
 from botai.browser.proxy import EgressProxy, derive_key
 from tests.fakeuni.app import create_fakeuni
+from tests.fakeuni.login import ASSET_HOST, SIBLING_HOST
 
 FAKEUNI_HOSTS = ("fakeuni.test", "id.fakeuni.test", "api.fakeuni.test", "calendar.fakeuni.test")
+# Page-asset hosts: a CDN that is not a subdomain of the origin, and a sibling under its domain.
+# They are never in a connection's allowlist; a context reaches them only as asset hosts.
+FAKEUNI_ASSET_HOSTS = (ASSET_HOST, SIBLING_HOST)
 PROXY_SECRET = derive_key(b"test-master-secret-0123456789abcdef", "proxy-token")
 
 
@@ -133,7 +137,9 @@ def trust_fakeuni(tls: Tls, monkeypatch: pytest.MonkeyPatch) -> Path:
 async def egress(fakeuni_port: int) -> AsyncIterator[EgressProxy]:
     proxy = EgressProxy(
         PROXY_SECRET,
-        test_hosts={host: ("127.0.0.1", fakeuni_port) for host in FAKEUNI_HOSTS},
+        test_hosts={
+            host: ("127.0.0.1", fakeuni_port) for host in (*FAKEUNI_HOSTS, *FAKEUNI_ASSET_HOSTS)
+        },
     )
     await proxy.start()
     try:

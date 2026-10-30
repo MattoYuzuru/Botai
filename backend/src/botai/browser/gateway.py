@@ -40,10 +40,12 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import SecretStr
 
+from botai.browser.assets import NAVIGATION_REFUSED, AssetGate
 from botai.browser.egress import LOGIN_TOKEN_TTL_S, Egress
 from botai.browser.forms import CaptchaPage, PushWait, detect, has_credential_fields
 from botai.browser.pagescan import SCAN_JS, build_snapshot
 from botai.browser.probe import requires_authentication
+from botai.browser.proxy import ASSET_HOSTS
 from botai.browser.read_capabilities import ReadCapabilityRegistry
 from botai.browser.read_views import ReadView, ReadViewRegistry
 from botai.browser.session import (
@@ -382,8 +384,10 @@ class PlaywrightHandle:
         confirmed_entry_url: SecretStr | None = None,
         restored_bearers: Mapping[str, tuple[SecretStr, datetime | None]] | None = None,
         suffixes: Sequence[str] = (),
+        assets: AssetGate | None = None,
     ) -> None:
         self._gateway = gateway
+        self._assets = assets
         self.context = context
         self._page = page
         self.user_id = user_id
@@ -461,12 +465,16 @@ class PlaywrightHandle:
         return self._page.url
 
     def visited_hosts(self) -> list[str]:
-        """Hosts the browser asked for, in first-seen order (allowed or not)."""
-        return list(self._visited)
+        """Hosts the browser asked for, in first-seen order (allowed or not). Hosts that only
+        served page assets are not among them: they must never be learned as login hosts."""
+        assets = self._assets.hosts if self._assets is not None else {}
+        return [host for host in self._visited if host not in assets or host in self.allow_hosts]
 
     def blocked_hosts(self) -> list[str]:
-        """Hosts whose tunnel the proxy refused, first-seen order."""
-        return list(dict.fromkeys(self._blocked))
+        """Hosts whose tunnel the proxy refused or whose request our asset gate refused,
+        first-seen order."""
+        refused = self._assets.refused if self._assets is not None else []
+        return list(dict.fromkeys([*self._blocked, *refused]))
 
     def navigation_failure(self) -> BotaiError | None:
         """Only the current main-page navigation, never a blocked image or an old request."""
@@ -1012,7 +1020,13 @@ class PlaywrightHandle:
                 **url_facts(request.url),
             )
         refused = self._refused_navigations.pop(request, None)
-        if refused is not None and "BLOCKED_BY_CLIENT" in failure:
+        if refused is None and self._assets is not None:
+            refused = self._assets.take_refused_navigation(request)
+        if (
+            refused is not None
+            and "BLOCKED_BY_CLIENT" in failure
+            and refused[0] != NAVIGATION_REFUSED
+        ):
             self._guard_refused_navigation = True
         if request is self._navigation_request:
             self._navigation_error = (
@@ -1032,6 +1046,14 @@ class PlaywrightHandle:
         """Why our guard stopped a submission, as the flow can act on it: a host it may put to the
         student for approval, or a refusal it can only report."""
         reason, host = refusal
+        if reason == NAVIGATION_REFUSED and host:
+            # a document for a host that is not the connection's (not an asset): the same question
+            # the student gets when the proxy refuses a redirect
+            return BotaiError(
+                ErrorCode.EGRESS_BLOCKED,
+                f"Сайт вуза ведёт на {host}, а этот адрес не входит в разрешённые для подключения",
+                extra={"host": host},
+            )
         if reason == "auth_host_not_allowed" and host:
             return BotaiError(
                 ErrorCode.EGRESS_BLOCKED,
@@ -1534,6 +1556,8 @@ class PlaywrightHandle:
         await asyncio.shield(self._closing)
 
     async def _finish_close(self) -> None:
+        if self._assets is not None:
+            self._assets.summary()
         try:
             with contextlib.suppress(PlaywrightError, TimeoutError):
                 async with asyncio.timeout(2):
@@ -1572,8 +1596,13 @@ class PlaywrightGateway:
         lifetime_s: float = HOLD_MAX_S,
         tmp_dir: Path | None = None,
         clock: Clock | None = None,
+        asset_hosts: int = ASSET_HOSTS,
     ) -> None:
         self._egress = egress
+        # How many hosts outside a connection's allowlist one context may load page assets from
+        # (0: none, the exact-host allowlist alone). Every context of this gateway is a login or a
+        # rendered read; API fetches never go through here (security.md §4.3).
+        self._asset_hosts = asset_hosts
         self._headless = headless
         self._sandbox = sandbox if sandbox is not None else sandbox_default()
         self._ignore_https_errors = ignore_https_errors  # tests only: fixture certificates
@@ -1741,7 +1770,7 @@ class PlaywrightGateway:
         context: BrowserContext | None = None
         try:
             credentials = await self._egress.credentials(
-                hosts, ttl_s=LOGIN_TOKEN_TTL_S, suffixes=suffixes
+                hosts, ttl_s=LOGIN_TOKEN_TTL_S, suffixes=suffixes, assets=self._asset_hosts
             )
             browser = await self._ensure_browser(credentials.server)
             context = await browser.new_context(
@@ -1759,12 +1788,31 @@ class PlaywrightGateway:
                 viewport={"width": 1024, "height": 768},
             )
             context.set_default_timeout(ACTION_TIMEOUT_MS)
+            assets: AssetGate | None = None
             primary = origin or (session.origin if session is not None else f"https://{hosts[0]}")
             injected_authorizations: dict[Request, str] = {}
             if session is not None:
                 injected_authorizations = await self._restore(
                     context, session, allow_hosts=hosts, clock=self._clock
                 )
+            if self._asset_hosts > 0:
+                # After restore, so the gate runs before bearer injection; before the read-only
+                # guard, which stays the newest route (and so the first to see a request).
+                token = credentials.token
+
+                async def arm(host: str) -> bool:
+                    return await self._egress.arm_asset_host(token, host)
+
+                assets = AssetGate(
+                    context=context,
+                    allow_hosts=hosts,
+                    suffixes=suffixes,
+                    cap=self._asset_hosts,
+                    arm=arm,
+                    diagnostic_facts=_browser_diagnostics(connection_id),
+                )
+                await context.route(assets.http_pattern, assets.route)
+                await context.route_web_socket(assets.socket_pattern, assets.close_socket)
             if read_only:
                 # Install after restore so this guard runs before bearer injection.
                 route_diagnostics = _browser_diagnostics(connection_id)
@@ -1813,6 +1861,7 @@ class PlaywrightGateway:
             injected_authorizations=injected_authorizations,
             restored_bearers=restored_bearers,
             suffixes=suffixes,
+            assets=assets,
             confirmed_entry_url=(
                 session.entry_url
                 if session is not None and auth_origin(primary) == auth_origin(session.origin)
@@ -1945,7 +1994,13 @@ class PlaywrightGateway:
                 # The application may have refreshed its token since restoration. Its own
                 # credentials take precedence over the saved fallback, including other schemes.
                 audience = auth_origin(route.request.url) or ""
-                bearer = scoped.get(audience)
+                # Only hosts of the connection: a page-asset host (security.md §4.3) never gets
+                # the source's authorization, whatever `scoped` was built from.
+                bearer = (
+                    scoped.get(audience)
+                    if (urlsplit(route.request.url).hostname or "").lower() in hosts
+                    else None
+                )
                 at = read_now()
                 expired = (session.expires_hint is not None and session.expires_hint <= at) or (
                     bearer is not None
