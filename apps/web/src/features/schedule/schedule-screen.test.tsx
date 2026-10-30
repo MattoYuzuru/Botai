@@ -284,6 +284,93 @@ describe("«Расписание»: карточка пары по пресет�
   });
 });
 
+describe("«Расписание»: источники одного вуза склеены (FR-054)", () => {
+  const space = () => current.db.spaces[0] as { id: string };
+  const merged = (patch: Parameters<typeof eventFixture>[0] = {}) =>
+    eventFixture({
+      id: "merged",
+      title: "Теория вероятностей",
+      startsAt: "2026-10-27T10:00:00.000Z",
+      endsAt: "2026-10-27T11:20:00.000Z",
+      location: "ауд. 412",
+      teacher: "Сидорова Е. Н.",
+      provenance: provenanceFixture({ spaceId: space().id, connectionId: "primary" }),
+      sources: [
+        { connectionId: "primary", title: "Личный кабинет" },
+        { connectionId: "second", title: "Календарь" },
+      ],
+      ...patch,
+    });
+  const serve = (...events: ReturnType<typeof merged>[]) =>
+    current.server.use(http.get("*/api/v1/schedule", () => HttpResponse.json(events)));
+
+  it("в карточке дня склеенная пара подписана источниками, расхождение — спокойной строкой", async () => {
+    serve(merged({ disagreement: { kind: "location", detail: "«Календарь» — ауд. 305" } }));
+    renderApp("/schedule");
+    const card = await screen.findByRole("button", { name: /Теория вероятностей/ });
+    expect(card.querySelector("[data-part=sources]")).toHaveTextContent("Личный кабинет · Календарь");
+    expect(card.querySelector("[data-part=disagreement]")).toHaveTextContent(
+      "Источники расходятся: «Календарь» — ауд. 305",
+    );
+    // карточка осталась плотной: аудитория и преподаватель основного источника на месте, пара одна
+    expect(card.querySelector("[data-fact=room]")).toHaveTextContent("ауд. 412");
+    expect(screen.getAllByRole("button", { name: /Теория вероятностей/ })).toHaveLength(1);
+  });
+
+  it("пара одного источника без расхождения — ни строки источников, ни предупреждения", async () => {
+    serve(
+      merged({
+        sources: [{ connectionId: "primary", title: "Личный кабинет" }],
+      }),
+    );
+    renderApp("/schedule");
+    const card = await screen.findByRole("button", { name: /Теория вероятностей/ });
+    expect(card.querySelector("[data-part=sources]")).toBeNull();
+    expect(card.querySelector("[data-part=disagreement]")).toBeNull();
+  });
+
+  it("пары нет в основном источнике: показана с пометкой, а не спрятана", async () => {
+    serve(
+      merged({
+        sources: [{ connectionId: "second", title: "Календарь" }],
+        disagreement: {
+          kind: "not_in_primary",
+          detail: "Нет в основном источнике «Личный кабинет»: возможно, пару перенесли или отменили",
+        },
+      }),
+    );
+    renderApp("/schedule");
+    const card = await screen.findByRole("button", { name: /Теория вероятностей/ });
+    expect(card.querySelector("[data-part=disagreement]")).toHaveTextContent(
+      "Нет в основном источнике «Личный кабинет»",
+    );
+    expect(card.querySelector("[data-part=disagreement]")).not.toHaveTextContent("Источники расходятся");
+  });
+
+  it("шит пары: источники с пометкой «основной» и полоса с расхождением", async () => {
+    serve(merged({ disagreement: { kind: "time", detail: "«Календарь» — время 13:05–14:25" } }));
+    renderApp("/schedule");
+    await userEvent.click(await screen.findByRole("button", { name: /Теория вероятностей/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Теория вероятностей" });
+    expect(within(sheet).getByText("Личный кабинет (основной) · Календарь")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("Источники расходятся: «Календарь» — время 13:05–14:25"),
+    ).toBeInTheDocument();
+  });
+
+  it("на ноутбуке то же в колонке недели", async () => {
+    useLaptop();
+    serve(merged({ disagreement: { kind: "teacher", detail: "«Календарь» — преподаватель Иванов" } }));
+    renderApp("/schedule");
+    const grid = await screen.findByRole("region", { name: "Неделя" });
+    const card = await within(grid).findByRole("button", { name: /Теория вероятностей/ });
+    expect(card.querySelector("[data-part=sources]")).toHaveTextContent("Личный кабинет · Календарь");
+    expect(card.querySelector("[data-part=disagreement]")).toHaveTextContent(
+      "Источники расходятся: «Календарь» — преподаватель Иванов",
+    );
+  });
+});
+
 describe("«Расписание»: ноутбук", () => {
   it("неделя сеткой в семь колонок вместо ленты дней, пересечения подписаны", async () => {
     useLaptop();

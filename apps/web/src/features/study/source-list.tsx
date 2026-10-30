@@ -23,6 +23,8 @@ export function SourceList({
   nowMs: number;
   onOpen: (connection: Connection) => void;
 }) {
+  // Роль в расписании видна, когда источников с расписанием несколько: у единственного она ничего не говорит.
+  const several = space.connections.filter((connection) => Boolean(connection.scheduleRole)).length > 1;
   return (
     <ul aria-label={`Источники: ${space.shortTitle}`}>
       {space.connections.map((connection) => {
@@ -49,6 +51,13 @@ export function SourceList({
                     {view.label}
                   </Badge>
                   <span>{view.detail}</span>
+                  {several && connection.scheduleRole && (
+                    <span data-schedule-role={connection.scheduleRole}>
+                      {connection.scheduleRole === "primary"
+                        ? "Основное расписание"
+                        : "Дополнительное расписание"}
+                    </span>
+                  )}
                 </>
               }
               onOpen={() => onOpen(connection)}

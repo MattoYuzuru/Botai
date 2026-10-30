@@ -50,3 +50,41 @@ export function ScheduleFacts({
  * вторую строку, а не усекается — информация не теряется в узкой колонке недели.
  */
 export const KIND_BADGE = "h-auto min-h-6 max-w-full whitespace-normal py-0.5 text-left";
+
+/**
+ * Откуда склеена пара и в чём источники расходятся (FR-054). Строка источников — только когда их больше
+ * одного («Кабинет · Календарь»), основной первым; строка расхождения — спокойное предупреждение рядом с
+ * деталями, без рамки и заливки: цвет `warning-fg` вместе с иконкой и словами, а не один цвет. Как и
+ * `ScheduleFacts`, это не список: карточка целиком — кнопка.
+ */
+export function ScheduleProvenance({
+  sources,
+  note,
+  className,
+}: {
+  sources: readonly string[] | undefined;
+  note: string | null | undefined;
+  className?: string;
+}) {
+  const merged = sources !== undefined && sources.length > 1;
+  if (!merged && !note) return null;
+  return (
+    <span className={cn("flex flex-col gap-1 type-caption", className)}>
+      {merged && (
+        <span data-part="sources" className="inline-flex min-w-0 items-start gap-1 text-fg-muted">
+          <Icon name="source" size={16} className="mt-0.5" />
+          <span className="min-w-0 break-words">
+            <span className="sr-only">Источники: </span>
+            {sources.join(" · ")}
+          </span>
+        </span>
+      )}
+      {note && (
+        <span data-part="disagreement" className="inline-flex min-w-0 items-start gap-1 text-warning-fg">
+          <Icon name="warning" size={16} className="mt-0.5" />
+          <span className="min-w-0 break-words">{note}</span>
+        </span>
+      )}
+    </span>
+  );
+}

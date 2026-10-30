@@ -4,7 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataVariant } from "@/mocks/data-handlers";
 import type { Scenario } from "@/mocks/db";
-import { eventFixture, hrefOf } from "@/test/data-fixtures";
+import { eventFixture, hrefOf, provenanceFixture } from "@/test/data-fixtures";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
 
@@ -35,6 +35,36 @@ afterAll(() => {
 });
 
 const screenState = () => document.querySelector("[data-screen=today]")?.getAttribute("data-state");
+
+describe("«Сегодня»: источники одного вуза склеены (FR-054)", () => {
+  it("склеенная пара — одна карточка с источниками и спокойной строкой о расхождении", async () => {
+    const space = current.db.spaces[0] as { id: string };
+    const event = eventFixture({
+      id: "merged-today",
+      title: "Теория вероятностей",
+      startsAt: "2026-10-27T10:00:00.000Z",
+      endsAt: "2026-10-27T11:20:00.000Z",
+      provenance: provenanceFixture({ spaceId: space.id, connectionId: "primary" }),
+      sources: [
+        { connectionId: "primary", title: "Личный кабинет" },
+        { connectionId: "second", title: "Календарь" },
+      ],
+      disagreement: { kind: "location", detail: "«Календарь» — ауд. 305" },
+    });
+    current.server.use(
+      http.get("*/api/v1/today", () =>
+        HttpResponse.json({ date: "2026-10-27", events: [event], deadlines: [], attention: [] }),
+      ),
+    );
+    renderApp("/");
+    const card = await screen.findByRole("button", { name: /Теория вероятностей/ });
+    expect(card.querySelector("[data-part=sources]")).toHaveTextContent("Личный кабинет · Календарь");
+    expect(card.querySelector("[data-part=disagreement]")).toHaveTextContent(
+      "Источники расходятся: «Календарь» — ауд. 305",
+    );
+    expect(screen.getAllByRole("button", { name: /Теория вероятностей/ })).toHaveLength(1);
+  });
+});
 
 describe("«Сегодня»: пары и сроки", () => {
   it("пары сегодня из обоих вузов идут одной лентой по времени, у каждой метка вуза", async () => {

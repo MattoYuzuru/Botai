@@ -26,9 +26,15 @@ interface WithProvenance {
 
 type Widen<T extends { provenance: Schemas["Provenance"] }> = Omit<T, "provenance"> & WithProvenance;
 
+/** Источник, из которого прочитана пара; первый в `ScheduleEvent.sources` — основной источник расписания вуза. */
+export type EventSource = Schemas["EventSource"];
+
+/** Источники расходятся (`kind` — в чём) или похожая пара есть в основном источнике, а в этот час нет (`not_in_primary`). */
+export type EventDisagreement = Schemas["EventDisagreement"];
+
 export type ScheduleEvent = Always<
   Widen<Schemas["ScheduleEventOut"]>,
-  "kindText" | "address" | "group" | "lessonNumber" | "links" | "attributes"
+  "kindText" | "address" | "group" | "lessonNumber" | "links" | "attributes" | "sources" | "disagreement"
 >;
 export type Deadline = Widen<Schemas["DeadlineOut"]>;
 export type Course = Widen<Schemas["CourseOut"]>;
@@ -51,7 +57,10 @@ export type ConnectionKind = Schemas["ConnectionOut"]["kind"];
 export type ConnectionTask = Schemas["ActiveTaskOut"];
 
 /** `entryUrl` — UI-страница входа в данные источника; `threadId` — тред задач источника; `activeTask` — задача сейчас. */
-export type Connection = Always<Schemas["ConnectionOut"], "entryUrl" | "threadId" | "activeTask">;
+export type Connection = Always<
+  Schemas["ConnectionOut"],
+  "entryUrl" | "threadId" | "activeTask" | "scheduleRole"
+>;
 
 interface Result {
   data?: unknown;

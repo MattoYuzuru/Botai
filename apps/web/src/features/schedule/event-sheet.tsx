@@ -15,6 +15,7 @@ import { openUrlOf } from "@/features/data/open-url";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { EVENT_FORMAT_LABEL, eventDetails } from "./event-details";
 import { endMs, startMs } from "./events";
+import { disagreementNote, sourcesOf } from "./sources";
 
 export interface EventSheetProps {
   /** Выбранная пара; `null` — шит закрыт. Содержимое остаётся на время анимации закрытия. */
@@ -29,7 +30,8 @@ export interface EventSheetProps {
 /**
  * Карточка пары по пресету `eventDetails` (event-details.ts): тип занятия бейджем, время, номер пары, аудитория,
  * адрес, преподаватель, группа, предмет и прочие атрибуты источника — только те, что есть, каждый со своей
- * иконкой; онлайн-ссылки кнопками; пересечение с парой другого вуза; источник со временем получения.
+ * иконкой; онлайн-ссылки кнопками; пересечение с парой другого вуза; склейку источников и их расхождение
+ * (FR-054); источник со временем получения.
  * «Открыть в личном кабинете» ведёт на страницу интерфейса источника, а не на адрес API. На ноутбуке шит —
  * правая панель.
  */
@@ -72,6 +74,7 @@ function EventDetails({
   const connection = space?.connections.find((row) => row.id === event.provenance.connectionId);
   const openUrl = openUrlOf(event.provenance, connection);
   const partners = event.conflictsWith.map((id) => events.find((row) => row.id === id) ?? null);
+  const note = disagreementNote(event);
 
   return (
     <div className="flex flex-col gap-4 pb-2">
@@ -85,6 +88,12 @@ function EventDetails({
           </Badge>
         )}
       </div>
+
+      {note && (
+        <Banner tone="warning" icon="warning">
+          {note}
+        </Banner>
+      )}
 
       {partners.length > 0 && (
         <Banner tone="warning" icon="warning">
@@ -107,6 +116,13 @@ function EventDetails({
             {fact.text}
           </DetailRow>
         ))}
+        {sourcesOf(event).length > 1 && (
+          <DetailRow icon="source" label="Источники">
+            {sourcesOf(event)
+              .map((source, index) => (index === 0 ? `${source.title} (основной)` : source.title))
+              .join(" · ")}
+          </DetailRow>
+        )}
       </DetailList>
 
       {details.links.length > 0 && (

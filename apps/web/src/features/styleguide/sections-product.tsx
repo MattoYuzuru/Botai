@@ -85,7 +85,10 @@ export function StudySection() {
             />
           </Card>
         </Demo>
-        <Demo label="ScheduleWeek + ScheduleDay (пара идёт сейчас, изменение, пересечение)" wide>
+        <Demo
+          label="ScheduleWeek + ScheduleDay (пара идёт сейчас, изменение, пересечение, склейка источников и расхождение)"
+          wide
+        >
           <div className="flex flex-col gap-4">
             <ScheduleWeek days={WEEK} selected={selected} onSelect={setSelected} nowMs={NOW} timeZone={MSK} />
             <ScheduleDay
