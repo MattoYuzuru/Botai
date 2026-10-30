@@ -1045,6 +1045,7 @@
           "kind": {
             "enum": [
               "time",
+              "title",
               "location",
               "teacher",
               "group",
@@ -3650,7 +3651,7 @@
     },
     "/api/v1/connections/{connection_id}/disable": {
       "post": {
-        "description": "Switches the source off, reversibly: no sync, its data leaves every view, nothing is deleted.",
+        "description": "Switches the source off, reversibly: its tasks stop, there is no sync, and its classes, tasks,\ncourses, grades, people, news and documents leave every view; nothing is deleted.",
         "operationId": "disable_connection_api_v1_connections__connection_id__disable_post",
         "parameters": [
           {
@@ -3693,7 +3694,7 @@
     },
     "/api/v1/connections/{connection_id}/enable": {
       "post": {
-        "description": "Switches a disabled source back on; its data returns and it syncs at the next tick.",
+        "description": "Switches a disabled source back on: it returns to the status it had and its data is shown\nagain; a source that syncs is refreshed at the next tick.",
         "operationId": "enable_connection_api_v1_connections__connection_id__enable_post",
         "parameters": [
           {

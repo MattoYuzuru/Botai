@@ -42,7 +42,7 @@ class EventDisagreement(ApiModel):
     class at all."""
 
     kind: Literal[
-        "time", "location", "teacher", "group", "address", "several", "not_in_primary"
+        "time", "title", "location", "teacher", "group", "address", "several", "not_in_primary"
     ]  # `several`: more than one field differs; `not_in_primary`: see `domain.merge`
     detail: str  # short and human, e.g. «Календарь» — ауд. 305
 

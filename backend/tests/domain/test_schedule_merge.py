@@ -8,16 +8,31 @@ real tables. The pure rules (tolerance, titles, notes) are in `test_merge.py`.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+import pytest
+from sqlalchemy import func, select, text
 
 from botai.core.clock import FrozenClock
-from botai.db.models import Connection, ScheduleEvent, Space
+from botai.core.ids import new_id
+from botai.db.models import ChatThread, Connection, Job, ScheduleEvent, Space
 from tests.auth.support import Sm, signup
-from tests.domain.helpers import T0, Campus, add, add_source, at, event
+from tests.domain.helpers import (
+    T0,
+    Campus,
+    add,
+    add_source,
+    at,
+    course,
+    deadline,
+    document,
+    event,
+    grade,
+    news,
+    person,
+)
 
 WEEK = {"start": "2026-10-26T00:00:00Z", "end": "2026-11-02T00:00:00Z"}
 
@@ -134,6 +149,39 @@ async def test_when_only_the_newer_source_has_events_it_decides(
     assert (await roles_of(campus))[campus.calendar] == "primary"
 
 
+@pytest.mark.parametrize("status", ["needs_reauth", "error"])
+async def test_by_default_a_source_that_needs_the_student_does_not_decide_but_a_choice_stands(
+    campus: Campus, tx_sessionmaker: Sm, status: str
+) -> None:
+    await seed_one_class(campus, tx_sessionmaker)
+    async with tx_sessionmaker() as s:
+        row = await s.get(Connection, campus.cabinet)
+        assert row is not None
+        row.status = status
+        await s.commit()
+    [one] = await schedule(campus.client)
+    assert titles(one["sources"]) == [
+        "Календарь",
+        "Кабинет",
+    ]  # the healthy one first, though younger
+    roles = await roles_of(campus)
+    assert (roles[campus.calendar], roles[campus.cabinet]) == ("primary", "secondary")
+    # the student's own choice is respected whatever the state of the source
+    assert (await choose(campus, campus.cabinet)).status_code == 204
+    [chosen] = await schedule(campus.client)
+    assert titles(chosen["sources"]) == ["Кабинет", "Календарь"]
+    assert (await roles_of(campus))[campus.cabinet] == "primary"
+    # the one that was passed over is a healthy source again: the oldest decides, as before
+    await choose(campus, None)
+    async with tx_sessionmaker() as s:
+        row = await s.get(Connection, campus.cabinet)
+        assert row is not None
+        row.status = "stale"
+        await s.commit()
+    [back] = await schedule(campus.client)
+    assert titles(back["sources"]) == ["Кабинет", "Календарь"]
+
+
 async def test_the_chosen_source_decides_and_the_old_one_fills_in(
     campus: Campus, tx_sessionmaker: Sm
 ) -> None:
@@ -185,10 +233,59 @@ async def test_the_choice_of_a_foreign_space_is_a_404(campus: Campus) -> None:
 # --- switching a source off and on --------------------------------------------------------------
 
 
+async def seed_records(c: Campus, sm: Sm) -> None:
+    """Every kind of record the cabinet has, a document of it, and a document that belongs to no
+    source (a file of a chat): the first leave with the source, the last stays."""
+    due = T0 + timedelta(days=3)
+    await add(
+        sm,
+        deadline(c.user_id, c.cabinet, due, title="Сдать лабораторную"),
+        course(c.user_id, c.cabinet, "Базы данных"),
+        grade(c.user_id, c.cabinet, "9"),
+        person(c.user_id, c.cabinet, "Сидорова Е. Н."),
+        news(c.user_id, c.cabinet, T0, title="Новость кабинета"),
+    )
+    texts = [
+        document(c.user_id, c.space, c.cabinet, "Правила кабинета", "пересдача проходит в среду"),
+        document(c.user_id, c.space, None, "Файл из чата", "памятка первокурснику"),
+    ]
+    await add(sm, *(doc for doc, _ in texts))  # a chunk needs its document in the table first
+    await add(sm, *(chunk for _, chunk in texts))
+
+
+async def records(c: Campus) -> dict[str, int]:
+    """How many records of each kind the student sees in the university of the campus."""
+    client, space = c.client, c.space
+    out: dict[str, int] = {}
+    for kind in ("deadlines", "courses", "grades", "people", "news"):
+        r = await client.get(f"/api/v1/{kind}", params={"space_id": space})
+        assert r.status_code == 200, r.text
+        out[kind] = len(r.json())
+    docs = await client.get(f"/api/v1/spaces/{space}/documents")
+    assert docs.status_code == 200, docs.text
+    out["documents"] = len(docs.json())
+    sections = await client.get(f"/api/v1/spaces/{space}/sections")
+    out["documentsSection"] = next(
+        (row["count"] for row in sections.json() if row["kind"] == "documents"), 0
+    )
+    return out
+
+
 async def test_a_disabled_source_leaves_every_view_and_comes_back(
     campus: Campus, tx_sessionmaker: Sm
 ) -> None:
     await seed_one_class(campus, tx_sessionmaker)
+    await seed_records(campus, tx_sessionmaker)
+    full = {
+        "deadlines": 1,
+        "courses": 1,
+        "grades": 1,
+        "people": 1,
+        "news": 1,
+        "documents": 2,
+        "documentsSection": 2,
+    }
+    assert await records(campus) == full
     off = await campus.client.post(f"/api/v1/connections/{campus.cabinet}/disable")
     assert off.status_code == 200
     assert off.json()["status"] == "disabled"
@@ -198,36 +295,131 @@ async def test_a_disabled_source_leaves_every_view_and_comes_back(
     assert only["location"] == "405"
     today = await campus.client.get("/api/v1/today")
     assert [titles(e["sources"]) for e in today.json()["events"]] == [["Календарь"]]
+    assert today.json()["deadlines"] == []
+    # nothing of the cabinet is shown or counted; the file that belongs to no source stays
+    assert await records(campus) == {
+        "deadlines": 0,
+        "courses": 0,
+        "grades": 0,
+        "people": 0,
+        "news": 0,
+        "documents": 1,
+        "documentsSection": 1,
+    }
     on = await campus.client.post(f"/api/v1/connections/{campus.cabinet}/enable")
     assert on.status_code == 200
     assert on.json()["status"] == "active"
     assert on.json()["nextSyncAt"] is not None  # it syncs at the next tick
     [back] = await schedule(campus.client)
     assert titles(back["sources"]) == ["Кабинет", "Календарь"]
+    assert await records(campus) == full
     async with tx_sessionmaker() as s:
         assert (
             await s.scalar(select(func.count()).select_from(ScheduleEvent)) == 2
         )  # nothing deleted
 
 
-async def test_switching_is_idempotent_and_an_unfinished_source_goes_back_to_draft(
-    campus: Campus, tx_sessionmaker: Sm
+@pytest.mark.parametrize(
+    ("status", "adapter", "synced"),
+    [
+        ("active", "recipe", True),
+        ("stale", "recipe", True),
+        ("needs_reauth", "recipe", False),  # still needs the student to log in
+        ("error", "recipe", False),
+        ("draft", None, False),  # connecting never finished
+        ("draft", "ical", False),  # a calendar that waits for its link still waits
+    ],
+)
+async def test_switching_on_returns_the_source_to_the_status_it_had(
+    campus: Campus, tx_sessionmaker: Sm, status: str, adapter: str | None, synced: bool
 ) -> None:
-    c = campus.client
-    for _ in range(2):
-        assert (await c.post(f"/api/v1/connections/{campus.cabinet}/disable")).json()[
-            "status"
-        ] == "disabled"
     async with tx_sessionmaker() as s:
         row = await s.get(Connection, campus.cabinet)
         assert row is not None
-        row.adapter = None  # connecting never finished
+        row.status, row.adapter = status, adapter
         await s.commit()
-    back = await c.post(f"/api/v1/connections/{campus.cabinet}/enable")
-    assert back.json()["status"] == "draft"
-    assert back.json()["nextSyncAt"] is None
-    again = await c.post(f"/api/v1/connections/{campus.cabinet}/enable")
-    assert again.json()["status"] == "draft"
+    c = campus.client
+    for _ in range(2):  # switching off twice changes nothing the second time
+        off = await c.post(f"/api/v1/connections/{campus.cabinet}/disable")
+        assert off.json()["status"] == "disabled"
+    for _ in range(2):
+        on = await c.post(f"/api/v1/connections/{campus.cabinet}/enable")
+        assert on.json()["status"] == status
+        assert (on.json()["nextSyncAt"] is not None) is synced
+    async with tx_sessionmaker() as s:
+        row = await s.get(Connection, campus.cabinet)
+        assert row is not None
+        assert row.disabled_from is None
+
+
+async def test_switching_off_stops_the_tasks_of_the_source_and_the_thread_stays_free(
+    campus: Campus, tx_sessionmaker: Sm
+) -> None:
+    """A task that waits for an answer would swallow the next message of its thread and refuse it
+    for a source that is off: the task ends with the source, and the message goes to the agent."""
+    thread = ChatThread(id=new_id(), user_id=campus.user_id, space_id=campus.space)
+    waiting = Job(
+        id=new_id(),
+        user_id=campus.user_id,
+        kind="connect",
+        state="waiting_user",
+        connection_id=campus.cabinet,
+        thread_id=thread.id,
+        run_after=T0,
+        payload={"dialogue": {"pending": {"channel": "dialogue", "block_id": new_id()}}},
+    )
+    running = Job(
+        id=new_id(),
+        user_id=campus.user_id,
+        kind="sync",
+        state="running",
+        connection_id=campus.cabinet,
+        run_after=T0,
+    )
+    elsewhere = Job(
+        id=new_id(),
+        user_id=campus.user_id,
+        kind="sync",
+        state="queued",
+        connection_id=campus.calendar,
+        run_after=T0,
+    )
+    async with tx_sessionmaker() as s:
+        row = await s.get(Connection, campus.cabinet)
+        assert row is not None
+        row.status = "learning"
+        s.add(thread)
+        await s.flush()
+        s.add_all([waiting, running, elsewhere])
+        await s.commit()
+    listed = await campus.client.get(f"/api/v1/spaces/{campus.space}/connections")
+    assert next(r for r in listed.json() if r["id"] == campus.cabinet)["activeTask"] is not None
+    off = await campus.client.post(f"/api/v1/connections/{campus.cabinet}/disable")
+    assert off.status_code == 200
+    assert off.json()["activeTask"] is None
+    async with tx_sessionmaker() as s:
+        states = {
+            j.id: j.state for j in await s.scalars(select(Job).where(Job.user_id == campus.user_id))
+        }
+    assert states[waiting.id] == "cancelled"
+    assert states[running.id] == "cancelled"
+    assert states[elsewhere.id] == "queued"  # another source's task is not touched
+    # the thread no longer waits for an answer for the source that was switched off
+    runtime = await campus.client.get(f"/api/v1/chat/threads/{thread.id}/runtime")
+    assert runtime.status_code == 200, runtime.text
+    assert runtime.json()["pending"] == []
+    assert [t["state"] for t in runtime.json()["tasks"]] == ["cancelled"]
+    assert runtime.json()["activeJob"] is None
+    sent = await campus.client.post(
+        f"/api/v1/chat/threads/{thread.id}/messages", json={"text": "что у меня завтра?"}
+    )
+    assert sent.status_code == 202, sent.text
+    async with tx_sessionmaker() as s:
+        chat = (await s.scalars(select(Job).where(Job.kind == "chat"))).all()
+    assert len(chat) == 1  # it went to the agent, not to the stopped task
+    # the cabinet was configured (an adapter): it comes back as the same stop would leave it
+    on = await campus.client.post(f"/api/v1/connections/{campus.cabinet}/enable")
+    assert on.json()["status"] == "stale"
 
 
 async def test_a_disabled_primary_falls_back_and_the_choice_applies_again_when_it_is_back(
@@ -316,6 +508,57 @@ async def test_nothing_is_marked_beyond_the_reach_of_the_primary(
     assert (
         one["disagreement"] is None
     )  # the cabinet's last class ended before this one: no data there
+
+
+async def test_one_far_exam_does_not_make_every_day_up_to_it_missing_from_the_primary(
+    campus: Campus, tx_sessionmaker: Sm
+) -> None:
+    """The cabinet's classes end on 31.10 (its sync window) and it has an exam on 20.12: a class of
+    the calendar on 3.11 is not "missing" from a cabinet that does not reach that far."""
+    await add(
+        tx_sessionmaker,
+        event(campus.user_id, campus.cabinet, at(9, day=27), title="Алгоритмы"),
+        event(campus.user_id, campus.cabinet, at(9, day=30), title="Алгоритмы"),
+        event(
+            campus.user_id,
+            campus.cabinet,
+            datetime(2026, 12, 20, 9, 0, tzinfo=UTC),
+            title="Экзамен: Алгоритмы",
+            kind="exam",
+        ),
+        event(
+            campus.user_id,
+            campus.calendar,
+            datetime(2026, 11, 3, 9, 0, tzinfo=UTC),
+            title="Алгоритмы",
+        ),
+    )
+    [one] = await schedule(campus.client, start="2026-11-03T00:00:00Z", end="2026-11-04T00:00:00Z")
+    assert titles(one["sources"]) == ["Календарь"]
+    assert one["disagreement"] is None
+
+
+async def test_a_class_within_the_reach_of_the_regular_classes_is_still_marked(
+    campus: Campus, tx_sessionmaker: Sm
+) -> None:
+    await add(
+        tx_sessionmaker,
+        event(campus.user_id, campus.cabinet, at(9, day=23), title="Алгоритмы"),
+        event(campus.user_id, campus.cabinet, at(9, day=30), title="Алгоритмы"),
+        event(campus.user_id, campus.calendar, at(9, day=27), title="Алгоритмы"),
+    )
+    [one] = await schedule(campus.client, start="2026-10-27T00:00:00Z", end="2026-10-28T00:00:00Z")
+    assert one["disagreement"]["kind"] == "not_in_primary"
+
+
+async def test_the_read_of_a_schedule_has_the_indexes_it_needs(tx_sessionmaker: Sm) -> None:
+    async with tx_sessionmaker() as s:
+        names = set(
+            await s.scalars(
+                text("select indexname from pg_indexes where tablename = 'schedule_events'")
+            )
+        )
+    assert "ix_schedule_events_conn_start" in names
 
 
 async def test_universities_never_merge(campus: Campus, tx_sessionmaker: Sm) -> None:

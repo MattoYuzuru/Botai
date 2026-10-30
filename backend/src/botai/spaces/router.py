@@ -135,8 +135,11 @@ async def get_connection(
 async def disable_connection(
     connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> ConnectionOut:
-    """Switches the source off, reversibly: no sync, its data leaves every view, nothing is deleted."""
-    conn = await service.set_source_enabled(session, user.id, connection_id, enabled=False)
+    """Switches the source off, reversibly: its tasks stop, there is no sync, and its classes, tasks,
+    courses, grades, people, news and documents leave every view; nothing is deleted."""
+    conn = await service.set_source_enabled(
+        session, services.vault, services.clock, user.id, connection_id, enabled=False
+    )
     return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
 
 
@@ -144,9 +147,10 @@ async def disable_connection(
 async def enable_connection(
     connection_id: str, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> ConnectionOut:
-    """Switches a disabled source back on; its data returns and it syncs at the next tick."""
+    """Switches a disabled source back on: it returns to the status it had and its data is shown
+    again; a source that syncs is refreshed at the next tick."""
     conn = await service.set_source_enabled(
-        session, user.id, connection_id, enabled=True, now=services.clock.now()
+        session, services.vault, services.clock, user.id, connection_id, enabled=True
     )
     return (await service.connection_outs(session, services.vault, user.id, [conn]))[0]
 

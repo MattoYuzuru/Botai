@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.clock import SystemClock
@@ -71,6 +71,13 @@ _SECTION_TABLES = (
     ("people", Person),
     ("locations", Location),
     ("news", NewsItem),
+)
+
+# A document of a source the student switched off is not shown or searched anywhere (FR-054): like
+# every other record of that source. A document of no source (a file of a chat) always is.
+LIVE_DOCUMENT = or_(
+    Document.connection_id.is_(None),
+    Document.connection_id.not_in(select(Connection.id).where(Connection.status == "disabled")),
 )
 
 NEEDS_ATTENTION = frozenset({"stale", "needs_reauth", "repairing"})
@@ -193,7 +200,8 @@ async def _assignment_descriptions(
 async def section_counts(
     session: AsyncSession, user_id: str, space_id: str
 ) -> list[tuple[str, int]]:
-    """How many rows of each kind the live connections of one space have (documents: the space)."""
+    """How many rows of each kind the live connections of one space have (documents: the space's,
+    but not those of a source switched off)."""
     connection_ids = select(Connection.id).where(
         Connection.user_id == user_id,
         Connection.space_id == space_id,
@@ -210,7 +218,7 @@ async def section_counts(
     docs = await session.scalar(
         select(func.count())
         .select_from(Document)
-        .where(Document.user_id == user_id, Document.space_id == space_id)
+        .where(Document.user_id == user_id, Document.space_id == space_id, LIVE_DOCUMENT)
     )
     counts.append(("documents", int(docs or 0)))
     return counts
@@ -236,7 +244,12 @@ def _mark_conflicts(events: list[ScheduleEventOut]) -> None:
 
 
 async def _merge_plans(
-    session: AsyncSession, user_id: str, conns: dict[str, _Conn]
+    session: AsyncSession,
+    user_id: str,
+    conns: dict[str, _Conn],
+    *,
+    start: datetime,
+    end: datetime,
 ) -> dict[str, SpacePlan]:
     """How each university with more than one schedule source is merged (`domain.merge`)."""
     sources = await primary.schedule_sources(session, user_id, conns.values())
@@ -244,7 +257,7 @@ async def _merge_plans(
     if not several:
         return {}
     coverage = await primary.coverage_of(
-        session, user_id, [found.order[0] for found in several.values()]
+        session, user_id, [found.order[0] for found in several.values()], start=start, end=end
     )
     return {
         sid: SpacePlan(
@@ -320,7 +333,7 @@ async def _events(
     first, last = cast("tuple[datetime | None, datetime | None]", tuple(bounds))
     if first is None or last is None:  # nothing in the window
         return []
-    plans = await _merge_plans(session, user_id, conns)
+    plans = await _merge_plans(session, user_id, conns, start=start, end=end)
     margin = MERGE_MARGIN if plans else timedelta(0)
     lo, hi = min(first, start) - margin, max(last, end) + margin
     rows = (

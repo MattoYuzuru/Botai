@@ -180,8 +180,8 @@
       "required": ["kind", "detail"],
       "properties": {
         "kind": {
-          "enum": ["time", "location", "teacher", "group", "address", "several", "not_in_primary"],
-          "description": "Что расходится; several — больше одного поля; not_in_primary — похожее занятие есть в основном источнике в пределах семи дней, а в этот час нет (вероятно, перенесено или отменено)."
+          "enum": ["time", "title", "location", "teacher", "group", "address", "several", "not_in_primary"],
+          "description": "Что расходится (title — слова названия, которых нет у основного); several — больше одного поля; not_in_primary — похожее занятие того же типа есть в основном источнике в пределах семи дней, а в этот час нет при регулярных занятиях основного на это время (вероятно, перенесено или отменено)."
         },
         "detail": { "type": "string", "maxLength": 400, "description": "Коротко для человека: «Календарь» — ауд. 305." }
       }

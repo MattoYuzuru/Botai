@@ -10,9 +10,11 @@ import httpx
 
 from botai.core.ids import new_id
 from botai.db.models import (
+    Chunk,
     Connection,
     Course,
     Deadline,
+    Document,
     Grade,
     NewsItem,
     Person,
@@ -97,6 +99,30 @@ def grade(user_id: str, conn_id: str, value: str = "8", **kw: Any) -> Grade:
 def person(user_id: str, conn_id: str, name: str = "Иванов И. И.", **kw: Any) -> Person:
     ext = kw.pop("ext", None)
     return Person(name=name, **_common(user_id, conn_id, ext), **kw)
+
+
+def document(
+    user_id: str,
+    space_id: str,
+    conn_id: str | None,
+    title: str,
+    text: str,
+    *,
+    url: str | None = None,
+) -> tuple[Document, Chunk]:
+    """A saved document and its one chunk of text (add the document first)."""
+    doc = Document(
+        id=new_id(),
+        user_id=user_id,
+        space_id=space_id,
+        connection_id=conn_id,
+        kind="page",
+        title=title,
+        url=url,
+        fetched_at=T0,
+        hash=new_id(),
+    )
+    return doc, Chunk(user_id=user_id, document_id=doc.id, ord=0, text=text, tokens=len(text) // 3)
 
 
 def news(user_id: str, conn_id: str, published_at: datetime, title: str = "Новость") -> NewsItem:

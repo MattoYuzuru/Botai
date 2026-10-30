@@ -7,6 +7,8 @@ online link (the secondary). Nothing here is about a real university.
 
 from __future__ import annotations
 
+import itertools
+import random
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -73,7 +75,13 @@ def ev(
     )
 
 
-TITLES = {CABINET: "Кабинет", CALENDAR: "Календарь", NOTES: "Заметки"}
+TITLES = {
+    CABINET: "Кабинет",
+    CALENDAR: "Календарь",
+    NOTES: "Заметки",
+    "conn-a": "Альфа",
+    "conn-b": "Бета",
+}
 
 
 def plan(*order: str, coverage: Coverage | None = None) -> SpacePlan:
@@ -401,7 +409,7 @@ def test_a_secondary_event_with_no_match_is_shown_as_its_own() -> None:
     assert merged["s"].disagreement is None  # the cabinet has no yoga to compare with
 
 
-COVERED = Coverage(at(0, day=19), at(23, day=30))
+COVERED = Coverage.span(at(0, day=19), at(23, day=30))
 
 
 def test_a_class_the_primary_has_elsewhere_but_not_here_is_marked_not_hidden() -> None:
@@ -430,10 +438,10 @@ def test_no_marker_where_the_primary_has_no_data_at_all() -> None:
     """The cabinet reaches four weeks ahead: a class after that is not "missing" in it."""
     before = ev("p", "Алгоритмы", at(9, day=25, month=11), conn=CABINET)
     after = ev("s", "Алгоритмы", at(9, day=30, month=11), conn=CALENDAR)
-    edge = Coverage(at(0, day=19), at(11, day=26, month=11))
+    edge = Coverage.span(at(0, day=19), at(11, day=26, month=11))
     assert by_id(run([before, after], coverage=edge))["s"].disagreement is None
     assert by_id(run([before, after], coverage=None))["s"].disagreement is None
-    wider = Coverage(at(0, day=19), at(23, day=15, month=12))
+    wider = Coverage.span(at(0, day=19), at(23, day=15, month=12))
     assert by_id(run([before, after], coverage=wider))["s"].disagreement is not None
 
 
@@ -520,7 +528,7 @@ def test_three_months_of_two_sources_merge_fast() -> None:
             rows.append(
                 ev(f"s{d}-{n}", title, shifted, conn=CALENDAR, teacher=f"Преподаватель {n}")
             )
-    coverage = Coverage(day0, day0 + timedelta(days=91))
+    coverage = Coverage.span(day0, day0 + timedelta(days=91))
     started = time.perf_counter()
     merged = run(rows, coverage=coverage)
     elapsed = time.perf_counter() - started
@@ -550,3 +558,314 @@ def test_compare_counts_pairs_and_what_only_one_side_has() -> None:
     first, second = result.pairs
     assert [k for k, _ in first.differences] == ["location"]
     assert second.differences == ()
+
+
+# --- classes that are not the same class (the review of 5821546) -------------------------------
+
+
+def test_a_lecture_and_a_seminar_of_one_course_at_one_hour_are_two_classes() -> None:
+    lecture = ev("p", "Матанализ", at(9), kind="lecture", location="101")
+    seminar = ev(
+        "s",
+        "Матанализ",
+        at(9),
+        conn=CALENDAR,
+        kind="seminar",
+        location="205",
+        url="https://meet.fakeuni.test/seminar",
+        format="online",
+    )
+    merged = by_id(run([lecture, seminar]))
+    assert set(merged) == {"p", "s"}
+    assert merged["p"].url is None  # the seminar's online room is not the lecture's
+    assert merged["p"].format == "unknown"
+    assert merged["p"].links == []
+    assert [s.connection_id for s in merged["p"].sources] == [CABINET]
+    assert merged["p"].disagreement is None
+
+
+def test_a_class_and_its_exam_are_two_classes() -> None:
+    seminar = ev("p", "Матанализ", at(9), kind="seminar", location="101")
+    exam = ev(
+        "s", "Матанализ, контрольная работа", at(9), conn=CALENDAR, kind="exam", location="101"
+    )
+    merged = by_id(run([seminar, exam]))
+    assert set(merged) == {"p", "s"}
+    assert merged["p"].kind == "seminar"
+    assert merged["p"].disagreement is None
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs"),
+    [
+        ("Матанализ", "Экзамен: Матанализ"),
+        ("Матанализ", "Матанализ (контрольная работа)"),
+        ("Матанализ", "Зачёт по матанализу"),
+        ("Матанализ", "Консультация: Матанализ"),
+        ("Матанализ", "Коллоквиум Матанализ"),
+        ("Linear algebra", "Linear algebra exam"),
+        ("Linear algebra", "Linear algebra quiz"),
+        ("Экзамен: Матанализ", "Зачёт: Матанализ"),
+    ],
+)
+def test_an_assessment_word_in_only_one_title_keeps_the_classes_apart(
+    mine: str, theirs: str
+) -> None:
+    merged = run([ev("p", mine, at(9)), ev("s", theirs, at(9), conn=CALENDAR)])
+    assert {e.id for e in merged} == {"p", "s"}
+
+
+def test_the_same_assessment_word_in_both_titles_is_the_same_exam() -> None:
+    merged = run(
+        [
+            ev("p", "Экзамен: Матанализ", at(9), kind="exam", location="101"),
+            ev("s", "Матанализ — экзамен", at(9), conn=CALENDAR, teacher="Иванов"),
+        ]
+    )
+    (one,) = merged
+    assert one.id == "p"
+    assert one.teacher == "Иванов"
+
+
+def test_the_kind_a_title_names_keeps_a_lecture_and_a_seminar_apart_even_without_a_kind() -> None:
+    merged = run(
+        [ev("p", "Лекция: Матанализ", at(9)), ev("s", "Семинар: Матанализ", at(9), conn=CALENDAR)]
+    )
+    assert {e.id for e in merged} == {"p", "s"}
+    (one,) = run([ev("p", "Лекция: Матанализ", at(9)), ev("s", "Матанализ", at(9), conn=CALENDAR)])
+    assert one.id == "p"
+
+
+def test_an_unknown_kind_does_not_keep_two_classes_apart() -> None:
+    (one,) = run(
+        [
+            ev("p", "Матанализ", at(9), kind="seminar"),
+            ev("s", "Матанализ", at(9), conn=CALENDAR, kind="other", teacher="Иванов"),
+        ]
+    )
+    assert (one.kind, one.teacher) == ("seminar", "Иванов")
+
+
+def test_an_extra_word_in_the_title_of_the_other_source_is_noted() -> None:
+    cabinet = ev("p", "Матанализ", at(9))
+    calendar = ev("s", "Матанализ (подгруппа Б)", at(9), conn=CALENDAR)
+    (one,) = run([cabinet, calendar])
+    assert one.title == "Матанализ"
+    assert one.disagreement is not None
+    assert one.disagreement.kind == "title"
+    assert one.disagreement.detail == "«Календарь» — название «Матанализ (подгруппа Б)»"
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs"),
+    [
+        ("Матанализ", "Матанализ (лекция)"),  # only the kind of the class
+        ("Матанализ", "МАТАНАЛИЗ."),
+        ("Теория вероятностей и статистика", "Теория вероятностей"),  # the other has fewer words
+    ],
+)
+def test_no_title_note_without_words_of_their_own(mine: str, theirs: str) -> None:
+    (one,) = run([ev("p", mine, at(9)), ev("s", theirs, at(9), conn=CALENDAR)])
+    assert one.disagreement is None
+
+
+def test_links_of_the_other_source_carry_the_name_of_that_source() -> None:
+    cabinet = ev(
+        "p", "Право", at(9), links=[EventLink(url="https://a.fakeuni.test/1", label="Материалы")]
+    )
+    calendar = ev(
+        "s",
+        "Право",
+        at(9),
+        conn=CALENDAR,
+        links=[EventLink(url="https://meet.fakeuni.test/room", label="Комната")],
+    )
+    (one,) = run([cabinet, calendar])
+    assert [(link.url, link.label) for link in one.links] == [
+        ("https://a.fakeuni.test/1", "Материалы"),
+        ("https://meet.fakeuni.test/room", "Календарь: Комната"),
+    ]
+
+
+def test_the_url_of_the_primary_is_never_replaced() -> None:
+    cabinet = ev("p", "Право", at(9), url="https://cabinet.fakeuni.test/p")
+    calendar = ev("s", "Право", at(9), conn=CALENDAR, url="https://calendar.fakeuni.test/event/42")
+    (one,) = run([cabinet, calendar])
+    assert one.url == "https://cabinet.fakeuni.test/p"
+    assert "https://calendar.fakeuni.test/event/42" in [link.url for link in one.links]
+
+
+# --- time and length ----------------------------------------------------------------------------
+
+
+def test_events_with_no_length_still_meet_themselves() -> None:
+    (one,) = run(
+        [ev("p", "Матанализ", at(9), at(9)), ev("s", "Матанализ", at(9), at(9), conn=CALENDAR)]
+    )
+    assert one.id == "p"
+    assert [s.connection_id for s in one.sources] == [CABINET, CALENDAR]
+    assert one.disagreement is None
+
+
+def test_a_reminder_does_not_swallow_the_class_at_the_same_minute() -> None:
+    merged = run(
+        [
+            ev("p", "Алгоритмы", at(9), at(10, 20)),
+            ev("s", "Напомнить про домашку", at(9), at(9), conn=CALENDAR),
+        ]
+    )
+    assert {e.id for e in merged} == {"p", "s"}
+
+
+@pytest.mark.parametrize(
+    ("start_shift", "end_shift", "noted"),
+    [
+        (0, 0, False),
+        (0, 10, False),  # a calendar that rounds the end of a class up is noise
+        (0, 15, False),
+        (0, -15, False),
+        (0, 16, True),
+        (0, 20, True),
+        (1, 0, True),  # the start moved, however little
+        (-5, 0, True),
+    ],
+)
+def test_a_time_is_noted_when_the_start_differs_or_the_end_by_more_than_a_quarter_of_an_hour(
+    start_shift: int, end_shift: int, noted: bool
+) -> None:
+    cabinet = ev("p", "Алгоритмы", at(9), at(10, 20))
+    calendar = ev(
+        "s",
+        "Алгоритмы",
+        at(9) + timedelta(minutes=start_shift),
+        at(10, 20) + timedelta(minutes=end_shift),
+        conn=CALENDAR,
+    )
+    (one,) = run([cabinet, calendar])
+    assert (one.disagreement is not None and one.disagreement.kind == "time") is noted
+
+
+# --- the order of the sources -------------------------------------------------------------------
+
+
+def test_sources_the_plan_does_not_list_come_after_it_in_the_order_of_their_ids() -> None:
+    rows = [
+        ev("p", "Право", at(9), conn=CABINET, location="305"),
+        ev("b", "Право", at(9), conn="conn-b", location="405", teacher="Бета"),
+        ev("a", "Право", at(9), conn="conn-a", location="505", teacher="Альфа"),
+    ]
+    plan_ = {"space-a": plan(CABINET)}
+    (one,) = merge.merge_events(rows, plan_)
+    assert [s.connection_id for s in one.sources] == [CABINET, "conn-a", "conn-b"]
+    assert one.teacher == "Альфа"  # the earlier id fills first
+    assert merge.merge_events(list(reversed(rows)), plan_) == [one]
+
+
+# --- how far the primary's regular classes reach ------------------------------------------------
+
+
+def test_one_far_exam_does_not_stretch_the_reach_of_the_primary() -> None:
+    last = ev("p1", "Матанализ", at(9, day=27))
+    exam = ev("ex", "Экзамен", at(9, day=20, month=12), kind="exam")
+    later = ev("s", "Матанализ", at(9, day=3, month=11), conn=CALENDAR)
+    classes = [
+        (e.starts_at, e.ends_at)
+        for e in (last, exam)
+        if merge.is_regular(e.kind, e.title, e.starts_at, e.ends_at)
+    ]
+    coverage = Coverage.of_classes(classes)
+    assert coverage is not None
+    assert not coverage.reaches(later.starts_at, later.ends_at)
+    out = by_id(run([last, exam, later], coverage=coverage))
+    assert out["s"].disagreement is None  # the primary's classes end on 27.10: nothing is "missing"
+
+
+def test_a_long_gap_splits_the_reach_and_a_short_one_does_not() -> None:
+    day = timedelta(days=1)
+    first = at(9, day=1)
+    classes = [(first + day * n, first + day * n + timedelta(minutes=80)) for n in (0, 3, 10)]
+    classes.append((first + day * 40, first + day * 40 + timedelta(minutes=80)))  # after a break
+    coverage = Coverage.of_classes(classes)
+    assert coverage is not None
+    assert len(coverage.spans) == 2
+    assert coverage.reaches(first + day * 5, first + day * 5 + timedelta(minutes=80))
+    assert not coverage.reaches(first + day * 25, first + day * 25 + timedelta(minutes=80))
+    assert Coverage.of_classes([]) is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "title", "regular"),
+    [
+        ("lecture", "Алгоритмы", True),
+        ("other", "Алгоритмы", True),
+        ("exam", "Алгоритмы", False),
+        ("consultation", "Алгоритмы", False),
+        ("other", "Экзамен по алгоритмам", False),
+        ("other", "Зачёт", False),
+    ],
+)
+def test_what_counts_as_a_regular_class(kind: str, title: str, regular: bool) -> None:
+    assert merge.is_regular(kind, title, at(9), at(10, 20)) is regular
+    assert merge.is_regular("lecture", "Алгоритмы", at(0), at(23)) is False  # not a class's length
+
+
+def test_a_consultation_of_a_course_is_not_a_missing_lecture() -> None:
+    lectures = [ev("p1", "Матанализ", at(9, day=26)), ev("p2", "Матанализ", at(9, day=28))]
+    consultation = ev("s", "Консультация: Матанализ", at(15, day=30), conn=CALENDAR)
+    out = by_id(run([*lectures, consultation], coverage=COVERED))
+    assert out["s"].disagreement is None
+
+
+# --- the probes of the review: invariants over many random days --------------------------------
+
+
+def test_permuting_the_rows_never_changes_who_absorbs_whom() -> None:
+    p1 = ev("p1", "Матанализ", at(9), location="101")
+    p2 = ev("p2", "Матанализ", at(9), location="102")
+    s = ev("s", "Матанализ", at(9), conn=CALENDAR, teacher="Иванов")
+    seen = {
+        tuple((e.id, e.teacher) for e in run(list(perm)))
+        for perm in itertools.permutations([p1, p2, s])
+    }
+    assert len(seen) == 1
+
+
+def test_the_same_instant_in_another_zone_is_the_same_class() -> None:
+    berlin = ZoneInfo("Europe/Berlin")
+    start = datetime(2026, 10, 25, 9, 0, tzinfo=berlin)  # the day the clocks go back
+    cabinet = ev("p", "Матанализ", start, start + timedelta(minutes=90))
+    calendar = ev(
+        "s",
+        "Матанализ",
+        start.astimezone(UTC),
+        start.astimezone(UTC) + timedelta(minutes=90),
+        conn=CALENDAR,
+    )
+    assert len(run([cabinet, calendar])) == 1
+
+
+def test_random_days_lose_nothing_repeat_no_id_and_ignore_the_order_of_rows() -> None:
+    rnd = random.Random(1)
+    titles = ["Матанализ", "Физика", "История России", "Иностранный язык", "Программирование"]
+    for _ in range(300):
+        rows = []
+        for k in range(rnd.randint(1, 12)):
+            start = at(8) + timedelta(minutes=10 * rnd.randint(0, 60))
+            length = timedelta(minutes=rnd.choice([80, 90, 60, 0]))
+            rows.append(
+                ev(
+                    f"e{k}",
+                    rnd.choice(titles),
+                    start,
+                    start + length,
+                    conn=rnd.choice([CABINET, CALENDAR, NOTES]),
+                )
+            )
+        out = run(rows, CABINET, CALENDAR, NOTES)
+        ids = [e.id for e in out]
+        assert len(ids) == len(set(ids))
+        assert sum(len(e.sources) for e in out) == len(rows), (
+            "a class vanished or was counted twice"
+        )
+        again = run(list(reversed(rows)), CABINET, CALENDAR, NOTES)
+        assert [e.model_dump() for e in out] == [e.model_dump() for e in again]

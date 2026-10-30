@@ -217,6 +217,9 @@ class Connection(Base):
     error_code: Mapped[str | None] = mapped_column(String(40))
     error_detail: Mapped[str | None] = mapped_column(Text)
     error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The status the source had when the student switched it off; switching it on restores it
+    # (a source that needed a login still needs one; a calendar waiting for its link still waits).
+    disabled_from: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = ts_now()
 
 
@@ -282,6 +285,8 @@ class ScheduleEvent(_Domain, Base):
     __table_args__ = (
         *_uq("schedule_events"),
         Index("ix_schedule_events_user_start", "user_id", "starts_at"),
+        # One source's classes in a window (the read of a schedule, the reach of a source, FR-054).
+        Index("ix_schedule_events_conn_start", "connection_id", "starts_at"),
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="other")
@@ -576,6 +581,29 @@ class ChatThread(Base):
     seen_links: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+
+
+class AgentConfirmation(Base):
+    """A question the application itself asked the student, in the thread, before it does something
+    the agent proposed (switching a source off). The application writes the buttons; the action runs
+    only when the student's next message is exactly the label of the button written for this very
+    connection, once and within a few minutes. One pending question per thread and action: a new
+    question replaces the old one, so one press never switches two sources off."""
+
+    __tablename__ = "agent_confirmations"
+    __table_args__ = (UniqueConstraint("thread_id", "action"),)
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    thread_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    connection_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = ts_now()
 
 
 class ChatMessage(Base):

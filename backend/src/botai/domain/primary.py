@@ -1,10 +1,11 @@
 """Owner: W1. Which source of a university decides its schedule (FR-054).
 
 A university (a space) can have several live sources with schedule events: a cabinet and a
-calendar. One of them is the primary: the student's choice (`spaces.primary_schedule_connection_id`)
-or, when nothing is chosen, the oldest live source that has schedule events, so the answer is
-always defined. A disabled source is never primary and is passed over; a deleted one clears the
-choice by the foreign key. Everything else with schedule events is secondary.
+calendar. One of them is the primary: the student's choice (`spaces.primary_schedule_connection_id`),
+which is respected whatever the state of that source, or, when nothing is chosen, the oldest live
+source that has schedule events, healthy ones (`HEALTHY`) before those that need a login or are
+broken, so the answer is always defined. A disabled source is never primary and is passed over; a
+deleted one clears the choice by the foreign key. Everything else with schedule events is secondary.
 
 Reads only; setting the choice is `spaces.service.set_primary_source`.
 """
@@ -13,16 +14,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.db.models import Connection, ScheduleEvent, Space
-from botai.domain.merge import Coverage
+from botai.domain.merge import COVERAGE_GAP, NEARBY, Coverage, is_regular
 
 ScheduleRole = Literal["primary", "secondary"]
+# Sources whose data is current enough to decide by default; the others need the student first.
+HEALTHY = frozenset({"active", "syncing", "stale"})
+# Regular classes are read this far beyond the window asked for, to know where a stretch of them ends.
+COVERAGE_MARGIN = NEARBY + COVERAGE_GAP + timedelta(days=1)
 
 
 class LiveConnection(Protocol):
@@ -32,6 +37,8 @@ class LiveConnection(Protocol):
     def space_id(self) -> str: ...
     @property
     def created_at(self) -> datetime: ...
+    @property
+    def status(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +71,15 @@ async def schedule_sources(
     if not by_space:
         return {}
     every_id = [c.id for conns in by_space.values() for c in conns]
+    # One EXISTS per connection (an index probe), not a pass over every stored class.
     with_events = set(
         await session.scalars(
-            select(ScheduleEvent.connection_id)
-            .where(ScheduleEvent.user_id == user_id, ScheduleEvent.connection_id.in_(every_id))
-            .distinct()
+            select(Connection.id).where(
+                Connection.id.in_(every_id),
+                exists().where(
+                    ScheduleEvent.connection_id == Connection.id, ScheduleEvent.user_id == user_id
+                ),
+            )
         )
     )
     spaces = (
@@ -80,7 +91,9 @@ async def schedule_sources(
     ).all()
     out: dict[str, ScheduleSources] = {}
     for space_id, time_zone, pointer in spaces:
-        conns = sorted(by_space[space_id], key=lambda c: (c.created_at, c.id))
+        conns = sorted(
+            by_space[space_id], key=lambda c: (c.status not in HEALTHY, c.created_at, c.id)
+        )
         ids = [c.id for c in conns]
         chosen = pointer if pointer in ids else None
         rest = [i for i in ids if i in with_events and i != chosen]
@@ -91,31 +104,48 @@ async def schedule_sources(
 
 
 async def coverage_of(
-    session: AsyncSession, user_id: str, connection_ids: Iterable[str]
+    session: AsyncSession,
+    user_id: str,
+    connection_ids: Iterable[str],
+    *,
+    start: datetime,
+    end: datetime,
 ) -> dict[str, Coverage]:
-    """The span of schedule events each source has stored (all time), for the sources that have any."""
+    """Where each source's regular classes reach around [start, end): a bounded read, joined into
+    stretches (`Coverage.of_classes`). An exam, a consultation or a reminder does not count: one
+    far exam would otherwise make every day up to it look "missing" from the source."""
     ids = list(connection_ids)
     if not ids:
         return {}
     rows = await session.execute(
         select(
             ScheduleEvent.connection_id,
-            func.min(ScheduleEvent.starts_at),
-            func.max(ScheduleEvent.ends_at),
+            ScheduleEvent.starts_at,
+            ScheduleEvent.ends_at,
+            ScheduleEvent.kind,
+            ScheduleEvent.title,
+        ).where(
+            ScheduleEvent.user_id == user_id,
+            ScheduleEvent.connection_id.in_(ids),
+            ScheduleEvent.starts_at >= start - COVERAGE_MARGIN,
+            ScheduleEvent.starts_at < end + COVERAGE_MARGIN,
         )
-        .where(ScheduleEvent.user_id == user_id, ScheduleEvent.connection_id.in_(ids))
-        .group_by(ScheduleEvent.connection_id)
     )
-    return {cid: Coverage(first, last) for cid, first, last in rows.all()}
+    regular: dict[str, list[tuple[datetime, datetime]]] = {}
+    for connection_id, first, last, kind, title in rows.all():
+        if is_regular(kind, title, first, last):
+            regular.setdefault(connection_id, []).append((first, last))
+    found = {cid: Coverage.of_classes(classes) for cid, classes in regular.items()}
+    return {cid: coverage for cid, coverage in found.items() if coverage is not None}
 
 
 async def live_schedule_sources(
     session: AsyncSession, user_id: str, *, space_ids: Iterable[str] | None = None
 ) -> dict[str, ScheduleSources]:
     """`schedule_sources` over the live connections of the student (of the given spaces)."""
-    stmt = select(Connection.id, Connection.space_id, Connection.created_at).where(
-        Connection.user_id == user_id, Connection.status != "disabled"
-    )
+    stmt = select(
+        Connection.id, Connection.space_id, Connection.created_at, Connection.status
+    ).where(Connection.user_id == user_id, Connection.status != "disabled")
     if space_ids is not None:
         stmt = stmt.where(Connection.space_id.in_(list(space_ids)))
     live = [_Live(*row) for row in (await session.execute(stmt)).all()]
@@ -140,3 +170,4 @@ class _Live:
     id: str
     space_id: str
     created_at: datetime
+    status: str

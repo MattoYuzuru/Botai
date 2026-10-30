@@ -10,12 +10,17 @@ functions below over the rows of one space:
 * two events match when their times agree (start and end each within `TIME_TOLERANCE`, or the
   intervals overlap by at least `STRONG_OVERLAP` of their union) and their titles are similar
   (`TITLE_MATCH`); matching is one to one per source, best title first, then the closest time;
+* two events of different kinds never match: a lecture and a seminar of one course, or a class and
+  its exam, are different events even at the same hour (known kinds that differ, an assessment word
+  — экзамен, контрольная, зачёт — in only one title);
 * a matched pair is one class: the base keeps its time, title and kind, fills its empty fields from
   the other and lists both sources. A value both have and differ on stays the base's, and the
-  class carries an `EventDisagreement` naming the other source's value;
+  class carries an `EventDisagreement` naming the other source's value (also words in the title
+  that the base does not have);
 * an event with no match stays in the list as its own class. If the primary source has a class of
-  a similar title within `NEARBY` of it but none at this slot, and its data reaches this slot, the
-  class is marked `not_in_primary` (likely moved or cancelled): shown with a note, never hidden.
+  a similar title within `NEARBY` of it but none at this slot, and its regular data (`Coverage`)
+  reaches this slot, the class is marked `not_in_primary` (likely moved or cancelled): shown with a
+  note, never hidden.
 
 No LLM, no database and no mutation of the stored rows. Only events of one space meet; spaces
 (universities) never merge, and cross-space conflicts (FR-013) are computed afterwards by the caller
@@ -27,7 +32,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -55,12 +60,21 @@ TITLE_MATCH = 0.5
 SIMILAR_ELSEWHERE = 0.6
 CONTAINMENT_SIMILARITY = 0.75  # one title says everything the other says (two words or more)
 NEARBY = timedelta(days=7)
+# A calendar rounds the end of a class (80 minutes become an hour and a half): that is noise. The
+# start moving, or the end by more than this, is a different time.
+END_NOISE = timedelta(minutes=15)
+# An event with no length (a reminder) is a minute long for matching, so that the same reminder in
+# two sources still meets itself.
+ZERO_LENGTH = timedelta(minutes=1)
+# The primary's data "reaches" a slot while its regular classes follow each other with no gap longer
+# than this (a week of holidays inside a term stays covered, a summer does not).
+COVERAGE_GAP = timedelta(days=14)
 
 MAX_DETAIL = 400
 MAX_LINKS = 4  # the limits of the domain contract
 MAX_ATTRIBUTES = 8
 
-Kind = Literal["time", "location", "teacher", "group", "address"]
+Kind = Literal["time", "title", "location", "teacher", "group", "address"]
 
 # Words that tell nothing about which class it is: function words and the kind of a class, which
 # the source gives in another field («Лекция: Матанализ» is «Матанализ»).
@@ -102,11 +116,59 @@ def _stem(word: str) -> str:
 
 _KIND_STEMS = frozenset(_stem(_norm(w)) for w in _KIND_WORDS)
 
+# What a title says about the type of the class, for sources that do not give a kind of their own.
+_TITLE_KIND = {
+    _stem(_norm(word)): kind
+    for kind, words in (
+        ("lecture", ("лекция", "lecture")),
+        ("seminar", ("семинар", "практика", "практическое", "seminar", "practice")),
+    )
+    for word in words
+}
+# Words that make a class an assessment, never "the same class" as one without the word.
+_ASSESSMENT = frozenset(
+    _stem(_norm(word))
+    for word in (
+        "экзамен",
+        "контрольная",
+        "контроль",
+        "зачёт",
+        "консультация",
+        "коллоквиум",
+        "пересдача",
+        "тест",
+        "тестирование",
+        "exam",
+        "test",
+        "quiz",
+        "midterm",
+    )
+)
+IRREGULAR_KINDS = frozenset({"exam", "consultation"})
+
+
+def _title_words(title: str) -> list[str]:
+    return [_stem(w) for w in _WORD.findall(_norm(title)) if w not in _STOP]
+
+
+def assessment_words(title: str) -> frozenset[str]:
+    """The assessment words of a title (экзамен, контрольная, зачёт, консультация…), as roots."""
+    return frozenset(w for w in _title_words(title) if w in _ASSESSMENT)
+
+
+def class_kind(kind: str, title: str) -> str | None:
+    """The type of a class: the source's own kind, else what the words of the title say, else
+    `None` (unknown)."""
+    if kind != "other":
+        return kind
+    found = {_TITLE_KIND[w] for w in _title_words(title) if w in _TITLE_KIND}
+    return next(iter(found)) if len(found) == 1 else None
+
 
 def title_tokens(title: str) -> frozenset[str]:
     """The words that identify a class: casefolded, ё as е, punctuation and function words off,
     stemmed, the kind of the class (lecture, seminar) off. A title of nothing else keeps its words."""
-    words = [_stem(w) for w in _WORD.findall(_norm(title)) if w not in _STOP]
+    words = _title_words(title)
     content = [w for w in words if w not in _KIND_STEMS]
     return frozenset(content or words)
 
@@ -200,16 +262,24 @@ def _clock(moment: datetime, zone: ZoneInfo) -> str:
     return f"{moment.astimezone(zone):%H:%M}"
 
 
+def _short_title(title: str) -> str:
+    text = " ".join(title.split())
+    return text if len(text) <= 80 else text[:79].rstrip() + "…"
+
+
 def differences(
     base: ScheduleEventOut, other: ScheduleEventOut, zone: ZoneInfo
 ) -> list[tuple[Kind, str]]:
     """What the two say differently about the same class, in the words of the other one. Only a
-    value both have is compared: an empty one is filled, not a disagreement."""
+    value both have is compared: an empty one is filled, not a disagreement. A time differs when the
+    start does, or the end by more than `END_NOISE`; a title, when the other has words of its own."""
     out: list[tuple[Kind, str]] = []
     if _minute(base.starts_at) != _minute(other.starts_at) or (
-        _minute(base.ends_at) != _minute(other.ends_at)
+        abs(base.ends_at - other.ends_at) > END_NOISE
     ):
         out.append(("time", f"время {_clock(other.starts_at, zone)}–{_clock(other.ends_at, zone)}"))
+    if title_tokens(other.title) - title_tokens(base.title):
+        out.append(("title", f"название «{_short_title(other.title)}»"))
     checks: tuple[
         tuple[Kind, str | None, str | None, Callable[[str, str], bool | None], str], ...
     ] = (
@@ -233,10 +303,38 @@ def differences(
 
 @dataclass(frozen=True, slots=True)
 class Coverage:
-    """The span the primary source has data for: a class beyond it is not "missing" there."""
+    """The stretches of time the primary source has regular classes for: a class outside them is not
+    "missing" there. A far exam or a reminder is not regular and does not stretch it."""
 
-    first: datetime
-    last: datetime
+    spans: tuple[tuple[datetime, datetime], ...]
+
+    @classmethod
+    def span(cls, first: datetime, last: datetime) -> Coverage:
+        return cls(((first, last),))
+
+    @classmethod
+    def of_classes(cls, classes: Iterable[tuple[datetime, datetime]]) -> Coverage | None:
+        """Regular classes (start, end) joined into stretches: a gap over `COVERAGE_GAP` splits."""
+        spans: list[tuple[datetime, datetime]] = []
+        for start, end in sorted(classes):
+            if spans and start - spans[-1][1] <= COVERAGE_GAP:
+                spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+            else:
+                spans.append((start, end))
+        return cls(tuple(spans)) if spans else None
+
+    def reaches(self, start: datetime, end: datetime) -> bool:
+        return any(first <= start and end <= last for first, last in self.spans)
+
+
+def is_regular(kind: str, title: str, start: datetime, end: datetime) -> bool:
+    """A class that says something about how far a source's timetable goes: not an exam, a
+    consultation or anything with an assessment word, and not longer than a class can be."""
+    return (
+        kind not in IRREGULAR_KINDS
+        and not assessment_words(title)
+        and end - start <= MAX_MATCH_DURATION
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,22 +353,35 @@ class _Entry:
     event: ScheduleEventOut
     tokens: frozenset[str]
     start: datetime
-    end: datetime
+    end: datetime  # never before the start: an event with no length is a minute long
     rank: int  # the position of the source the class came from; 0 is the primary
     matchable: bool
+    kind: str | None  # what the class is, if the source or its title says
+    assessment: frozenset[str]
     notes: list[tuple[str, Kind, str]] = field(default_factory=list)  # (source title, kind, text)
     missing: bool = False
 
     @classmethod
     def of(cls, event: ScheduleEventOut, rank: int) -> _Entry:
+        end = max(event.ends_at, event.starts_at + ZERO_LENGTH)
         return cls(
             event=event,
             tokens=title_tokens(event.title),
             start=event.starts_at,
-            end=event.ends_at,
+            end=end,
             rank=rank,
-            matchable=event.ends_at - event.starts_at <= MAX_MATCH_DURATION,
+            matchable=end - event.starts_at <= MAX_MATCH_DURATION,
+            kind=class_kind(event.kind, event.title),
+            assessment=assessment_words(event.title),
         )
+
+
+def _same_class(a: _Entry, b: _Entry) -> bool:
+    """False for two events that cannot be one class whatever their time and words: both kinds are
+    known and differ, or an assessment word is in one title only."""
+    if a.kind is not None and b.kind is not None and a.kind != b.kind:
+        return False
+    return a.assessment == b.assessment
 
 
 def _sorted(entries: list[_Entry]) -> list[_Entry]:
@@ -289,7 +400,7 @@ def _assign(incoming: Sequence[_Entry], pool: Sequence[_Entry]) -> dict[int, int
             other = pool[j]
             if other.start >= item.end:
                 break
-            if not other.matchable or other.end <= item.start:
+            if not other.matchable or other.end <= item.start or not _same_class(item, other):
                 continue
             gap = time_distance(item.start, item.end, other.start, other.end)
             if gap is None:
@@ -308,28 +419,39 @@ def _assign(incoming: Sequence[_Entry], pool: Sequence[_Entry]) -> dict[int, int
 
 
 def _absorb(entry: _Entry, other: ScheduleEventOut, source: EventSource, zone: ZoneInfo) -> None:
-    """Fills the empty fields of `entry` from `other` and records what they disagree on."""
+    """Fills the empty fields of `entry` from `other` and records what they disagree on. The
+    address of the class (`url`), its links and its format come only from a source that says the
+    same kind of class; a link of the other source is shown under the name of that source."""
     base = entry.event
     update: dict[str, Any] = {}
-    for name in ("location", "teacher", "address", "group", "url", "kind_text", "course_title"):
+    kinds_agree = base.kind == other.kind or "other" in (base.kind, other.kind)
+    fillable = ["location", "teacher", "address", "group", "kind_text", "course_title"]
+    if kinds_agree:
+        fillable.append("url")
+    for name in fillable:
         if _blank(getattr(base, name)) and not _blank(getattr(other, name)):
             update[name] = getattr(other, name)
     if base.lesson_number is None and other.lesson_number is not None:
         update["lesson_number"] = other.lesson_number
-    if base.format == "unknown" and other.format != "unknown":
+    if kinds_agree and base.format == "unknown" and other.format != "unknown":
         update["format"] = other.format
     if base.kind == "other" and _blank(base.kind_text) and other.kind != "other":
         update["kind"] = other.kind  # «other» is the default of a source that does not say
     links = list(base.links)
     known = {link.url for link in links}
-    extra = [*other.links]
-    if (
-        not _blank(other.url)
-        and other.url not in known
-        and other.url != update.get("url", base.url)
-    ):
-        # a different address of the same class is one more way in, not a loss
-        extra.append(EventLink(url=str(other.url), label=source.title[:80]))
+    extra: list[EventLink] = []
+    if kinds_agree:
+        extra = [
+            EventLink(url=link.url, label=f"{source.title}: {link.label}"[:80])
+            for link in other.links
+        ]
+        if (
+            not _blank(other.url)
+            and other.url not in known
+            and other.url != update.get("url", base.url)
+        ):
+            # a different address of the same class is one more way in, not a loss
+            extra.append(EventLink(url=str(other.url), label=source.title[:80]))
     for link in extra:
         if link.url not in known and len(links) < MAX_LINKS:
             links.append(link)
@@ -385,13 +507,15 @@ def _disagreement(entry: _Entry, plan: SpacePlan) -> EventDisagreement | None:
 
 def _mark_missing(entries: Sequence[_Entry], primary: Sequence[_Entry], plan: SpacePlan) -> None:
     """A class of another source that the primary does not have at this slot, though it has the
-    same class a few days earlier or later, is probably moved or cancelled there."""
+    same class a few days earlier or later, is probably moved or cancelled there. Only where the
+    primary's regular classes reach, and only a class of the same kind (a consultation is not a
+    missing lecture)."""
     coverage = plan.coverage
     if coverage is None or not primary:
         return
     starts = [e.start for e in primary]
     for entry in entries:
-        if entry.rank == 0 or not (coverage.first <= entry.start and entry.end <= coverage.last):
+        if entry.rank == 0 or not entry.matchable or not coverage.reaches(entry.start, entry.end):
             continue
         elsewhere = False
         here = False
@@ -399,6 +523,8 @@ def _mark_missing(entries: Sequence[_Entry], primary: Sequence[_Entry], plan: Sp
             other = primary[j]
             if other.start > entry.start + NEARBY:
                 break
+            if not _same_class(entry, other):
+                continue
             if title_similarity(entry.tokens, other.tokens) < SIMILAR_ELSEWHERE:
                 continue
             if time_distance(entry.start, entry.end, other.start, other.end) is not None:
@@ -409,11 +535,14 @@ def _mark_missing(entries: Sequence[_Entry], primary: Sequence[_Entry], plan: Sp
 
 
 def merge_space(events: Sequence[ScheduleEventOut], plan: SpacePlan) -> list[ScheduleEventOut]:
-    """The events of one university from all its sources as one list (sorted by start)."""
+    """The events of one university from all its sources as one list (sorted by start). A source
+    the plan does not list comes after the listed ones, in the order of its id."""
     rank = {connection_id: i for i, connection_id in enumerate(plan.order)}
+    unknown = sorted({e.provenance.connection_id for e in events} - set(rank))
+    rank.update({connection_id: len(plan.order) + i for i, connection_id in enumerate(unknown)})
     by_source: dict[int, list[_Entry]] = {}
     for event in events:
-        position = rank.get(event.provenance.connection_id, len(rank))
+        position = rank[event.provenance.connection_id]
         by_source.setdefault(position, []).append(_Entry.of(event, position))
     pool = _sorted(by_source.pop(0, []))
     primary = list(pool)

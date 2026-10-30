@@ -365,7 +365,8 @@ export interface paths {
         put?: never;
         /**
          * Disable Connection
-         * @description Switches the source off, reversibly: no sync, its data leaves every view, nothing is deleted.
+         * @description Switches the source off, reversibly: its tasks stop, there is no sync, and its classes, tasks,
+         *     courses, grades, people, news and documents leave every view; nothing is deleted.
          */
         post: operations["disable_connection_api_v1_connections__connection_id__disable_post"];
         delete?: never;
@@ -385,7 +386,8 @@ export interface paths {
         put?: never;
         /**
          * Enable Connection
-         * @description Switches a disabled source back on; its data returns and it syncs at the next tick.
+         * @description Switches a disabled source back on: it returns to the status it had and its data is shown
+         *     again; a source that syncs is refreshed at the next tick.
          */
         post: operations["enable_connection_api_v1_connections__connection_id__enable_post"];
         delete?: never;
@@ -1328,7 +1330,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "time" | "location" | "teacher" | "group" | "address" | "several" | "not_in_primary";
+            kind: "time" | "title" | "location" | "teacher" | "group" | "address" | "several" | "not_in_primary";
         };
         /** EventLink */
         EventLink: {
