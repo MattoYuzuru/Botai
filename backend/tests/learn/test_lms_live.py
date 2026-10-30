@@ -127,7 +127,19 @@ async def test_the_real_model_researches_the_rules_cabinet(
             )
     print("[result]", result)
     print("[specs]", await env.specs())
-    for _revision, _state in await env.specs():
-        print("[stored spec]", json.dumps(await env.spec(_revision), ensure_ascii=False))
-    for model in (m.ScheduleEvent, m.Deadline, m.Course):
-        print(f"[rows] {model.__tablename__}={await env.count(model)}")
+    counts = {
+        model.__tablename__: await env.count(model) for model in (m.ScheduleEvent, m.Deadline)
+    }
+    print("[rows]", counts)
+
+    # What a good answer to this cabinet is; the model is free in how it writes the rest.
+    assert isinstance(result, dict), result
+    assert result["status"] == "ok"
+    endpoints = {e["kind"]: e for e in (await env.spec(1))["recipe"]["endpoints"]}
+    print("[stored spec]", json.dumps(await env.spec(1), ensure_ascii=False))
+    assert endpoints["scheduleEvents"]["response"]["expand"]["type"] == "weekly"
+    assert counts["schedule_events"] == 36  # 5 rules unrolled over the weeks of the term
+    assert endpoints["deadlines"]["request"]["query"] == {"state": list(lms.STATES)}
+    assert counts["deadlines"] == 5
+    assert set(lms.STATE.segments) == {"me"}
+    assert all(asked == list(lms.STATES) for asked in lms.STATE.state_reads)

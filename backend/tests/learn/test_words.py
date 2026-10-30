@@ -33,9 +33,16 @@ def test_a_phrase_is_prose(text: str) -> None:
 def test_the_latest_two_different_reasons_are_told() -> None:
     codes = ["empty_result", "evidence_query_mismatch", "response_status", "empty_result"]
     assert words.why(codes) == "; ".join(
-        [words.reason("empty_result"), words.reason("response_status")]
+        [words.reason("response_status"), words.reason("evidence_query_mismatch")]
     )
     assert words.why([]) == "разобрать не удалось"
+
+
+def test_no_records_is_told_only_when_nothing_more_specific_is_known() -> None:
+    assert words.why(["empty_result", "required_fields_missing"]) == words.reason(
+        "required_fields_missing"
+    )
+    assert words.why(["empty_result"]) == words.reason("empty_result")
 
 
 def test_a_page_is_named_by_its_title_or_its_path_and_an_error_page_is_not_a_place() -> None:

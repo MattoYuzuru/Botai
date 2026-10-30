@@ -131,7 +131,7 @@ class Researcher(ls.EvidenceLlm):
     def __init__(
         self, queue: list[LlmResponse], discovery: list[LlmResponse] | None = None
     ) -> None:
-        super().__init__(queue=queue, discovery_queue=discovery or planner())
+        super().__init__(queue=queue, discovery_queue=planner() if discovery is None else discovery)
 
     async def complete(self, request: LlmRequest) -> LlmResponse:
         response = await super().complete(request)

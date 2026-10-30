@@ -104,9 +104,12 @@ def reason(code: str) -> str:
 
 
 def why(codes: Iterable[str]) -> str:
-    """Up to two different reasons, the latest first (a later attempt knew more)."""
+    """Up to two different reasons, the latest first (a later attempt knew more). "No records" is
+    what every failed read ends in, so it is told only when nothing more specific is known."""
+    distinct = list(dict.fromkeys(codes))
+    distinct = [code for code in distinct if code != "empty_result"] or distinct
     seen: list[str] = []
-    for code in reversed(list(codes)):
+    for code in reversed(distinct):
         text = reason(code)
         if text not in seen:
             seen.append(text)
