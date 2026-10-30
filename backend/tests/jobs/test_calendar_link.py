@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,8 @@ from botai.core.vault import SecretKind
 from botai.db import models as m
 from botai.learn.handlers import make_handlers
 from botai.settings import Settings
+from botai.sources import calendar as calendar_module
+from botai.sources.calendar import CalendarConnector
 from botai.sources.runner import make_sync_handler
 from botai.spaces import service as spaces_service
 from tests.agent.rig import call, final, step
@@ -154,7 +157,7 @@ async def student(env: Env, *, university: str = UNIVERSITY) -> Student:
     return Student(client, account.id, space.json()["id"], thread.json()["id"])
 
 
-def start_worker(env: Env, app: object, llm: ScriptedLlm | None = None) -> Directory:
+def start_worker(env: Env, app: object, llm: ScriptedLlm | None = None, **config: Any) -> Directory:
     """The worker of production for this task: connect (with the calendar), sync, and the agent."""
     network = Directory(app)
     learn = make_handlers(transport=network, retry=NO_RETRY)
@@ -165,7 +168,8 @@ def start_worker(env: Env, app: object, llm: ScriptedLlm | None = None) -> Direc
                 JobKind.CONNECT: learn[JobKind.CONNECT],
                 JobKind.SYNC: make_sync_handler(transport=network, retry=NO_RETRY),
                 JobKind.CHAT: handle_chat,
-            }
+            },
+            **config,
         )
     )
     return network
@@ -766,3 +770,171 @@ async def test_a_task_waiting_for_a_link_does_not_hold_the_source_slot(env: Env)
     third = await worker.claim()
     assert third is not None
     assert third.id == later
+
+
+async def test_a_calendar_task_never_runs_together_with_another_task_of_its_own_source(
+    env: Env,
+) -> None:
+    """A refresh would read the link that the task is replacing, get a 404 and mark the source as
+    needing a new link after the task made it work: the two take turns."""
+    who = await student(env)
+    queue = env.services.queue
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    conn = await make_working(env, who)
+    worker = env.worker({})
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY, "replace_link": True})
+    sync = await queue.enqueue(
+        JobKind.SYNC, user_id=who.user_id, connection_id=conn.id, dedupe=False
+    )
+    first = await worker.claim()  # the older one: the calendar task
+    assert first is not None
+    assert first.kind == "connect"
+    async with env.sm() as session:  # waiting for the student, as it does for up to half an hour
+        row = await session.get(m.Job, first.id)
+        assert row is not None
+        row.state = "waiting_user"
+        await session.commit()
+    assert await worker.claim() is None  # the refresh waits
+    assert (await env.job(sync)).state == "queued"
+    await worker._finish(first, "done")
+    second = await worker.claim()
+    assert second is not None
+    assert second.id == sync
+
+    # and the other way round: a refresh that runs keeps the calendar task waiting
+    await worker._finish(second, "done")
+    await queue.enqueue(JobKind.SYNC, user_id=who.user_id, connection_id=conn.id, dedupe=False)
+    running = await worker.claim()
+    assert running is not None
+    assert running.kind == "sync"
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY, "replace_link": True})
+    assert await worker.claim() is None
+
+
+async def test_calendar_tasks_that_wait_for_a_link_are_capped_like_login_windows(env: Env) -> None:
+    """Each one holds a worker for as long as the student looks for the link: a few at a time, and
+    the rest wait in the queue, so that the chat turns of everyone else still find a worker."""
+    students = [await student(env) for _ in range(3)]
+    for who in students:
+        await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    worker = env.worker({}, max_calendar_links=2)
+    claimed = [await worker.claim(), await worker.claim()]
+    assert all(c is not None for c in claimed)
+    assert len({c.user_id for c in claimed if c is not None}) == 2
+    assert await worker.claim() is None  # the third waits for a place
+    first = claimed[0]
+    assert first is not None
+    await worker._finish(first, "done")
+    third = await worker.claim()
+    assert third is not None
+    assert third.user_id not in {c.user_id for c in claimed if c is not None}
+    # a chat turn is not held back by them
+    await env.services.queue.enqueue(
+        JobKind.CHAT, user_id=students[0].user_id, thread_id=students[0].thread_id, dedupe=False
+    )
+    chat = await worker.claim()
+    assert chat is not None
+    assert chat.kind == "chat"
+
+
+async def test_a_calendar_that_never_got_a_link_is_a_draft_after_the_wait_runs_out(
+    env: Env, fakeuni_app: object
+) -> None:
+    who = await student(env)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    start_worker(env, fakeuni_app, ask_ttl=timedelta(seconds=0.5))
+    (job,) = await jobs_of(env, who.user_id, "connect")
+    done = await env.wait_for(job.id, {"cancelled", "failed", "done"})
+    assert done.state == "cancelled"
+    conn = await calendar_of(env, who.user_id)
+    assert (conn.status, conn.spec_id, conn.origin) == ("draft", None, "")
+    # and asking again starts it again
+    again = await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    assert again.startswith("Результат: запущено")
+
+
+async def test_a_calendar_the_student_stopped_is_a_draft_and_a_working_one_stays_as_it_was(
+    env: Env, fakeuni_app: object
+) -> None:
+    who = await student(env)
+    start_worker(env, fakeuni_app)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    seen: set[str] = set()
+    field = await field_of(who, seen)
+    stopped = await who.client.post(f"/api/v1/jobs/{field['jobId']}/cancel")
+    assert stopped.status_code == 204
+    await env.wait_for(field["jobId"], {"cancelled"})
+    assert (await calendar_of(env, who.user_id)).status == "draft"
+
+    # a calendar with a link that works: a replacement the student abandons changes nothing
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    link_task = await hand_over(who, fakeuni.SERVICE_URL, seen)
+    await env.wait_for(link_task, {"done"})
+    assert (await calendar_of(env, who.user_id)).status == "active"
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY, "replace_link": True})
+    field = await field_of(who, seen)
+    await who.client.post(f"/api/v1/jobs/{field['jobId']}/cancel")
+    await env.wait_for(field["jobId"], {"cancelled"})
+    kept = await calendar_of(env, who.user_id)
+    assert (kept.status, kept.origin) == ("active", ORIGIN)
+
+
+async def test_a_calendar_that_could_not_be_registered_keeps_the_link_it_had(
+    env: Env, fakeuni_app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    who = await student(env)
+    start_worker(env, fakeuni_app)
+    seen: set[str] = set()
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    first = await hand_over(who, fakeuni.SERVICE_URL, seen)
+    await env.wait_for(first, {"done"})
+    conn = await calendar_of(env, who.user_id)
+
+    async def broken(self: object, *args: object) -> None:
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(CalendarConnector, "_register", broken)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY, "replace_link": True})
+    second = await hand_over(who, fakeuni.PATH_URL, seen)
+    await env.wait_for(second, {"failed"})
+    stored = await env.services.vault.get(who.user_id, conn.id, SecretKind.ICAL_URL)
+    assert stored is not None
+    assert stored.get_secret_value() == fakeuni.SERVICE_URL  # the old link, not the new one
+    assert (await calendar_of(env, who.user_id)).status == "active"
+
+    # a calendar that had no link keeps none
+    other = await student(env, university="Другой институт")
+    await connect_calendar(other.chat(env), {"university_query": "Другой институт"})
+    third = await hand_over(other, fakeuni.PATH_URL, set())
+    await env.wait_for(third, {"failed"})
+    unlinked = await calendar_of(env, other.user_id)
+    assert await env.services.vault.get(other.user_id, unlinked.id, SecretKind.ICAL_URL) is None
+
+
+async def test_an_address_the_client_cannot_use_is_a_wrong_link_not_a_crashed_task(
+    env: Env, fakeuni_app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    who = await student(env)
+    await connect_calendar(who.chat(env), {"university_query": UNIVERSITY})
+    network = start_worker(env, fakeuni_app)
+    calls = 0
+    real = calendar_module.read_link
+
+    async def read(ctx: Any, url: str) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("an address the proxy token cannot carry")
+        if calls == 2:
+            raise httpx.UnsupportedProtocol("no")
+        return await real(ctx, url)
+
+    monkeypatch.setattr(calendar_module, "read_link", read)
+    seen: set[str] = set()
+    await hand_over(who, fakeuni.SERVICE_URL, seen)
+    await hand_over(who, fakeuni.SERVICE_URL, seen)
+    task = await hand_over(who, fakeuni.SERVICE_URL, seen)
+    done = await env.wait_for(task, {"done", "failed"})
+    assert done.state == "done"
+    assert said(await history(who)).count("не удалось открыть") == 2
+    assert network.requests  # the third try went out

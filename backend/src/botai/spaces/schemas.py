@@ -20,7 +20,8 @@ ConnectionStatus = Literal[
     "error",
     "disabled",
 ]
-SecretKindIn = Literal["token", "ical_url", "api_key"]
+# A calendar link is not one of them: it is a task's protected field (chat), where it is checked and read.
+SecretKindIn = Literal["token", "api_key"]
 
 
 class UniversityOut(ApiModel):

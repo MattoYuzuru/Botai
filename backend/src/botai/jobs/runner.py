@@ -55,7 +55,9 @@ SYNC_STATUSES = ("active", "stale")
 ACTIVE_STATES = ("running", "waiting_user")
 MANUAL_LOGIN = {"manual_login": True}
 # A calendar link task drives no browser and no site of the student's: it waits for the student
-# without holding the user's source slot, and does not wait for it either.
+# without holding the user's source slot, and does not wait for it either. Two things still bound it:
+# like a login window it holds a worker while the student looks for the link (a cap, below), and it
+# never runs together with another source task of its own source (a refresh reads the link it replaces).
 CALENDAR_LINK = {"calendar": True}
 
 
@@ -84,6 +86,8 @@ class RunnerConfig:
     # A login in a browser window holds a worker for as long as the student takes (up to 30
     # minutes): no more than this many at once in the whole system, whatever the queue holds.
     max_manual_logins: int = 2
+    # The same for a task that waits for a calendar link in a protected field.
+    max_calendar_links: int = 2
     heartbeat_seconds: float = 15.0
     lease: timedelta = timedelta(minutes=2)
     maintenance_seconds: float = 30.0
@@ -162,6 +166,7 @@ class Worker:
         skipped_users: set[str] = set()
         skipped_jobs: set[str] = set()
         manual_cap = max(1, min(self.config.max_manual_logins, self.config.concurrency - 1))
+        calendar_cap = max(1, min(self.config.max_calendar_links, self.config.concurrency - 1))
         async with self.services.db() as session:
             while True:
                 compatible = or_(
@@ -170,6 +175,7 @@ class Worker:
                 )
                 active = aliased(Job)
                 holding = aliased(Job)
+                other = aliased(Job)
                 manual = and_(Job.kind == JobKind.CONNECT.value, Job.payload.contains(MANUAL_LOGIN))
                 manual_active = (
                     select(func.count())
@@ -181,12 +187,35 @@ class Worker:
                     )
                     .scalar_subquery()
                 )
+                calendar = and_(
+                    Job.kind == JobKind.CONNECT.value, Job.payload.contains(CALENDAR_LINK)
+                )
+                calendar_active = (
+                    select(func.count())
+                    .select_from(holding)
+                    .where(
+                        holding.kind == JobKind.CONNECT.value,
+                        holding.payload.contains(CALENDAR_LINK),
+                        holding.state.in_(ACTIVE_STATES),
+                    )
+                    .scalar_subquery()
+                )
                 busy = exists(
                     select(active.id).where(
                         active.user_id == Job.user_id,
                         active.kind.in_(SOURCE_KINDS),
                         active.state.in_(ACTIVE_STATES),
                         ~active.payload.contains(CALENDAR_LINK),
+                    )
+                )
+                # One source, one task at a time: a calendar task and a refresh of the same
+                # calendar must not overlap (the refresh would read the link being replaced).
+                same_source = exists(
+                    select(other.id).where(
+                        other.id != Job.id,
+                        other.connection_id == Job.connection_id,
+                        other.kind.in_(SOURCE_KINDS),
+                        other.state.in_(ACTIVE_STATES),
                     )
                 )
                 job = await session.scalar(
@@ -202,7 +231,11 @@ class Worker:
                             Job.payload.contains(CALENDAR_LINK),
                             ~busy,
                         ),
+                        or_(
+                            Job.kind.not_in(SOURCE_KINDS), Job.connection_id.is_(None), ~same_source
+                        ),
                         or_(~manual, manual_active < manual_cap),
+                        or_(~calendar, calendar_active < calendar_cap),
                         Job.user_id.not_in(skipped_users),
                         Job.id.not_in(self._tasks),
                         Job.id.not_in(skipped_jobs),
@@ -217,7 +250,17 @@ class Worker:
                 if (
                     job.kind == JobKind.CONNECT.value
                     and job.payload.get("manual_login") is True
-                    and not await self._manual_login_place(session, manual_cap)
+                    and not await self._place(session, "manual-logins", MANUAL_LOGIN, manual_cap)
+                ):
+                    skipped_jobs.add(job.id)
+                    await session.rollback()
+                    continue
+                if (
+                    job.kind == JobKind.CONNECT.value
+                    and job.payload.get("calendar") is True
+                    and not await self._place(
+                        session, "calendar-links", CALENDAR_LINK, calendar_cap
+                    )
                 ):
                     skipped_jobs.add(job.id)
                     await session.rollback()
@@ -270,9 +313,13 @@ class Worker:
                 self._claims[claimed.id] = claimed
                 return claimed
 
-    async def _manual_login_place(self, session: AsyncSession, cap: int) -> bool:
+    async def _place(
+        self, session: AsyncSession, name: str, marker: dict[str, Any], cap: int
+    ) -> bool:
+        """A free place among the tasks that wait for a person while holding a worker (login
+        windows, calendar links): one worker at a time looks, so two cannot both take the last."""
         taken = await session.scalar(
-            select(func.pg_try_advisory_xact_lock(func.hashtextextended("manual-logins", 0)))
+            select(func.pg_try_advisory_xact_lock(func.hashtextextended(name, 0)))
         )
         if not taken:
             return False
@@ -281,7 +328,7 @@ class Worker:
             .select_from(Job)
             .where(
                 Job.kind == JobKind.CONNECT.value,
-                Job.payload.contains(MANUAL_LOGIN),
+                Job.payload.contains(marker),
                 Job.state.in_(ACTIVE_STATES),
             )
         )

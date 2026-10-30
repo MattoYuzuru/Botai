@@ -12,13 +12,17 @@ and no login. The link is a secret, so the way to hand it over is a task, not a 
    calendar), asks again after a wrong one (three tries), keeps the link in the Vault as
    `ical_url`, reads the calendar once and tells the student what is in it.
 
-The link is never an argument, a log line, a diagnostic field, an event, a history message or an
-API answer; the only part of it that is stored in the open is its host (`origin`).
+A link typed into the chat is dropped before it is stored (`refuse_calendar_link`); the thread gets
+a plain question in its place, with buttons, and only the student's «Да» (to the agent, which calls
+`connect_calendar`) opens the field. The link is never an argument, a log line, a diagnostic field,
+an event, a history message or an API answer; the only part of it that is stored in the open is its
+host (`origin`).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -27,12 +31,12 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from icalendar import Calendar
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.contracts.agent_ui import InputBlock
+from botai.contracts.agent_ui import InputBlock, TextBlock
 from botai.contracts.specs import IcalSpec, Kind
-from botai.core.calendar_link import normalize_calendar_link, origin_of_link
 from botai.core.diagnostics import diagnostic_event
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.execution import save_secret
@@ -41,7 +45,8 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobClaimLost, JobContext, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
-from botai.db.models import Connection, Job, Space, University
+from botai.db.models import ChatMessage, ChatThread, Connection, Job, Space, University
+from botai.jobs import dialogue
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import enqueue_in_session
 from botai.learn import revisions
@@ -49,6 +54,7 @@ from botai.learn.summary import confirm_details, finished_text, weeks_ahead
 from botai.learn.ui import Ui
 from botai.sources.adapter import Record
 from botai.sources.adapters.ical import IcalAdapter, read_link
+from botai.sources.calendar_url import normalize_calendar_link, origin_of_link
 from botai.sources.runner import (
     ConnInfo,
     build_context,
@@ -59,13 +65,13 @@ from botai.sources.runner import (
     load_snapshot,
     set_connection,
 )
-from botai.spaces import repo, service
+from botai.spaces import service
 
 CALENDAR_TITLE = "Календарь"
 KIND = "calendar"
 ADAPTER = "ical"
 ATTEMPTS = 3
-UPCOMING = 5
+log = logging.getLogger(__name__)
 
 GUIDE = (
     "Чтобы читать календарь, мне нужна его личная ссылка на экспорт (iCal). Где её взять:\n\n"
@@ -169,29 +175,144 @@ async def start_calendar_source(
     return CalendarStart("started", conn, job, space)
 
 
-async def start_from_chat(
-    session: AsyncSession, user_id: str, thread_id: str, space_id: str | None, now: datetime
-) -> CalendarStart | None:
-    """A personal calendar link was written into a thread: open the protected field right there.
+# --- a link typed into the chat -------------------------------------------------------------------
 
-    The university is the thread's own, else the student's only one; with several and no hint
-    nothing is started (the agent asks which one). Nothing of the message is kept.
-    """
-    space = await repo.get_space(session, user_id, space_id) if space_id else None
-    if space is None:
-        owned = [s for s in await repo.list_spaces(session, user_id) if s.university_id]
-        space = owned[0] if len(owned) == 1 else None
-    if space is None:
-        return None
-    return await start_calendar_source(
-        session,
-        user_id=user_id,
-        thread_id=thread_id,
-        space=space,
-        title=CALENDAR_TITLE,
-        replace_link=True,
-        now=now,
+OFFER = "Похоже, это личная ссылка календаря"
+REFUSAL = (
+    "Это личная ссылка календаря, в чат её вставлять нельзя: она открывает весь календарь. "
+    "Подключить календарь можно через защищённое поле: я предложил это ниже, в чате"
+)
+YES = "Да, подключить календарь"
+YES_REPLACE = "Да, заменить ссылку календаря"
+NO = "Нет, это другое"
+NO_REPLACE = "Нет, оставить как есть"
+QUICK_MAX = 60
+BUTTONS = 4
+
+
+@dataclass(frozen=True, slots=True)
+class Offer:
+    """What the thread says to the student in place of the link: a plain question, with buttons."""
+
+    text: str
+    quick_replies: tuple[str, ...] = ()
+
+
+def _button(text: str) -> str:
+    return text if len(text) <= QUICK_MAX else text[: QUICK_MAX - 1].rstrip() + "…"
+
+
+async def _offer_for(
+    session: AsyncSession, user_id: str, thread_id: str, thread_space_id: str | None
+) -> Offer:
+    """The question for this thread: the thread's university, else the student's only one; with
+    several and no hint, which one. Nothing is created: the answer decides."""
+    owned = [entry for entry in await service.list_sources(session, user_id) if entry.university]
+    chosen = next((e for e in owned if e.space.id == thread_space_id), None)
+    if chosen is None and len(owned) == 1:
+        chosen = owned[0]
+    if chosen is None:
+        if not owned:
+            return Offer(
+                f"{OFFER}, а в чат её присылать нельзя. Для какого вуза подключить календарь? Напишите название вуза."
+            )
+        text = f"{OFFER}, а в чат её присылать нельзя. Для какого вуза подключить календарь?"
+        if len(owned) > BUTTONS:
+            text += " Если нужного вуза нет в кнопках, напишите его название."
+        return Offer(
+            text, tuple(_button(f"Календарь для {e.short_title}") for e in owned[:BUTTONS])
+        )
+    space = chosen.space
+    conn = next((v.connection for v in chosen.sources if v.connection.adapter == ADAPTER), None)
+    where = f"«{space.title}»"
+    if conn is not None:
+        running = await session.scalar(
+            select(Job)
+            .where(
+                Job.user_id == user_id,
+                Job.connection_id == conn.id,
+                Job.kind == JobKind.CONNECT.value,
+                Job.state.in_(sorted(IN_FLIGHT)),
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(1)
+        )
+        if running is not None and running.thread_id == thread_id:
+            return Offer(
+                f"{OFFER}: в чат её присылать нельзя. Защищённое поле для неё уже открыто выше, "
+                "введите ссылку там."
+            )
+        if running is not None and running.thread_id:
+            return Offer(
+                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} уже ждёт ссылку в "
+                f"[другом чате](botai://threads/{running.thread_id}): введите её в защищённое поле там."
+            )
+        if conn.status == "disabled":
+            return Offer(
+                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} отключён: включите "
+                "его в списке источников, и я открою защищённое поле для ссылки."
+            )
+        if conn.spec_id is not None and conn.status not in {"needs_reauth", "error", "draft"}:
+            return Offer(
+                f"{OFFER}: в чат её присылать нельзя. Календарь вуза {where} уже подключён. "
+                "Заменить ссылку на новую? Я открою для неё защищённое поле.",
+                (YES_REPLACE, NO_REPLACE),
+            )
+    return Offer(
+        f"{OFFER}, а в чат её присылать нельзя: она открывает весь календарь. Подключить "
+        f"календарь вуза {where}? Ссылку я попрошу ввести в защищённом поле.",
+        (YES, NO),
     )
+
+
+async def offer_calendar(
+    session: AsyncSession, user_id: str, thread: ChatThread, now: datetime
+) -> None:
+    """Writes the question into the thread, once: a second ask while the first is the last word of
+    the thread adds nothing. Commits. Creates no source and no task."""
+    thread_id, space_id = thread.id, thread.space_id
+    offer = await _offer_for(session, user_id, thread_id, space_id)
+    last = await session.scalar(
+        select(ChatMessage)
+        .where(ChatMessage.user_id == user_id, ChatMessage.thread_id == thread_id)
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(1)
+    )
+    already = (
+        last is not None
+        and last.role == "agent"
+        and bool(last.blocks)
+        and str(last.blocks[0].get("markdown", "")).startswith(OFFER)
+    )
+    if already:
+        await session.rollback()
+        return
+    at = await dialogue.message_time(session, user_id, thread_id, now)
+    block = TextBlock(
+        id=new_id(), at=at, markdown=offer.text, quick_replies=list(offer.quick_replies) or None
+    )
+    session.add(
+        ChatMessage(
+            id=new_id(),
+            user_id=user_id,
+            thread_id=thread_id,
+            role="agent",
+            blocks=[block.model_dump(by_alias=True, mode="json", exclude_none=True)],
+            created_at=at,
+        )
+    )
+    await session.commit()
+
+
+async def refuse_calendar_link(
+    session: AsyncSession, user_id: str, thread: ChatThread, now: datetime
+) -> BotaiError:
+    """A personal calendar link must not stay in a chat. Nothing of the message is kept, nothing is
+    created: the thread gets the question, and the answer is the student's to give."""
+    thread_id = thread.id
+    await offer_calendar(session, user_id, thread, now)
+    diagnostic_event("chat.calendar_link", thread_id=thread_id, outcome="refused")
+    return BotaiError(ErrorCode.SECRET_LINK_CALENDAR, REFUSAL)
 
 
 # --- the task -------------------------------------------------------------------------------------
@@ -315,6 +436,11 @@ class CalendarConnector:
         except BotaiError as error:
             await stage.finish("failed")
             raise LinkProblem(_problem_text(error)) from None
+        except (ValueError, httpx.HTTPError):  # an address the client or the proxy cannot use
+            await stage.finish("failed")
+            raise LinkProblem(
+                "Эту ссылку не удалось открыть: проверьте, что она скопирована целиком."
+            ) from None
         if reading.calendar is None:
             await stage.finish("failed")
             raise LinkProblem(_READING_TEXT[reading.problem or "format"])
@@ -322,12 +448,31 @@ class CalendarConnector:
         diagnostic_event("learn.calendar", outcome="ok")
         return link, reading.calendar
 
-    async def _connect(self, info: ConnInfo, link: str, calendar: Calendar) -> dict[str, Any]:
-        svc, ctx = self.services, self.ctx
-        connection_id, user_id = info.connection_id, info.user_id
-        origin = origin_of_link(link)
-        host = urlsplit(link).hostname or ""
-        await save_secret(ctx, svc.vault, user_id, connection_id, SecretKind.ICAL_URL, link)
+    async def _fence(self, connection_id: str) -> None:
+        """The task is still the source's current one and the source is still there: checked before
+        anything is written (the Vault write takes the same row lock, so this is its own transaction)."""
+        async with self.services.db() as db, db.begin():
+            conn = await guard_source_write(db, self.ctx, self.ctx.user_id, connection_id)
+            if conn is None or conn.status == "disabled":
+                raise JobClaimLost("the source is gone")
+
+    async def _put_back(self, connection_id: str, previous: SecretStr | None) -> None:
+        """The calendar that worked keeps its link when the new one could not be registered."""
+        vault, user_id = self.services.vault, self.ctx.user_id
+        try:
+            if previous is None:
+                await vault.delete(user_id, connection_id, SecretKind.ICAL_URL)
+            else:
+                await vault.put(
+                    user_id, connection_id, SecretKind.ICAL_URL, previous.get_secret_value()
+                )
+        except Exception:  # never the link in the message: the type and the frames are enough
+            log.error("the previous calendar link could not be restored", exc_info=False)
+
+    async def _register(self, connection_id: str, origin: str, host: str) -> None:
+        """The spec of the link's host (shared, without the link) and the fields of the source, in
+        one transaction: all or nothing."""
+        svc, ctx, user_id = self.services, self.ctx, self.ctx.user_id
         spec = {"adapter": ADAPTER, "origin": origin}
         IcalSpec.model_validate(spec)
         now = svc.clock.now()
@@ -346,6 +491,20 @@ class CalendarConnector:
             conn.origin, conn.allow_hosts = origin, [host]
             conn.kind, conn.adapter = KIND, ADAPTER
             conn.spec_id, conn.spec_revision = row.id, row.revision
+
+    async def _connect(self, info: ConnInfo, link: str, calendar: Calendar) -> dict[str, Any]:
+        svc, ctx = self.services, self.ctx
+        connection_id, user_id = info.connection_id, info.user_id
+        origin = origin_of_link(link)
+        host = urlsplit(link).hostname or ""
+        previous = await svc.vault.get(user_id, connection_id, SecretKind.ICAL_URL)
+        await self._fence(connection_id)
+        await save_secret(ctx, svc.vault, user_id, connection_id, SecretKind.ICAL_URL, link)
+        try:
+            await self._register(connection_id, origin, host)
+        except BaseException:
+            await self._put_back(connection_id, previous)
+            raise
         async with svc.db() as db:
             snap = await load_snapshot(db, user_id, connection_id)
         sctx = build_context(svc, snap, None, transport=self.transport, retry=self.retry)

@@ -29,7 +29,7 @@ from botai.core.clock import Clock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import ChatMessage, Job, JobAnswer, JobEvent
+from botai.db.models import ChatMessage, ChatThread, Job, JobAnswer, JobEvent
 from botai.jobs import dialogue
 from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.events import TERMINAL, append_event, status_data
@@ -209,8 +209,18 @@ async def record_answer(
         and pending.get("channel") == "dialogue"
         and isinstance(values, str)
     ):
+        from botai.core.calendar_link import calendar_link_in
+        from botai.sources import calendar
         from botai.spaces.conversations import safe_text
 
+        thread = (
+            await session.get(ChatThread, job.thread_id)
+            if job.thread_id is not None and calendar_link_in(values)
+            else None
+        )
+        if thread is not None and thread.user_id == user_id:
+            # The same as in the chat: nothing is kept, the thread gets the question.
+            raise await calendar.refuse_calendar_link(session, user_id, thread, datetime.now(UTC))
         values = safe_text(values)
 
     # Claim the answer slot first (the unique key makes a second answer lose), but commit it only

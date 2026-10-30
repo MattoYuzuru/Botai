@@ -254,13 +254,16 @@ class IcalAdapter:
         except (ValueError, TypeError, OverflowError):
             return [start] if lo <= start <= hi else []
         excluded: set[datetime] = set()
+        days: set[date] = set()  # `EXDATE;VALUE=DATE`: the whole day of a timed series is skipped
         raw = comp.get("EXDATE")
         for group in raw if isinstance(raw, list) else [raw] if raw is not None else []:
             for dt in getattr(group, "dts", []):
-                value = _as_datetime(dt.dt, ctx.tz)
-                if value is not None:
+                if isinstance(dt.dt, date) and not isinstance(dt.dt, datetime):
+                    days.add(dt.dt)
+                elif (value := _as_datetime(dt.dt, ctx.tz)) is not None:
                     excluded.add(value)
-        return [o for o in found if o not in excluded]
+        zone = start.tzinfo or ctx.tz
+        return [o for o in found if o not in excluded and o.astimezone(zone).date() not in days]
 
     def _record(
         self, comp: Any, ext: str, start: datetime, end: datetime | None, ctx: SyncContext

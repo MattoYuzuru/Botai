@@ -88,6 +88,15 @@ async def post_message(
     return await conversations.post_message(session, services, user.id, thread_id, body)
 
 
+@router.post("/chat/threads/{thread_id}/calendar-link", status_code=204)
+async def calendar_link_offer(
+    thread_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> None:
+    """The client kept a personal calendar link out of its queue; the thread asks the student whether
+    to connect the calendar. No body: the link never travels."""
+    await conversations.offer_calendar_link(session, services, user.id, thread_id)
+
+
 @router.get("/chat/threads/{thread_id}/runtime", response_model=ThreadRuntime)
 async def thread_runtime(
     thread_id: str, user: AuthUser, session: DbSession, services: ServicesDep

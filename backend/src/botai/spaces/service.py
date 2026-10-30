@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.core.calendar_link import normalize_calendar_link
 from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
@@ -595,10 +594,6 @@ async def put_secret(
     value = body.value.strip()
     if not value:
         raise BotaiError(ErrorCode.VALIDATION, "Значение не может быть пустым")
-    if body.kind == "ical_url":
-        value = normalize_calendar_link(
-            value
-        )  # `webcal://` is kept as the `https://` it stands for
     await session.commit()  # the Vault works in its own transaction
     await vault.put(user_id, conn.id, SecretKind(body.kind), value)
 

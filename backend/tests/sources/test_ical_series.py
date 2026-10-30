@@ -34,14 +34,14 @@ MOSCOW = "DTSTART;TZID=Europe/Moscow:20261026T093000"
 MOSCOW_END = "DTEND;TZID=Europe/Moscow:20261026T105000"
 
 
-def read(*events: str) -> list[Record]:
+def read(*events: str, now: datetime = NOW) -> list[Record]:
     ctx = make_ctx(
         create_fakeuni(),
         allow_hosts=("calendar.fakeuni.test",),
         origin="https://calendar.fakeuni.test",
         logged_in=False,
     )
-    ctx.now = NOW
+    ctx.now = now
     text = (HEAD + "".join(events) + TAIL).replace("\n", "\r\n")
     spec = IcalSpec(adapter="ical", origin="https://calendar.fakeuni.test")
     return IcalAdapter(spec).result_for(Calendar.from_ical(text.encode()), ctx).records
@@ -114,3 +114,75 @@ def test_a_rule_that_cannot_be_read_costs_one_class_not_the_calendar() -> None:
     assert len(starts(records, "Сломанное правило")) == 1
     assert len(starts(records, "Целое")) == 2
     assert Counter(r.kind for r in records) == {"scheduleEvents": 3}
+
+
+def test_a_series_keeps_its_local_hour_across_the_end_of_daylight_saving_time() -> None:
+    """Berlin turns the clocks back on 25 October: 09:00 stays 09:00, only the UTC hour moves."""
+    series = event(
+        "dst",
+        "DTSTART;TZID=Europe/Berlin:20261019T090000",
+        "FREQ=WEEKLY;UNTIL=20261109",
+        "Vorlesung",
+        end="DTEND;TZID=Europe/Berlin:20261019T100000",
+    )
+    assert starts(read(series, now=datetime(2026, 10, 18, tzinfo=UTC)), "Vorlesung") == [
+        "2026-10-19T07:00",  # summer time, UTC+2
+        "2026-10-26T08:00",  # winter time, UTC+1
+        "2026-11-02T08:00",
+        "2026-11-09T08:00",
+    ]
+
+
+def test_a_skipped_day_written_as_a_date_skips_the_timed_class_of_that_day() -> None:
+    series = (
+        "BEGIN:VEVENT\nUID:x@fixture\n" + MOSCOW + "\n" + MOSCOW_END + "\n"
+        "RRULE:FREQ=WEEKLY;UNTIL=20261130\nEXDATE;VALUE=DATE:20261109\n"
+        "SUMMARY:Практика\nEND:VEVENT\n"
+    )
+    assert starts(read(series), "Практика") == [
+        "2026-10-26T06:30",
+        "2026-11-02T06:30",
+        "2026-11-16T06:30",
+        "2026-11-23T06:30",
+        "2026-11-30T06:30",
+    ]
+
+
+def test_a_skipped_class_and_a_moved_one_are_found_in_utc_as_well_as_in_local_time() -> None:
+    series = (
+        "BEGIN:VEVENT\nUID:u@fixture\n" + MOSCOW + "\n" + MOSCOW_END + "\n"
+        "RRULE:FREQ=WEEKLY;COUNT=4\nEXDATE:20261109T063000Z\nSUMMARY:Лекция\nEND:VEVENT\n"
+        "BEGIN:VEVENT\nUID:u@fixture\nRECURRENCE-ID:20261102T063000Z\n"
+        "DTSTART;TZID=Europe/Moscow:20261102T120000\nDTEND;TZID=Europe/Moscow:20261102T130000\n"
+        "SUMMARY:Лекция\nEND:VEVENT\n"
+    )
+    assert starts(read(series), "Лекция") == [
+        "2026-10-26T06:30",
+        "2026-11-02T09:00",  # moved to 12:00 in Moscow
+        "2026-11-16T06:30",
+    ]
+
+
+def test_a_cancelled_class_of_a_series_is_gone_and_the_others_stay() -> None:
+    series = (
+        "BEGIN:VEVENT\nUID:c@fixture\n" + MOSCOW + "\n" + MOSCOW_END + "\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\nSUMMARY:Консультация\nEND:VEVENT\n"
+        "BEGIN:VEVENT\nUID:c@fixture\nRECURRENCE-ID;TZID=Europe/Moscow:20261102T093000\n"
+        "STATUS:CANCELLED\nDTSTART;TZID=Europe/Moscow:20261102T093000\nSUMMARY:Консультация\nEND:VEVENT\n"
+    )
+    assert starts(read(series), "Консультация") == ["2026-10-26T06:30", "2026-11-09T06:30"]
+
+
+def test_a_zone_the_calendar_defines_itself_is_understood() -> None:
+    zone = (
+        "BEGIN:VTIMEZONE\nTZID:Russian Standard Time\nBEGIN:STANDARD\nDTSTART:16010101T000000\n"
+        "TZOFFSETFROM:+0300\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\n"
+    )
+    series = event(
+        "z",
+        "DTSTART;TZID=Russian Standard Time:20261026T093000",
+        "FREQ=WEEKLY;UNTIL=20261116T093000",
+        "Пара",
+        end="DTEND;TZID=Russian Standard Time:20261026T105000",
+    )
+    assert len(starts(read(zone + series), "Пара")) == 4
