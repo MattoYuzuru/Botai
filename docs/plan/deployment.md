@@ -349,6 +349,18 @@ production»). Откат флага — одна строка + перезап�
 api/worker. Незавершённые v4-jobs завершатся понятной ошибкой (не тихим переходом на v3),
 данные и трассы остаются. v3-путь при откате не тронут.
 
+### Инцидент: `MissingGreenlet` в v3-мосте (исправлен 2026-11-01)
+
+Сразу после включения v4 плановые `SYNC` старых v3-подключений начали падать
+`internal_error`/`MissingGreenlet`: в `agent/v4/dispatch.py` мост логировал `connection.id`
+**после** `session.rollback()`, который истекает ORM-объект, и обращение к атрибуту шло в
+asyncpg вне greenlet. Затронуты были все три моста (`SYNC`, `REPAIR`, `CONNECT` календаря по
+ссылке) — то есть любой пользователь со старыми подключениями не получал обновлений данных.
+Исправление: логировать `connection_id` до `rollback()`; добавлен регрессионный тест на реальном
+`Worker`/Postgres (`tests/jobs/test_agent_dispatch_v4.py::test_a_v3_connection_sync_bridges_without_touching_expired_rows`).
+После деплоя фикса проверить: worker без `MissingGreenlet`, плановые sync завершаются `done`,
+`jobs` не копит `failed` с `internal_error`.
+
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
 | Параметр | Значение |

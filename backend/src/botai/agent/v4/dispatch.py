@@ -110,8 +110,10 @@ async def handle_connect(
         if space is None:
             raise BotaiError(ErrorCode.NOT_FOUND, "Пространство подключения не найдено")
         if payload.get("calendar") is True or connection.adapter == "ical":
+            # Log before expiring the ORM object: after `rollback()` its loaded attributes are
+            # gone, and touching `connection.id` here raised MissingGreenlet in production.
+            log.info("connect %s: calendar-by-link stays on the v3 path this round", connection_id)
             await session.rollback()
-            log.info("connect %s: calendar-by-link stays on the v3 path this round", connection.id)
             return await _v3_connect(ctx, services, payload)
         if connection.status == "disabled":
             raise BotaiError(ErrorCode.CONFLICT, "Подключение выключено: включите источник")
@@ -209,8 +211,10 @@ async def handle_sync(
         connection = await _owned_connection(session, ctx.user_id, connection_id)
         source = await _find_source(session, ctx.user_id, connection)
         if source is None:
+            # Log before expiring the ORM object (see handle_connect): a v3 connection has no v4
+            # source, and every scheduled sync of an old connection takes this bridge.
+            log.info("sync %s: no v4 source yet, keeping the v3 handler", connection_id)
             await session.rollback()
-            log.info("sync %s: no v4 source yet, keeping the v3 handler", connection.id)
             return await _v3_sync(ctx, services, payload)
         source_id = source.id
 
@@ -281,8 +285,8 @@ async def handle_repair(
         connection = await _owned_connection(session, ctx.user_id, connection_id)
         source = await _find_source(session, ctx.user_id, connection)
         if source is None:
+            log.info("repair %s: no v4 source yet, keeping the v3 handler", connection_id)
             await session.rollback()
-            log.info("repair %s: no v4 source yet, keeping the v3 handler", connection.id)
             return await _v3_repair(ctx, services, payload)
         source_id = source.id
         await _mark_source_status(session, ctx.user_id, connection, "learning")

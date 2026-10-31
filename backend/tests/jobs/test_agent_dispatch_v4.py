@@ -511,3 +511,34 @@ async def test_repair_falls_back_to_the_agent_and_activates_the_fixed_playbook(
     assert sync_job.state == "done", sync_job.error
     assert sync_job.result is not None
     assert sync_job.result["status"] == "ok"
+
+
+async def test_a_v3_connection_sync_bridges_without_touching_expired_rows(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: production SYNC of a v3-only connection crashed with `MissingGreenlet`.
+
+    The v3 bridge logged `connection.id` after `session.rollback()` had expired the ORM object,
+    so on the v4 engine every scheduled sync of an old connection failed with internal_error.
+    The bridge must log before expiring and hand the job to the v3 handler.
+    """
+    env.settings.agent_engine = "v4"
+    user = await env.account()
+    _, connection_id = await _connection(env, user.id)  # v3 connection; it has no v4 Source
+    bridged = False
+
+    async def fake_v3(ctx: Any, services: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal bridged
+        bridged = True
+        return {"status": "ok", "connection_id": connection_id}
+
+    monkeypatch.setattr("botai.agent.v4.dispatch._v3_sync", fake_v3)
+    job_id = await env.services.queue.enqueue(
+        JobKind.SYNC, user_id=user.id, connection_id=connection_id, payload={}
+    )
+    env.start(env.worker(make_v4_handlers()))
+    job = await env.wait_for(job_id, {"done", "failed"}, within=30)
+
+    assert job.state == "done", job.error
+    assert bridged, "the v3 bridge must run for a connection without a v4 source"
+    assert job.result == {"status": "ok", "connection_id": connection_id}
