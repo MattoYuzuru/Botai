@@ -17,8 +17,8 @@
 
 Дополнение 29.10.2026: [factory v2](../../architecture/factory-v2.md) и
 [ADR-0012](../../adr/0012-verified-source-factory-v2.md) описывают реализованное ограниченное
-подмножество auth/data/browser. V1 читается без изменений; v2 producer по умолчанию выключен,
-общий CI и выпуск ещё проверяются. Claim/checkpoint/usage — по
+подмножество auth/data/browser. V1 читается без изменений; v2 выпущен (PR #69–#71), автор всегда создаёт v2,
+переключатели удалены 2026-10-30. Claim/checkpoint/usage — по
 [LLD исследования](../../architecture/source-research.md), без новой очереди.
 
 ## Срезы
