@@ -1,4 +1,4 @@
-"""Chat files (docs/plan/agent-hub-v3.md §3.6): upload, metadata, bytes, delete an unsent one."""
+"""Chat files (docs/v4/05-implementation-plan.md §3.6): upload, metadata, bytes, delete an unsent one."""
 
 from __future__ import annotations
 

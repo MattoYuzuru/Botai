@@ -15,6 +15,9 @@ class ErrorCode(StrEnum):
     SOURCE_UNAVAILABLE = "source_unavailable"
     SOURCE_RATE_LIMITED = "source_rate_limited"
     SOURCE_BOT_PROTECTION = "source_bot_protection"
+    # The research kept re-reading the same pages and finding nothing new: it stopped on purpose,
+    # with an honest count, instead of being re-queued in slices until its time budget ran out.
+    SOURCE_NO_PROGRESS = "source_no_progress"
     LOGIN_FAILED = "login_failed"
     # Our own guard stopped a request of the login: the site is not down.
     LOGIN_GUARD_REFUSED = "login_guard_refused"

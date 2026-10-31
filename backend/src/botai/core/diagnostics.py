@@ -49,6 +49,7 @@ _NUMBERS = set(
         "delay_ms",
         "page_index",
         "round_no",
+        "slice_count",
         "candidate_index",
         "limit",
         "body_bytes",

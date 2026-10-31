@@ -1,6 +1,6 @@
 # Результаты бенчмарка агента
 
-Файл собирается командой `python -m botai.agent.bench --summarize` из `*.json` рядом; руками не править. Методика — [benchmark.md](../../docs/plan/benchmark.md).
+Файл собирается командой `python -m botai.agent.bench --summarize` из `*.json` рядом; руками не править. Методика — [benchmark.md](../../docs/v4/04-benchmark.md).
 
 Потрачено на бенчмарк всего: **$0.4474** из $12.
 

@@ -171,6 +171,63 @@ def test_a_search_control_inside_a_login_form_is_never_filled() -> None:
     assert [f.selector for f in step.fields] == ["#u", "#p"]
 
 
+@pytest.mark.parametrize(
+    ("kw", "url"),
+    [
+        ({"input_type": "email", "label": "Электронная почта"}, "https://uni.test/idp/continue"),
+        ({"input_type": "tel", "label": "Телефон"}, "https://uni.test/auth/start"),
+        ({"name": "user", "label": "Учётная запись"}, "https://uni.test/identity/start"),
+    ],
+)
+def test_username_only_forms_on_sso_pages_are_mirrored_natively(
+    kw: dict[str, object], url: str
+) -> None:
+    """The address of an IdP page or its field label is enough evidence for a native step."""
+    snap = page(form(field(**kw)), url=url)
+    step = detect(snap)
+    assert isinstance(step, FormStep)
+    assert [f.role for f in step.fields] == ["username"]
+    assert has_credential_fields(snap)
+
+
+def test_a_contact_phone_form_stays_a_data_form() -> None:
+    snap = page(
+        form(field("#phone", input_type="tel", label="Телефон")),
+        url="https://uni.test/contacts",
+        title="Контакты",
+    )
+    assert best_step(snap) is None
+    assert not has_credential_fields(snap)
+    assert isinstance(detect(snap), UnknownPage)
+
+
+def test_a_hidden_password_still_marks_the_page_as_authentication() -> None:
+    """A script reveals the password later: the page cannot be the cabinet, but it also cannot
+    be mirrored yet, so the human screen is the right answer."""
+    snap = page(
+        form(field("#p", input_type="password", visible=False)),
+        url="https://uni.test/idp/step2",
+        title="",
+    )
+    assert isinstance(detect(snap), UnknownPage)
+    assert has_credential_fields(snap)
+
+
+def test_password_in_html_without_forms_counts_as_authentication() -> None:
+    snap = PageSnapshot(
+        url="https://uni.test/idp/step2",
+        html='<main><form><input type="password" name="p"></form></main>',
+    )
+    assert has_credential_fields(snap)
+    # A page the scanner did read does not become authentication evidence by its HTML alone.
+    searched = page(
+        form(field("#q", input_type="search")),
+        url="https://uni.test/dashboard",
+        html='<input type="password">',
+    )
+    assert not has_credential_fields(searched)
+
+
 def test_uncertain_extra_fields_in_an_auth_form_are_left_for_the_human() -> None:
     snap = page(form(field("#p", input_type="password"), field("#extra", label="Группа")))
     assert isinstance(detect(snap), UnknownPage)

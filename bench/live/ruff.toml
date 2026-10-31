@@ -1,0 +1,24 @@
+# Lint profile of the live benchmark (standalone operator tool, not part of the `botai` package).
+#
+# `bench/live` starts a real Google Chrome over a local CDP port, calls the macOS `security`
+# CLI and the external Central University skill, and probes unknown live pages: per-selector
+# and per-response failures are expected and deliberately swallowed. The product rules that
+# ban raw `urllib`/`subprocess`/broad exceptions do not apply to this tool, and it is not part
+# of the `botai` service contour. Everything else stays as strict as the repository config.
+
+line-length = 100
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "S", "SIM", "RUF", "PT", "TID"]
+ignore = ["E501", "B008"]
+extend-ignore = [
+  "BLE001",  # catching Exception is how a live probe records a barrier instead of dying
+  "RUF059",  # unpacked helpers from the lazy module loader are intentionally unused
+  "S110",    # try/except/pass around browser probing
+  "S112",    # try/except/continue around selector-by-selector probing
+  "S603",    # subprocess calls to trusted local tools (security, skill lms.py)
+  "S606",    # the same calls start a trusted binary path without a shell
+  "SIM105",  # contextlib.suppress would hide the intent of "probe and move on"
+  "TID251",  # urllib is used only for the loopback CDP endpoint, not for product traffic
+]

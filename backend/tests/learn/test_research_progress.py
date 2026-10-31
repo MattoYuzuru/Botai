@@ -281,3 +281,96 @@ async def test_a_link_to_another_site_does_not_discard_what_the_research_accepte
 
     assert restored.state.intent_key == intent_key(INTENT, ORIGIN)
     assert set(restored.state.candidates) == {"scheduleEvents"}
+
+
+# --- request budget pre-check -----------------------------------------------------------------
+
+
+async def test_before_request_reserves_a_batch_so_the_total_never_overruns() -> None:
+    ctx = MemoryContext()
+    settings = Settings(_env_file=None, botai_research_max_requests=10)
+    ledger = await load(ctx, settings)
+
+    await ledger.before_request(4)
+    await ledger.before_request(4)
+    assert ledger.state.other_requests == 8
+
+    # A batch that would not fit is refused before it is made: the count stays below the maximum.
+    with pytest.raises(BotaiError) as refused:
+        await ledger.before_request(3)
+    assert refused.value.code == ErrorCode.SOURCE_RATE_LIMITED
+    assert "8 из 10" in refused.value.detail
+    assert ledger.state.other_requests == 8
+
+    await ledger.before_request(2)  # exactly the remaining room
+    assert ledger.state.other_requests == 10
+    with pytest.raises(BotaiError) as exhausted:
+        await ledger.before_request()
+    assert exhausted.value.code == ErrorCode.SOURCE_RATE_LIMITED
+
+
+# --- stopping a research that finds nothing new -----------------------------------------------
+
+
+async def test_slices_without_progress_end_the_research_instead_of_being_deferred_forever() -> None:
+    ctx = MemoryContext()
+    settings = Settings(_env_file=None, botai_research_no_progress_slices=3)
+    ledger = await load(ctx, settings)
+
+    await ledger.end_slice()  # the baseline: what the research knew at the first slice end
+    assert ledger.state.no_progress_slices == 0
+    await ledger.end_slice()
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 2
+    assert await load(ctx, settings) is not None  # the state is durable between attempts
+
+    with pytest.raises(BotaiError) as stopped:
+        await ledger.end_slice()
+    assert stopped.value.code == ErrorCode.SOURCE_NO_PROGRESS
+    assert "3 слайса подряд" in stopped.value.detail
+    assert "0 запросов" in stopped.value.detail
+    # The counter is an additive field of the same private checkpoint, no migration involved.
+    stored = ResearchProgress.model_validate_json(ctx.history[-1].payload.get_secret_value())
+    assert stored.no_progress_slices == 3  # the stop itself is in the checkpoint
+    assert len(stored.findings_digest) == 64
+
+
+async def test_a_slice_that_found_a_page_or_a_candidate_resets_the_counter() -> None:
+    ctx = MemoryContext()
+    settings = Settings(_env_file=None, botai_research_no_progress_slices=3)
+    ledger = await load(ctx, settings)
+    await ledger.end_slice()
+    await ledger.end_slice()
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 2
+
+    ledger.state.memory.visited.append(ORIGIN + "/deadlines")
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 0
+
+    # Accepted candidates are findings too, even when the pages are the same.
+    ledger.state.candidates["scheduleEvents"] = proposal()
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 0
+
+    ledger.state.proposals["deadlines"] = [proposal()]
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 0
+
+
+async def test_a_changed_intent_gets_a_fresh_no_progress_chance() -> None:
+    ctx = MemoryContext()
+    settings = Settings(_env_file=None, botai_research_no_progress_slices=3)
+    ledger = await load(ctx, settings)
+    await ledger.end_slice()
+    await ledger.end_slice()
+    await ledger.end_slice()
+    assert ledger.state.no_progress_slices == 2
+
+    changed = await load(
+        ctx,
+        settings,
+        intent=LearningIntent(entry_urls=INTENT.entry_urls, requested_kinds=("deadlines",)),
+    )
+    assert changed.state.no_progress_slices == 0
+    assert changed.state.findings_digest == ""

@@ -38,6 +38,16 @@ def digest(value: object) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def slices_count(limit: int) -> str:
+    """Russian plural for the user-facing stop message (1 слайс, 2 слайса, 5 слайсов)."""
+    last = limit % 10
+    if last == 1 and limit % 100 != 11:
+        return f"{limit} слайс"
+    if 2 <= last <= 4 and not 12 <= limit % 100 <= 14:
+        return f"{limit} слайса"
+    return f"{limit} слайсов"
+
+
 def intent_key(intent: LearningIntent, origin: str | None = None) -> str:
     """What a research of one source was asked for. A link to another site is not part of it: it
     becomes a source of its own, so it neither renews the proof nor discards what was accepted here."""
@@ -116,6 +126,12 @@ class ResearchProgress(BaseModel):
     # Kinds whose thin horizon the student was already asked about: once per research, even
     # across restarts and a changed intent.
     horizon_asked: list[Kind] = Field(default_factory=list, max_length=8)
+    # What the research had found at the end of the previous bounded slice (a hash of the accepted
+    # kinds/candidates, visited pages, plans and inferred kinds) and how many slices in a row
+    # changed none of it. Both are additive fields of the same checkpoint: old payloads restore
+    # with their defaults and no migration is needed.
+    findings_digest: str = Field(default="", max_length=64)
+    no_progress_slices: int = Field(default=0, ge=0)
 
     @property
     def tokens(self) -> int:
@@ -202,6 +218,9 @@ class ResearchLedger:
                 )
                 old.intent_key, old.allow_hosts_key = key, hosts_key
                 old.candidates, old.proposals, old.phase = {}, {}, "observe"
+                # A new instruction from the student deserves a fresh chance: slices that found
+                # nothing for the previous one are not held against it.
+                old.findings_digest, old.no_progress_slices = "", 0
             state = old
         else:
             state = ResearchProgress(
@@ -273,16 +292,85 @@ class ResearchLedger:
         self.state.memory = memory.model_copy(deep=True)
         await self.save()
 
-    async def before_request(self) -> None:
-        if (
-            self.state.other_requests + self.state.memory.requests
-            >= self.settings.botai_research_max_requests
-        ):
+    async def before_request(self, requests: int = 1) -> None:
+        """Charge a network read (or a whole batch of them) against the total request budget.
+
+        The budget is checked *before* the batch: a request that would not fit is not made, so
+        the persisted count never passes the maximum (production once ended at 2005 of 2000).
+        """
+        used = self.state.other_requests + self.state.memory.requests
+        maximum = self.settings.botai_research_max_requests
+        if used + requests > maximum:
             raise BotaiError(
-                ErrorCode.SOURCE_RATE_LIMITED, "Исследование достигло общего бюджета чтений"
+                ErrorCode.SOURCE_RATE_LIMITED,
+                f"Исследование исчерпало бюджет чтений: {used} из {maximum} запросов",
             )
-        self.state.other_requests += 1
+        self.state.other_requests += requests
         await self.save()
+
+    def findings_digest(self) -> str:
+        """Everything a research can find: accepted kinds/candidates, proposals (endpoints), pages
+        it has seen, inferred kinds. Spend counters and page revisits are deliberately not here:
+        a slice that only re-read the same page must not look like progress."""
+        state, memory = self.state, self.state.memory
+        return digest(
+            {
+                "candidates": {
+                    kind: saved.model_dump(mode="json")
+                    for kind, saved in sorted(state.candidates.items())
+                },
+                "proposals": {
+                    kind: [item.model_dump(mode="json") for item in items]
+                    for kind, items in sorted(state.proposals.items())
+                },
+                "visited": sorted(memory.visited),
+                "frontier": sorted(memory.frontier),
+                "evidence": memory.evidence_urls,
+                "plans": {
+                    key: [plan.start_url, plan.result_url]
+                    for key, plan in sorted(memory.browser_plans.items())
+                },
+                "discovered": memory.discovered_kinds,
+            }
+        )
+
+    async def end_slice(self) -> None:
+        """End of a bounded research slice that the job would resume: count it, unless it found.
+
+        A slice ends by its own time/step budget and the job goes back to the queue. A source
+        that only gives the same pages and no new candidate would be resumed until the whole time
+        budget is spent (production: 15 re-runs, 23 minutes, 2005/2000 requests). After
+        `botai_research_no_progress_slices` such slices in a row the research stops with
+        `source_no_progress` and the counts, instead of yet another deferral.
+        """
+        fingerprint = self.findings_digest()
+        if fingerprint != self.state.findings_digest:
+            self.state.findings_digest = fingerprint
+            self.state.no_progress_slices = 0
+            await self.save()
+            return
+        self.state.no_progress_slices += 1
+        limit = self.settings.botai_research_no_progress_slices
+        diagnostic_event(
+            "learn.research_no_progress",
+            slice_count=self.state.no_progress_slices,
+            limit=limit,
+            step=self.state.memory.steps,
+            request_count=self.state.memory.requests + self.state.other_requests,
+            token_count=self.state.tokens,
+            elapsed_ms=self.state.active_ms,
+        )
+        await self.save()  # the counter is durable even when this very slice ends the research
+        if self.state.no_progress_slices >= limit:
+            requests = self.state.memory.requests + self.state.other_requests
+            raise BotaiError(
+                ErrorCode.SOURCE_NO_PROGRESS,
+                f"Исследование перестало находить новое: {slices_count(limit)} подряд "
+                "без прогресса "
+                f"({self.state.memory.steps} шагов, {requests} запросов, "
+                f"{self.state.tokens} токенов, {self.state.active_ms // 1000} с). "
+                "Останавливаюсь, чтобы не тратить бюджет впустую.",
+            )
 
     @asynccontextmanager
     async def operation(
@@ -323,6 +411,9 @@ class ResearchLedger:
                 state.uncertain_calls += 1
             await self.save()
             if isinstance(exc, TimeoutError):
+                # A slice that timed out without changing anything is counted by `end_slice`;
+                # after a few in a row the task ends instead of being re-run until 30 minutes.
+                await self.end_slice()
                 raise JobDeferred("Продолжаю исследование после ограничения времени") from None
             raise
         else:

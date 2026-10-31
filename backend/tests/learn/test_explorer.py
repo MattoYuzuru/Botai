@@ -5,19 +5,23 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from typing import Any
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.contracts.agent_ui import ChoiceBlock, ConfirmBlock, InputBlock, TextBlock
 from botai.core.browser import FakeBrowserGateway, FakePage
 from botai.core.errors import BotaiError, ErrorCode
-from botai.core.jobs import InMemoryJobContext, JobCancelled, JobKind
-from botai.core.llm import LlmResponse
+from botai.core.jobs import InMemoryJobContext, JobCancelled, JobDeferred, JobKind
+from botai.core.llm import LlmRequest, LlmResponse
+from botai.core.research import ResearchCheckpoint, ResearchConflict
 from botai.db import models as m
 from botai.learn import revisions
+from botai.learn.progress import ResearchLedger, ResearchProgress
 from tests.fakeuni import data
 from tests.learn import support as ls
 from tests.learn.conftest import EnvFactory
@@ -540,3 +544,154 @@ async def test_a_connection_without_an_address_asks_for_it(make_env: EnvFactory)
     assert result["status"] == "ok"
     assert isinstance(env.asked[0], InputBlock)
     assert (await env.conn()).origin == data.ORIGIN
+
+
+# --- research slices: stop when a source stops producing findings -----------------------------
+
+
+class MemoryResearchContext(InMemoryJobContext):
+    """A job context that also keeps the private research checkpoint in memory."""
+
+    def __init__(self, store: dict[str, ResearchCheckpoint], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._store = store
+
+    async def load_research(self) -> ResearchCheckpoint | None:
+        return self._store.get("checkpoint")
+
+    async def save_research(
+        self, payload: SecretStr, *, intent_key: str, expected_revision: int
+    ) -> ResearchCheckpoint:
+        current = self._store.get("checkpoint")
+        revision = current.revision if current is not None else 0
+        if revision != expected_revision:
+            raise ResearchConflict
+        self._store["checkpoint"] = ResearchCheckpoint(revision + 1, intent_key, payload)
+        return self._store["checkpoint"]
+
+
+class SlicePlanner(ls.EvidenceLlm):
+    """One harmless inspect per bounded slice: the slice always ends by its step budget."""
+
+    async def complete_observation(self, request: LlmRequest) -> LlmResponse:
+        self.observation_requests.append(request)
+        observation = json.loads(request.messages[1].content)["observation"]
+        if observation["pages"]:
+            action, ref = "inspect", observation["pages"][0]["ref"]
+        elif observation["links"]:
+            action, ref = "navigate", observation["links"][0]["ref"]
+        else:
+            action, ref = "finish", None
+        return LlmResponse(
+            content=json.dumps(
+                {
+                    "stateRef": observation["stateRef"],
+                    "action": action,
+                    "ref": ref,
+                    "discoveries": [],
+                    "evidenceRefs": [],
+                }
+            )
+        )
+
+
+def research_attempt(env: object, store: dict[str, ResearchCheckpoint]) -> MemoryResearchContext:
+    from tests.learn.env import Env
+
+    assert isinstance(env, Env)
+    return MemoryResearchContext(
+        store,
+        user_id=env.seeded.user_id,
+        connection_id=env.seeded.connection_id,
+        job_id="fixture-research-job",
+    )
+
+
+async def test_a_deferred_slice_reports_its_progress_to_the_ledger(
+    make_env: EnvFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = await make_env([])
+    env.services.settings.botai_research_slice_steps = 1
+    env.services.llm = SlicePlanner()
+    store: dict[str, ResearchCheckpoint] = {}
+    ended: list[int] = []
+    original = ResearchLedger.end_slice
+
+    async def counting(self: ResearchLedger) -> None:
+        ended.append(self.state.memory.steps)
+        await original(self)
+
+    monkeypatch.setattr(ResearchLedger, "end_slice", counting)
+    ctx = research_attempt(env, store)
+    with pytest.raises(JobDeferred):
+        await env.handlers[JobKind.CONNECT](ctx, env.services, {"kinds": ["scheduleEvents"]})
+
+    assert ended == [1]  # the bounded slice is counted before the job is put back in the queue
+    checkpoint = store["checkpoint"]
+    progress = ResearchProgress.model_validate_json(checkpoint.payload.get_secret_value())
+    assert progress.memory.resume_needed
+    assert len(progress.findings_digest) == 64
+
+
+async def test_a_research_that_stops_finding_new_ends_with_source_no_progress(
+    make_env: EnvFactory,
+) -> None:
+    env = await make_env([])
+    env.services.settings.botai_research_slice_steps = 1
+    env.services.settings.botai_research_no_progress_slices = 2
+    env.services.llm = SlicePlanner()
+    store: dict[str, ResearchCheckpoint] = {}
+    stopped: BotaiError | None = None
+    deferred = 0
+    for _ in range(8):  # the loop itself is the safety net: the test must not hang
+        ctx = research_attempt(env, store)
+        try:
+            await env.handlers[JobKind.CONNECT](ctx, env.services, {"kinds": ["scheduleEvents"]})
+        except JobDeferred:
+            deferred += 1
+            continue
+        except BotaiError as error:
+            stopped = error
+            break
+        raise AssertionError("a stuck research must not finish as a success")
+
+    assert deferred >= 1, "the bounded slices must be deferred before the honest stop"
+    assert stopped is not None
+    assert stopped.code is ErrorCode.SOURCE_NO_PROGRESS
+    assert "2 слайса подряд" in stopped.detail
+    assert (await env.conn()).status == "error"
+    progress = ResearchProgress.model_validate_json(store["checkpoint"].payload.get_secret_value())
+    assert progress.no_progress_slices == 2
+
+
+async def test_a_connect_does_not_open_the_browser_when_a_page_cannot_fit_its_budget(
+    make_env: EnvFactory,
+) -> None:
+    env = await make_env([])
+    env.services.settings.botai_research_slice_steps = 1
+    env.services.settings.botai_research_max_requests = 10
+    env.services.llm = SlicePlanner()
+    store: dict[str, ResearchCheckpoint] = {}
+
+    first = research_attempt(env, store)
+    with pytest.raises(JobDeferred):
+        await env.handlers[JobKind.CONNECT](first, env.services, {"kinds": ["scheduleEvents"]})
+
+    # The pages of the first slice cost 3 reads; only 2 of the 10 are left: another page cannot fit.
+    checkpoint = store["checkpoint"]
+    progress = ResearchProgress.model_validate_json(checkpoint.payload.get_secret_value())
+    assert progress.memory.max_read_requests == 3
+    progress.memory.requests = 8
+    store["checkpoint"] = ResearchCheckpoint(
+        checkpoint.revision + 1, checkpoint.intent_key, SecretStr(progress.model_dump_json())
+    )
+    opened = len(env.services.browser.handles)  # pyright: ignore[reportAttributeAccessIssue]
+
+    ctx = research_attempt(env, store)
+    result = await env.handlers[JobKind.CONNECT](ctx, env.services, {"kinds": ["scheduleEvents"]})
+
+    assert result["status"] == "error"
+    assert result["detail"] == "source_rate_limited"
+    assert len(env.services.browser.handles) == opened  # pyright: ignore[reportAttributeAccessIssue]
+    said = " ".join(block.markdown for block in ls.blocks_of(ctx, "text"))
+    assert "бюджет чтений: 8 из 10 запросов" in said

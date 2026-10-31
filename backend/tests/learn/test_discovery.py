@@ -19,6 +19,7 @@ from botai.core.llm import LlmMessage, LlmRequest, LlmResponse, ScriptedLlm
 from botai.db import models as m
 from botai.learn.discovery import DiscoveryBudget, ObservationSession, adaptive_observe
 from botai.learn.intent import LearningIntent, apply_intent, prepare_turn
+from botai.learn.memory import DiscoveryMemory, MemoryLimits
 from botai.learn.observe import observe
 from botai.learn.redact import Redactor
 from tests.learn import support as ls
@@ -721,3 +722,62 @@ async def test_legacy_crawl_with_unexamined_or_failed_menu_branches_is_incomplet
     assert obs.limited
     assert obs.stop_reason == ("navigation_failed" if missing_branch else "page_budget")
     assert obs.pages
+
+
+# --- the request budget is checked before a page, not after it ---------------------------------
+
+
+def _expensive_requests(count: int) -> list[ObservedRequest]:
+    return [
+        ObservedRequest(
+            method="GET",
+            url=ORIGIN + f"/api/v2/data/{index}",
+            status=200,
+            resource_type="xhr",
+            response_content_type="application/json",
+            response_sample="{}",
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_requests", "visited", "requests_after"),
+    [
+        (4, [ORIGIN + "/"], 3),  # no room for another page: it is not opened
+        (6, [ORIGIN + "/", ORIGIN + "/courses"], 6),  # exactly the whole budget is spent
+    ],
+)
+async def test_a_read_that_might_overrun_the_request_budget_is_not_started(
+    max_requests: int, visited: list[str], requests_after: int
+) -> None:
+    """A page costs several requests and the number is known only after it is opened. The slice
+    reserves the cost of the most expensive read it already made, so a page that cannot fit is
+    never started and the total lands on the maximum instead of 2005 of 2000 (production)."""
+    home, courses = ORIGIN + "/", ORIGIN + "/courses"
+    page_requests = _expensive_requests(3)
+    handle = TrackingHandle(
+        {
+            home: FakePage('<main><a href="/courses">Курсы</a></main>', requests=page_requests),
+            courses: FakePage("<main>Курсы</main>", requests=page_requests),
+        }
+    )
+    limits = MemoryLimits(max_requests=max_requests)
+    memory = DiscoveryMemory(origin=ORIGIN)
+
+    obs = await adaptive_observe(
+        handle,
+        ORIGIN,
+        Redactor(),
+        start_urls=[home],
+        intent=LearningIntent(),
+        llm=ScriptedLlm(discovery_queue=[plan(1, "navigate", "l0")]),
+        budget=DiscoveryBudget(steps=2, requests=max_requests),
+        memory=memory,
+        run_limits=limits,
+    )
+
+    assert obs.stop_reason == "request_budget"
+    assert obs.limited
+    assert handle.visits == visited
+    assert memory.requests == requests_after

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
 from collections.abc import Callable, Collection, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
@@ -90,6 +91,13 @@ _BOT_PROTECTION_DETAIL = (
     "Сайт вуза не пускает автоматический заход. Мы не обходим такую защиту: "
     "попробуйте позже или войдите на сайте самостоятельно."
 )
+_DONE_UNCONFIRMED_DETAIL = (
+    "Вход не подтвердился: сайт не открыл учебный кабинет после «Я вошёл». "
+    "Проверьте данные и начните вход заново."
+)
+_DONE_UNCONFIRMED_HINT = (
+    "Вход пока не подтверждён: завершите его на экране и нажмите «Я вошёл» ещё раз"
+)
 Outcome = PageSnapshot | SessionState
 
 
@@ -105,6 +113,14 @@ class LoginTiming:
     cooldown_s: float = 600.0
     max_attempts: int = 3
     max_pages: int = 14
+    # «Я вошёл» on the fallback screen is a request, not proof: the flow keeps checking for
+    # this long. If nothing changed and the person is not touching the screen, the login is
+    # reported as unconfirmed instead of waiting for the full human_wait_s.
+    done_grace_s: float = 90.0
+    max_done_tries: int = 3
+    # An unconfirmed «Я вошёл» keeps probing with `force=True`, but only this many times: a
+    # forced check may navigate to the entry page, so a slow site must not be hit every second.
+    max_forced_checks: int = 4
 
 
 class ScreenLink(Protocol):
@@ -120,6 +136,11 @@ class ScreenLink(Protocol):
     @property
     def closed(self) -> bool: ...
 
+    @property
+    def close_reason(self) -> str | None:
+        """Why the screen ended, if it did (ttl, success, browser closed, mirrored, ...)."""
+        ...
+
     def idle_s(self) -> float:
         """Seconds since the viewer last touched the page (inf if never)."""
         ...
@@ -132,7 +153,7 @@ class ScreenLink(Protocol):
 
     async def succeed(self) -> None: ...
 
-    async def close(self, reason: str) -> None: ...
+    async def close(self, reason: str, *, notify: str | None = None) -> None: ...
 
 
 class LoginScreens(Protocol):
@@ -662,7 +683,11 @@ class LoginFlow:
             if (
                 run.preset is not None
                 and run.preset.mode == "screen"
-                and isinstance(detection, FormStep | UnknownPage)
+                # The learned mode only says that the screen was needed once. A page whose
+                # credential form is recognised now goes through the native fields: they are
+                # faster and keep the password out of the remote stream. Only a page we still
+                # cannot mirror needs the screen.
+                and isinstance(detection, UnknownPage)
             ):
                 outcome = await self._human(run, snap, hint="Войдите на сайте вуза на этом экране.")
                 if isinstance(outcome, SessionState):
@@ -1295,9 +1320,24 @@ class LoginFlow:
         step_then = pending.signature if pending else None
         loop = asyncio.get_running_loop()
         deadline = loop.time() + t.human_wait_s
+        # «Я вошёл» is a request, not proof. While such a request is waiting for confirmation
+        # the flow keeps probing with `force=True`; if the person stops touching the screen and
+        # nothing confirms the login, it ends with a clear error instead of the 30-minute wait.
+        done_at: float | None = None
+        done_tries = 0
+        forced_left = 0
         while loop.time() < deadline:
             await asyncio.sleep(t.poll_s)
             if link.closed or run.handle.closed:
+                # The screen outlived its usefulness: it timed out or the browser died. The job
+                # must not just vanish («Подключение отменено»): the student is told the login was
+                # not confirmed and can start it again. A screen closed for another reason (a
+                # newer one replaced it, the job is being torn down) stays a cancellation.
+                if run.handle.closed or link.close_reason in {"ttl", "browser closed"}:
+                    raise BotaiError(
+                        ErrorCode.LOGIN_FAILED,
+                        "Экран входа закрылся, а вход не подтвердился. Начните вход заново.",
+                    )
                 raise JobCancelled("the login screen was closed")
             try:
                 now = await run.handle.snapshot()
@@ -1318,9 +1358,19 @@ class LoginFlow:
                 await link.close("bot_protection")
                 raise BotaiError(ErrorCode.SOURCE_BOT_PROTECTION, _BOT_PROTECTION_DETAIL)
             said_done = link.take_done()
+            if said_done:
+                done_tries += 1
+                if done_tries > t.max_done_tries:
+                    await link.close("done_unconfirmed", notify="expired")
+                    raise BotaiError(ErrorCode.LOGIN_FAILED, _DONE_UNCONFIRMED_DETAIL)
+                done_at = loop.time()
+                forced_left = t.max_forced_checks
             if not run.force_relogin and link.human_control and page_signature(now) != handed_over:
                 run.human_progress = True
-            finished = await self._try_finish(run, now, force=said_done)
+            force = said_done or forced_left > 0
+            if force and not said_done:
+                forced_left -= 1
+            finished = await self._try_finish(run, now, force=force)
             if finished is not None:
                 await link.succeed()
                 return finished
@@ -1338,14 +1388,25 @@ class LoginFlow:
                 now = await self._submit(run, pending)  # the human did the check, we send the form
                 continue
             if said_done:
-                await link.needs("input", "Вход пока не подтверждён: завершите его на экране")
+                await link.needs("input", _DONE_UNCONFIRMED_HINT)
+            if done_at is not None and loop.time() - done_at >= t.done_grace_s:
+                if link.idle_s() >= loop.time() - done_at:
+                    # nobody touched the screen since «Я вошёл»: the login did not go through
+                    await link.close("done_unconfirmed", notify="expired")
+                    raise BotaiError(ErrorCode.LOGIN_FAILED, _DONE_UNCONFIRMED_DETAIL)
+                # the person is still working on the page: the next «Я вошёл» starts a new window
+                done_at = None
+                await link.needs("input", _DONE_UNCONFIRMED_HINT)
+            idle = link.idle_s()
+            quiet = math.isfinite(idle) and idle >= t.resume_idle_s
             if (
                 isinstance(found, FormStep)
                 and not run.manual_requested
-                and not link.human_control
+                # The person may have typed on the screen already; a quiet normal form is still
+                # better handled by native BotAI fields. Manual control is opt-out only.
+                and (not link.human_control or quiet)
                 and page_signature(now) != handed_over
                 and (found.signature != step_then or urlsplit(now.url).path != handed_path)
-                and link.idle_s() >= t.resume_idle_s
             ):
                 await link.needs("input", "Дальше вход продолжится в обычных полях BotAI")
                 await run.job.emit(

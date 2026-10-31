@@ -94,6 +94,9 @@ class DiscoveryMemory(BaseModel):
     tokens: int = Field(default=0, ge=0)
     requests: int = Field(default=0, ge=0)
     probes: int = Field(default=0, ge=0)  # repeated reads with other dates, over all slices
+    # The most requests one page read has cost so far: the next slice reserves that much before
+    # it opens a browser, so a nearly spent total is not overrun by one more page (2005/2000).
+    max_read_requests: int = Field(default=0, ge=0)
     active_ms: int = Field(default=0, ge=0)
     reserved_tokens: int = Field(default=0, ge=0)
     pending_planner_tokens: int = Field(default=0, ge=0)

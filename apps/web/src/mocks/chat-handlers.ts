@@ -1,7 +1,7 @@
 /**
  * Обработчики MSW для чата агент-хаба v3: треды (непрочитанное, внимание, активная задача), сообщения с вложениями,
  * состояние треда (`runtime`), вложения и шкала контекста. Поток заданий (`GET /jobs/{id}/events`) отдают общие
- * обработчики заданий. Форма — по плану `docs/plan/agent-hub-v3.md` §3.2, §3.6; «агент» мока — `chat-agent.ts`.
+ * обработчики заданий. Форма — по плану `docs/v4/05-implementation-plan.md` §3.2, §3.6; «агент» мока — `chat-agent.ts`.
  */
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";

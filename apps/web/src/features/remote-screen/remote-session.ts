@@ -134,11 +134,32 @@ export class RemoteSession {
       this.timer = setTimeout(resolve, delay);
     });
     if (this.ended) return;
+    await this.renewAndConnect();
+  }
+
+  private async renewAndConnect() {
     try {
-      this.connect(await this.options.renew());
+      const ticket = await this.options.renew();
+      if (this.ended) return;
+      this.connect(ticket);
     } catch {
       if (!this.ended) void this.reconnect();
     }
+  }
+
+  /**
+   * Start over now: a fresh ticket and a new socket, without spending the automatic-retry
+   * budget. Used when the connection is up but the screen is silent (a slow VPN, a lost frame).
+   */
+  restart(): void {
+    if (this.ended) return;
+    clearTimeout(this.timer);
+    this.attempt = 0;
+    const previous = this.socket;
+    this.socket = null; // the old socket's close must not start a reconnect of its own
+    previous?.close(1000, "restart");
+    this.setStatus("reconnecting");
+    void this.renewAndConnect();
   }
 
   private finish(message: ServerMessage) {
