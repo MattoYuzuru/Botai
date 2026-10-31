@@ -323,6 +323,32 @@ sandbox-контейнер сокета не получает и секрето�
 → `BOTAI_AGENT_ENGINE=v4` в `compose.vars` → повторная проверка (см. раздел «v4-агент в
 production»). Откат флага — одна строка + перезапуск api/worker.
 
+## Выпуск `8492384` и включение v4 (2026-11-01, ночь)
+
+Второй срез v4 (чтение v4-данных, v4-чат, трассы/политики, запуски источников) и включение
+движка. CI на SHA — зелёный (20 м 6 с; web-e2e с CI-only ретраями), deploy — успех (1 м 19 с),
+отката не было.
+
+1. Проверка после деплоя: образы `botai-app` и `botai-sandbox` тега `8492384350cf`, revision
+   label = полный SHA; Postgres `pgvector/pgvector:pg17`, `alembic_version=a9c4e2f7b1d6`,
+   extension `vector 0.8.7`; api healthy; worker/proxy без ошибок; Caddy-лог жив.
+2. Включение движка: `BOTAI_AGENT_ENGINE=v4` добавлен в `/srv/botai/compose.vars`, затем
+   `docker compose -p botai -f compose.prod.yaml --env-file compose.vars up -d api worker`.
+   Проверено: `Settings().agent_engine == "v4"` в api и worker, `docker version` из worker
+   (сервер 29.8.2), `GET https://botai.mnema.app/api/v1/sources` отвечает `401` (v4-роутер
+   активен; на v3 было бы `404`).
+3. Функциональный smoke (`ops/smoke/v4_agent_smoke.py`, запускается внутри api-контейнера):
+   `AGENT`-job `done/answer`, 2 шага, 1 tool call (`code_exec`), 14 789 токенов, $0.000843;
+   `agent_runs` = `answer` + 6 событий (`run_started`, 2 × `model_call`, `tool_call`,
+   `tool_result`, `run_finished`); в `/srv/botai/agent-workspaces/<run_id>/smoke.txt` лежит
+   `42`; контейнеров с `label=botai.agent.sandbox=1` после прогона нет; worker без ошибок.
+4. Песочница отдельно (`ops/smoke/sandbox_smoke.py` из worker): uid 10001, env worker'а и
+   docker-сокет внутри не видны, файл переживает два вызова, остатков нет.
+
+**Откат:** убрать/заменить `BOTAI_AGENT_ENGINE=v4` на `v3` в `compose.vars` и перезапустить
+api/worker. Незавершённые v4-jobs завершатся понятной ошибкой (не тихим переходом на v3),
+данные и трассы остаются. v3-путь при откате не тронут.
+
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
 | Параметр | Значение |
