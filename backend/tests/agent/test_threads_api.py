@@ -91,9 +91,18 @@ async def test_every_thread_is_listed_newest_first_and_only_the_students_own(api
 
 async def test_a_message_moves_last_message_at_whoever_inserted_it(api: Api) -> None:
     thread = await add_thread(api.sm, api.user_id)
-    later = T + timedelta(days=3)
+    async with api.sm() as session:
+        # The thread is stamped by the database clock when it is inserted, not by the API
+        # fixture's frozen `T`: the messages are placed around that stamp, so the test does not
+        # start failing on the day the wall clock passes `T` plus a fixed offset.
+        created = await session.scalar(
+            select(ChatThread.last_message_at).where(ChatThread.id == thread)
+        )
+    assert created is not None
+    later = created + timedelta(days=3)
+    older = created - timedelta(days=3)
     await add_agent_message(api, thread, at=later)
-    await add_agent_message(api, thread, "Старое", at=T - timedelta(days=3))  # never moves it back
+    await add_agent_message(api, thread, "Старое", at=older)  # never moves it back
     async with api.sm() as session:
         row = await session.get(ChatThread, thread)
     assert row is not None

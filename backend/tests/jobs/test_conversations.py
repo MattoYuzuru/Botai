@@ -1542,8 +1542,17 @@ async def test_manual_login_resumes_connect_in_the_current_thread_and_preserves_
     assert intent.discovery_mode == ("auto" if requested is None else "requested")
     assert intent.entry_urls == (URL,)
     assert intent.absent_kinds == ("deadlines",)
+    # Which of two simultaneous requests creates the task is up to the queue lock, and the other
+    # one reads the active tasks before or after that commit: it is told either that the login was
+    # accepted (its enqueue joined the task) or that a task is already running. Both are true; the
+    # only fixed points are that the creator was told "accepted" and nobody is told otherwise.
+    accepted = [result for result in results if "Запрос защищённого входа" in result]
+    joined = [result for result in results if result not in accepted]
+    assert accepted
+    for result in joined:
+        assert "уже идёт задание" in result
+        assert "Новый вход не запущен" in result
     for result in results:
-        assert "Запрос защищённого входа" in result
         assert "в этом чате" in result
         assert resumed_id not in result
     assert (await runtime_of(client, thread))["activeJob"] is None
@@ -1554,6 +1563,80 @@ async def test_manual_login_resumes_connect_in_the_current_thread_and_preserves_
             )
             == 2
         )
+
+
+async def test_manual_login_again_after_the_first_request_is_told_it_is_running(
+    env: Env,
+) -> None:
+    client, user, thread = await student(env)
+    connection, old_id = await source_task(env, user, thread)
+    async with env.sm() as session:
+        old = await session.get(Job, old_id)
+        assert old is not None
+        old.state = "done"
+        await session.commit()
+    tools = ChatEnv(
+        services=env.services, user_id=user, thread_id=thread, job_id=None, space_id=None
+    )
+    first = await request_login(tools, {"connection_id": connection, "on_screen": True})
+    second = await request_login(tools, {"connection_id": connection, "on_screen": True})
+    assert "Запрос защищённого входа" in first
+    assert "уже идёт задание" in second
+    assert "Новый вход не запущен" in second
+    resumed_id = (await runtime_of(client, thread))["activeJob"]["id"]
+    assert resumed_id != old_id
+    assert resumed_id not in first + second
+    async with env.sm() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Job).where(Job.connection_id == connection)
+            )
+            == 2
+        )
+
+
+async def test_manual_login_while_the_previous_task_finishes_starts_a_new_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The student asks for a login while the source's last task is being finished (its row is
+    locked by the transaction that settles it): once it is done the request is accepted as a new
+    task, it is never answered with "a task is already running" about the one that just ended."""
+    client, user, thread = await student(env)
+    connection, old_id = await source_task(env, user, thread)
+    tools = ChatEnv(
+        services=env.services, user_id=user, thread_id=thread, job_id=None, space_id=None
+    )
+    real_lock = queue_module.lock_sources
+    requesting = asyncio.Event()
+
+    async def observed_lock(session: AsyncSession, ids: Iterable[str]) -> None:
+        requesting.set()
+        await real_lock(session, ids)
+
+    monkeypatch.setattr(queue_module, "lock_sources", observed_lock)
+    async with env.sm() as finishing:
+        old = await finishing.scalar(select(Job).where(Job.id == old_id).with_for_update())
+        assert old is not None
+        pending = asyncio.create_task(
+            request_login(tools, {"connection_id": connection, "on_screen": True})
+        )
+        try:
+            await asyncio.wait_for(requesting.wait(), 2)
+            old.state = "done"
+            await finishing.commit()
+            result = await asyncio.wait_for(pending, 2)
+        finally:
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    assert "Запрос защищённого входа" in result
+    assert "уже идёт" not in result
+    resumed_id = (await runtime_of(client, thread))["activeJob"]["id"]
+    assert resumed_id != old_id
+    resumed = await env.job(resumed_id)
+    assert resumed.state == "queued"
+    assert resumed.payload["manual_login"] is True
+    assert resumed_id not in result
 
 
 @pytest.mark.parametrize(
