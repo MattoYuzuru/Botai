@@ -323,13 +323,13 @@ sandbox-контейнер сокета не получает и секрето�
 → `BOTAI_AGENT_ENGINE=v4` в `compose.vars` → повторная проверка (см. раздел «v4-агент в
 production»). Откат флага — одна строка + перезапуск api/worker.
 
-## Выпуск `8492384` (финальный деплой `43bfee6`) и включение v4 (2026-11-01, ночь)
+## Выпуск `8492384` (деплои `43bfee6` → `d6c3791`) и включение v4 (2026-11-01, ночь)
 
 Второй срез v4 (чтение v4-данных, v4-чат, трассы/политики, запуски источников) и включение
 движка. CI на SHA — зелёный (20 м 6 с; web-e2e с CI-only ретраями), deploy — успех (1 м 19 с),
 отката не было.
 
-1. Проверка после деплоя: образы `botai-app` и `botai-sandbox` тега `8492384350cf` (финальный документационный коммит `43bfee6` — тот же код, тег `43bfee6c46da`), revision
+1. Проверка после деплоя: образы `botai-app` и `botai-sandbox` тега `8492384350cf` (финальный документационный коммит `43bfee6` — тот же код, тег `43bfee6c46da`; финальный тег с фиксом `d6c37916de2f`), revision
    label = полный SHA; Postgres `pgvector/pgvector:pg17`, `alembic_version=a9c4e2f7b1d6`,
    extension `vector 0.8.7`; api healthy; worker/proxy без ошибок; Caddy-лог жив.
 2. Включение движка: `BOTAI_AGENT_ENGINE=v4` добавлен в `/srv/botai/compose.vars`, затем
@@ -358,8 +358,9 @@ asyncpg вне greenlet. Затронуты были все три моста (`
 ссылке) — то есть любой пользователь со старыми подключениями не получал обновлений данных.
 Исправление: логировать `connection_id` до `rollback()`; добавлен регрессионный тест на реальном
 `Worker`/Postgres (`tests/jobs/test_agent_dispatch_v4.py::test_a_v3_connection_sync_bridges_without_touching_expired_rows`).
-После деплоя фикса проверить: worker без `MissingGreenlet`, плановые sync завершаются `done`,
-`jobs` не копит `failed` с `internal_error`.
+Проверено после деплоя `d6c3791` (01.11): `MissingGreenlet` в worker больше нет; вручную поставленный
+`SYNC` для реального v3-подключения завершился `done`; счётчик `failed/internal_error` не растёт;
+v4-движок (AGENT/чат) работает.
 
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
