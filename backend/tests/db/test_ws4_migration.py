@@ -169,15 +169,21 @@ async def test_duplicate_spaces_are_merged_and_sources_get_human_kinds_and_title
         ]
         assert await execute("SELECT entry_url FROM connections WHERE entry_url IS NOT NULL") == []
 
-        # the rules hold from now on
-        for sql in (
-            "INSERT INTO spaces (id,user_id,university_id,title,accent_hue,time_zone,profile) "
-            "VALUES ('x1','u1','hse','Дубль',250,'Europe/Moscow','{}')",
-            "INSERT INTO spaces (id,user_id,university_id,title,accent_hue,time_zone,profile) "
-            "VALUES ('x2','u1',NULL,'Дубль',250,'Europe/Moscow','{}')",
-        ):
-            with pytest.raises(Exception, match="uq_spaces"):
-                await execute(sql)
+        # the rules hold from now on: one space per (user, university)...
+        with pytest.raises(Exception, match="uq_spaces"):
+            await execute(
+                "INSERT INTO spaces (id,user_id,university_id,title,accent_hue,time_zone,profile) "
+                "VALUES ('x1','u1','hse','Дубль',250,'Europe/Moscow','{}')"
+            )
+        # ...and the removed "materials" bucket has no unique index anymore (a9c4e2f7b1d6): its
+        # legacy rows survive, the model just does not promise one per user
+        assert (
+            await execute(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'spaces' "
+                "AND indexname = 'uq_spaces_user_id_materials'"
+            )
+            == []
+        )
 
         await asyncio.to_thread(command.downgrade, cfg, BEFORE)
         assert await execute("SELECT count(*) FROM spaces") == [(3,)]

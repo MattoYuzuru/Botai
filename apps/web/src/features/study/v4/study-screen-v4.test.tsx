@@ -121,7 +121,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
 });
 
 describe("карточка источника", () => {
-  it("что это, что читает, описание чтения, ревизии, прочитанное и честная заглушка запусков", async () => {
+  it("что это, что читает, описание чтения, ревизии, прочитанное и история запусков", async () => {
     const user = userEvent.setup();
     renderApp("/study");
     const hse = await panel(/^Высшая школа экономики/);
@@ -137,8 +137,23 @@ describe("карточка источника", () => {
     expect(within(card).getByText("Прочитанное")).toBeInTheDocument();
     expect(within(card).getByText("Сроки заданий")).toBeInTheDocument();
     expect(within(card).getByText("Программа курса: математический анализ.pdf")).toBeInTheDocument();
-    // Запусков API пока не отдаёт: карточка говорит это прямо, без выдуманных прогонов.
-    expect(card.querySelector('[data-part="runs-placeholder"]')?.textContent).toMatch(/История запусков/);
+    // История запусков — настоящие прогоны источника со статусами, счётчиками и ссылками.
+    const runs = within(card).getByRole("list", { name: "Запуски источника" });
+    expect(within(runs).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(runs).getByText("Обновление")).toBeInTheDocument();
+    expect(within(runs).getByText("Подключение")).toBeInTheDocument();
+    expect(within(runs).getByText("Починка")).toBeInTheDocument();
+    expect(within(runs).getAllByText("Готово")).toHaveLength(2);
+    expect(within(runs).getByText("Не удалось")).toBeInTheDocument();
+    expect(within(runs).getByRole("link", { name: "Трасса" })).toHaveAttribute(
+      "href",
+      "/agent/runs/run-answer",
+    );
+    // Тред последней задачи источника открывается из карточки (SourceOut.threadId).
+    expect(within(card).getByRole("link", { name: "Открыть тред задачи" })).toHaveAttribute(
+      "href",
+      "/chat?thread=01JMKCDB00000000000000THR",
+    );
 
     expect(within(card).getByRole("link", { name: "Открыть сайт: Личный кабинет" })).toHaveAttribute(
       "href",
@@ -253,7 +268,9 @@ describe("карточка источника", () => {
     const cu = await panel(/^Центральный университет/);
     await user.click(await within(cu).findByRole("button", { name: /^LMS:/ }));
     const card = await screen.findByRole("dialog", { name: "LMS" });
-    expect(within(card).getByText(/прежней модели подключений/)).toBeInTheDocument();
+    expect(within(card).getByText(/прежняя модель подключений/)).toBeInTheDocument();
+    expect(within(card).getByText(/истории не отдаёт/)).toBeInTheDocument();
+    expect(within(card).queryByRole("list", { name: "Запуски источника" })).toBeNull();
   });
 
   it("источник ждёт входа: карточка ведёт в чат, а не в отдельную форму", async () => {

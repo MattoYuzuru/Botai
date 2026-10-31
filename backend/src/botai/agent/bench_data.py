@@ -25,6 +25,7 @@ from botai.db.models import (
     Person,
     ScheduleEvent,
     Space,
+    University,
     User,
 )
 
@@ -60,6 +61,7 @@ async def seed(
     ident = make_id or _random_id
     now = _t(data["now"]) or datetime.now().astimezone()
     user_id, space_id = ident("user", "student"), ident("space", "main")
+    university_id = ident("university", "main")
     spec = data["space"]
     conns: dict[str, str] = {}
     course_ids = {c["title"]: c["id"] for c in data.get("courses", [])}
@@ -73,10 +75,23 @@ async def seed(
             )
         )
         await session.flush()
+        # A space is a university ("My materials" is gone, docs/v4/03-sources-and-ux §1.6): the
+        # synthetic student has one university, so the production reads find the scenario space.
+        session.add(
+            University(
+                id=university_id,
+                title=spec["title"],
+                short_title=spec["title"][:40],
+                origins=[ORIGIN],
+                accent_hue=spec.get("accentHue", 250.0),
+            )
+        )
+        await session.flush()
         session.add(
             Space(
                 id=space_id,
                 user_id=user_id,
+                university_id=university_id,
                 title=spec["title"],
                 time_zone=spec.get("timeZone", "Europe/Moscow"),
                 profile=spec.get("profile", {}),

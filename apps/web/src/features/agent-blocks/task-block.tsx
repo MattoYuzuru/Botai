@@ -23,6 +23,8 @@ export function TaskBlockView({ block, ctx }: { block: TaskBlock; ctx: BlockCont
   const here = ctx.threadId !== undefined && block.threadId === ctx.threadId;
   const state = STATES[ctx.taskState?.(block.jobId) ?? block.state] ?? "running";
   const active = state === "running" || state === "waiting_user" || state === "queued";
+  const terminal = !active;
+  const runId = ctx.taskRunId?.(block.jobId);
   const connect = block.kind === "connect";
   return (
     <>
@@ -32,7 +34,13 @@ export function TaskBlockView({ block, ctx }: { block: TaskBlock; ctx: BlockCont
         state={state}
         here={here}
         action={
-          !here ? (
+          runId && terminal ? (
+            <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
+              <Link to="/agent/runs/$runId" params={{ runId }} aria-label={`Трасса хода: ${block.title}`}>
+                Трасса
+              </Link>
+            </Button>
+          ) : !here ? (
             <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
               <Link to="/chat" search={{ thread: block.threadId }}>
                 Открыть чат

@@ -78,6 +78,9 @@ async def test_a_picture_is_bound_shown_in_the_history_and_never_indexed(env: En
 
 async def test_a_document_is_indexed_in_the_thread_it_came_with(env: Env) -> None:
     client, user, thread = await student(env)
+    # A space always has a university ("My materials" is gone): the student has exactly one, so a
+    # file of a thread without a university goes there.
+    target = (await client.post("/api/v1/spaces", json={"title": "Фейкуни"})).json()
     doc = await upload(client, make_docx(), "Правила пересдачи.docx")
     sent = await send(client, thread, "Вот правила", [doc])
     assert sent.status_code == 202, sent.text
@@ -99,8 +102,25 @@ async def test_a_document_is_indexed_in_the_thread_it_came_with(env: Env) -> Non
     assert ingest.payload["attachment_id"] == doc
     assert (conn.kind, conn.title) == ("document", "Правила пересдачи")
     assert space is not None
-    assert space.user_id == user  # the student's own materials when the chat has no university
+    assert space.university_id is not None  # the university of the space, not a "materials" bucket
+    assert (space.id, space.user_id) == (target["id"], user)
     assert att.ingest_state == "queued"
+
+
+async def test_a_document_without_a_university_is_stored_but_not_indexed(env: Env) -> None:
+    """No university and no single one to fall back to: the file stays attached, nothing is read,
+    and no "materials" space is opened behind the owner's back (03 §1.6)."""
+    client, user, thread = await student(env)
+    doc = await upload(client, make_docx(), "Правила.docx")
+    sent = await send(client, thread, "Вот правила", [doc])
+    assert sent.status_code == 202, sent.text
+    assert [b["type"] for b in sent.json()["message"]["blocks"]] == ["text", "attachment"]
+    async with env.sm() as session:
+        jobs = list(await session.scalars(select(Job).where(Job.user_id == user)))
+        assert [job.kind for job in jobs] == ["chat"]  # no ingest task
+        att = await session.get(Attachment, doc)
+        assert att is not None
+        assert att.ingest_state != "queued"
 
 
 async def test_the_same_message_sent_twice_is_one_message_with_its_files(env: Env) -> None:

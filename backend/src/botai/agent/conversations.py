@@ -505,7 +505,10 @@ async def _attach_files(
     at: datetime,
 ) -> None:
     """The files go with the message: bound to it, shown as `attachment` blocks, and a document
-    starts indexing into the thread's university (or the student's own materials) right away."""
+    starts indexing into the thread's university right away. A space always has a university now
+    ("My materials" is gone, 03-sources-and-ux §1.6): when the thread names none and the student
+    has no single university, the file stays attached but is not indexed — the agent asks which
+    university it belongs to instead of writing it into a bucket that no longer exists."""
     await session.flush()  # the message exists before files are bound to it
     refs = await attachments.bind_to_message(session, user_id, thread.id, message.id, ids)
     message.blocks = [
@@ -526,10 +529,12 @@ async def _attach_files(
     documents = [ref for ref in refs if ref.kind == "document"]
     if not documents:
         return
-    space_id = thread.space_id or (await service.ensure_space(session, user_id, None)).id
+    space = await service.default_space(session, user_id, thread.space_id)
+    if space is None:
+        return
     for ref in documents:
         att = await attachments.get(session, user_id, ref.id)
-        await attachments.start_ingest(session, att, space_id, thread.id, now=services.clock.now())
+        await attachments.start_ingest(session, att, space.id, thread.id, now=services.clock.now())
 
 
 async def _continued(session: AsyncSession, job: Job) -> bool:

@@ -182,7 +182,9 @@ async def test_pgvector_migration_round_trip(database_url: str) -> None:
             await engine.dispose()
         assert "ix_chunk_embeddings_embedding_vec_hnsw" in plan_text
 
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        # Not "-1": the chain may grow revisions after this one; the rollback target is the
+        # revision this migration chains after.
+        await asyncio.to_thread(command.downgrade, cfg, BEFORE)
         columns = await _fetch(
             target_url,
             "SELECT column_name FROM information_schema.columns "

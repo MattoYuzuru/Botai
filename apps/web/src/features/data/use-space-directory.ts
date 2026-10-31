@@ -14,7 +14,7 @@ export interface SpaceInfo {
   shortTitle: string;
   timeZone: string;
   hue: number;
-  universityId: string | null;
+  universityId: string;
   connections: readonly Connection[];
   health: SpaceHealth;
 }
@@ -43,13 +43,6 @@ export function spaceShortTitle(space: Space, universities: readonly University[
   );
 }
 
-/**
- * Только пространства-вузы: «Мои материалы» больше нет как единицы интерфейса (D-013,
- * 03-sources-and-ux.md §1.6). Сервер до миграции может их знать — интерфейс их не показывает.
- */
-export const universitySpaces = (spaces: readonly Space[] | undefined): Space[] | undefined =>
-  spaces?.filter((space) => space.universityId !== null);
-
 const combineConnections = (results: readonly { data: Connection[] | undefined; isPending: boolean }[]) => ({
   lists: results.map((result) => result.data),
   pending: results.some((result) => result.isPending),
@@ -59,15 +52,14 @@ const combineConnections = (results: readonly { data: Connection[] | undefined; 
  * Вузы пользователя вместе с подключениями и сводным состоянием источников. Подключения обновляются
  * в фоне: статус «обновляется» сменяется на «работает» без действий человека.
  *
- * Пространства без вуза («Мои материалы») в интерфейс не попадают: в v4 вуз — единственная единица
- * экрана, а файл и документ — источник вуза (D-013, 03-sources-and-ux.md §1.6). Прежняя модель ещё
- * может их знать до миграции — фильтр снимается вместе с ней.
+ * В v4 пространство — всегда вуз (`SpaceOut.universityId` не пустой): «Мои материалы» больше нет
+ * как единицы модели и интерфейса (D-013, 03-sources-and-ux.md §1.6), поэтому фильтров нет.
  */
 export function useSpaceDirectory(): SpaceDirectory {
   const spacesResult = useQuery(spacesQuery);
   const universities = useQuery(universitiesQuery(""));
   const online = useOnline();
-  const spaces = useMemo(() => universitySpaces(spacesResult.data), [spacesResult.data]);
+  const spaces = spacesResult.data;
   const connections = useQueries({
     queries: (spaces ?? []).map((space) => ({
       ...connectionsQuery(space.id),

@@ -15,11 +15,13 @@ import { Route as RegisterRouteImport } from './routes/register'
 import { Route as StyleguideRouteImport } from './routes/styleguide'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppActionsRouteImport } from './routes/_app/actions'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppScheduleRouteImport } from './routes/_app/schedule'
 import { Route as AppTasksRouteImport } from './routes/_app/tasks'
 import { Route as AppStudyIndexRouteImport } from './routes/_app/study/index'
 import { Route as AppStudyKindRouteImport } from './routes/_app/study/$kind'
+import { Route as AppAgentRunsRunIdRouteImport } from './routes/_app/agent/runs/$runId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -50,6 +52,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppActionsRoute = AppActionsRouteImport.update({
+  id: '/actions',
+  path: '/actions',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppChatRoute = AppChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -75,6 +82,11 @@ const AppStudyKindRoute = AppStudyKindRouteImport.update({
   path: '/study/$kind',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAgentRunsRunIdRoute = AppAgentRunsRunIdRouteImport.update({
+  id: '/agent/runs/$runId',
+  path: '/agent/runs/$runId',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -82,23 +94,27 @@ export interface FileRoutesByFullPath {
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
   '/welcome': typeof WelcomeRoute
+  '/actions': typeof AppActionsRoute
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
   '/tasks': typeof AppTasksRoute
   '/study/$kind': typeof AppStudyKindRoute
   '/study/': typeof AppStudyIndexRoute
+  '/agent/runs/$runId': typeof AppAgentRunsRunIdRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
   '/welcome': typeof WelcomeRoute
+  '/actions': typeof AppActionsRoute
   '/chat': typeof AppChatRoute
   '/schedule': typeof AppScheduleRoute
   '/tasks': typeof AppTasksRoute
   '/': typeof AppIndexRoute
   '/study/$kind': typeof AppStudyKindRoute
   '/study': typeof AppStudyIndexRoute
+  '/agent/runs/$runId': typeof AppAgentRunsRunIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -107,12 +123,14 @@ export interface FileRoutesById {
   '/register': typeof RegisterRoute
   '/styleguide': typeof StyleguideRoute
   '/welcome': typeof WelcomeRoute
+  '/_app/actions': typeof AppActionsRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/schedule': typeof AppScheduleRoute
   '/_app/tasks': typeof AppTasksRoute
   '/_app/': typeof AppIndexRoute
   '/_app/study/$kind': typeof AppStudyKindRoute
   '/_app/study/': typeof AppStudyIndexRoute
+  '/_app/agent/runs/$runId': typeof AppAgentRunsRunIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -122,23 +140,27 @@ export interface FileRouteTypes {
     | '/register'
     | '/styleguide'
     | '/welcome'
+    | '/actions'
     | '/chat'
     | '/schedule'
     | '/tasks'
     | '/study/$kind'
     | '/study/'
+    | '/agent/runs/$runId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/register'
     | '/styleguide'
     | '/welcome'
+    | '/actions'
     | '/chat'
     | '/schedule'
     | '/tasks'
     | '/'
     | '/study/$kind'
     | '/study'
+    | '/agent/runs/$runId'
   id:
     | '__root__'
     | '/_app'
@@ -146,12 +168,14 @@ export interface FileRouteTypes {
     | '/register'
     | '/styleguide'
     | '/welcome'
+    | '/_app/actions'
     | '/_app/chat'
     | '/_app/schedule'
     | '/_app/tasks'
     | '/_app/'
     | '/_app/study/$kind'
     | '/_app/study/'
+    | '/_app/agent/runs/$runId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -206,6 +230,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/actions': {
+      id: '/_app/actions'
+      path: '/actions'
+      fullPath: '/actions'
+      preLoaderRoute: typeof AppActionsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/chat': {
       id: '/_app/chat'
       path: '/chat'
@@ -241,25 +272,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppStudyKindRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/agent/runs/$runId': {
+      id: '/_app/agent/runs/$runId'
+      path: '/agent/runs/$runId'
+      fullPath: '/agent/runs/$runId'
+      preLoaderRoute: typeof AppAgentRunsRunIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
+  AppActionsRoute: typeof AppActionsRoute
   AppChatRoute: typeof AppChatRoute
   AppScheduleRoute: typeof AppScheduleRoute
   AppTasksRoute: typeof AppTasksRoute
   AppIndexRoute: typeof AppIndexRoute
   AppStudyKindRoute: typeof AppStudyKindRoute
   AppStudyIndexRoute: typeof AppStudyIndexRoute
+  AppAgentRunsRunIdRoute: typeof AppAgentRunsRunIdRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppActionsRoute: AppActionsRoute,
   AppChatRoute: AppChatRoute,
   AppScheduleRoute: AppScheduleRoute,
   AppTasksRoute: AppTasksRoute,
   AppIndexRoute: AppIndexRoute,
   AppStudyKindRoute: AppStudyKindRoute,
   AppStudyIndexRoute: AppStudyIndexRoute,
+  AppAgentRunsRunIdRoute: AppAgentRunsRunIdRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

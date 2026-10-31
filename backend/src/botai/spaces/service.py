@@ -40,22 +40,20 @@ from botai.spaces.views import ActiveTask, SourceView, TaskInfo, UniversitySourc
 # Connections in these states have no finished setup (or were switched off): no sync, no repair.
 _NOT_READY = frozenset({"draft", "learning", "disabled"})
 _BROWSER_PAYLOAD = frozenset({"manual_login", "learning_intent", "url", "kinds"})
-MATERIALS_TITLE = "Мои материалы"
-MATERIALS_SHORT_TITLE = "Материалы"
 _NAME_NOT_ADDRESS = "Назовите вуз словами, а не адресом сайта"
 
 
 # --- what the API shows ---------------------------------------------------------------------------
 
 
-def space_out(space: Space, university: University | None) -> SpaceOut:
-    """`university` is the registry row of `space.university_id` (None for "My materials")."""
+def space_out(space: Space, university: University) -> SpaceOut:
+    """A space is a university: "My materials" is gone from the model (03-sources-and-ux §1.6)."""
     return SpaceOut(
         id=space.id,
         title=space.title,
-        short_title=university.short_title if university else MATERIALS_SHORT_TITLE,
-        aliases=list(universities.aliases_of(university)) if university else [],
-        university_id=space.university_id,
+        short_title=university.short_title,
+        aliases=list(universities.aliases_of(university)),
+        university_id=university.id,
         accent_hue=space.accent_hue,
         time_zone=space.time_zone,
         created_at=space.created_at,
@@ -63,13 +61,16 @@ def space_out(space: Space, university: University | None) -> SpaceOut:
 
 
 async def spaces_out(session: AsyncSession, spaces: Sequence[Space]) -> list[SpaceOut]:
-    ids = {s.university_id for s in spaces if s.university_id}
+    """The spaces of a student for the API: a legacy space without a university (made before the
+    model change) keeps its rows but is not shown; D-016 allows recreating them, nothing is lost."""
+    linked = [s for s in spaces if s.university_id]
+    ids = {s.university_id for s in linked if s.university_id}
     rows = (
         {u.id: u for u in await session.scalars(select(University).where(University.id.in_(ids)))}
         if ids
         else {}
     )
-    return [space_out(s, rows.get(s.university_id or "")) for s in spaces]
+    return [space_out(s, rows[s.university_id]) for s in linked if s.university_id in rows]
 
 
 def _active_task_out(task: ActiveTask | None) -> ActiveTaskOut | None:
@@ -140,17 +141,13 @@ async def lock_university_space(
 
 
 async def _space_of(
-    session: AsyncSession, user_id: str, university: University | None
+    session: AsyncSession, user_id: str, university: University
 ) -> tuple[Space, bool]:
-    """The one space of (user, university) - or of the user's materials - made if it is missing."""
-    uni_id = university.id if university else None
-    await lock_university_space(session, user_id, uni_id)
+    """The one space of (user, university), made if it is missing."""
+    await lock_university_space(session, user_id, university.id)
     existing = await session.scalar(
         select(Space)
-        .where(
-            Space.user_id == user_id,
-            Space.university_id == uni_id if uni_id else Space.university_id.is_(None),
-        )
+        .where(Space.user_id == user_id, Space.university_id == university.id)
         .order_by(Space.created_at, Space.id)
         .limit(1)
     )
@@ -158,11 +155,10 @@ async def _space_of(
         return existing, False
     space = Space(
         user_id=user_id,
-        university_id=uni_id,
-        title=(university.title if university else MATERIALS_TITLE)[:120],
+        university_id=university.id,
+        title=university.title[:120],
     )
-    if university is not None:
-        space.accent_hue = university.accent_hue
+    space.accent_hue = university.accent_hue
     session.add(space)
     await session.flush()
     return space, True
@@ -172,14 +168,36 @@ async def ensure_space(session: AsyncSession, user_id: str, university_id: str |
     """The space of this university for this user, created on first use (never a second one).
 
     `university_id` is a registry id or the id of a catalog suggestion (which becomes a registry
-    row now); `None` is the user's "My materials" for documents outside any university.
+    row now). A space always has a university: "My materials" is gone (03-sources-and-ux §1.6), so
+    `None` is an honest validation error, not a hidden bucket.
     """
-    university = (
-        await universities.find_or_create(session, title=university_id, university_id=university_id)
-        if university_id
-        else None
+    if not university_id:
+        raise BotaiError(
+            ErrorCode.VALIDATION, "«Моих материалов» больше нет: выберите вуз для источника"
+        )
+    university = await universities.find_or_create(
+        session, title=university_id, university_id=university_id
     )
     return (await _space_of(session, user_id, university))[0]
+
+
+async def default_space(
+    session: AsyncSession, user_id: str, space_id: str | None = None
+) -> Space | None:
+    """The university space a document of this thread belongs to, or `None` when it is unclear.
+
+    A file belongs to a source of a university (03 §1.6): the thread's space when it has one,
+    otherwise the student's only university. With no university, or several and no thread context,
+    the caller asks instead of opening a "materials" space that no longer exists.
+    """
+    if space_id is not None:
+        found = await session.scalar(
+            select(Space).where(Space.id == space_id, Space.user_id == user_id)
+        )
+        if found is not None and found.university_id is not None:
+            return found
+    spaces = [s for s in await repo.list_spaces(session, user_id) if s.university_id is not None]
+    return spaces[0] if len(spaces) == 1 else None
 
 
 async def create_space(
@@ -204,6 +222,8 @@ async def update_space(
     session: AsyncSession, user_id: str, space_id: str, body: SpaceUpdate
 ) -> Space:
     space = await repo.get_space(session, user_id, space_id)
+    if space.university_id is None:  # a legacy "materials" space: not shown, not editable
+        raise BotaiError(ErrorCode.NOT_FOUND, "Пространство не найдено")
     if body.title is not None:
         title = " ".join(body.title.split())
         if not title:
@@ -243,13 +263,12 @@ async def delete_space(session: AsyncSession, user_id: str, space_id: str) -> No
 async def list_sources(session: AsyncSession, user_id: str) -> list[UniversitySources]:
     """Every university of the user with its sources, oldest first; each source with its
     human title, the thread of its latest task and its active task."""
-    spaces = await repo.list_spaces(session, user_id)
+    # A legacy space without a university is not a university of the student: hidden, not deleted.
+    spaces = [s for s in await repo.list_spaces(session, user_id) if s.university_id]
     unis = {
         u.id: u
         for u in await session.scalars(
-            select(University).where(
-                University.id.in_({s.university_id for s in spaces if s.university_id})
-            )
+            select(University).where(University.id.in_({s.university_id for s in spaces}))
         )
     }
     conns = list(
@@ -263,12 +282,14 @@ async def list_sources(session: AsyncSession, user_id: str) -> list[UniversitySo
     result: list[UniversitySources] = []
     for space in spaces:
         uni = unis.get(space.university_id or "")
+        if uni is None:
+            continue
         result.append(
             UniversitySources(
                 space=space,
                 university=uni,
-                short_title=uni.short_title if uni else MATERIALS_SHORT_TITLE,
-                aliases=universities.aliases_of(uni) if uni else (),
+                short_title=uni.short_title,
+                aliases=universities.aliases_of(uni),
                 sources=[_view(c, tasks.get(c.id)) for c in conns if c.space_id == space.id],
             )
         )

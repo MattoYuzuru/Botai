@@ -46,7 +46,7 @@ export function spaceFixture(patch: Partial<Space> = {}): Space {
     title: "Синтетический университет",
     shortTitle: "СУ",
     aliases: [],
-    universityId: null,
+    universityId: "u-synthetic",
     accentHue: 262,
     timeZone: "Europe/Moscow",
     createdAt: "2026-09-01T00:00:00.000Z",

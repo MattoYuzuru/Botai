@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -36,7 +36,7 @@ from botai.db.models import (
     SourceState,
 )
 from botai.db.session import DbSession
-from botai.sources.v4 import artifacts, playbooks, priorities, service, state
+from botai.sources.v4 import artifacts, playbooks, priorities, runs, service, state
 from botai.sources.v4.runner import RunReport, SourceRunner
 from botai.sources.v4.schemas import (
     ArtifactOut,
@@ -53,6 +53,7 @@ from botai.sources.v4.schemas import (
     SourceCreateIn,
     SourceOut,
     SourcePatch,
+    SourceRunOut,
     SourceStateOut,
     SyncIn,
 )
@@ -85,7 +86,35 @@ V4 = Depends(require_sources_v4)
 RunnerDep = Annotated[RunnerBuilder, Depends(get_runner_builder)]
 
 
-def _source_out(source: Source) -> SourceOut:
+def _linked_connection(source: Source) -> str | None:
+    """The v3 connection a v4 source was created from (the dispatch links them in its config)."""
+    linked = source.config.get("connection_id")
+    return linked if isinstance(linked, str) and linked else None
+
+
+async def _thread_ids(
+    session: AsyncSession, user_id: str, sources: Sequence[Source]
+) -> dict[str, str]:
+    """The thread of each source's latest task, in one query for the whole page (no N+1)."""
+    from botai.spaces.views import load_task_info
+
+    links = {
+        source.id: linked
+        for source in sources
+        if (linked := _linked_connection(source)) is not None
+    }
+    if not links:
+        return {}
+    tasks = await load_task_info(session, user_id, list(links.values()))
+    found: dict[str, str] = {}
+    for source_id, connection_id in links.items():
+        task = tasks.get(connection_id)
+        if task is not None and task.thread_id is not None:
+            found[source_id] = task.thread_id
+    return found
+
+
+def _source_out(source: Source, *, thread_id: str | None = None) -> SourceOut:
     return SourceOut(
         id=source.id,
         space_id=source.space_id,
@@ -104,6 +133,7 @@ def _source_out(source: Source) -> SourceOut:
         disabled_from=source.disabled_from,
         created_at=source.created_at,
         updated_at=source.updated_at,
+        thread_id=thread_id,
     )
 
 
@@ -187,7 +217,8 @@ async def list_sources(
     rows = await service.list_sources(
         session, user_id=user.id, space_id=space_id, status=status, kind=kind
     )
-    return [_source_out(row) for row in rows]
+    threads = await _thread_ids(session, user.id, rows)
+    return [_source_out(row, thread_id=threads.get(row.id)) for row in rows]
 
 
 @router.post("/sources", response_model=SourceOut, status_code=201, dependencies=[V4])
@@ -208,12 +239,15 @@ async def create_source(body: SourceCreateIn, user: AuthUser, session: DbSession
         auth_ref=body.auth_ref,
     )
     await session.commit()
-    return _source_out(source)
+    threads = await _thread_ids(session, user.id, [source])
+    return _source_out(source, thread_id=threads.get(source.id))
 
 
 @router.get("/sources/{source_id}", response_model=SourceOut, dependencies=[V4])
 async def get_source(source_id: str, user: AuthUser, session: DbSession) -> SourceOut:
-    return _source_out(await service.get_source(session, user_id=user.id, source_id=source_id))
+    source = await service.get_source(session, user_id=user.id, source_id=source_id)
+    threads = await _thread_ids(session, user.id, [source])
+    return _source_out(source, thread_id=threads.get(source.id))
 
 
 @router.patch("/sources/{source_id}", response_model=SourceOut, dependencies=[V4])
@@ -222,24 +256,49 @@ async def update_source(
 ) -> SourceOut:
     source = await service.update_source(session, user_id=user.id, source_id=source_id, patch=body)
     await session.commit()
-    return _source_out(source)
+    threads = await _thread_ids(session, user.id, [source])
+    return _source_out(source, thread_id=threads.get(source.id))
 
 
 @router.post("/sources/{source_id}/disable", response_model=SourceOut, dependencies=[V4])
 async def disable_source(source_id: str, user: AuthUser, session: DbSession) -> SourceOut:
     source = await service.disable_source(session, user_id=user.id, source_id=source_id)
     await session.commit()
-    return _source_out(source)
+    threads = await _thread_ids(session, user.id, [source])
+    return _source_out(source, thread_id=threads.get(source.id))
 
 
 @router.post("/sources/{source_id}/enable", response_model=SourceOut, dependencies=[V4])
 async def enable_source(source_id: str, user: AuthUser, session: DbSession) -> SourceOut:
     source = await service.enable_source(session, user_id=user.id, source_id=source_id)
     await session.commit()
-    return _source_out(source)
+    threads = await _thread_ids(session, user.id, [source])
+    return _source_out(source, thread_id=threads.get(source.id))
 
 
 # --- runs ---------------------------------------------------------------------------------------
+
+
+@router.get(
+    "/sources/{source_id}/runs",
+    response_model=list[SourceRunOut],
+    dependencies=[V4],
+)
+async def list_source_runs(
+    source_id: str,
+    user: AuthUser,
+    session: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[SourceRunOut]:
+    """The source's run history, newest first: jobs, their outcome and the agent trace id.
+
+    Links a job to the source by the dispatch's connection link, the job payload (`source_id`) or
+    the run that saved the source's artifacts. A foreign or missing source is 404, as everywhere.
+    """
+    source = await service.get_source(session, user_id=user.id, source_id=source_id)
+    rows = await runs.list_runs(session, user_id=user.id, source=source, limit=limit, offset=offset)
+    return [SourceRunOut.model_validate(row) for row in rows]
 
 
 @router.post("/sources/{source_id}/probe", response_model=RunReportOut, dependencies=[V4])

@@ -13,11 +13,17 @@ type S = components["schemas"];
  * Пространство и подключение мока: сгенерированная форма плюс поля v3, которые отдают экраны данных. Поля
  * необязательны, потому что часть обработчиков (подключение в чате) ещё создаёт записи по прежней форме.
  */
+/** Пространство мока: у v4-API пространство всегда вуз (`universityId: string`). */
 export type MockSpace = S["SpaceOut"] & Partial<Pick<Space, "shortTitle" | "aliases">>;
 export type MockConnection = S["ConnectionOut"] &
   Partial<Pick<Connection, "entryUrl" | "threadId" | "activeTask" | "scheduleRole">>;
 /** Источник v4: сгенерированная форма `SourceOut`, как её отдаёт `/api/v1/sources`. */
 export type MockSource = S["SourceOut"];
+/** Строка политики автономии (`PolicyOut`) и запись журнала действий (`ActionOut`). */
+export type MockPolicy = S["PolicyOut"];
+export type MockAction = S["ActionOut"];
+/** Запуск источника (`SourceRunOut`): задание, его итог, ошибка и ссылки на тред/трассу. */
+export type MockSourceRun = S["SourceRunOut"];
 
 export type Scenario = "fresh" | "empty" | "connected" | "reauth" | "stale";
 
@@ -73,6 +79,12 @@ export interface MockDb {
   artifacts: S["ArtifactOut"][];
   /** Порядок источников по виду данных (`${spaceId}:${kind}`) — настройка «основной источник». */
   sourcePriorities: Record<string, string[]>;
+  /** Явные строки политики автономии владельца; без строки действует дефолт (docs/v4/19-actions.md). */
+  actionPolicies: MockPolicy[];
+  /** Журнал действий: предложения, решения и итоги. Тела запросов сервер не хранит. */
+  actionsLog: MockAction[];
+  /** История запусков источников: задания connect/sync/repair и их итоги. */
+  sourceRuns: MockSourceRun[];
   universities: S["UniversityOut"][];
   /** Задания подключения (живут только в памяти вкладки). */
   sims: Map<string, JobSim>;
@@ -109,7 +121,7 @@ export function seedUniversities(): S["UniversityOut"][] {
 function space(
   title: string,
   shortTitle: string,
-  universityId: string | null,
+  universityId: string,
   hue: number,
   createdAt: string,
 ): MockSpace {
@@ -174,6 +186,9 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
     playbookVersions: {},
     artifacts: [],
     sourcePriorities: {},
+    actionPolicies: [],
+    actionsLog: [],
+    sourceRuns: [],
     universities: seedUniversities(),
     sims: new Map(),
     jobVariant: "basic",
@@ -205,6 +220,7 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
     ),
   ];
   seedSourceWorld(db, scenario, iso);
+  seedActionWorld(db, iso);
   return db;
 }
 
@@ -236,6 +252,7 @@ function seedSourceWorld(db: MockDb, scenario: Scenario, iso: (minutesAgo: numbe
       lastSyncAt: iso(5),
       lastError: null,
       disabledFrom: null,
+      threadId: "01JMKCDB00000000000000THR",
       createdAt: iso(60 * 24 * 40),
       updatedAt: iso(5),
     },
@@ -423,6 +440,141 @@ function seedSourceWorld(db: MockDb, scenario: Scenario, iso: (minutesAgo: numbe
 
   // Порядок для склейки расписания уже выбран владельцем: кабинет — основной, календарь — дополнительный.
   db.sourcePriorities = { [`${hse.id}:schedule`]: ["src-hse-portal", "src-hse-calendar"] };
+
+  const run = (
+    id: string,
+    sourceId: string,
+    kind: string,
+    status: string,
+    startedAt: string,
+    extra: Partial<MockSourceRun> = {},
+  ): MockSourceRun => ({
+    id,
+    sourceId,
+    kind,
+    status,
+    ok: status === "done" ? true : status === "failed" ? false : null,
+    startedAt,
+    finishedAt: status === "running" || status === "queued" ? null : startedAt,
+    counts: {},
+    errorCode: null,
+    errorDetail: null,
+    threadId: null,
+    runId: null,
+    ...extra,
+  });
+  db.sourceRuns = [
+    run("job-portal-sync-2", "src-hse-portal", "sync", "done", iso(6), {
+      counts: { schedule: 12, deadlines: 4 },
+      threadId: "01JMKCDB00000000000000THR",
+      runId: "run-answer",
+    }),
+    run("job-portal-connect", "src-hse-portal", "connect", "done", iso(60 * 24 * 30), {
+      counts: { schedule: 12, deadlines: 4 },
+      threadId: "01JMKCDB00000000000000THR",
+    }),
+    run("job-portal-repair", "src-hse-portal", "repair", "failed", iso(60 * 24), {
+      errorCode: "recipe_drift",
+      errorDetail: "Сайт вуза изменил разметку — нужна починка описания.",
+    }),
+    run("job-calendar-sync", "src-hse-calendar", "sync", "done", iso(12), {
+      counts: { schedule: 8 },
+    }),
+    run("job-cu-sync", "src-cu-lms", "sync", "failed", lmsSyncedAt, {
+      errorCode: "source_auth_required",
+      errorDetail: "Сессия источника закончилась.",
+    }),
+  ];
+}
+
+/**
+ * Журнал действий мок-стенда: спрошенное, автоматическое, запрещённое и неудавшееся действия.
+ * Тела запросов и значения полей — синтетические, уже «замаскированные», как их отдаёт сервер.
+ */
+function seedActionWorld(db: MockDb, iso: (minutesAgo: number) => string): void {
+  const action = (
+    id: number,
+    decision: string,
+    mode: string,
+    actionClass: string,
+    intent: string,
+    createdAt: string,
+    extra: Partial<MockAction> = {},
+  ): MockAction => ({
+    id,
+    decision,
+    mode,
+    actionClass,
+    scopeKind: "source",
+    scopeId: "src-hse-portal",
+    intent,
+    proposal: {
+      transport: "http",
+      intent,
+      source_id: "src-hse-portal",
+      space_id: db.spaces[0]?.id ?? null,
+      method: "POST",
+      url: "https://lk.fakeuni.test/api/requests",
+      body_kind: "form",
+      fields: [
+        { name: "course", value: "Алгоритмы и структуры данных" },
+        { name: "comment", value: "Запись через BotAI" },
+      ],
+      header_names: ["content-type"],
+      cookie_names: ["sessionid"],
+    },
+    request: null,
+    result: null,
+    rollback: null,
+    idempotencyKey: `run:demo:sha256-${id}`,
+    runId: "run-answer",
+    jobId: "01JMKCDB00000000000000JOB",
+    sourceId: "src-hse-portal",
+    createdAt,
+    decidedAt: null,
+    executedAt: null,
+    ...extra,
+  });
+
+  db.actionsLog = [
+    action(1, "asked", "ask", "write_soft", "Записаться на пересдачу по алгоритмам", iso(5), {
+      rollback: { hint: "Отменить запись можно в личном кабинете вуза." },
+    }),
+    action(2, "executed", "auto", "write_soft", "Отправить заявку на консультацию", iso(80), {
+      request: {
+        method: "POST",
+        url: "https://lk.fakeuni.test/api/requests",
+        body_kind: "form",
+        body_bytes: 128,
+        body_sha256: "f".repeat(64),
+      },
+      result: { status: 200, summary: "Заявка принята личным кабинетом." },
+      decidedAt: iso(80),
+      executedAt: iso(79),
+    }),
+    action(3, "denied", "ask", "money", "Оплатить доступ к дополнительному курсу", iso(150), {
+      decidedAt: iso(149),
+    }),
+    action(4, "failed", "auto", "write_destructive", "Отозвать заявление на пересдачу", iso(300), {
+      request: {
+        method: "DELETE",
+        url: "https://lk.fakeuni.test/api/requests/42",
+        body_kind: "json",
+        body_bytes: 0,
+        body_sha256: "e".repeat(64),
+      },
+      result: { status: 500, summary: "Сайт вуза ответил ошибкой." },
+      decidedAt: iso(300),
+      executedAt: iso(299),
+    }),
+    action(5, "never", "never", "money", "Купить полный доступ к курсу", iso(500), {
+      scopeKind: "global",
+      scopeId: null,
+      sourceId: null,
+      runId: null,
+      jobId: null,
+    }),
+  ];
 }
 
 export function findUser(db: MockDb, id: string | null): MockUser | undefined {
@@ -450,6 +602,9 @@ export function restoreDb(now: () => number = Date.now): MockDb | null {
     return {
       ...parsed,
       sources: parsed.sources ?? [],
+      actionPolicies: parsed.actionPolicies ?? [],
+      actionsLog: parsed.actionsLog ?? [],
+      sourceRuns: parsed.sourceRuns ?? [],
       playbooks: parsed.playbooks ?? {},
       playbookVersions: parsed.playbookVersions ?? {},
       artifacts: parsed.artifacts ?? [],

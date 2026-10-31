@@ -208,11 +208,16 @@ async def _extra_keys(env: ChatEnv, e: ScheduleEventOut) -> list[str]:
     metas = await env.titles()
     keys: list[str] = []
     for source in e.sources[1:]:
-        meta = metas.get(source.connection_id)
+        meta = metas.get(source.connection_id) if source.connection_id else None
+        link = (
+            f"botai://connections/{source.connection_id}"
+            if source.connection_id
+            else f"botai://sources/{source.source_id}"
+        )
         keys.append(
             env.sources.add(
                 title=meta.title if meta else source.title,
-                url=f"botai://connections/{source.connection_id}",
+                url=link,
                 kind="connection",
                 fetched_at=meta.last_sync_at if meta else None,
             )

@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { api, call } from "./client";
 import { isApiError } from "./errors";
 import type { components } from "./schema.gen";
@@ -15,6 +15,7 @@ export type RunReportOut = Schemas["RunReportOut"];
 export type PlaybookOut = Schemas["PlaybookOut"];
 export type PlaybookVersionOut = Schemas["PlaybookVersionOut"];
 export type ArtifactOut = Schemas["ArtifactOut"];
+export type SourceRunOut = Schemas["SourceRunOut"];
 export type PriorityOut = Schemas["PriorityOut"];
 
 /** Состояния источника — словарь v4 (`db.models.SOURCE_STATUSES`), UI показывает их словами и цветом. */
@@ -81,6 +82,7 @@ export const sourceKeys = {
   playbook: (sourceId: string) => ["sources", sourceId, "playbook"] as const,
   versions: (sourceId: string) => ["sources", sourceId, "versions"] as const,
   artifacts: (sourceId: string) => ["sources", sourceId, "artifacts"] as const,
+  runs: (sourceId: string) => ["sources", sourceId, "runs"] as const,
   priority: (spaceId: string, kind: string) => ["sources", "priority", spaceId, kind] as const,
 };
 
@@ -137,6 +139,28 @@ export const sourceArtifactsQuery = (sourceId: string) =>
         }),
       ),
     staleTime: 60_000,
+  });
+
+/** Сколько запусков источника показывать за раз (и просить у сервера). */
+export const RUNS_PAGE_SIZE = 20;
+
+/**
+ * История запусков источника: задания `connect/sync/repair/ingest/chat/action/agent`, их итог,
+ * ошибка и ссылки на тред задачи и трассу хода агента (`SourceRunOut`, docs/v4/17-study-ui.md).
+ */
+export const sourceRunsQuery = (sourceId: string) =>
+  infiniteQueryOptions({
+    queryKey: sourceKeys.runs(sourceId),
+    queryFn: ({ pageParam }) =>
+      call(
+        api.GET("/api/v1/sources/{source_id}/runs", {
+          params: { path: { source_id: sourceId }, query: { limit: RUNS_PAGE_SIZE, offset: pageParam } },
+        }),
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (last: SourceRunOut[], _all, lastOffset: number) =>
+      last.length === RUNS_PAGE_SIZE ? lastOffset + RUNS_PAGE_SIZE : undefined,
+    staleTime: 30_000,
   });
 
 /** Порядок источников одного вида данных: первый живой источник решает конфликты (FR-062, D-013). */

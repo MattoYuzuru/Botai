@@ -23,7 +23,7 @@ export function StudyScreenV4() {
   const nowMs = useNow(30_000);
   const online = useOnline();
   const [opened, setOpened] = useState<{ source: StudySource; space: SpaceInfo } | null>(null);
-  // Вуз — единственная единица экрана: пространства без вуза в директорию не попадают (useSpaceDirectory).
+  // В v4 пространство — всегда вуз: каждая единица директории — вуз со своими источниками.
   const universities = scope.spaces;
   const state = resolveDataState({
     hasData: directory.connectionsLoaded,

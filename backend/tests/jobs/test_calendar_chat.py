@@ -20,7 +20,6 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobKind
 from botai.db import models as m
 from botai.sources import calendar
-from botai.spaces import service as spaces_service
 from tests.e2e.support import dump_database
 from tests.fakeuni import ical as fakeuni
 from tests.jobs.env import Env
@@ -195,12 +194,9 @@ async def test_the_question_names_the_university_of_the_thread_and_materials_fal
     assert await made(env, who.user_id) == (0, 0)
 
 
-async def test_a_thread_of_the_materials_space_falls_back_to_the_only_university(env: Env) -> None:
+async def test_a_thread_without_a_university_falls_back_to_the_only_university(env: Env) -> None:
     who = await student(env)
-    async with env.sm() as session:
-        materials = await spaces_service.ensure_space(session, who.user_id, None)
-        await session.commit()
-    thread = (await who.client.post("/api/v1/chat/threads", json={"spaceId": materials.id})).json()
+    thread = (await who.client.post("/api/v1/chat/threads", json={})).json()
     refusal(await post(who.client, thread["id"], LINKS[0]))
     (question,) = await offers(env, thread["id"])
     assert "«Фейкуни»" in question["markdown"]

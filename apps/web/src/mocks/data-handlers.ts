@@ -150,6 +150,12 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       return HttpResponse.json(spaceId ? all.filter((row) => row.provenance.spaceId === spaceId) : all);
     });
 
+  /** Живое подключение провенанса: у v4-строк `connectionId` пуст, тогда фильтр не отбрасывает запись. */
+  const liveProvenance = (provenance: S["Provenance"], live: ReadonlySet<string>): boolean =>
+    provenance.connectionId === null ||
+    provenance.connectionId === undefined ||
+    live.has(provenance.connectionId);
+
   /** Статус, который был у источника до отключения: включение возвращает его, как сервер. */
   const before = new Map<string, S["ConnectionOut"]["status"]>();
   const switchHandler = (action: "disable" | "enable") =>
@@ -191,14 +197,14 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         : seedEvents(db).filter(
             (e) =>
               free(e) &&
-              live.has(e.provenance.connectionId) &&
+              liveProvenance(e.provenance, live) &&
               Date.parse(e.startsAt) < to &&
               Date.parse(e.endsAt) > from,
           );
       const deadlines = quiet
         ? []
         : seedDeadlines(db)
-            .filter((d) => live.has(d.provenance.connectionId) && !DONE.has(d.state))
+            .filter((d) => liveProvenance(d.provenance, live) && !DONE.has(d.state))
             .filter((d) => {
               const due = dueOf(d);
               return due !== null && due >= from;
@@ -237,7 +243,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const rows = seedEvents(db).filter(
         (e) =>
           free(e) &&
-          live.has(e.provenance.connectionId) &&
+          liveProvenance(e.provenance, live) &&
           Date.parse(e.startsAt) < end &&
           Date.parse(e.endsAt) > start &&
           (!spaceId || e.provenance.spaceId === spaceId),
@@ -255,7 +261,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const includeDone = url.searchParams.get("include_done") === "true";
       const live = new Set(db.connections.filter((c) => c.status !== "disabled").map((c) => c.id));
       const rows = seedDeadlines(db)
-        .filter((d) => live.has(d.provenance.connectionId))
+        .filter((d) => liveProvenance(d.provenance, live))
         .filter((d) => (spaceId ? d.provenance.spaceId === spaceId : true))
         .filter((d) => includeDone || !DONE.has(d.state))
         .sort((a, b) => (dueOf(a) ?? Number.POSITIVE_INFINITY) - (dueOf(b) ?? Number.POSITIVE_INFINITY));

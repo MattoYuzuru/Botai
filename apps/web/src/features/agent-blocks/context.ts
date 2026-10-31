@@ -41,6 +41,8 @@ export interface BlockContext {
   threadId?: string;
   /** Чат: актуальное состояние задачи (из серверного состояния треда), если оно известно. */
   taskState?: (jobId: string) => string | undefined;
+  /** Чат: id хода агента v4 для трассы (`/agent/runs/<id>`), если результат задания его нёс. */
+  taskRunId?: (jobId: string) => string | undefined;
   /** Чат: остановить задачу этого треда. Уже найденные данные сохраняются. */
   cancelTask?: (jobId: string) => Promise<void>;
 }

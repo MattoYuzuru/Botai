@@ -66,7 +66,16 @@ test.describe("«Учёба»: источники вуза", () => {
     await expect(sheet.getByText("Ревизия 2")).toBeVisible();
     await expect(sheet.getByText("Прочитанное")).toBeVisible();
     await expect(sheet.getByText("Сроки заданий")).toBeVisible();
-    await expect(sheet.locator('[data-part="runs-placeholder"]')).toContainText(/История запусков/);
+    const runs = sheet.getByRole("list", { name: "Запуски источника" });
+    await expect(runs.getByRole("listitem")).toHaveCount(3);
+    await expect(runs.getByText("Обновление")).toBeVisible();
+    await expect(runs.getByText("Готово", { exact: true }).first()).toBeVisible();
+    await expect(runs.getByText("Починка", { exact: true })).toBeVisible();
+    await expect(runs.getByRole("link", { name: "Трасса" })).toHaveAttribute(
+      "href",
+      "/agent/runs/run-answer",
+    );
+    await expect(sheet.getByRole("link", { name: "Открыть тред задачи" })).toBeVisible();
     await expect(sheet.getByRole("link", { name: "Открыть сайт: Личный кабинет" })).toHaveAttribute(
       "href",
       "https://lk.fakeuni.test/",

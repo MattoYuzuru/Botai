@@ -546,6 +546,32 @@ def _write_readme(directory: Path) -> None:
         "Аудит фазы 0.5 (0.5.4–0.5.7 + prod-readiness для `BOTAI_AGENT_ENGINE=v4`) — "
         "[phase-0.5-audit.md](phase-0.5-audit.md).",
         "",
+    ]
+    certified = [row for row in rows if (row.get("certification") or {}).get("certified")]
+    if certified:
+        row = max(certified, key=lambda item: str(item.get("startedAt") or ""))
+        cert = row.get("certification") or {}
+        metrics = row.get("metrics") or {}
+        lines += [
+            f"## Приёмка `{cert.get('sha', '?')[:7]}` — CERTIFIED",
+            "",
+            f"**{row.get('scenario')}** · run `{row.get('runId')}` · {row.get('startedAt')} · "
+            f"HEAD `{cert.get('sha')}` ({cert.get('tree', 'clean tree')})",
+            "",
+            f"- Статус: `{row.get('status')}` → **{cert.get('verdict')}**; "
+            f"security gate: {'чистый' if cert.get('securityGateClean') else 'НЕ чистый'} "
+            f"(messagesLeak={row.get('checks', {}).get('messagesLeak')}, "
+            f"traceLeak={row.get('checks', {}).get('traceLeak')}, "
+            f"raw sweep переписал {row.get('checks', {}).get('secretSweep', {}).get('filesRedacted')} файлов)",
+            f"- Метрики: {metrics.get('steps')} шагов, {metrics.get('toolCalls')} tool calls, "
+            f"{metrics.get('totalTokens')} токенов, **${metrics.get('costUsd')}**, {row.get('durationSec')} с",
+            f"- Данные: {cert.get('dataSummary')}",
+            f"- Источник: {cert.get('source')}",
+            f"- Что доказано: {'; '.join(row.get('proven') or [])}",
+            f"- Что не доказано: {'; '.join(row.get('notProven') or [])}",
+            "",
+        ]
+    lines += [
         "| Сценарий | Статус | Время | Шаги | Инструменты | Токены | $ | Барьер |",
         "|---|---|---|---|---|---|---|---|",
     ]

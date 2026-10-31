@@ -52,22 +52,15 @@ async def test_a_second_space_of_one_university_is_impossible_in_the_database(
     async with tx_sessionmaker() as s:
         s.add(m.University(id="u1", title="Вуз", short_title="В", origins=[], accent_hue=250))
         await s.flush()
-        s.add_all(
-            [
-                m.Space(user_id=user, university_id="u1", title="Вуз"),
-                m.Space(user_id=user, university_id=None, title="Мои материалы"),
-            ]
-        )
+        s.add(m.Space(user_id=user, university_id="u1", title="Вуз"))
         await s.commit()
-    for university_id in ("u1", None):
-        async with tx_sessionmaker() as s:
-            s.add(m.Space(user_id=user, university_id=university_id, title="Дубль"))
-            with pytest.raises(IntegrityError):
-                await s.flush()
+    async with tx_sessionmaker() as s:
+        s.add(m.Space(user_id=user, university_id="u1", title="Дубль"))
+        with pytest.raises(IntegrityError):
+            await s.flush()
     other = await make_user(tx_sessionmaker)
     async with tx_sessionmaker() as s:  # the same university for another student is fine
         s.add(m.Space(user_id=other, university_id="u1", title="Вуз"))
-        s.add(m.Space(user_id=other, university_id=None, title="Мои материалы"))
         await s.commit()
 
 
@@ -90,22 +83,25 @@ async def test_ensure_space_creates_once_and_names_the_space_after_the_universit
     assert unknown.value.status == 404
 
 
-async def test_one_materials_space_per_user_for_documents_outside_a_university(
+async def test_a_space_without_a_university_is_gone_from_the_api(
     client: httpx.AsyncClient, tx_sessionmaker: Sm, clock: FrozenClock
 ) -> None:
+    """A space always has a university (03 §1.6): no new "materials" bucket is made, and a legacy
+    row of the old one stays in the database but is not shown by the API."""
     acc = await signup(client, tx_sessionmaker, clock)
-    other = await make_user(tx_sessionmaker)
     async with tx_sessionmaker() as s:
-        mine = await service.ensure_space(s, acc.id, None)
-        again = await service.ensure_space(s, acc.id, None)
-        theirs = await service.ensure_space(s, other, None)
+        with pytest.raises(BotaiError) as refused:
+            await service.ensure_space(s, acc.id, None)
+    assert refused.value.status == 422  # validation: the caller must name a university
+
+    async with tx_sessionmaker() as s:  # a row of the removed bucket survives untouched
+        legacy = m.Space(user_id=acc.id, university_id=None, title="Мои материалы")
+        s.add(legacy)
         await s.commit()
-    assert mine.id == again.id != theirs.id
-    assert (mine.university_id, mine.title) == (None, "Мои материалы")
-    listed = (await client.get("/api/v1/spaces")).json()
-    assert [(s["title"], s["shortTitle"], s["universityId"]) for s in listed] == [
-        ("Мои материалы", "Материалы", None)
-    ]
+        legacy_id = legacy.id
+    assert (await client.get("/api/v1/spaces")).json() == []
+    async with tx_sessionmaker() as s:
+        assert await s.get(m.Space, legacy_id) is not None
 
 
 async def test_two_requests_at_once_still_make_one_space(database_url: str) -> None:
@@ -232,22 +228,12 @@ async def test_searching_saves_nothing(tx_sessionmaker: Sm) -> None:
 async def _university_with_sources(sm: Sm, user_id: str) -> dict[str, str]:
     async with sm() as s:
         space = await service.ensure_space(s, user_id, "vysshaya-shkola-ekonomiki")
-        materials = await service.ensure_space(s, user_id, None)
         await s.commit()
     portal = await make_connection(
         sm, user_id, space.id, origin="https://lk.hse.example", kind="portal"
     )
     lms = await make_connection(sm, user_id, space.id, origin="https://lms.hse.example", kind="lms")
-    paper = await make_connection(
-        sm, user_id, materials.id, origin="https://upload.botai.local", kind="document"
-    )
-    return {
-        "space": space.id,
-        "materials": materials.id,
-        "portal": portal,
-        "lms": lms,
-        "paper": paper,
-    }
+    return {"space": space.id, "portal": portal, "lms": lms}
 
 
 async def _job(
@@ -317,15 +303,11 @@ async def test_list_sources_groups_sources_by_university_with_their_task_and_thr
     await _job(tx_sessionmaker, user, ids["portal"], kind="sync", state="done", thread_id=None)
     async with tx_sessionmaker() as s:
         result = await service.list_sources(s, user)
-    assert [(u.space.id, u.short_title) for u in result] == [
-        (ids["space"], "НИУ ВШЭ"),
-        (ids["materials"], "Материалы"),
-    ]
-    hse, materials = result
+    assert [(u.space.id, u.short_title) for u in result] == [(ids["space"], "НИУ ВШЭ")]
+    (hse,) = result
     assert "Вышка" in hse.aliases
     assert hse.university is not None
     assert hse.university.id == "vysshaya-shkola-ekonomiki"
-    assert materials.university is None
     by_id = {v.connection.id: v for v in hse.sources}
     assert set(by_id) == {ids["portal"], ids["lms"]}
     lms = by_id[ids["lms"]]
@@ -337,7 +319,6 @@ async def test_list_sources_groups_sources_by_university_with_their_task_and_thr
         "waiting_user",
     )
     assert (by_id[ids["portal"]].thread_id, by_id[ids["portal"]].active_task) == (None, None)
-    assert [v.connection.id for v in materials.sources] == [ids["paper"]]
 
 
 async def test_a_deleted_thread_is_not_a_link_and_other_users_are_not_listed(

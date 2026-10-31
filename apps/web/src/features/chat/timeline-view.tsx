@@ -1,5 +1,6 @@
 import { Button, ChatMessage, QuickReplies, ThinkingStream, type ViewerAttachment } from "@botai/design";
 import { useMemo, useState } from "react";
+import { runIdFromResult } from "@/api/agent-runs";
 import { api, call } from "@/api/client";
 import { attachmentContentUrl, type PendingRef, type ThreadRuntime } from "@/api/v3";
 import { AgentBlockView } from "@/features/agent-blocks/agent-block";
@@ -108,6 +109,20 @@ export function TimelineView({
     return states;
   }, [runtime, jobs]);
 
+  /** Ходы v4 несут `run_id` в результате задания: по нему карточка задачи ведёт в трассу. */
+  const taskRunIds = useMemo(() => {
+    const ids = new Map<string, string>();
+    const remember = (jobId: string | undefined, result: unknown) => {
+      if (!jobId) return;
+      const runId = runIdFromResult(result);
+      if (runId) ids.set(jobId, runId);
+    };
+    for (const task of runtime?.tasks ?? []) remember(task.id, task.result);
+    if (runtime?.activeJob) remember(runtime.activeJob.id, runtime.activeJob.result);
+    for (const job of jobs) remember(job.id, job.snapshot.result);
+    return ids;
+  }, [runtime, jobs]);
+
   const base = useMemo(
     () => ({
       nowMs,
@@ -117,12 +132,13 @@ export function TimelineView({
       groupSources: links.groupSources,
       openAttachment: links.openAttachment,
       taskState: (jobId: string) => taskStates.get(jobId),
+      taskRunId: (jobId: string) => taskRunIds.get(jobId),
       cancelTask: async (jobId: string) => {
         await jobManager.cancel(jobId);
         onChanged();
       },
     }),
-    [nowMs, timeZone, threadId, links, taskStates, onChanged],
+    [nowMs, timeZone, threadId, links, taskStates, taskRunIds, onChanged],
   );
 
   // Ответ на вопрос задачи — сообщение с цитатой этого вопроса, его пишет сервер. Пока оно не пришло, в ленте стоит
@@ -191,6 +207,7 @@ type BaseContext = Pick<
   | "groupSources"
   | "openAttachment"
   | "taskState"
+  | "taskRunId"
   | "cancelTask"
 >;
 

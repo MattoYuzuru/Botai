@@ -1765,11 +1765,29 @@
         "type": "object"
       },
       "EventSource": {
-        "description": "A source that contributed to a class (FR-054): the first one is the university's primary\nschedule source, whose values the class shows.",
+        "description": "A source that contributed to a class (FR-054): the first one is the university's primary\nschedule source, whose values the class shows. A v3 source names its connection, a v4 source\nits source record; exactly one of the two is set.",
         "properties": {
           "connectionId": {
-            "title": "Connectionid",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
           },
           "title": {
             "title": "Title",
@@ -1777,7 +1795,6 @@
           }
         },
         "required": [
-          "connectionId",
           "title"
         ],
         "title": "EventSource",
@@ -3003,10 +3020,18 @@
         "type": "object"
       },
       "Provenance": {
+        "description": "Where a record was read and when. Two provenance paths coexist while v3 and v4 share the\ndomain tables: a v3 row names its `connectionId`, a v4 row its `sourceId` (docs/v4/03 §6.1).\nBoth are null-capable for that reason; a response always has at least one of them.",
         "properties": {
           "connectionId": {
-            "title": "Connectionid",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
           },
           "fetchedAt": {
             "format": "date-time",
@@ -3024,6 +3049,17 @@
             ],
             "title": "Openurl"
           },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
+          },
           "sourceUrl": {
             "title": "Sourceurl",
             "type": "string"
@@ -3038,7 +3074,6 @@
           }
         },
         "required": [
-          "connectionId",
           "spaceId",
           "sourceUrl",
           "fetchedAt",
@@ -3934,6 +3969,17 @@
             "title": "Status",
             "type": "string"
           },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -4131,6 +4177,129 @@
         "title": "SourcePatch",
         "type": "object"
       },
+      "SourceRunOut": {
+        "description": "One run of a source as the source card shows it: a job, its outcome and its agent trace.\n\nThe source of a run is the linked v3 connection (`Source.config[\"connection_id\"]`), the job\npayload (`source_id`), or the run that saved the source's artifacts — whichever links the job.",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errorcode"
+          },
+          "errorDetail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errordetail"
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finishedat"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ok"
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runid"
+          },
+          "sourceId": {
+            "title": "Sourceid",
+            "type": "string"
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          }
+        },
+        "required": [
+          "id",
+          "sourceId",
+          "kind",
+          "status",
+          "ok",
+          "startedAt",
+          "finishedAt",
+          "counts",
+          "errorCode",
+          "errorDetail",
+          "threadId",
+          "runId"
+        ],
+        "title": "SourceRunOut",
+        "type": "object"
+      },
       "SourceStateOut": {
         "properties": {
           "cursor": {
@@ -4223,7 +4392,7 @@
         "type": "object"
       },
       "SpaceOut": {
-        "description": "A university of the student (or \"My materials\", `universityId` null).",
+        "description": "A university of the student: a space always has one (\"My materials\" is gone, 03 §1.6).",
         "properties": {
           "accentHue": {
             "title": "Accenthue",
@@ -4258,15 +4427,8 @@
             "type": "string"
           },
           "universityId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Universityid"
+            "title": "Universityid",
+            "type": "string"
           }
         },
         "required": [
@@ -7940,6 +8102,76 @@
           }
         },
         "summary": "Repair Source",
+        "tags": [
+          "sources-v4"
+        ]
+      }
+    },
+    "/api/v1/sources/{source_id}/runs": {
+      "get": {
+        "description": "The source's run history, newest first: jobs, their outcome and the agent trace id.\n\nLinks a job to the source by the dispatch's connection link, the job payload (`source_id`) or\nthe run that saved the source's artifacts. A foreign or missing source is 404, as everywhere.",
+        "operationId": "list_source_runs_api_v1_sources__source_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SourceRunOut"
+                  },
+                  "title": "Response List Source Runs Api V1 Sources  Source Id  Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Source Runs",
         "tags": [
           "sources-v4"
         ]

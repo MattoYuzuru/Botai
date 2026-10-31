@@ -17,7 +17,7 @@ status/events, so the UI can show it without a new contract.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +38,7 @@ from botai.agent.v4.protocol import (
     ToolResult,
 )
 from botai.agent.v4.providers.base import Provider
-from botai.agent.v4.runtime import RunResult, RunTask
+from botai.agent.v4.runtime import Mask, RunResult, RunTask
 from botai.contracts.agent_ui import ChoiceBlock, ChoiceOption, InputBlock, TextBlock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
@@ -47,6 +47,11 @@ from botai.core.llm import LlmMessage, Purpose, Tier
 from botai.core.services import Services
 
 MAX_ANSWER_CHARS = 8000
+
+
+def _identity_mask(text: str) -> str:
+    return text
+
 
 # Which evidence moves a task to which phase, and how the phase is named in the job status.
 TOOL_PHASES: dict[str, str] = {
@@ -83,6 +88,9 @@ class JobRun:
     run_id: str
     result: RunResult
     workspace: Path
+    # The broker's masking table captured before close: a handler may still mask the final answer
+    # text after the run (the values themselves are gone from the closed broker).
+    mask: Mask = field(default=_identity_mask)
 
 
 class PhaseReporter:
@@ -146,6 +154,7 @@ async def run_v4_job(
     """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`."""
     active_run_id = run_id or new_id()
     wiring: AgentWiring | None = None
+    mask: Mask = _identity_mask
     try:
         try:
             wiring = await build_agent_wiring(
@@ -194,8 +203,10 @@ async def run_v4_job(
         workspace = wiring.workspace.root
     finally:
         if wiring is not None:
+            if wiring.broker is not None:
+                mask = wiring.broker.snapshot_masker()
             await wiring.aclose()
-    return JobRun(run_id=result.run_id, result=result, workspace=workspace)
+    return JobRun(run_id=result.run_id, result=result, workspace=workspace, mask=mask)
 
 
 def job_ask_channel(ctx: JobContext, services: Services) -> AskUser:

@@ -2,6 +2,7 @@ import { Badge, Banner, Button } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { runIdFromResult } from "@/api/agent-runs";
 import { threadOfJob } from "@/features/chat/job-thread";
 import { useOpenThread } from "@/features/chat/open-thread";
 import { chatKeys, runtimeQuery } from "@/features/chat/queries";
@@ -53,6 +54,7 @@ export function ActiveJobBar() {
   const terminal = current ? isTerminal(current.state) : false;
   const attention = (runtime.data?.pending ?? []).some((item) => item.jobId === active.jobId);
   const failed = current ? jobFailed(current) : false;
+  const runId = current ? runIdFromResult(current.result) : null;
 
   return (
     <Banner
@@ -62,6 +64,13 @@ export function ActiveJobBar() {
       className="rounded-none px-safe-4 pt-safe-3"
       action={
         <div className="flex items-center gap-1">
+          {terminal && runId && (
+            <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
+              <Link to="/agent/runs/$runId" params={{ runId }} aria-label={`Трасса хода: ${active.title}`}>
+                Трасса
+              </Link>
+            </Button>
+          )}
           <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
             {threadId ? (
               <Link to="/chat" search={{ thread: threadId }}>

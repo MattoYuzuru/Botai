@@ -231,6 +231,24 @@ export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions
       return HttpResponse.json(rows);
     }),
 
+    http.get("*/api/v1/sources/:sourceId/runs", async ({ params, request }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const source = found(String(params.sourceId));
+      if (!source) return problem(404, "not_found", "Источник не найден");
+      const url = new URL(request.url);
+      const limit = Number(url.searchParams.get("limit") ?? 20);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      const size = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.trunc(limit))) : 20;
+      const start = Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0;
+      const rows = db.sourceRuns
+        .filter((row) => row.sourceId === source.id)
+        .slice()
+        .sort((left, right) => (right.startedAt ?? "").localeCompare(left.startedAt ?? ""))
+        .slice(start, start + size);
+      return HttpResponse.json(rows);
+    }),
+
     http.get("*/api/v1/spaces/:spaceId/priorities/:kind", async ({ params }) => {
       await wait();
       if (!signedIn()) return unauthorized();

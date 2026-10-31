@@ -78,7 +78,6 @@ async def _seed(sm: Sm, services: Services, user_id: str, *, tag: str, shared_or
         spaces = [
             m.Space(user_id=user_id, university_id=uni_own, title=f"Вуз {tag}"),
             m.Space(user_id=user_id, university_id=uni_common, title="Общий вуз"),
-            m.Space(user_id=user_id, university_id=None, title="Мои материалы"),
         ]
         s.add_all(spaces)
         await s.flush()

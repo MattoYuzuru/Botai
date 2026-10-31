@@ -236,20 +236,22 @@ async function runTask(ctx: AgentCtx, sim: JobSim, threadId: string, input: Task
         },
         "Жду ссылку на источник",
       ));
-    const university = input.university
-      ? db.universities.find((item) => item.id === input.university)
-      : undefined;
+    // В v4 пространство — всегда вуз: без названного берём первый вуз справочника мока.
+    const university =
+      (input.university ? db.universities.find((item) => item.id === input.university) : undefined) ??
+      db.universities[0];
+    if (!university) throw new Error("В моке нет ни одного вуза");
     let space =
       db.spaces.find((item) => item.id === input.spaceId) ??
-      db.spaces.find((item) => item.universityId === university?.id);
+      db.spaces.find((item) => item.universityId === university.id);
     if (!space) {
       space = {
         id: ulid(),
-        universityId: university?.id ?? null,
-        title: university?.title ?? "Мой вуз",
-        shortTitle: university?.shortTitle ?? "Мой вуз",
-        aliases: university?.aliases ?? [],
-        accentHue: university?.accentHue ?? 325,
+        universityId: university.id,
+        title: university.title,
+        shortTitle: university.shortTitle,
+        aliases: university.aliases,
+        accentHue: university.accentHue,
         timeZone: "Europe/Moscow",
         createdAt: ctx.iso(),
       };

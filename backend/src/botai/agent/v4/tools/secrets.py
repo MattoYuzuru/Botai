@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -46,6 +47,7 @@ MAX_SECRET_CHARS = 4096
 MAX_HANDLES = 50
 MAX_HTTP_BODY_CHARS = 20_000
 
+HANDLE_PREFIX = "sec_"
 HANDLE_PATTERN = re.compile(r"^sec_[0-9A-HJKMNP-TV-Z]{26}$")
 _VALUE_SLOT = "{secret}"
 _METHOD = re.compile(r"^[A-Z]{3,10}$")
@@ -89,7 +91,7 @@ class SecretBroker:
             raise ValueError("secret is too long")
         if len(self._values) >= MAX_HANDLES:
             raise ValueError("too many secret handles in one run")
-        handle = f"sec_{new_id()}"
+        handle = f"{HANDLE_PREFIX}{new_id()}"
         await self._vault.put(
             self._user_id,
             self._vault_scope(handle),
@@ -119,12 +121,30 @@ class SecretBroker:
                 masked = masked.replace(value, MASK)
         return masked
 
+    def snapshot_masker(self) -> Callable[[str], str]:
+        """A masker that still works after `clear()` (the handler stores the answer later).
+
+        The wiring closes the broker in `finally` before the handler composes and stores the final
+        answer; the values themselves are not needed for that, only the replacement table.
+        """
+        values = tuple(value for value in self._values.values() if len(value) >= MIN_MASKABLE_CHARS)
+
+        def masked(text: str) -> str:
+            for value in values:
+                if value in text:
+                    text = text.replace(value, MASK)
+            return text
+
+        return masked
+
     def clear(self) -> None:
         self._values.clear()
 
     def _vault_scope(self, handle: str) -> str:
-        # The handle is part of the AAD scope: a handle cannot decrypt another run's slot.
-        return f"{self._scope_id}:{handle}"
+        # The Vault scope column is `varchar(26)` (the v3 block-id width), so the scope must be the
+        # handle's ULID: unique per issued secret, exactly 26 characters, and still part of the
+        # AAD — another run's handle cannot decrypt this slot.
+        return handle.removeprefix(HANDLE_PREFIX)
 
 
 class _SecretRequestArgs(BaseModel):

@@ -1,9 +1,10 @@
-"""The worker's handler table under the two engines: v3 keeps the old handlers, v4 takes sources.
+"""The worker's handler table under the two engines: v3 stays old, v4 takes chat and source jobs.
 
 The v4 engine is enabled by one env var; the table is where that decision becomes real. The v3
 table must stay byte-for-byte the old handler set (the flag is a product switch, not a refactor),
-while v4 replaces exactly the source jobs (CONNECT/SYNC/REPAIR) and keeps chat/actions/ingest on the
-v3 handlers. The v4 handlers themselves keep a v3 bridge for connections without a v4 source.
+while v4 replaces exactly CHAT (the free-harness turn) and the source jobs (CONNECT/SYNC/REPAIR)
+and keeps actions/ingest on the v3 handlers. The v4 source handlers keep a v3 bridge for
+connections without a v4 source.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ from botai.learn.handlers import HANDLERS as LEARN
 from botai.settings import Settings
 from botai.sources.handlers import HANDLERS as SOURCES
 from botai.worker import handler_table
+
+V4_CHAT = JobKind.CHAT
+V4_SOURCE = {JobKind.CONNECT, JobKind.SYNC, JobKind.REPAIR}
 
 
 def _settings(engine: str) -> Settings:
@@ -34,15 +38,17 @@ def test_the_v3_flag_keeps_the_old_handler_set() -> None:
     assert JobKind.AGENT in table
 
 
-def test_the_v4_flag_replaces_exactly_the_source_jobs() -> None:
+def test_the_v4_flag_replaces_chat_and_the_source_jobs() -> None:
     v3 = handler_table(_settings("v3"))
     v4 = handler_table(_settings("v4"))
 
-    replaced = {JobKind.CONNECT, JobKind.SYNC, JobKind.REPAIR}
-    for kind in replaced:
+    assert v4[V4_CHAT] is not v3[V4_CHAT]
+    assert v4[V4_CHAT].__module__ == "botai.agent.v4.chat"
+    for kind in V4_SOURCE:
         assert v4[kind] is not v3[kind], kind
         # A distinct v4 handler, not a renamed v3 one.
         assert v4[kind].__module__ == "botai.agent.v4.dispatch"
+    replaced = {V4_CHAT, *V4_SOURCE}
     for kind in set(v3) - replaced:
         assert v4[kind] is v3[kind], kind
 

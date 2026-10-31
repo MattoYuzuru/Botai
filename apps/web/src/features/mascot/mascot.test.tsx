@@ -127,7 +127,7 @@ describe("состояние Вари из состояния источнико
     shortTitle: state,
     timeZone: "Europe/Moscow",
     hue: 262,
-    universityId: null,
+    universityId: "u-test",
     connections: [],
     health: { state, updatedAt: null },
   });

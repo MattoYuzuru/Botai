@@ -1,6 +1,8 @@
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
 import { fieldsHash } from "@/lib/hash";
+import { createActionHandlers } from "./action-handlers";
+import { createAgentRunHandlers } from "./agent-run-handlers";
 import { createChatHandlers } from "./chat-handlers";
 import { runConnect } from "./connect-script";
 import { createDataHandlers } from "./data-handlers";
@@ -129,6 +131,8 @@ export function createHandlers(
 
   return [
     ...createDataHandlers(db, { latency, persist, jobPace }),
+    ...createAgentRunHandlers(db, { latency }),
+    ...createActionHandlers(db, { latency }),
     ...createSourcesHandlers(db, { latency, persist }),
     ...createChatHandlers(db, { latency, persist, jobPace }),
     http.post("*/api/v1/auth/login", async ({ request }) => {
@@ -196,14 +200,18 @@ export function createHandlers(
       await wait();
       if (!currentUser()) return problem(401, "unauthorized", "Нужно войти в BotAI");
       const body = (await request.json()) as S["SpaceCreate"];
-      const known = body.universityId ? db.universities.find((u) => u.id === body.universityId) : undefined;
+      // Пространство v4 — всегда вуз; мок не создаёт «Мои материалы».
+      const known =
+        (body.universityId ? db.universities.find((u) => u.id === body.universityId) : undefined) ??
+        db.universities[0];
+      if (!known) return problem(422, "validation", "Неизвестный вуз: в справочнике мока пусто");
       const created: MockSpace = {
         id: ulid(),
         title: body.title,
-        shortTitle: known?.shortTitle ?? body.title,
+        shortTitle: known.shortTitle ?? body.title,
         aliases: [],
-        universityId: known?.id ?? null,
-        accentHue: known?.accentHue ?? 325,
+        universityId: known.id,
+        accentHue: known.accentHue,
         timeZone: "Europe/Moscow",
         createdAt: new Date(db.now()).toISOString(),
       };

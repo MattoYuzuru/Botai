@@ -35,9 +35,11 @@ import {
   sourceVersionsQuery,
   syncSource,
 } from "@/api/sources";
+import { PoliciesSection } from "@/features/actions/policies-section";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
 import { sourceChatLinks } from "./chat-links-v4";
+import { SourceRunsSection } from "./source-runs";
 import { dataKindsOf, describeSourceKind, describeSourceStatus, natureKindsOf } from "./status";
 import { type StudySource, sourceFromApi } from "./use-study-sources";
 
@@ -120,6 +122,7 @@ function SourceCardDetails({
     void queryClient.invalidateQueries({ queryKey: sourceKeys.playbook(shown.id) });
     void queryClient.invalidateQueries({ queryKey: sourceKeys.versions(shown.id) });
     void queryClient.invalidateQueries({ queryKey: sourceKeys.artifacts(shown.id) });
+    void queryClient.invalidateQueries({ queryKey: sourceKeys.runs(shown.id) });
     void queryClient.invalidateQueries({ queryKey: sourceKeys.priority(space.id, "schedule") });
   };
 
@@ -270,11 +273,15 @@ function SourceCardDetails({
         timeZone={space.timeZone}
       />
 
-      <p className="type-caption text-fg-subtle" data-part="runs-placeholder">
-        {isV4
-          ? "История запусков (проверка, подключение, обновление, починка) появится позже — сейчас здесь только описание чтения и прочитанные файлы."
-          : "Данные из прежней модели подключений: описание чтения и история появятся после перехода на новые источники."}
-      </p>
+      <PoliciesSection
+        scopeKind="source"
+        scopeId={shown.id}
+        sourceId={shown.id}
+        spaceId={space.id}
+        journalSourceId={shown.id}
+      />
+
+      <SourceRunsSection source={shown} nowMs={nowMs} timeZone={space.timeZone} />
 
       <div className="flex flex-col gap-2">
         {openUrl && (

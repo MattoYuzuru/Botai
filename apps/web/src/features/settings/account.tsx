@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { api, call } from "@/api/client";
 import { humanMessage } from "@/api/errors";
 import { meQuery } from "@/api/queries";
+import { PoliciesSection } from "@/features/actions/policies-section";
 import { clearSnapshots } from "@/features/pwa/snapshots";
 import { AppearanceSettings } from "./appearance";
 
@@ -47,6 +48,7 @@ export function AccountSettings() {
           </Button>
         </div>
       </Card>
+      <PoliciesSection scopeKind="global" />
     </section>
   );
 }

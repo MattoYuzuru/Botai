@@ -170,7 +170,11 @@ async def test_secret_broker_stores_values_in_the_vault_and_hands_out_handles() 
     assert broker.handles == (handle,)
     assert await broker.resolve(handle) == "P@ssw0rd-FIXTURE"
     assert broker.mask("token P@ssw0rd-FIXTURE end") == "token *** end"
-    stored = await vault.get("u1", f"job-1:{handle}", SecretKind.TRANSIENT)
+    # The Vault scope is the handle ULID (the column is varchar(26), the v3 block-id width):
+    # a longer scope (e.g. "job-id:handle") is rejected by Postgres, so this width is the contract.
+    scope = handle.removeprefix("sec_")
+    assert len(scope) == 26
+    stored = await vault.get("u1", scope, SecretKind.TRANSIENT)
     assert stored is not None
     assert stored.get_secret_value() == "P@ssw0rd-FIXTURE"
     with pytest.raises(ValueError, match="invalid secret handle"):

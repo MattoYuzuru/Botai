@@ -1,25 +1,31 @@
 """Owner: W1. Tenant-scoped reads of the domain. `user_id` is always the first argument (NFR-001).
 
-W5's chat tools and W1's routers use these; W3's normalizer writes the tables directly.
+W5's chat tools and W1's routers use these; W3's normalizer writes the tables directly, and the v4
+playbook runner writes the same tables with `source_id` provenance (`sources/v4/domain.py`).
 
-Rules shared by every read:
+Rules shared by every read (`docs/v4/03-sources-and-ux.md` §4, §6.1):
 
-* the user's own rows only, and only from connections that are not `disabled` (the student
-  switched them off: their data leaves every view);
+* the user's own rows only, and only from live sources: a v3 connection the student switched off,
+  and a v4 source in `disabled`/`archived`, hide their data from every view — nothing is deleted;
 * `space_id`, when given, must be the user's space, otherwise `not_found`: a caller that guesses a
   foreign id learns nothing and an assistant that hallucinates one is told so instead of being
   handed an empty list;
 * the schedule of one university read from several sources is merged here, on every read and
-  nowhere else (`domain.merge`, FR-054): stored rows stay per source;
-* every row carries provenance (FR-012, NFR-007). `stale` is true when the connection needs
-  attention (`stale`, `needs_reauth`, `repairing`) or when its last sync is older than the
-  freshness of its adapter spec (`staleAfterMinutes`, see `sources.schedule`).
+  nowhere else (`domain.merge`, FR-054): stored rows stay per source, and the sources of both
+  provenance paths take part, ordered by `source_priorities` (v4, FR-062) or the legacy
+  `spaces.primary_schedule_connection_id` (v3), then by health and age;
+* a result that involves a v4 source is deduplicated across sources by the natural key of the kind
+  (title+date, code, name, url), the row of the higher-priority source kept; a v3-only result is
+  returned exactly as before, so enabling v4 never rewrites the v3 answers;
+* every row carries provenance (FR-012, NFR-007): `connectionId` for a v3 row, `sourceId` for a
+  v4 one. `stale` is true when the source needs attention (`stale`, `needs_reauth`, `repairing` for
+  a v3 connection; `stale`/`needs_reauth`/`error`/… for a v4 source) or when its last sync is
+  older than the freshness of its adapter spec.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,7 +36,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from botai.core.clock import SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import (
-    AdapterSpecRow,
     Assignment,
     Connection,
     Course,
@@ -43,7 +48,7 @@ from botai.db.models import (
     ScheduleEvent,
     Space,
 )
-from botai.domain import primary
+from botai.domain import sources
 from botai.domain.merge import NEARBY, SpacePlan, merge_events
 from botai.domain.schemas import (
     CourseOut,
@@ -58,8 +63,7 @@ from botai.domain.schemas import (
     ScheduleEventOut,
     TodayOut,
 )
-from botai.sources.schedule import freshness_of, is_stale
-from botai.spaces.views import display_title
+from botai.domain.sources import LiveSources
 
 # Section kinds of the API (FR-014) and the tables that feed them, in display order.
 _SECTION_TABLES = (
@@ -79,9 +83,6 @@ LIVE_DOCUMENT = ~exists().where(
     Connection.id == Document.connection_id, Connection.status == "disabled"
 )
 
-NEEDS_ATTENTION = frozenset({"stale", "needs_reauth", "repairing"})
-# "Not ok" on the home screen: the student may have to do or wait for something.
-ATTENTION_STATUSES = frozenset({"stale", "needs_reauth", "waiting_user", "repairing", "error"})
 DONE_STATES = frozenset({"submitted", "graded"})
 
 MAX_ROWS = 2000
@@ -96,15 +97,17 @@ _EVENT_KINDS = ("lecture", "seminar", "lab", "exam", "consultation", "other")
 _EVENT_FORMATS = ("offline", "online", "hybrid", "unknown")
 _DEADLINE_STATES = ("open", "submitted", "graded", "missed", "unknown")
 
-
-@dataclass(frozen=True, slots=True)
-class _Conn:
-    id: str
-    space_id: str
-    status: str
-    stale: bool
-    created_at: datetime
-    title: str
+# The `source_priorities` kind of a section: the v4 schedule vocabulary for the schedule, the
+# reading-kind vocabulary of the domain tables for the rest (`sources.v4.kinds`).
+_PRIORITY_KIND = {
+    "courses": "courses",
+    "scheduleEvents": "schedule",
+    "deadlines": "deadlines",
+    "grades": "grades",
+    "people": "people",
+    "locations": "locations",
+    "news": "news",
+}
 
 
 def _choice(value: str | None, allowed: tuple[str, ...], default: str) -> Any:
@@ -114,6 +117,16 @@ def _choice(value: str | None, allowed: tuple[str, ...], default: str) -> Any:
 def _aware(value: datetime) -> datetime:
     """A naive datetime from a caller is taken as UTC."""
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _moment(value: datetime | None) -> str:
+    """The comparable natural key of a moment: the same instant is the same string."""
+    return _aware(value).astimezone(UTC).isoformat() if value is not None else ""
+
+
+def _text_key(value: str | None) -> str:
+    """The comparable natural key of a human text: casefolded, ё as е, spacing collapsed."""
+    return " ".join((value or "").casefold().replace("ё", "е").split())
 
 
 async def _require_space(session: AsyncSession, user_id: str, space_id: str | None) -> None:
@@ -126,79 +139,76 @@ async def _require_space(session: AsyncSession, user_id: str, space_id: str | No
         raise BotaiError(ErrorCode.NOT_FOUND, "Пространство не найдено")
 
 
-async def _connections(
-    session: AsyncSession, user_id: str, *, now: datetime, space_id: str | None = None
-) -> dict[str, _Conn]:
-    stmt = (
-        select(Connection, AdapterSpecRow.spec)
-        .outerjoin(AdapterSpecRow, AdapterSpecRow.id == Connection.spec_id)
-        .where(Connection.user_id == user_id, Connection.status != "disabled")
-        .order_by(Connection.created_at, Connection.id)
-    )
-    if space_id is not None:
-        stmt = stmt.where(Connection.space_id == space_id)
-    out: dict[str, _Conn] = {}
-    for conn, spec in (await session.execute(stmt)).all():
-        stale = conn.status in NEEDS_ATTENTION or is_stale(
-            now, conn.last_sync_at, freshness_of(spec or {})
-        )
-        out[conn.id] = _Conn(
-            conn.id, conn.space_id, conn.status, stale, conn.created_at, display_title(conn)
-        )
-    return out
+# --- provenance and joins between the two paths -------------------------------------------------
 
 
-def _prov(row: Any, conn: _Conn) -> Provenance:
+def _prov(row: Any, live: LiveSources) -> Provenance:
+    source = live.resolve(row)
     return Provenance(
-        connection_id=conn.id,
-        space_id=conn.space_id,
+        connection_id=row.connection_id,
+        source_id=row.source_id,
+        space_id=source.space_id,
         source_url=row.source_url,
         open_url=row.open_url,
         fetched_at=row.fetched_at,
-        stale=conn.stale,
+        stale=source.stale,
     )
 
 
-def _conn_of(row: Any, conns: dict[str, _Conn]) -> tuple[str, _Conn]:
-    """The v3 connection of a domain row; every caller selects rows by connection_id.in_(conns)."""
-    connection_id = row.connection_id
-    if connection_id is None or connection_id not in conns:
-        raise BotaiError(ErrorCode.INTERNAL, "Доменная запись без действующего подключения")
-    return connection_id, conns[connection_id]
+def _event_source(row: Any, live: LiveSources) -> EventSource:
+    source = live.resolve(row)
+    return EventSource(connection_id=row.connection_id, source_id=row.source_id, title=source.title)
 
 
 async def _course_titles(
-    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str | None, str | None]]
+    session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Any]
 ) -> dict[tuple[str, str], str]:
-    wanted = {(c, e) for c, e in pairs if c is not None and e}
+    """Titles of the courses the given rows refer to, looked up by the row's own provenance: a v3
+    row resolves against its connection's courses, a v4 row against its source's (one query)."""
+    wanted = {row.course_external_id for row in rows if row.course_external_id}
     if not wanted:
         return {}
-    rows = await session.execute(
-        select(Course.connection_id, Course.external_id, Course.title).where(
+    found = await session.execute(
+        select(Course.connection_id, Course.source_id, Course.external_id, Course.title).where(
             Course.user_id == user_id,
-            Course.connection_id.in_({c for c, _ in wanted}),
-            Course.external_id.in_({e for _, e in wanted}),
+            live.filter_of(Course),
+            Course.external_id.in_(wanted),
         )
     )
-    return {(c, e): t for c, e, t in rows.all() if c is not None and (c, e) in wanted}
+    out: dict[tuple[str, str], str] = {}
+    for connection_id, source_id, external_id, title in found.all():
+        key = source_id if source_id is not None and source_id in live.sources else connection_id
+        if key is not None:
+            out[(key, external_id)] = title
+    return out
 
 
 async def _assignment_descriptions(
-    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str | None, str | None]]
+    session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Any]
 ) -> dict[tuple[str, str], str]:
-    """Task text of a deadline comes from its assignment, when the source gave one."""
-    wanted = {(c, e) for c, e in pairs if c is not None and e}
+    """Task text of a deadline comes from its assignment, when the same source gave one."""
+    wanted = {row.assignment_external_id for row in rows if row.assignment_external_id}
     if not wanted:
         return {}
-    rows = await session.execute(
-        select(Assignment.connection_id, Assignment.external_id, Assignment.description).where(
+    found = await session.execute(
+        select(
+            Assignment.connection_id,
+            Assignment.source_id,
+            Assignment.external_id,
+            Assignment.description,
+        ).where(
             Assignment.user_id == user_id,
-            Assignment.connection_id.in_({c for c, _ in wanted}),
-            Assignment.external_id.in_({e for _, e in wanted}),
+            live.filter_of(Assignment),
+            Assignment.external_id.in_(wanted),
             Assignment.description.is_not(None),
         )
     )
-    return {(c, e): d for c, e, d in rows.all() if c is not None and (c, e) in wanted and d}
+    out: dict[tuple[str, str], str] = {}
+    for connection_id, source_id, external_id, description in found.all():
+        key = source_id if source_id is not None and source_id in live.sources else connection_id
+        if key is not None and description:
+            out[(key, external_id)] = description
+    return out
 
 
 # --- sections -----------------------------------------------------------------------------------
@@ -207,19 +217,15 @@ async def _assignment_descriptions(
 async def section_counts(
     session: AsyncSession, user_id: str, space_id: str
 ) -> list[tuple[str, int]]:
-    """How many rows of each kind the live connections of one space have (documents: the space's,
+    """How many rows of each kind the live sources of one space have (documents: the space's,
     but not those of a source switched off)."""
-    connection_ids = select(Connection.id).where(
-        Connection.user_id == user_id,
-        Connection.space_id == space_id,
-        Connection.status != "disabled",
-    )
+    live = await sources.load(session, user_id, space_id=space_id)
     counts: list[tuple[str, int]] = []
     for kind, model in _SECTION_TABLES:
         n = await session.scalar(
             select(func.count())
             .select_from(model)
-            .where(model.user_id == user_id, model.connection_id.in_(connection_ids))
+            .where(model.user_id == user_id, live.filter_of(model))
         )
         counts.append((kind, int(n or 0)))
     docs = await session.scalar(
@@ -253,23 +259,30 @@ def _mark_conflicts(events: list[ScheduleEventOut]) -> None:
 async def _merge_plans(
     session: AsyncSession,
     user_id: str,
-    conns: dict[str, _Conn],
+    live: LiveSources,
     *,
     start: datetime,
     end: datetime,
 ) -> dict[str, SpacePlan]:
-    """How each university with more than one schedule source is merged (`domain.merge`)."""
-    sources = await primary.schedule_sources(session, user_id, conns.values())
-    several = {sid: found for sid, found in sources.items() if len(found.order) > 1}
+    """How each university with more than one schedule source is merged (`domain.merge`): the v4
+    priority order first, the legacy v3 primary after it, the rest by health and age."""
+    orders = await sources.schedule_orders(session, user_id, live)
+    several = {sid: found for sid, found in orders.items() if len(found.order) > 1}
     if not several:
         return {}
-    coverage = await primary.coverage_of(
-        session, user_id, [found.order[0] for found in several.values()], start=start, end=end
+    coverage = await sources.coverage_of(
+        session,
+        user_id,
+        live,
+        [found.order[0] for found in several.values()],
+        start=start,
+        end=end,
     )
+    titles = live.titles()
     return {
         sid: SpacePlan(
             order=found.order,
-            titles={cid: conns[cid].title for cid in found.order},
+            titles=titles,
             zone=_zone(found.time_zone),
             coverage=coverage.get(found.order[0]),
         )
@@ -278,14 +291,15 @@ async def _merge_plans(
 
 
 async def _event_outs(
-    session: AsyncSession, user_id: str, rows: Sequence[ScheduleEvent], conns: dict[str, _Conn]
+    session: AsyncSession,
+    user_id: str,
+    live: LiveSources,
+    rows: Sequence[ScheduleEvent],
 ) -> list[ScheduleEventOut]:
-    titles = await _course_titles(
-        session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
-    )
+    titles = await _course_titles(session, user_id, live, rows)
     out: list[ScheduleEventOut] = []
     for r in rows:
-        connection_id, connection = _conn_of(r, conns)
+        source = live.resolve(r)
         out.append(
             ScheduleEventOut(
                 id=r.id,
@@ -296,7 +310,7 @@ async def _event_outs(
                 format=_choice(r.format, _EVENT_FORMATS, "unknown"),
                 location=r.location_text,
                 teacher=r.teacher_text,
-                course_title=titles.get((connection_id, r.course_external_id or "")),
+                course_title=titles.get((source.id, r.course_external_id or "")),
                 url=r.url,
                 kind_text=r.kind_text,
                 address=r.address,
@@ -306,8 +320,8 @@ async def _event_outs(
                 attributes=[EventAttribute(**attribute) for attribute in r.attributes],
                 changed=r.changed,
                 conflicts_with=[],
-                provenance=_prov(r, connection),
-                sources=[EventSource(connection_id=connection_id, title=connection.title)],
+                provenance=_prov(r, live),
+                sources=[_event_source(r, live)],
             )
         )
     return out
@@ -316,20 +330,17 @@ async def _event_outs(
 async def _events(
     session: AsyncSession,
     user_id: str,
-    conns: dict[str, _Conn],
+    live: LiveSources,
     *,
     start: datetime,
     end: datetime,
 ) -> list[ScheduleEventOut]:
-    """Events overlapping [start, end) with conflicts computed against *all* live connections,
+    """Events overlapping [start, end) with conflicts computed against *all* live sources,
     including events just outside the window that overlap one inside it. Classes of one university
     that several of its sources describe are merged first (FR-054): the primary source decides."""
-    if not conns:
+    if live.is_empty:
         return []
-    overlap = (
-        ScheduleEvent.user_id == user_id,
-        ScheduleEvent.connection_id.in_(list(conns)),
-    )
+    overlap = (ScheduleEvent.user_id == user_id, live.filter_of(ScheduleEvent))
     bounds = (
         await session.execute(
             select(func.min(ScheduleEvent.starts_at), func.max(ScheduleEvent.ends_at)).where(
@@ -341,7 +352,7 @@ async def _events(
     first, last = cast("tuple[datetime | None, datetime | None]", tuple(bounds))
     if first is None or last is None:  # nothing in the window
         return []
-    plans = await _merge_plans(session, user_id, conns, start=start, end=end)
+    plans = await _merge_plans(session, user_id, live, start=start, end=end)
     margin = MERGE_MARGIN if plans else timedelta(0)
     lo, hi = min(first, start) - margin, max(last, end) + margin
     rows = (
@@ -352,7 +363,7 @@ async def _events(
             .limit(MAX_ROWS)
         )
     ).all()
-    events = merge_events(await _event_outs(session, user_id, rows, conns), plans)
+    events = merge_events(await _event_outs(session, user_id, live, rows), plans)
     _mark_conflicts(events)
     return [e for e in events if e.starts_at < end and e.ends_at > start]
 
@@ -366,11 +377,11 @@ async def source_events(
     end: datetime,
     now: datetime | None = None,
 ) -> list[ScheduleEventOut]:
-    """The classes of ONE source overlapping [start, end), as the source has them: no merge, no
+    """The classes of ONE v3 source overlapping [start, end), as the source has them: no merge, no
     conflicts (the agent compares two sources with it). A disabled or foreign source is empty."""
     now = now or SystemClock().now()
-    conns = await _connections(session, user_id, now=now)
-    if connection_id not in conns:
+    live = await sources.load(session, user_id, now=now)
+    if connection_id not in live.connections:
         return []
     rows = (
         await session.scalars(
@@ -385,7 +396,7 @@ async def source_events(
             .limit(MAX_ROWS)
         )
     ).all()
-    return await _event_outs(session, user_id, rows, conns)
+    return await _event_outs(session, user_id, live, rows)
 
 
 async def list_events(
@@ -401,14 +412,75 @@ async def list_events(
     overlapping classes from other spaces, also when `space_id` hides those from the result."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now)
-    events = await _events(session, user_id, conns, start=_aware(start), end=_aware(end))
+    live = await sources.load(session, user_id, now=now)
+    events = await _events(session, user_id, live, start=_aware(start), end=_aware(end))
     if space_id is not None:
         events = [e for e in events if e.provenance.space_id == space_id]
     return events
 
 
 # --- deadlines ----------------------------------------------------------------------------------
+
+
+def _deadline_key(row: Deadline, live: LiveSources) -> tuple[str, str, str]:
+    return (
+        live.resolve(row).space_id,
+        _text_key(row.title),
+        _moment(row.effective_due_at or row.due_at),
+    )
+
+
+async def _deadlines(
+    session: AsyncSession,
+    user_id: str,
+    live: LiveSources,
+    *,
+    include_done: bool,
+    due_from: datetime | None = None,
+    limit: int = MAX_ROWS,
+) -> list[DeadlineOut]:
+    if live.is_empty:
+        return []
+    due = func.coalesce(Deadline.effective_due_at, Deadline.due_at)
+    stmt = select(Deadline).where(Deadline.user_id == user_id, live.filter_of(Deadline))
+    if not include_done:
+        stmt = stmt.where(Deadline.state.not_in(sorted(DONE_STATES)))
+    if due_from is not None:
+        stmt = stmt.where(due >= due_from)
+    rows = (
+        await session.scalars(stmt.order_by(due.asc().nulls_last(), Deadline.id).limit(limit))
+    ).all()
+    kind = _PRIORITY_KIND["deadlines"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[Deadline] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _deadline_key(row, live),
+        )
+    ]
+    titles = await _course_titles(session, user_id, live, kept)
+    texts = await _assignment_descriptions(session, user_id, live, kept)
+    out: list[DeadlineOut] = []
+    for r in kept:
+        source = live.resolve(r)
+        out.append(
+            DeadlineOut(
+                id=r.id,
+                title=r.title,
+                due_at=r.due_at,
+                effective_due_at=r.effective_due_at,
+                state=_choice(r.state, _DEADLINE_STATES, "unknown"),
+                course_title=titles.get((source.id, r.course_external_id or "")),
+                description=texts.get((source.id, r.assignment_external_id or "")),
+                url=r.url,
+                provenance=_prov(r, live),
+            )
+        )
+    return out
 
 
 async def list_deadlines(
@@ -423,58 +495,19 @@ async def list_deadlines(
     graded work is left out unless `include_done`."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now, space_id=space_id)
-    return await _deadlines(session, user_id, conns, include_done=include_done)
-
-
-async def _deadlines(
-    session: AsyncSession,
-    user_id: str,
-    conns: dict[str, _Conn],
-    *,
-    include_done: bool,
-    due_from: datetime | None = None,
-    limit: int = MAX_ROWS,
-) -> list[DeadlineOut]:
-    if not conns:
-        return []
-    due = func.coalesce(Deadline.effective_due_at, Deadline.due_at)
-    stmt = select(Deadline).where(
-        Deadline.user_id == user_id, Deadline.connection_id.in_(list(conns))
-    )
-    if not include_done:
-        stmt = stmt.where(Deadline.state.not_in(sorted(DONE_STATES)))
-    if due_from is not None:
-        stmt = stmt.where(due >= due_from)
-    rows = (
-        await session.scalars(stmt.order_by(due.asc().nulls_last(), Deadline.id).limit(limit))
-    ).all()
-    titles = await _course_titles(
-        session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
-    )
-    texts = await _assignment_descriptions(
-        session, user_id, ((r.connection_id, r.assignment_external_id) for r in rows)
-    )
-    out: list[DeadlineOut] = []
-    for r in rows:
-        connection_id, connection = _conn_of(r, conns)
-        out.append(
-            DeadlineOut(
-                id=r.id,
-                title=r.title,
-                due_at=r.due_at,
-                effective_due_at=r.effective_due_at,
-                state=_choice(r.state, _DEADLINE_STATES, "unknown"),
-                course_title=titles.get((connection_id, r.course_external_id or "")),
-                description=texts.get((connection_id, r.assignment_external_id or "")),
-                url=r.url,
-                provenance=_prov(r, connection),
-            )
-        )
-    return out
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    return await _deadlines(session, user_id, live, include_done=include_done)
 
 
 # --- the rest of the domain ---------------------------------------------------------------------
+
+
+def _course_key(row: Course, live: LiveSources) -> tuple[str, str, str]:
+    return (
+        live.resolve(row).space_id,
+        _text_key(row.code) or _text_key(row.title),
+        _text_key(row.term),
+    )
 
 
 async def list_courses(
@@ -487,33 +520,53 @@ async def list_courses(
     """Courses the sources still list (archived ones, which vanished from the source, are out)."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now, space_id=space_id)
-    if not conns:
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
         return []
-    rows = await session.scalars(
-        select(Course)
-        .where(
-            Course.user_id == user_id,
-            Course.connection_id.in_(list(conns)),
-            Course.archived.is_(False),
-        )
-        .order_by(Course.title, Course.id)
-        .limit(MAX_ROWS)
-    )
-    out: list[CourseOut] = []
-    for r in rows:
-        _, connection = _conn_of(r, conns)
-        out.append(
-            CourseOut(
-                id=r.id,
-                title=r.title,
-                code=r.code,
-                term=r.term,
-                url=r.url,
-                provenance=_prov(r, connection),
+    rows = list(
+        await session.scalars(
+            select(Course)
+            .where(
+                Course.user_id == user_id,
+                live.filter_of(Course),
+                Course.archived.is_(False),
             )
+            .order_by(Course.title, Course.id)
+            .limit(MAX_ROWS)
         )
-    return out
+    )
+    kind = _PRIORITY_KIND["courses"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[Course] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _course_key(row, live),
+        )
+    ]
+    return [
+        CourseOut(
+            id=r.id,
+            title=r.title,
+            code=r.code,
+            term=r.term,
+            url=r.url,
+            provenance=_prov(r, live),
+        )
+        for r in kept
+    ]
+
+
+def _grade_key(row: Grade, live: LiveSources) -> tuple[str, str, str, str]:
+    return (
+        live.resolve(row).space_id,
+        _text_key(row.title),
+        _text_key(row.value),
+        _moment(row.graded_at),
+    )
 
 
 async def list_grades(
@@ -526,23 +579,33 @@ async def list_grades(
     """Newest grades first; ungraded-date rows last."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now, space_id=space_id)
-    if not conns:
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
         return []
-    rows = (
+    rows = list(
         await session.scalars(
             select(Grade)
-            .where(Grade.user_id == user_id, Grade.connection_id.in_(list(conns)))
+            .where(Grade.user_id == user_id, live.filter_of(Grade))
             .order_by(Grade.graded_at.desc().nulls_last(), Grade.title, Grade.id)
             .limit(MAX_ROWS)
         )
-    ).all()
-    titles = await _course_titles(
-        session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
     )
+    kind = _PRIORITY_KIND["grades"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[Grade] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _grade_key(row, live),
+        )
+    ]
+    titles = await _course_titles(session, user_id, live, kept)
     out: list[GradeOut] = []
-    for r in rows:
-        connection_id, connection = _conn_of(r, conns)
+    for r in kept:
+        source = live.resolve(r)
         out.append(
             GradeOut(
                 id=r.id,
@@ -550,12 +613,16 @@ async def list_grades(
                 value=r.value,
                 scale=r.scale,
                 weight=r.weight,
-                course_title=titles.get((connection_id, r.course_external_id or "")),
+                course_title=titles.get((source.id, r.course_external_id or "")),
                 graded_at=r.graded_at,
-                provenance=_prov(r, connection),
+                provenance=_prov(r, live),
             )
         )
     return out
+
+
+def _person_key(row: Person, live: LiveSources) -> tuple[str, str]:
+    return (live.resolve(row).space_id, _text_key(row.name))
 
 
 async def list_people(
@@ -567,28 +634,47 @@ async def list_people(
 ) -> list[PersonOut]:
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now, space_id=space_id)
-    if not conns:
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
         return []
-    rows = await session.scalars(
-        select(Person)
-        .where(Person.user_id == user_id, Person.connection_id.in_(list(conns)))
-        .order_by(Person.name, Person.id)
-        .limit(MAX_ROWS)
-    )
-    out: list[PersonOut] = []
-    for r in rows:
-        _, connection = _conn_of(r, conns)
-        out.append(
-            PersonOut(
-                id=r.id,
-                name=r.name,
-                role=r.role,
-                email=r.email,
-                provenance=_prov(r, connection),
-            )
+    rows = list(
+        await session.scalars(
+            select(Person)
+            .where(Person.user_id == user_id, live.filter_of(Person))
+            .order_by(Person.name, Person.id)
+            .limit(MAX_ROWS)
         )
-    return out
+    )
+    kind = _PRIORITY_KIND["people"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[Person] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _person_key(row, live),
+        )
+    ]
+    return [
+        PersonOut(
+            id=r.id,
+            name=r.name,
+            role=r.role,
+            email=r.email,
+            provenance=_prov(r, live),
+        )
+        for r in kept
+    ]
+
+
+def _news_key(row: NewsItem, live: LiveSources) -> tuple[str, str, str]:
+    return (
+        live.resolve(row).space_id,
+        _text_key(row.url) or _text_key(row.title),
+        _moment(row.published_at),
+    )
 
 
 async def list_news(
@@ -601,29 +687,40 @@ async def list_news(
     """Newest first."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
-    conns = await _connections(session, user_id, now=now, space_id=space_id)
-    if not conns:
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
         return []
-    rows = await session.scalars(
-        select(NewsItem)
-        .where(NewsItem.user_id == user_id, NewsItem.connection_id.in_(list(conns)))
-        .order_by(NewsItem.published_at.desc(), NewsItem.id)
-        .limit(MAX_ROWS)
-    )
-    out: list[NewsOut] = []
-    for r in rows:
-        _, connection = _conn_of(r, conns)
-        out.append(
-            NewsOut(
-                id=r.id,
-                title=r.title,
-                body=r.body,
-                published_at=r.published_at,
-                url=r.url,
-                provenance=_prov(r, connection),
-            )
+    rows = list(
+        await session.scalars(
+            select(NewsItem)
+            .where(NewsItem.user_id == user_id, live.filter_of(NewsItem))
+            .order_by(NewsItem.published_at.desc(), NewsItem.id)
+            .limit(MAX_ROWS)
         )
-    return out
+    )
+    kind = _PRIORITY_KIND["news"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[NewsItem] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _news_key(row, live),
+        )
+    ]
+    return [
+        NewsOut(
+            id=r.id,
+            title=r.title,
+            body=r.body,
+            published_at=r.published_at,
+            url=r.url,
+            provenance=_prov(r, live),
+        )
+        for r in kept
+    ]
 
 
 # --- home screen --------------------------------------------------------------------------------
@@ -638,7 +735,7 @@ def _zone(name: str | None) -> ZoneInfo:
 
 async def today(session: AsyncSession, user_id: str, *, now: datetime | None = None) -> TodayOut:
     """Today's classes across spaces (each space's own calendar day), the nearest open deadlines
-    and the connections that need attention. `date` is today in the oldest space's time zone."""
+    and the sources that need attention. `date` is today in the oldest space's time zone."""
     now = _aware(now or SystemClock().now())
     spaces = (
         await session.execute(
@@ -655,15 +752,15 @@ async def today(session: AsyncSession, user_id: str, *, now: datetime | None = N
         return local, local + timedelta(days=1)
 
     windows = {sid: day_of(z) for sid, z in zones.items()}
-    conns = await _connections(session, user_id, now=now)
+    live = await sources.load(session, user_id, now=now)
 
     events: list[ScheduleEventOut] = []
-    if windows and conns:
+    if windows and not live.is_empty:
         lo = min(w[0] for w in windows.values())
         hi = max(w[1] for w in windows.values())
         events = [
             e
-            for e in await _events(session, user_id, conns, start=lo, end=hi)
+            for e in await _events(session, user_id, live, start=lo, end=hi)
             if e.starts_at < windows[e.provenance.space_id][1]
             and e.ends_at > windows[e.provenance.space_id][0]
         ]
@@ -671,15 +768,14 @@ async def today(session: AsyncSession, user_id: str, *, now: datetime | None = N
     deadlines = await _deadlines(
         session,
         user_id,
-        conns,
+        live,
         include_done=False,
         due_from=day_of(home)[0],
         limit=TODAY_DEADLINES,
     )
-    attention = [c.id for c in conns.values() if c.status in ATTENTION_STATUSES or c.stale]
     return TodayOut(
         date=now.astimezone(home).date().isoformat(),
         events=events,
         deadlines=deadlines,
-        attention=attention,
+        attention=live.attention(),
     )

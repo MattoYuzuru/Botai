@@ -746,10 +746,16 @@ async def add_document_url(env: ChatEnv, args: dict[str, Any]) -> str:
         try:
             if university_id:
                 space = await service.ensure_space(session, env.user_id, university_id)
-            elif env.space_id:
-                space = await repo.get_space(session, env.user_id, env.space_id)
             else:
-                space = await service.ensure_space(session, env.user_id, None)
+                # A file belongs to a source of a university (03 §1.6): the thread's university,
+                # or the student's only one. With no clear university the agent asks instead of
+                # opening the removed "My materials".
+                space = await service.default_space(session, env.user_id, env.space_id)
+                if space is None:
+                    return (
+                        "Результат: не запущено. Не понял, к какому вузу отнести документ: "
+                        "добавьте вуз или укажите university_id."
+                    )
             started = await documents_service.start_url(
                 session,
                 env.user_id,
@@ -1088,7 +1094,10 @@ SPECS = {
         {
             "url": {**_TEXT, "description": "HTTPS-ссылка на документ"},
             "title": {**_TEXT, "description": "Название документа, если студент его назвал"},
-            "university_id": {**_TEXT, "description": "Вуз документа; без него — «Мои материалы»"},
+            "university_id": {
+                **_TEXT,
+                "description": "Вуз документа; без него — единственный вуз студента",
+            },
         },
         ["url"],
     ),

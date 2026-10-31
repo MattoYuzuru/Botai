@@ -305,6 +305,24 @@ sandbox-контейнер сокета не получает и секрето�
 `agent_runs` остаются в БД. Sandbox-образ можно оставить: он не мешает v3. Удалять
 `agent-workspaces`/`source-artifacts` без нужды нельзя — там артефакты источников.
 
+## Выпуск `e8b8602` (2026-10-31, поздно вечером)
+
+Первый выпуск с v4-кодом и pgvector. CI на SHA — зелёный (19 м 56 с), deploy-workflow —
+успех (2 м 55 с), отката не было. Проверено после выпуска (read-only):
+
+| Что | Результат |
+|---|---|
+| Образ | `ghcr.io/mattoyuzuru/botai-app:e8b86020cc8f`, revision label = полный SHA; sandbox-образ `botai-sandbox:e8b86020cc8f` на месте |
+| Postgres | `pgvector/pgvector:pg17`, PG 17.11 (Debian), `alembic_version=f2b7d9c4a6e8`, extension `vector 0.8.7`; предупреждений о collation в логах нет (`datcollversion` пуст при initdb provider=c) |
+| Docker в worker | `docker version` → сервер 29.8.2; `DOCKER_GID=986`; `/var/run/docker.sock` доступен только контейнерам api/worker |
+| Песочница кода | smoke через реальный `ContainerExecutor` из worker: контейнер запустился, `uid 10001`, env worker'а/`BOTAI_*`/`DATABASE_URL` не видны, docker-сокета внутри нет, второй вызов прочитал файл первого, остатков `label=botai.agent.sandbox=1` нет |
+| Движок | `BOTAI_AGENT_ENGINE=v3` (флаг намеренно выключен до следующего среза), `BOTAI_AGENT_EXECUTOR=container`, `BOTAI_SOURCE_ARTIFACTS_DIR=/srv/botai/source-artifacts` |
+| Сервис | `/api/health` ok; worker/proxy — без ошибок в логах; Caddy access-лог жив; диагностика `true` сохранена (`diagnostics=keep`) |
+
+**Следующий шаг:** выпуск среза с чтением v4-данных экранами и UI трасс/политик → smoke v4-задачи
+→ `BOTAI_AGENT_ENGINE=v4` в `compose.vars` → повторная проверка (см. раздел «v4-агент в
+production»). Откат флага — одна строка + перезапуск api/worker.
+
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
 | Параметр | Значение |

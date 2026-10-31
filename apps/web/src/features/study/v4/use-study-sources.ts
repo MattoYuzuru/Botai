@@ -25,7 +25,7 @@ export interface StudySource {
   /** Страница интерфейса источника для «Открыть». */
   entryUrl: string | null;
   origin: string | null;
-  /** Тред последней задачи источника (в прежней модели известен; в v4 появится вместе с API задач). */
+  /** Тред последней задачи источника — отсюда карточка ведёт в чат этой задачи. */
   threadId: string | null;
   playbookId: string | null;
   trust: string | null;
@@ -98,7 +98,7 @@ export function sourceFromApi(source: SourceOut): StudySource {
     errorCode: error.code,
     entryUrl: source.entryUrl,
     origin: null,
-    threadId: null,
+    threadId: source.threadId ?? null,
     playbookId: source.playbookId,
     trust: source.trust,
     priority: source.priority,
@@ -114,14 +114,11 @@ export function sourceFromApi(source: SourceOut): StudySource {
  * показывает скелетон, чтобы не выдавать «источников нет» за факт.
  */
 export function useStudySources(space: SpaceInfo): StudySourcesResult {
-  const enabled = Boolean(space.universityId);
-  const query = useQuery({ ...sourcesQuery(space.id), enabled });
+  // В v4 пространство всегда вуз: API источников доступен для каждого пространства.
+  const query = useQuery(sourcesQuery(space.id));
 
   const fallback = useMemo(() => space.connections.map(connectionToStudySource), [space.connections]);
 
-  if (!enabled) {
-    return { sources: fallback, mode: "connections", loading: false, error: null };
-  }
   if (query.data) {
     return { sources: query.data.map(sourceFromApi), mode: "v4", loading: false, error: null };
   }

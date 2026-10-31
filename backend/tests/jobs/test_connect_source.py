@@ -443,23 +443,24 @@ async def test_list_universities_shows_sources_statuses_tasks_and_links(env: Env
     assert f"university_id={HSE}" in found
 
 
-async def test_a_public_document_becomes_a_task_of_this_thread_once(env: Env) -> None:
+async def test_a_public_document_goes_to_the_only_university_and_starts_once(env: Env) -> None:
     client, user = await student(env)
+    space = (await client.post("/api/v1/spaces", json={"title": "Фейкуни"})).json()
     thread = await thread_of(client)
     chat = tools(env, user, thread)
     result = await add_document_url(chat, {"url": SHEET, "title": "Список группы"})
     assert result.startswith("Результат: запущено")
-    assert "Мои материалы" in result
+    assert "Фейкуни" in result  # the student's only university, not a removed "materials" bucket
     (job,) = await jobs_of(env, user, "ingest")
     assert job.thread_id == thread
     assert job.payload["source"]["url"] == SHEET
     async with env.sm() as session:
-        space = await session.scalar(select(Space).where(Space.user_id == user))
+        row = await session.get(Space, space["id"])
         conn = await session.get(Connection, job.connection_id)
-    assert space is not None
-    assert (space.title, space.university_id) == ("Мои материалы", None)
+    assert row is not None
+    assert row.university_id is not None
     assert conn is not None
-    assert (conn.kind, conn.space_id) == ("sheet", space.id)
+    assert (conn.kind, conn.space_id) == ("sheet", row.id)
     (card,) = chat.blocks
     assert isinstance(card, TaskBlock)
     assert card.kind == "ingest"
@@ -468,6 +469,17 @@ async def test_a_public_document_becomes_a_task_of_this_thread_once(env: Env) ->
     assert len(await jobs_of(env, user, "ingest")) == 1
     refused = await add_document_url(chat, {"url": "http://example.org/a.pdf"})
     assert refused.startswith("Результат: не запущено")
+
+
+async def test_a_public_document_without_a_university_is_refused_honestly(env: Env) -> None:
+    """No university to put the source into, and no "materials" bucket to hide it in: the agent
+    says so instead of starting a task whose document has no university."""
+    client, user = await student(env)
+    chat = tools(env, user, await thread_of(client))
+    result = await add_document_url(chat, {"url": SHEET, "title": "Список группы"})
+    assert result.startswith("Результат: не запущено")
+    assert "Не понял, к какому вузу" in result
+    assert await jobs_of(env, user, "ingest") == []
 
 
 async def test_a_document_of_a_university_goes_to_its_space(env: Env) -> None:

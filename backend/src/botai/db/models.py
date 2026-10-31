@@ -108,8 +108,10 @@ class University(Base):
 
 
 class Space(Base):
-    """One university of one user (`university_id` set), or the single "My materials" space of a
-    user for documents outside any university (`university_id` NULL)."""
+    """One university of one user. A space always has a university: the old "My materials" space
+    (a space with `university_id` NULL) was removed from the model (`docs/v4/03-sources-and-ux.md`
+    §1.6). The column stays nullable on the way from v3 to v4 so legacy rows keep their data; the
+    API hides such rows and no code creates one (the migration drops the old unique index)."""
 
     __tablename__ = "spaces"
     __table_args__ = (
@@ -120,16 +122,12 @@ class Space(Base):
             unique=True,
             postgresql_where=text("university_id IS NOT NULL"),
         ),
-        Index(
-            "uq_spaces_user_id_materials",
-            "user_id",
-            unique=True,
-            postgresql_where=text("university_id IS NULL"),
-        ),
     )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
-    university_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("universities.id"))
+    university_id: Mapped[str | None] = mapped_column(
+        String(50), ForeignKey("universities.id")
+    )  # NULL only on legacy rows of the removed "My materials"; new spaces always set it
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     accent_hue: Mapped[float] = mapped_column(Float, nullable=False, default=262.2)
     time_zone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")

@@ -1146,6 +1146,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources/{source_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Source Runs
+         * @description The source's run history, newest first: jobs, their outcome and the agent trace id.
+         *
+         *     Links a job to the source by the dispatch's connection link, the job payload (`source_id`) or
+         *     the run that saved the source's artifacts. A foreign or missing source is 404, as everywhere.
+         */
+        get: operations["list_source_runs_api_v1_sources__source_id__runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/{source_id}/state": {
         parameters: {
             query?: never;
@@ -2063,11 +2086,14 @@ export interface components {
         /**
          * EventSource
          * @description A source that contributed to a class (FR-054): the first one is the university's primary
-         *     schedule source, whose values the class shows.
+         *     schedule source, whose values the class shows. A v3 source names its connection, a v4 source
+         *     its source record; exactly one of the two is set.
          */
         EventSource: {
             /** Connectionid */
-            connectionId: string;
+            connectionId?: string | null;
+            /** Sourceid */
+            sourceId?: string | null;
             /** Title */
             title: string;
         };
@@ -2527,10 +2553,15 @@ export interface components {
             /** Version */
             version?: number | null;
         };
-        /** Provenance */
+        /**
+         * Provenance
+         * @description Where a record was read and when. Two provenance paths coexist while v3 and v4 share the
+         *     domain tables: a v3 row names its `connectionId`, a v4 row its `sourceId` (docs/v4/03 §6.1).
+         *     Both are null-capable for that reason; a response always has at least one of them.
+         */
         Provenance: {
             /** Connectionid */
-            connectionId: string;
+            connectionId?: string | null;
             /**
              * Fetchedat
              * Format: date-time
@@ -2538,6 +2569,8 @@ export interface components {
             fetchedAt: string;
             /** Openurl */
             openUrl?: string | null;
+            /** Sourceid */
+            sourceId?: string | null;
             /** Sourceurl */
             sourceUrl: string;
             /** Spaceid */
@@ -2845,6 +2878,8 @@ export interface components {
             spaceId: string;
             /** Status */
             status: string;
+            /** Threadid */
+            threadId?: string | null;
             /** Title */
             title: string;
             /** Trust */
@@ -2891,6 +2926,41 @@ export interface components {
             /** Trust */
             trust?: string | null;
         };
+        /**
+         * SourceRunOut
+         * @description One run of a source as the source card shows it: a job, its outcome and its agent trace.
+         *
+         *     The source of a run is the linked v3 connection (`Source.config["connection_id"]`), the job
+         *     payload (`source_id`), or the run that saved the source's artifacts — whichever links the job.
+         */
+        SourceRunOut: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Errorcode */
+            errorCode: string | null;
+            /** Errordetail */
+            errorDetail: string | null;
+            /** Finishedat */
+            finishedAt: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Ok */
+            ok: boolean | null;
+            /** Runid */
+            runId: string | null;
+            /** Sourceid */
+            sourceId: string;
+            /** Startedat */
+            startedAt: string | null;
+            /** Status */
+            status: string;
+            /** Threadid */
+            threadId: string | null;
+        };
         /** SourceStateOut */
         SourceStateOut: {
             /** Cursor */
@@ -2929,7 +2999,7 @@ export interface components {
         };
         /**
          * SpaceOut
-         * @description A university of the student (or "My materials", `universityId` null).
+         * @description A university of the student: a space always has one ("My materials" is gone, 03 §1.6).
          */
         SpaceOut: {
             /** Accenthue */
@@ -2950,7 +3020,7 @@ export interface components {
             /** Title */
             title: string;
             /** Universityid */
-            universityId: string | null;
+            universityId: string;
         };
         /** SpaceUpdate */
         SpaceUpdate: {
@@ -5280,6 +5350,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_source_runs_api_v1_sources__source_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRunOut"][];
                 };
             };
             /** @description Validation Error */

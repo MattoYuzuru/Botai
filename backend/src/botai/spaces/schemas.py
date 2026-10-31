@@ -48,13 +48,13 @@ class SpaceUpdate(ApiModel):
 
 
 class SpaceOut(ApiModel):
-    """A university of the student (or "My materials", `universityId` null)."""
+    """A university of the student: a space always has one ("My materials" is gone, 03 §1.6)."""
 
     id: str
     title: str
     short_title: str
     aliases: list[str]
-    university_id: str | None
+    university_id: str
     accent_hue: float
     time_zone: str
     created_at: datetime

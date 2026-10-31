@@ -9,7 +9,12 @@ from botai.core.api import ApiModel
 
 
 class Provenance(ApiModel):
-    connection_id: str
+    """Where a record was read and when. Two provenance paths coexist while v3 and v4 share the
+    domain tables: a v3 row names its `connectionId`, a v4 row its `sourceId` (docs/v4/03 §6.1).
+    Both are null-capable for that reason; a response always has at least one of them."""
+
+    connection_id: str | None = None  # provenance of the v3 reading path
+    source_id: str | None = None  # provenance of the v4 reading path
     space_id: str
     source_url: str  # where the record was read; for an API source this is not a page to open
     fetched_at: datetime
@@ -30,9 +35,11 @@ class EventAttribute(ApiModel):
 
 class EventSource(ApiModel):
     """A source that contributed to a class (FR-054): the first one is the university's primary
-    schedule source, whose values the class shows."""
+    schedule source, whose values the class shows. A v3 source names its connection, a v4 source
+    its source record; exactly one of the two is set."""
 
-    connection_id: str
+    connection_id: str | None = None
+    source_id: str | None = None
     title: str  # the human title of the source, never an address
 
 

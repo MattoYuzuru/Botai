@@ -70,6 +70,29 @@ class SourceOut(ApiModel):
     disabled_from: str | None
     created_at: datetime
     updated_at: datetime
+    # The thread of the source's latest task (03 §5.3 «связи»); null while no task has a thread.
+    thread_id: str | None = None
+
+
+class SourceRunOut(ApiModel):
+    """One run of a source as the source card shows it: a job, its outcome and its agent trace.
+
+    The source of a run is the linked v3 connection (`Source.config["connection_id"]`), the job
+    payload (`source_id`), or the run that saved the source's artifacts — whichever links the job.
+    """
+
+    id: str  # the job id; the durable handle of a run
+    source_id: str
+    kind: str  # connect | sync | repair | ingest | chat | action | agent
+    status: str  # queued | running | waiting_user | done | failed | cancelled
+    ok: bool | None  # null while the run is still going
+    started_at: datetime | None
+    finished_at: datetime | None
+    counts: dict[str, int]  # how many records the run wrote, by v4 data kind
+    error_code: str | None
+    error_detail: str | None
+    thread_id: str | None
+    run_id: str | None  # the agent trace (`agent_runs.run_id`), when the job had one
 
 
 class ProbeIn(ApiModel):

@@ -567,23 +567,38 @@ def _mark_missing(entries: Sequence[_Entry], primary: Sequence[_Entry], plan: Sp
         entry.missing = elsewhere and not here
 
 
+def source_key(event: ScheduleEventOut) -> str:
+    """The provenance id of a class: the v4 source when the row came from one, else the v3
+    connection. Two provenance paths write the same tables (docs/v4/03-sources-and-ux §6.1), and
+    the merge order is a list of these ids."""
+    provenance = event.provenance
+    if provenance.source_id:
+        return provenance.source_id
+    if provenance.connection_id:
+        return provenance.connection_id
+    raise ValueError("a class without a source: neither source_id nor connection_id is set")
+
+
 def merge_space(events: Sequence[ScheduleEventOut], plan: SpacePlan) -> list[ScheduleEventOut]:
     """The events of one university from all its sources as one list (sorted by start). A source
     the plan does not list comes after the listed ones, in the order of its id."""
-    rank = {connection_id: i for i, connection_id in enumerate(plan.order)}
-    unknown = sorted({e.provenance.connection_id for e in events} - set(rank))
-    rank.update({connection_id: len(plan.order) + i for i, connection_id in enumerate(unknown)})
+    rank = {source_id: i for i, source_id in enumerate(plan.order)}
+    unknown = sorted({source_key(e) for e in events} - set(rank))
+    rank.update({source_id: len(plan.order) + i for i, source_id in enumerate(unknown)})
     by_source: dict[int, list[_Entry]] = {}
     for event in events:
-        position = rank[event.provenance.connection_id]
+        position = rank[source_key(event)]
         by_source.setdefault(position, []).append(_Entry.of(event, position))
     pool = _sorted(by_source.pop(0, []))
     primary = list(pool)
     for position in sorted(by_source):
         incoming = _sorted(by_source[position])
-        connection_id = incoming[0].event.provenance.connection_id
+        first = incoming[0].event
+        key = source_key(first)
         source = EventSource(
-            connection_id=connection_id, title=plan.titles.get(connection_id, "Источник")
+            connection_id=first.provenance.connection_id,
+            source_id=first.provenance.source_id,
+            title=plan.titles.get(key, "Источник"),
         )
         matched = _assign(incoming, pool)
         for i, item in enumerate(incoming):

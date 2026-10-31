@@ -237,7 +237,40 @@ prod-guard (в `ENV=prod` без контейнерного executor — `execut
 7. **SSE:** `Last-Event-ID`/повтор после реконнекта для долгих sync не реализован (поток
    одноразовый, отчёт дублируется в `done`).
 
-## 7. Открытые вопросы
+## 7. Чтение v4-данных экранами и история запусков (2026-11-01)
+
+**Зачем.** Строки домена с `source_id` уже писались, но продуктовые экраны читали только
+v3-подключения. Теперь оба пути читаются вместе — иначе подключённый v4-источник давал бы
+данные в карточке, но не в расписании/заданиях.
+
+- **Загрузчик** `backend/src/botai/domain/sources.py`: один раз на запрос загружает живые
+  источники (v3 `connections` + v4 `sources`; `disabled/archived` скрыты, staleness отмечен) в
+  пределах пространства. Для каждой модели — один `connection_id IN … OR source_id IN …`
+  (без N+1 по источникам). Приоритет: v4 `source_priorities` → legacy
+  `Space.primary_schedule_connection_id` → здоровье/возраст; для v3-only пространств порядок
+  байт-в-байт прежний.
+- **`domain/repo.py`** переведён на загрузчик: расписание, дедлайны, предметы, оценки, люди,
+  новости, «Сегодня» и счётчики разделов. Расписание склеивается прежним `merge_events` с
+  провенансом `source_id|connection_id`. Дедуп по естественному ключу применяется только к
+  группам, где есть v4-строка (v3-only результаты не меняются).
+- **Контракт:** `Provenance.connectionId` теперь nullable + `sourceId`; `EventSource` —
+  тоже `connectionId`+`sourceId` (ровно один заполнен); `TodayOut.attention` может содержать
+  id v4-источников. `SpaceOut.universityId` больше не nullable: «Мои материалы» убраны из
+  API/модели (`spaces/service.py`), миграция `a9c4e2f7b1d6` снимает частичный уникальный
+  индекс; легаси-пространства без вуза остаются в БД, но скрыты (D-016), старые
+  документные пути используют пространство треда/единственный вуз или честно отказывают.
+- **Запуски источника:** `GET /api/v1/sources/{source_id}/runs?limit=1..100&offset=0` →
+  `list[SourceRunOut]` (новые первыми): `id`, `sourceId`, `kind`
+  (`connect|sync|repair|ingest|chat|action|agent`), `status`, `ok`, `startedAt`, `finishedAt`,
+  `counts` (виды данных), `errorCode`, `errorDetail`, `threadId`, `runId` (ссылка на
+  `agent_runs`). Связь job'а с источником — `Source.config.connection_id`, `payload.source_id`
+  или `source_artifacts.run_id`; один запрос + один запрос трассы, owner-only, 404 на v3.
+  В `SourceOut` добавлен `threadId` (тред последней задачи источника).
+- **Не сделано (долг):** REST-sync всё ещё выполняется inline в API; асинхронный вариант
+  требует смены формы ответа и отдельного `POST /sources/{id}/sync-jobs` 202 — следующая
+  итерация вместе с web.
+
+## 8. Открытые вопросы
 
 1. **Активация без canary** (`require_canary=False`) есть для откатов/ручных правок; нужен ли
    явный класс действия/политика для «активировать без canary» — открыто.

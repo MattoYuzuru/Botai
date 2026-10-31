@@ -209,12 +209,19 @@ class ChatEnv:
         return {c.id: c for c in conns}
 
     async def cite(self, prov: Provenance) -> str:
-        conn = (await self.titles()).get(prov.connection_id)
+        # Two provenance paths coexist while v3 and v4 share the domain tables: a v3 row names its
+        # connection, a v4 row its source (docs/v4/03 §6.1). At least one of the two is set.
+        conn = (await self.titles()).get(prov.connection_id) if prov.connection_id else None
+        target = (
+            f"botai://connections/{prov.connection_id}"
+            if prov.connection_id
+            else f"botai://sources/{prov.source_id}"
+        )
         # The page the student opens (FR-042), never the API address the record was read from;
         # without one the citation leads to the source inside the app.
         return self.sources.add(
             title=conn.title if conn else "Источник данных",
-            url=prov.open_url or f"botai://connections/{prov.connection_id}",
+            url=prov.open_url or target,
             kind="data",
             fetched_at=prov.fetched_at,
             stale=prov.stale,
