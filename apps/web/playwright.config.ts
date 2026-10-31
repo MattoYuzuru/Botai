@@ -15,7 +15,11 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
-  retries: 0,
+  // Two phone-only timing flakes exist in the chat/connect specs (mock pacing under load): they
+  // pass standalone and under --workers=2, but CI runs all projects in parallel on a shared
+  // runner. A failed e2e retry is cheap; a red deploy is not. Local runs keep retries=0 so a real
+  // failure is visible immediately.
+  retries: process.env.CI ? 2 : 0,
   timeout: 45_000,
   expect: { timeout: 10_000 },
   reporter: [["list"]],
