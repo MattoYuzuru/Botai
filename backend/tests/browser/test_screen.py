@@ -89,7 +89,11 @@ class ScreenClient:
                 if message["t"] == "frame":
                     self.frames.append((at, message))
                     if self.auto_ack:
-                        await self.ws.send(json.dumps({"t": "ack", "seq": message["seq"]}))
+                        # The server sends its last message and then closes. When the close frame
+                        # is already in, the ack has nowhere to go; the messages that came before
+                        # the close are still queued and must be read, not dropped with the pump.
+                        with contextlib.suppress(ConnectionClosed):
+                            await self.ws.send(json.dumps({"t": "ack", "seq": message["seq"]}))
                 else:
                     self.messages.append(message)
                 self._arrived.set()
