@@ -25,6 +25,7 @@ from botai.domain.router import router as domain_router
 from botai.jobs.router import router as jobs_router
 from botai.settings import get_settings
 from botai.sources.router import router as sources_router
+from botai.sources.v4.router import router as sources_v4_router
 from botai.spaces.router import router as spaces_router
 from botai.speech.router import get_speech
 from botai.speech.router import router as speech_router
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
         usage_router,
         browser_router,
         sources_router,
+        sources_v4_router,
         attachments_router,
         speech_router,
         agent_router,

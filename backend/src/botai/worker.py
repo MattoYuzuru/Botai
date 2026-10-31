@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from botai.agent.handlers import HANDLERS as AGENT
+from botai.agent.v4.handlers import HANDLERS as AGENT_V4
 from botai.browser.handlers import HANDLERS as BROWSER
 from botai.core.handlers import HandlerTable
 from botai.core.logging import configure_logging
@@ -14,7 +15,7 @@ from botai.sources.handlers import HANDLERS as SOURCES
 
 def handler_table() -> HandlerTable:
     table: HandlerTable = {}
-    for part in (BROWSER, SOURCES, LEARN, AGENT):
+    for part in (BROWSER, SOURCES, LEARN, AGENT, AGENT_V4):
         overlap = table.keys() & part.keys()
         if overlap:
             raise RuntimeError(f"job kinds handled twice: {sorted(overlap)}")

@@ -1,0 +1,62 @@
+[
+  {
+    "task": "chat",
+    "status": "running",
+    "events": []
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "task": "chat",
+    "status": "waiting",
+    "events": []
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "seq": 0,
+    "at": "2026-10-31T09:00:00Z",
+    "kind": "llm"
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "seq": -1,
+    "at": "2026-10-31T09:00:00Z",
+    "kind": "note"
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA7",
+    "kind": "stdout",
+    "bytes": 10
+  },
+  {
+    "input_cache_miss": 10,
+    "input_cache_hit": 0,
+    "output": -1
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "task": "chat",
+    "status": "running",
+    "steps": 1
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA2",
+    "kind": "login",
+    "state": "running",
+    "createdAt": "2026-10-31T09:00:00Z"
+  },
+  {
+    "call_id": "call_3",
+    "arguments": {}
+  },
+  {
+    "max_steps": 0
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA5",
+    "messages": []
+  },
+  {
+    "run_id": "01JAAAAAAAAAAAAAAAAAAAAAA5",
+    "status": "answer"
+  }
+]

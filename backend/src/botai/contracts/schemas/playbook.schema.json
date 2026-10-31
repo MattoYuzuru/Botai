@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/playbook.schema.json",
+  "title": "BotAI playbook (версионируемое знание об источнике)",
+  "description": "Playbook — знание агента «как читать и обновлять источник» (docs/v4/03-sources-and-ux.md §2, docs/v4/02-architecture.md §6.4, docs/v4/14-sources-backend.md). Документ описывает playbook и его ревизию: идентификаторы, владельца/вуз, язык (declarative|python|js), декларативную часть и/или код, тесты, canary, health, провенанс, номер версии и активность. Словарь языка совпадает с `PLAYBOOK_LANGUAGES` в `db/models.py`; виды данных — с `SOURCE_DATA_KINDS`; виды артефактов — с `ARTIFACT_KINDS`. Секреты и личные параметры в общем playbook не хранятся: только имена secret_refs, значения — в Vault и конфиге источника. Код не исполняется в API/worker: его берёт runner в песочницу. Цикл жизни ревизии: draft → canary → active → deprecated | rolled_back (D-030); активная ровно одна.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "language", "version", "active", "health", "provenance"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID playbook'а (стабилен между ревизиями; строка `playbooks.id`)."
+    },
+    "versionId": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID ревизии (`playbook_versions.id`), если документ описывает конкретную версию."
+    },
+    "universityId": {
+      "type": ["string", "null"],
+      "maxLength": 50,
+      "description": "Вуз, для которого выучен playbook; null — общий/персональный."
+    },
+    "ownerId": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "null — общий в пределах двух аккаунтов (D-018); иначе личный playbook владельца."
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "language": {
+      "type": "string",
+      "enum": ["declarative", "python", "js"],
+      "description": "declarative — JSON-спека (частный случай recipe, без песочницы кода); python/js — код парсера/действий в песочнице. Совпадает с PLAYBOOK_LANGUAGES. Сервис не связывает язык и содержимое жёстко: ревизия обязана иметь spec или code (см. anyOf), а соответствие языка содержимому — конвенция."
+    },
+    "version": { "type": "integer", "minimum": 1, "description": "Номер ревизии (`playbook_versions.version`)." },
+    "state": {
+      "type": ["string", "null"],
+      "enum": ["draft", "canary", "active", "deprecated", "rolled_back", null],
+      "description": "Стадия жизненного цикла ревизии (D-030). В БД активность выражается `active`; state — контракт API/UI для явного отображения стадии."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "Активная ревизия для источников, ссылающихся на playbook; ровно одна на playbook (uq_playbook_versions_active)."
+    },
+    "checksum": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "sha256 содержимого ревизии (spec+code+tests) для дедупликации и сверки."
+    },
+    "origin": {
+      "type": ["string", "null"],
+      "pattern": "^https://[^\\s]+$",
+      "description": "Origin, для которого выучен playbook; в v4 идентичность источника хранится в Source.identity_key, поэтому origin — справочное поле, не ключ."
+    },
+    "auth": {
+      "type": ["object", "null"],
+      "description": "Знание о входе (шаги, имена секретов). В v4 значение и режим входа принадлежат источнику (Source.auth_ref/config); здесь только переиспользуемые имена шагов и secret_refs, без значений.",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["none", "session", "login", "token", "provider", "service-account"]
+        },
+        "entryUrl": { "type": ["string", "null"], "maxLength": 2000 },
+        "loginSteps": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+          "description": "Имена выученных шагов формы входа (login-form, mfa-if-asked); без селекторов-секретов."
+        },
+        "secretRefs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "description": "Имена секретов в Vault (password, cookies, ical_url, api_token). Значение сюда не попадает никогда."
+        }
+      }
+    },
+    "entrypoints": {
+      "type": "array",
+      "description": "Наблюдённые точки чтения: API-запросы (сеть первична, DOM — подсказка) или страницы.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url", "method", "format"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "url": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "Путь или абсолютный URL; шаблоны вида {weekStart}." },
+          "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "format": { "type": "string", "enum": ["json", "html", "text", "binary"] }
+        }
+      }
+    },
+    "reads": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Что и как читается: минимум один вид данных. dataKind — из SOURCE_DATA_KINDS (scheduleEvents рецепта ↔ schedule).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dataKind", "request"],
+        "properties": {
+          "dataKind": {
+            "type": "string",
+            "enum": ["schedule", "deadlines", "assignments", "courses", "grades", "people", "locations", "news", "documents", "messages"]
+          },
+          "request": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "id entrypoint или имя шага." },
+          "paging": { "type": "string", "enum": ["none", "offset", "cursor", "dateWindow", "page"] },
+          "extract": { "type": "string", "enum": ["json", "html", "code", "recipe"] },
+          "keys": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "maxLength": 200 },
+            "description": "Маппинг ключей домена (externalId, startsAt) на поля ответа."
+          }
+        }
+      }
+    },
+    "spec": {
+      "type": ["object", "null"],
+      "description": "Декларативная часть (`playbook_versions.spec`): JSON, совместимый с contracts/recipe.schema.json; обязательна при language=declarative."
+    },
+    "code": {
+      "description": "Код ревизии (`playbook_versions.code`): исходник или ссылка на content-addressed артефакт. Исполняется в песочнице runner'а, не в API/worker.",
+      "oneOf": [
+        { "type": "string", "maxLength": 200000 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifact", "entrypoint"],
+          "properties": {
+            "artifact": {
+              "type": "string",
+              "pattern": "^(sha256:)?[a-f0-9]{64}$",
+              "description": "sha256 кода; байты — в artifact store."
+            },
+            "entrypoint": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,120}:[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+            "language": { "type": "string", "enum": ["python", "js"] }
+          }
+        }
+      ]
+    },
+    "browser": {
+      "type": ["object", "null"],
+      "description": "Браузерный план (следующий формат 03 §2): шаги в реальном Chrome/CDP, включая вход и навигацию по SPA. Пока не имеет отдельного language; хранится рядом с spec/code и исполняется browser-контуром.",
+      "additionalProperties": false,
+      "required": ["steps"],
+      "properties": {
+        "baseUrl": { "type": ["string", "null"], "maxLength": 2000 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action"],
+            "properties": {
+              "action": { "type": "string", "enum": ["goto", "click", "type", "press", "wait", "select", "eval", "read", "download", "upload"] },
+              "target": { "type": ["string", "null"], "maxLength": 2000 },
+              "value": { "type": ["string", "null"], "maxLength": 8000 },
+              "secretHandle": { "type": ["string", "null"], "maxLength": 120 },
+              "timeoutSeconds": { "type": ["number", "null"], "minimum": 0.1 }
+            }
+          }
+        }
+      }
+    },
+    "selectors": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "maxLength": 500 },
+      "description": "Именованные CSS-селекторы для HTML/SPA без кода."
+    },
+    "schedule": {
+      "type": ["object", "null"],
+      "description": "Когда и как часто обновлять (подсказка планировщику; в v4 расписание живёт в конфиге источника). Частота — защита аккаунта, не архитектурный запрет.",
+      "additionalProperties": false,
+      "required": ["every"],
+      "properties": {
+        "every": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Интервал (3h, 30m) или cron." },
+        "windowDays": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "rateLimitPerMin": { "type": "integer", "minimum": 1, "maximum": 600 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "description": "Проверки здоровья (`playbooks.health`): что считается успехом чтения и когда данные устарели. Пустой объект допустим у нового playbook.",
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" }
+        },
+        "expected": { "type": "object" },
+        "maxAgeHours": { "type": "number", "minimum": 0 }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "description": "Офлайн-тесты на сохранённых наблюдениях/фикстурах (`playbook_versions.tests`). Сервис принимает объекты как есть; поля name/fixture/assert — рекомендуемый минимум для runner'а.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "fixture": { "type": "string", "minLength": 1, "maxLength": 500, "description": "artifact:<id> или путь к фикстуре." },
+          "assert": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "Декларативное условие (count > 0) или имя проверки." }
+        }
+      }
+    },
+    "canary": {
+      "type": ["object", "null"],
+      "description": "Результат последней проверки на живой сессии (`playbook_versions.canary`). Сервис хранит объект как есть; рекомендуемые поля — status (pending|ok|failed|skipped), checkedAt, artifactId, detail. Публикация активной ревизии без успешной canary не разрешается."
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Откуда playbook выучен (`playbooks.provenance`): прогон, наблюдения, модель; личные значения не хранятся. Пустой объект допустим; рекомендуемые поля — learnedAt, by, runId, session, observations, model.",
+      "additionalProperties": false,
+      "properties": {
+        "learnedAt": { "type": "string", "format": "date-time" },
+        "by": { "type": "string", "enum": ["agent", "human", "import"] },
+        "runId": { "type": ["string", "null"], "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "session": { "type": ["string", "null"], "enum": ["author", "owner", "service", null] },
+        "observations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "description": "artifact:<id> наблюдений, из которых собран playbook."
+        },
+        "model": { "type": ["string", "null"], "maxLength": 120 }
+      }
+    },
+    "notes": { "type": ["string", "null"], "maxLength": 4000 },
+    "createdByRun": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "`playbook_versions.created_by_run`: задача, которая записала ревизию."
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "anyOf": [
+    {
+      "required": ["spec"],
+      "properties": { "spec": { "type": "object" } }
+    },
+    {
+      "required": ["code"],
+      "properties": { "code": { "type": ["string", "object"] } }
+    }
+  ]
+}

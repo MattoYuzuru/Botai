@@ -2,6 +2,7 @@ import { Badge, Button, EmptyState, Icon, Sheet, SkeletonText } from "@botai/des
 import { Link } from "@tanstack/react-router";
 import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
+import { useStudyUiMode } from "@/features/study/v4/flag";
 import { addSourceDraft } from "./drafts";
 
 /**
@@ -19,6 +20,12 @@ export function SourcesPanel({
   nowMs: number;
 }) {
   const directory = useSpaceDirectory();
+  // v4: «Мои материалы» больше не пространство — в панели источников только вузы, как и на «Учёбе» v4
+  // (docs/v4/03-sources-and-ux.md §1.6, §5.5). В старом режиме панель не меняется.
+  const spaces =
+    useStudyUiMode() === "v4"
+      ? directory.spaces.filter((space) => space.universityId !== null)
+      : directory.spaces;
   return (
     <Sheet
       open={open}
@@ -36,7 +43,7 @@ export function SourcesPanel({
     >
       {!directory.loaded ? (
         <SkeletonText lines={5} label="Загрузка источников" />
-      ) : directory.none ? (
+      ) : spaces.length === 0 ? (
         <EmptyState
           icon="university"
           size="sm"
@@ -45,7 +52,7 @@ export function SourcesPanel({
         />
       ) : (
         <div className="flex flex-col gap-6" data-sources-list="">
-          {directory.spaces.map((space) => (
+          {spaces.map((space) => (
             <section
               key={space.id}
               className="flex flex-col gap-2"

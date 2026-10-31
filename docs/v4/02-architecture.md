@@ -823,15 +823,35 @@ Grafana не обязательны.
 | `search/` FTS, `chunks` | `agent/llm.py` → `agent/providers/*` | `agent/tools*.py` в узком виде (заменяются полным набором) |
 | `apps/web` чат, дизайн | `sources/calendar.py` — N календарей как playbook | `contracts/recipe.schema.json` как единственный формат (legacy) |
 | `ops/compose.prod.yaml` — основа | `ops/compose*.yaml` (+browser/sandbox) | тесты, закрепляющие allowlist/read-only/бюджеты/один календарь |
+| `agent/v4/{runtime,protocol,providers,traces}.py` — новый harness (готово) | `agent/v4/executor/local.py` → контейнерный executor | `agent/harness.py`, `agent/tools*.py` после wiring v4 |
+| `browser/control.py`, `browser/profiles.py` — полный контроль и профили (готово) | `agent/v4/tools/browser.py` (обёртка с маскированием/HAR) | v3-фильтры gateway/allowlist для v4-контроля не используются |
+| `sources/v4/*` — источники/playbook'и/артефакты/приоритеты (готово) | `sources/runner`, `agent/v4/tools/source_*` — следующий слой | старые `sources/adapters/*` после миграции |
 
 ### 12.4 Контракты, фиксируемые до кода
 
-`contracts/tools.schema.json` (инструменты), `contracts/playbook.schema.json` (спека,
-код, тесты, версии), `contracts/run.schema.json` (run/step/tool_call/artifact),
-`contracts/agent-ui.schema.json` (план, действие, вопрос, трасса, стоимость, экран);
-REST/SSE: `/api/v1/{runs,sources,playbooks,actions,artifacts,traces,browser,usage}*`
-(существующие маршруты живут, пока живы данные); Python-протоколы `Tool`, `LlmProvider`,
-`BrowserControl`, `SandboxClient`, `SecretBroker`, `PlaybookRunner`, `ArtifactStore`.
+`contracts/tools.schema.json` (ToolSpec/ToolResult — реестр инструментов),
+`contracts/playbook.schema.json` (спека, код, тесты, canary, health, версии),
+`contracts/run.schema.json` (run/step/tool_call/artifact/usage) — **созданы 2026-10-31**,
+примеры в `contracts/examples/{valid,invalid}/`; проверяются в CI
+(`backend/tests/core/test_contracts.py`); потребители — `agent/v4/**`,
+`sources/v4/**`, API трасс, UI. Старые схемы (`recipe.schema.json`, `adapter-spec`,
+`login-preset`) — legacy до миграции; `contracts/agent-ui.schema.json` (план, действие,
+вопрос, трасса, стоимость, экран); REST/SSE: `/api/v1/{runs,sources,playbooks,actions,
+artifacts,traces,browser,usage}*` (существующие маршруты живут, пока живы данные);
+Python-протоколы `Tool`, `LlmProvider`, `BrowserControl`, `SandboxClient`,
+`SecretBroker`, `PlaybookRunner`, `ArtifactStore`.
+
+**Готово на 2026-10-31 (read-only сверка):** `agent/v4/**` — runtime, protocol,
+providers (DeepSeek/Anthropic/OpenAI-совместимый/mock), traces, executor/local и
+tools `http_request`, `fs_read/write/list`, `ask_user`, `trace_read`; `browser/control.py`
++ `browser/profiles.py` — полный контроль и persistent-профили; `sources/v4/**` —
+источники, playbook'и, артефакты, state, приоритеты, миграция `e5a1c9b7d342`.
+**Ещё нет:** `agent/v4/tools/{browser,code,secret,source,rag,memory,job,action}.py`,
+`sources/runner`, DB-адаптер трасс и таблицы `runs`, wiring `agent_engine=v4`, Caddy/
+наблюдаемость, контейнерный executor. Расхождение: свежий playbook
+(`current_version=0`, без активной версии) не описывается `playbook.schema.json`
+(там `version≥1` и `active`) — нужен отдельный def identity или поле `currentVersion`
+(см. `contracts/README.md`, «расхождения»).
 
 ### 12.5 Критерии приёмки архитектуры
 

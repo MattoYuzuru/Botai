@@ -22,6 +22,14 @@ CASES = [
     ("login-preset.json", "login-preset.schema.json", TypeAdapter(LoginPreset)),
 ]
 
+# v4 contracts have no Pydantic mirror in `botai.contracts` yet (the runtime uses
+# `agent.v4.protocol`, sources use `sources.v4`), so only the JSON Schema side is checked here.
+SCHEMA_CASES = [
+    ("tools.contract.json", "tools.schema.json"),
+    ("run.trace.json", "run.schema.json"),
+    ("playbook.json", "playbook.schema.json"),
+]
+
 
 def _load(kind: str, name: str) -> list[object]:
     return json.loads((EXAMPLES / kind / name).read_text("utf-8"))
@@ -48,6 +56,28 @@ def test_invalid_examples_fail_schema(
 ) -> None:
     for item in _load("invalid", example):
         assert schemas.errors(schema, item), item
+
+
+@pytest.mark.parametrize(("example", "schema"), SCHEMA_CASES)
+def test_v4_valid_examples_pass_schema(example: str, schema: str) -> None:
+    for item in _load("valid", example):
+        assert schemas.errors(schema, item) == [], item
+
+
+@pytest.mark.parametrize(("example", "schema"), SCHEMA_CASES)
+def test_v4_invalid_examples_fail_schema(example: str, schema: str) -> None:
+    for item in _load("invalid", example):
+        assert schemas.errors(schema, item), item
+
+
+def test_every_contract_schema_is_registered() -> None:
+    """A new schema file must be added to `schemas.SCHEMA_FILES`, so CI can reference it."""
+    on_disk = {path.name for path in ROOT.glob("*.schema.json")}
+    registered = set(schemas.SCHEMA_FILES)
+    assert on_disk - registered == set(), (
+        f"add to botai.contracts.schemas.SCHEMA_FILES: {sorted(on_disk - registered)}"
+    )
+    assert registered - on_disk == set(), f"missing schema files: {sorted(registered - on_disk)}"
 
 
 def test_block_rejects_unknown_type() -> None:

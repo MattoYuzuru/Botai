@@ -1,0 +1,75 @@
+[
+  {
+    "name": "http_request",
+    "description": "Любой HTTP(S)-запрос от имени задачи. Произвольные хосты, методы, заголовки и тела разрешены; первичные секреты — только через secret_refs.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url"],
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
+        "url": { "type": "string", "minLength": 8 },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": { "type": ["string", "object", "array", "null"] },
+        "timeout_s": { "type": "number", "minimum": 0.5, "maximum": 300 },
+        "secret_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "timeout_s": 120,
+    "policy": "read",
+    "idempotent": true,
+    "max_result_chars": 50000,
+    "serial_only": false
+  },
+  {
+    "name": "fs_write",
+    "description": "Записать файл в workspace run. Путь вне workspace — ошибка policy_denied.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "content": { "type": "string", "maxLength": 500000 },
+        "mode": { "type": "string", "enum": ["write", "append"], "default": "write" }
+      }
+    },
+    "timeout_s": 10,
+    "policy": "write_soft",
+    "idempotent": false,
+    "serial_only": true
+  },
+  {
+    "ok": true,
+    "summary": "200 OK, 174 записи",
+    "data": { "request": { "method": "GET", "status": 200 }, "records": 174 },
+    "artifacts": [
+      {
+        "id": "01JAAAAAAAAAAAAAAAAAAAAAA7",
+        "kind": "json",
+        "bytes": 48213,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "url": null
+      }
+    ],
+    "truncated": false,
+    "next": null,
+    "error": null,
+    "cost": { "ms": 840 }
+  },
+  {
+    "ok": false,
+    "summary": "источник ответил 429",
+    "data": null,
+    "artifacts": [],
+    "truncated": false,
+    "next": null,
+    "error": {
+      "code": "source_rate_limited",
+      "detail": "Источник ответил 429; повтор после паузы.",
+      "retryable": true,
+      "hint": "Повторите через 60 секунд или возьмите другой эндпоинт."
+    },
+    "cost": { "ms": 120 }
+  }
+]

@@ -17,6 +17,11 @@ SCHEMA_FILES = (
     "login-preset.schema.json",
     "adapter-spec.schema.json",
     "domain.schema.json",
+    # v4 contracts (docs/v4/02-architecture.md §12.4); self-contained, registered so a future
+    # $ref from one v4 schema to another resolves through the same registry.
+    "tools.schema.json",
+    "run.schema.json",
+    "playbook.schema.json",
 )
 
 

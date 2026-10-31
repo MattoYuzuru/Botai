@@ -1,0 +1,112 @@
+[
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "universityId": "hse",
+    "ownerId": null,
+    "title": "ЛК ВШЭ: расписание и задания",
+    "language": "python",
+    "version": 3,
+    "state": "active",
+    "active": true,
+    "checksum": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "origin": "https://lk.example.edu",
+    "auth": {
+      "mode": "session",
+      "entryUrl": "https://lk.example.edu/",
+      "loginSteps": ["login-form", "mfa-if-asked"],
+      "secretRefs": ["password", "cookies"]
+    },
+    "entrypoints": [
+      { "id": "schedule", "url": "/api/schedule?week={weekStart}", "method": "GET", "format": "json" },
+      { "id": "tasks", "url": "/api/tasks", "method": "GET", "format": "json" }
+    ],
+    "reads": [
+      { "dataKind": "schedule", "request": "schedule", "paging": "dateWindow", "extract": "code",
+        "keys": { "externalId": "id", "startsAt": "start", "endsAt": "end" } },
+      { "dataKind": "deadlines", "request": "tasks", "extract": "code" }
+    ],
+    "code": "import json\n\ndef main(ctx):\n    data = ctx.http.get(ctx.entrypoints['schedule']).json()\n    return [{ 'external_id': row['id'], 'starts_at': row['start'] } for row in data['items']]\n",
+    "schedule": { "every": "3h", "windowDays": 35, "rateLimitPerMin": 12 },
+    "health": {
+      "checks": ["session-valid", "schedule-non-empty", "fields-required"],
+      "expected": { "schedule": { "min": 1 }, "maxAgeHours": 12 },
+      "maxAgeHours": 12
+    },
+    "tests": [
+      { "name": "расписание недели", "fixture": "artifact:01JAAAAAAAAAAAAAAAAAAAAAA7", "assert": "count > 0" }
+    ],
+    "canary": { "status": "ok", "checkedAt": "2026-10-31T09:10:00Z", "artifactId": "01JAAAAAAAAAAAAAAAAAAAAAA7" },
+    "provenance": {
+      "learnedAt": "2026-10-31T09:00:00Z",
+      "by": "agent",
+      "runId": "01JAAAAAAAAAAAAAAAAAAAAAA2",
+      "session": "author",
+      "observations": ["artifact:01JAAAAAAAAAAAAAAAAAAAAAA7"],
+      "model": "claude-sonnet-4-5"
+    },
+    "notes": "После смены семестра у /api/schedule меняется term — проверять.",
+    "createdByRun": "01JAAAAAAAAAAAAAAAAAAAAAA2",
+    "createdAt": "2026-10-31T09:00:00Z",
+    "updatedAt": "2026-10-31T09:10:00Z"
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA3",
+    "universityId": "cu",
+    "ownerId": null,
+    "title": "ЦУ: задания через API",
+    "language": "declarative",
+    "version": 1,
+    "state": "canary",
+    "active": false,
+    "origin": "https://my.example.edu",
+    "auth": { "mode": "session", "secretRefs": ["cookies"] },
+    "entrypoints": [
+      { "id": "tasks", "url": "/api/micro-lms/tasks/student", "method": "GET", "format": "json" }
+    ],
+    "reads": [
+      { "dataKind": "assignments", "request": "tasks", "extract": "json" }
+    ],
+    "spec": {
+      "format": "json",
+      "itemsPath": "/",
+      "fields": { "externalId": { "path": "/id" }, "title": { "path": "/title" } }
+    },
+    "schedule": { "every": "1h" },
+    "health": { "checks": ["session-valid", "assignments-non-empty"] },
+    "tests": [],
+    "canary": { "status": "pending", "checkedAt": null, "artifactId": null, "detail": null },
+    "provenance": { "learnedAt": "2026-10-31T09:20:00Z", "by": "agent", "model": "deepseek-flash" }
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA4",
+    "universityId": null,
+    "ownerId": "01JAAAAAAAAAAAAAAAAAAAAAA5",
+    "title": "Вход на неизвестный портал по шагам",
+    "language": "js",
+    "version": 2,
+    "state": "draft",
+    "active": false,
+    "origin": "https://portal.example.edu",
+    "auth": { "mode": "login", "loginSteps": ["login-form"], "secretRefs": ["password"] },
+    "entrypoints": [
+      { "id": "home", "url": "/students/portal", "method": "GET", "format": "html" }
+    ],
+    "reads": [
+      { "dataKind": "documents", "request": "home", "extract": "code" }
+    ],
+    "code": "async function main(ctx) { return []; }\n",
+    "browser": {
+      "baseUrl": "https://portal.example.edu",
+      "steps": [
+        { "action": "goto", "target": "https://portal.example.edu/students/portal", "timeoutSeconds": 30 },
+        { "action": "wait", "target": "text=Расписание", "timeoutSeconds": 20 },
+        { "action": "read", "target": "table", "value": "text" }
+      ]
+    },
+    "schedule": { "every": "6h", "rateLimitPerMin": 6 },
+    "health": { "checks": ["session-valid", "documents-non-empty"] },
+    "tests": [],
+    "canary": null,
+    "provenance": { "learnedAt": "2026-10-31T10:00:00Z", "by": "agent" }
+  }
+]

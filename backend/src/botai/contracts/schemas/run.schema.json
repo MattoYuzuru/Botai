@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/run.schema.json",
+  "title": "BotAI run trace: Run, RunTrace, TraceEvent, ToolCall, Artifact, Usage",
+  "description": "Трасса задачи агента v4 (docs/v4/02-architecture.md §3.5, §4.5, §4.8, §9; D-014, D-029). Два уровня: `run` — будущая запись `runs` (цель, kind, состояние, лимиты, провенанс); `runTrace`/`traceEvent` — фактическая реализация `botai.agent.v4.traces` (RunTrace, TraceEvent, RunInfo), которую runtime пишет уже сейчас. ToolCall/Artifact/Usage — конвенции содержимого `TraceEvent.payload` для вызовов инструментов, артефактов и токенов. Первичные секреты в трассе не сохраняются; cookie/сессия сохраняются по решению задачи (D-008).",
+  "oneOf": [
+    { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/runTrace" },
+    { "$ref": "#/$defs/traceEvent" },
+    { "$ref": "#/$defs/runInfo" },
+    { "$ref": "#/$defs/runTask" },
+    { "$ref": "#/$defs/runResult" },
+    { "$ref": "#/$defs/runLimits" },
+    { "$ref": "#/$defs/toolCall" },
+    { "$ref": "#/$defs/artifact" },
+    { "$ref": "#/$defs/usage" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Идентификатор прогона (ULID в проде, короткая строка в локальных запусках — как в traces.py)."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["chat", "connect", "sync", "repair", "probe", "ingest", "action", "research", "watch", "maintenance", "bench"],
+      "description": "Тип задачи (02-architecture §3.2). kind задаёт стартовый контекст и профиль, но не запрещает инструменты."
+    },
+    "state": {
+      "type": "string",
+      "enum": ["queued", "running", "waiting_user", "paused", "done", "failed", "cancelled"],
+      "description": "Состояние задачи (02-architecture §3.5); waiting_user не держит слот worker'а, paused — пауза владельца/лимита."
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["login", "research", "sync"],
+      "description": "Явная фаза CONNECT-задачи (02-architecture §5)."
+    },
+    "runStatus": {
+      "type": "string",
+      "enum": ["running", "answer", "paused", "cancelled", "step_limit", "time_limit", "token_limit", "cost_limit", "hard_stop", "error"],
+      "description": "RunStatus из traces.py: чем закончился/продолжается прогон."
+    },
+    "traceKind": {
+      "type": "string",
+      "enum": ["run_started", "model_call", "tool_call", "tool_result", "limit", "pause", "cancel", "error", "note", "run_finished"],
+      "description": "TraceKind из traces.py: вид шага трассы."
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "detail": { "type": "string", "default": "" },
+        "retryable": { "type": "boolean", "default": false },
+        "hint": { "type": ["string", "null"] }
+      }
+    },
+    "runLimits": {
+      "type": "object",
+      "description": "Лимиты run (runtime.RunLimits, D-009): None = без предела. С auto_continue=false пересечение мягкого лимита останавливает run с resumable-чекпоинтом; hard_stop_usd не смягчается.",
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": { "type": ["integer", "null"], "minimum": 1, "maximum": 1000000 },
+        "max_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 86400 },
+        "max_tokens": { "type": ["integer", "null"], "minimum": 1000, "maximum": 1000000000 },
+        "max_usd": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1000 },
+        "hard_stop_usd": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1000 },
+        "auto_continue": { "type": "boolean", "default": false },
+        "max_calls_per_step": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
+        "max_parallel_tools": { "type": "integer", "minimum": 1, "maximum": 32, "default": 8 },
+        "tool_result_chars": { "type": "integer", "minimum": 500, "maximum": 1000000, "default": 20000 }
+      }
+    },
+    "llmMessage": {
+      "type": "object",
+      "description": "LlmMessage из core.llm: сообщение, с которым run входит и выходит (чекпоинт resume).",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+        "content": { "type": "string", "default": "" },
+        "name": { "type": ["string", "null"] },
+        "tool_call_id": { "type": ["string", "null"] },
+        "tool_calls": { "type": "array" },
+        "reasoning_content": { "type": ["string", "null"] },
+        "data": { "type": "boolean", "default": false }
+      }
+    },
+    "runTask": {
+      "type": "object",
+      "title": "RunTask",
+      "description": "Вход runtime-цикла (runtime.RunTask, §4.1): задача, стартовые сообщения, профиль, workspace. DB-free: run_id, messages и workspace передаёт вызывающий.",
+      "additionalProperties": false,
+      "required": ["task"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "task": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "messages": { "type": "array", "items": { "$ref": "#/$defs/llmMessage" } },
+        "system": { "type": "string", "default": "" },
+        "purpose": { "type": "string", "enum": ["agent", "classify", "learn", "repair", "extract", "summarize", "bench"], "default": "agent" },
+        "tier": { "type": "string", "enum": ["fast", "pro"], "default": "fast" },
+        "model": { "type": ["string", "null"] },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 64000, "default": 4000 },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2, "default": 0.2 },
+        "json_schema": { "type": ["object", "null"] },
+        "workspace": { "type": "string", "default": "." },
+        "user_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object", "default": {} }
+      }
+    },
+    "runResult": {
+      "type": "object",
+      "title": "RunResult",
+      "description": "Итог run (runtime.RunResult): ответ, счётчики, чекпоинт messages и trace; can_resume для paused/step_limit/time_limit/token_limit/cost_limit.",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "trace"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "status": { "$ref": "#/$defs/runStatus" },
+        "content": { "type": "string", "default": "" },
+        "steps": { "type": "integer", "minimum": 0, "default": 0 },
+        "tool_calls": { "type": "integer", "minimum": 0, "default": 0 },
+        "usage": { "type": "array", "items": { "$ref": "#/$defs/usage" } },
+        "total_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+        "cost_usd": { "type": "number", "minimum": 0, "default": 0 },
+        "limit_reached": { "type": ["string", "null"] },
+        "error_code": { "type": ["string", "null"] },
+        "error_detail": { "type": "string", "default": "" },
+        "messages": { "type": "array", "items": { "$ref": "#/$defs/llmMessage" } },
+        "trace": { "$ref": "#/$defs/runTrace" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "description": "Токены и стоимость вызова модели (LlmUsage из core.llm) — конвенция payload шага model_call.",
+      "additionalProperties": false,
+      "required": ["input_cache_miss", "input_cache_hit", "output"],
+      "properties": {
+        "input_cache_miss": { "type": "integer", "minimum": 0 },
+        "input_cache_hit": { "type": "integer", "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 },
+        "reasoning": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "latency_ms": { "type": "integer", "minimum": 0 },
+        "model": { "type": "string", "maxLength": 120 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "description": "Ссылка на артефакт (ToolArtifact/traces payload): страница, JSON, HAR, скриншот, лог, файл. Байты в artifact store; здесь метаданные.",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": {
+          "type": "string",
+          "enum": ["page", "json", "file", "har", "screenshot", "log", "doc", "other"],
+          "description": "Словарь ARTIFACT_KINDS из db/models.py."
+        },
+        "bytes": { "type": "integer", "minimum": 0, "default": 0 },
+        "sha256": { "type": "string", "default": "" },
+        "url": { "type": ["string", "null"] }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "description": "Конвенция payload шагов tool_call/tool_result (runtime.py): `tool_call` несёт call_id/tool/arguments/policy; `tool_result` — call_id/tool/ok/summary/truncated/text_chars/duration_ms/error+result. См. contracts/tools.schema.json.",
+      "additionalProperties": true,
+      "required": ["tool"],
+      "properties": {
+        "call_id": { "type": "string", "maxLength": 120 },
+        "tool": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "arguments": { "type": "object" },
+        "policy": { "type": ["string", "null"], "enum": ["read", "write_soft", "write_destructive", "money", "auth", null] },
+        "ok": { "type": "boolean" },
+        "summary": { "type": "string" },
+        "truncated": { "type": "boolean" },
+        "text_chars": { "type": "integer", "minimum": 0 },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "error": { "type": ["string", "null"], "description": "Код ошибки (ToolError.code) или null." },
+        "result": {
+          "type": ["object", "array", "string", "number", "integer", "boolean", "null"],
+          "description": "ToolResult.to_wire(), если помещается в трассу; иначе result_truncated_in_trace=true."
+        }
+      }
+    },
+    "traceEvent": {
+      "type": "object",
+      "title": "TraceEvent",
+      "description": "Один записанный шаг трассы (traces.py). seq монотонен и стабилен внутри run; payload — структурированные данные шага (model usage, tool call, артефакты, причина лимита и т.п.).",
+      "additionalProperties": false,
+      "required": ["run_id", "seq", "at", "kind"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "at": { "type": "string", "format": "date-time" },
+        "kind": { "$ref": "#/$defs/traceKind" },
+        "step": { "type": "integer", "minimum": 0, "default": 0 },
+        "duration_ms": { "type": "integer", "minimum": 0, "default": 0 },
+        "payload": { "type": "object", "default": {} }
+      }
+    },
+    "runInfo": {
+      "type": "object",
+      "title": "RunInfo",
+      "description": "Дешёвая сводка для trace_list (traces.py).",
+      "additionalProperties": false,
+      "required": ["run_id", "event_count"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "task": { "type": "string", "default": "" },
+        "provider": { "type": "string", "default": "" },
+        "model": { "type": "string", "default": "" },
+        "status": { "$ref": "#/$defs/runStatus", "default": "running" },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "finished_at": { "type": ["string", "null"], "format": "date-time" },
+        "steps": { "type": "integer", "minimum": 0, "default": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+        "cost_usd": { "type": "number", "minimum": 0, "default": 0 },
+        "event_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runTrace": {
+      "type": "object",
+      "title": "RunTrace",
+      "description": "Всё, что runtime записал по одному run (traces.py): сводка и события.",
+      "additionalProperties": false,
+      "required": ["run_id", "events"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "task": { "type": "string", "default": "" },
+        "provider": { "type": "string", "default": "" },
+        "model": { "type": "string", "default": "" },
+        "status": { "$ref": "#/$defs/runStatus", "default": "running" },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "finished_at": { "type": ["string", "null"], "format": "date-time" },
+        "steps": { "type": "integer", "minimum": 0, "default": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+        "cost_usd": { "type": "number", "minimum": 0, "default": 0 },
+        "events": { "type": "array", "items": { "$ref": "#/$defs/traceEvent" } }
+      }
+    },
+    "run": {
+      "type": "object",
+      "title": "Run",
+      "description": "Плановая запись `runs` (02-architecture §9): цель, состояние, лимиты, провенанс. Runtime сейчас пишет RunTrace; DB-адаптер и API `/runs` появятся в фазе 2 без изменения этого контракта.",
+      "additionalProperties": false,
+      "required": ["id", "kind", "state", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "$ref": "#/$defs/kind" },
+        "state": { "$ref": "#/$defs/state" },
+        "userId": { "$ref": "#/$defs/id" },
+        "threadId": { "$ref": "#/$defs/id" },
+        "parentRunId": { "$ref": "#/$defs/id" },
+        "sourceId": { "$ref": "#/$defs/id" },
+        "goal": { "type": "string", "maxLength": 8000 },
+        "phase": { "$ref": "#/$defs/phase" },
+        "model": { "type": "string", "maxLength": 120 },
+        "policy": {
+          "type": "object",
+          "description": "Снимок политики автономии на момент run (D-025): класс действия → auto|ask|never.",
+          "additionalProperties": { "type": "string", "enum": ["auto", "ask", "never"] }
+        },
+        "limits": { "$ref": "#/$defs/runLimits" },
+        "input": { "type": ["object", "null"], "description": "Вход: вопрос, просьба, параметры задачи. Секретов не содержит." },
+        "result": { "type": ["object", "null"], "description": "Итог: ответ, сводка, ссылки на артефакты, статус." },
+        "error": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/error" }] },
+        "usage": { "$ref": "#/$defs/usage" },
+        "trace": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/runTrace" }] },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "engine": { "type": "string", "maxLength": 40, "description": "v4 / v3 — какой движок исполнял." },
+            "promptVersion": { "type": "string", "maxLength": 64 },
+            "traceVersion": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

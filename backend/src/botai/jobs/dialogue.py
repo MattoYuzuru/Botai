@@ -333,6 +333,11 @@ _TERMINAL_TEXT: dict[str, tuple[str, str, str]] = {
         "Документ добавить не удалось.",
         "",  # a document reports its own summary
     ),
+    "agent": (
+        "Задача агента остановлена.",
+        "Агент v4 не закончил задачу. Трасса сохранена в истории запусков.",
+        "",  # the agent emits its own answer block
+    ),
 }
 # A connect task that adds kinds to a source that works: the source keeps working whatever happens.
 _EXTENSION_TEXT = (

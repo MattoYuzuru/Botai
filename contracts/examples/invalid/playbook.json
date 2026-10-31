@@ -1,0 +1,82 @@
+[
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "language": "declarative",
+    "version": 1,
+    "active": false,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Неизвестный язык",
+    "language": "sql",
+    "version": 1,
+    "active": false,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Python без кода",
+    "language": "python",
+    "version": 1,
+    "active": false,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" }
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Секрет в secretRefs вместо имени",
+    "language": "declarative",
+    "version": 1,
+    "active": false,
+    "auth": { "mode": "login", "secretRefs": ["password=plaintext"] },
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Origin не https",
+    "language": "declarative",
+    "version": 1,
+    "active": false,
+    "origin": "ftp://lk.example.edu",
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Нет ни одного вида данных",
+    "language": "declarative",
+    "version": 1,
+    "active": false,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "reads": [],
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Нулевая версия",
+    "language": "declarative",
+    "version": 0,
+    "active": false,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  },
+  {
+    "id": "01JAAAAAAAAAAAAAAAAAAAAAA1",
+    "title": "Не указана активность ревизии",
+    "language": "declarative",
+    "version": 1,
+    "health": { "checks": ["schedule-non-empty"] },
+    "provenance": { "learnedAt": "2026-10-31T09:00:00Z", "by": "agent" },
+    "spec": {}
+  }
+]

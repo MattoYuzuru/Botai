@@ -117,3 +117,11 @@ export function visibleSections(sections: readonly Section[]): VisibleSection[] 
     return count > 0 ? [{ def, count }] : [];
   });
 }
+
+/**
+ * Производные разделы v4-«Учёбы» (03-sources-and-ux.md §5.5): «Документы и вложения» больше не отдельное
+ * место — документы живут в карточке вуза, поэтому раздела в списке нет; «Источники» отсутствуют и раньше.
+ */
+export function visibleSectionsV4(sections: readonly Section[]): VisibleSection[] {
+  return visibleSections(sections).filter(({ def }) => def.kind !== "documents");
+}

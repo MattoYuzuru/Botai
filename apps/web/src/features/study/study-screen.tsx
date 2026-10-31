@@ -27,6 +27,8 @@ import { AddDocumentSheet } from "./add-document-sheet";
 import { ConnectionSheet } from "./connection-sheet";
 import { type StudyKind, visibleSections } from "./registry";
 import { SourceList } from "./source-list";
+import { useStudyUiMode } from "./v4/flag";
+import { StudyScreenV4 } from "./v4/study-screen-v4";
 
 /**
  * «Учёба» (`/study`): вуз — единица со многими источниками. У каждого вуза: название, сокращение и сводный
@@ -37,6 +39,14 @@ import { SourceList } from "./source-list";
  * настройки — внизу экрана (§7.1).
  */
 export function StudyScreen() {
+  // Пивот v4: новый экран источников за флагом, пока владелец не принял его (docs/v4/17-study-ui.md).
+  // Флаг читается до остальных хуков, чтобы не запускать запросы старого экрана в v4-режиме.
+  if (useStudyUiMode() === "v4") return <StudyScreenV4 />;
+  return <StudyScreenLegacy />;
+}
+
+/** Текущий экран «Учёбы» (до приёмки v4): остаётся как fallback и работает без изменений. */
+function StudyScreenLegacy() {
   const directory = useSpaceDirectory();
   const scope = useScope(directory);
   const nowMs = useNow(30_000);

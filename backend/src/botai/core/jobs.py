@@ -24,6 +24,7 @@ class JobKind(StrEnum):
     INGEST = "ingest"  # document source
     CHAT = "chat"
     ACTION = "action"
+    AGENT = "agent"  # experimental v4 free-harness run (BOTAI_AGENT_ENGINE=v4)
 
 
 class JobState(StrEnum):

@@ -36,8 +36,12 @@ def test_no_university_specific_code() -> None:
 
 
 def test_no_direct_http_outside_core() -> None:
-    """Outbound requests must use botai.core.http (timeouts, retries, egress allowlist)."""
-    allowed = {"core/http.py", "agent/llm.py"}
+    """Outbound requests must use a vetted client (timeouts, retries, egress policy).
+
+    v3 keeps them in `core/http.py` and `agent/llm.py`; the v4 runtime owns one factory at
+    `agent/v4/http.py` (the free harness has no allowlist, so the guard is about a single
+    places to configure timeouts, not about blocking hosts)."""
+    allowed = {"core/http.py", "agent/llm.py", "agent/v4/http.py"}
     pattern = re.compile(r"httpx\.(AsyncClient|Client|get|post|request)\(")
     offenders = [
         str(p.relative_to(SRC))

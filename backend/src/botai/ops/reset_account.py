@@ -37,9 +37,10 @@ from botai.db.models import AuditLog, Job, User
 
 # The account itself and the records that must outlive a reset.
 PRESERVED = frozenset({"users", "auth_sessions", "invites", "audit_log", "llm_usage"})
-# Shared between users: removed by `--shared` only when nobody else uses them.
+# Shared between users: removed by `--shared` only when nobody else uses them. Playbooks v4 are
+# shared knowledge (D-018): a reset of one account must not take a playbook another account uses.
 ORIGIN_TABLES = ("adapter_specs", "login_presets", "source_sitemaps")
-SHARED = frozenset({*ORIGIN_TABLES, "universities"})
+SHARED = frozenset({*ORIGIN_TABLES, "universities", "playbooks"})
 ACTIVE_JOB_STATES = ("queued", "running", "waiting_user")
 
 

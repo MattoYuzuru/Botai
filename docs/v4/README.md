@@ -103,8 +103,30 @@ Claude Code, ChatGPT-агент) и удобнее их, потому что ж�
 | [08-login-ux.md](08-login-ux.md) | Вход: native-first, без вечного лоудера, качество/метрики удалённого экрана, реконнект |
 | [09-prod-login-incidents.md](09-prod-login-incidents.md) | Разбор production-инцидентов: research 2005/2000, лоудер, remote screen, VPN, МИСИС |
 | [10-limits-and-research.md](10-limits-and-research.md) | Мягкие лимиты, feature-flag v4, остановка research без прогресса (фаза 0) |
+| [11-runtime.md](11-runtime.md) | Agent runtime v4: цикл, протокол инструментов, трассы, провайдеры (фаза 1) |
+| [12-browser-control.md](12-browser-control.md) | Полный браузерный контроль и persistent-профили (фаза 1) |
+| [13-executor.md](13-executor.md) | Песочница `code_exec`/`fs`, local executor и модель угроз (фаза 1) |
+| [14-sources-backend.md](14-sources-backend.md) | Схема sources/playbooks/artifacts и сервис источников (фаза 2) |
+| [15-runtime-wiring.md](15-runtime-wiring.md) | Сборка v4-пути за флагом `agent_engine`, job `AGENT`, трассы в БД (фаза 1) |
+| [16-sources-runner-tools.md](16-sources-runner-tools.md) | Playbook-runner, `source_*` инструменты и REST/SSE API (фаза 2) |
+| [17-study-ui.md](17-study-ui.md) | Новый экран «Учёба» за флагом: источники, карточка, без «Моих материалов» (фаза 2) |
+| [18-rag.md](18-rag.md) | RAG: эмбеддинги, гибридный поиск, индексация артефактов (фаза 2) |
 | [_evidence/](_evidence/) | Сырые свидетельства: production, бенчмарк, трассы (только санитизированные) |
 | [_input/](_input/) | Входные документы пивота (анализ ограничений, заметки владельца) |
+
+## Статус реализации (2026-10-31, вторая итерация)
+
+- ✅ Фаза 0 и 0.5: мягкие лимиты, остановка research без прогресса, login UX — задеплоено.
+- ✅ Фаза 1 (ядро): runtime, протокол инструментов, провайдеры DeepSeek/Anthropic/OpenAI/mock,
+  полный браузерный контроль, local-executor, секреты/session, job `AGENT`, DB-трассы —
+  за флагом `BOTAI_AGENT_ENGINE=v4` (в prod выключен; local-executor в prod запрещён).
+- ✅ Фаза 2 (срез): аддитивная схема sources/playbooks/artifacts/priorities, сервис и runner,
+  `source_*` инструменты, REST/SSE `/api/v1/sources`, RAG (JSONB-fallback без pgvector),
+  новый «Учёба» UI за `?studyUi=v4` (старый экран — fallback).
+- ⏳ Осталось: включение v4-агента в prod (контейнерный executor), запись нормализованных
+  данных в домен, реальные сессии из Vault в runner, pgvector-миграция, полный UI без флага,
+  живая приёмка L2/L3 и бенчмарк нового runtime.
+
 
 ## Критерии завершённости пивота
 
