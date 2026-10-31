@@ -25,6 +25,26 @@ const NEEDS_TEXT: Record<NeedsKind, string> = {
   input: "Вуз просит ввести данные. Введите их на экране.",
 };
 
+/** Сколько ждём подтверждения после «Я вошёл»: дольше — понятная ошибка, а не вечный лоудер. */
+export const DONE_TIMEOUT_MS = 90_000;
+/** Первый кадр после подключения: медленный канал (VPN) не должен оставлять пустой экран. */
+export const FIRST_FRAME_TIMEOUT_MS = 20_000;
+
+const DONE_UNCONFIRMED_TEXT =
+  "Вход пока не подтвердился: экран не сообщил об успехе. Проверьте, что вход выполнен, и нажмите «Я вошёл» ещё раз.";
+const DONE_NOT_SENT_TEXT =
+  "Связь с экраном сейчас недоступна: «Я вошёл» не отправлен. Дождитесь переподключения и нажмите ещё раз.";
+const NO_FRAME_TEXT =
+  "Экран не прислал ни одного кадра: канал медленный или недоступен (например, через VPN). " +
+  "Проверьте соединение и повторите.";
+
+function expiredMessage(reason: string): string {
+  if (reason === "done_unconfirmed") {
+    return "Вход не подтвердился после «Я вошёл». Начните вход заново.";
+  }
+  return "Время входа истекло, экран закрыт. Начните вход заново.";
+}
+
 /** Рисует кадр на canvas и забывает его: кадры не хранятся ни в состоянии, ни на диске. */
 function paintFrame(canvas: HTMLCanvasElement | null, message: Extract<ServerMessage, { t: "frame" }>) {
   const context = canvas?.getContext?.("2d");
@@ -47,14 +67,29 @@ export interface RemoteScreenProps {
   createSocket?: (url: string) => SocketLike;
   /** Паузы переподключения (в тестах — нули). */
   retryDelays?: readonly number[];
+  /** Новый одноразовый билет для переподключения; в тестах — без сети. */
+  renewTicket?: () => Promise<{ wsUrl: string; ticket: string }>;
+  /** Сколько ждать подтверждения «Я вошёл», мс. */
+  doneTimeoutMs?: number;
+  /** Сколько ждать первый кадр после подключения, мс. */
+  firstFrameTimeoutMs?: number;
 }
 
 /**
  * Запасной экран входа (`login`): кадры удалённого браузера во всю ширину без прокрутки, касание и клавиатура,
  * статус соединения. Основной путь — зеркало формы (`SecretField`); сюда попадают капча и нестандартные шаги.
  * Вход делает человек; капча и MFA — «нужен человек», обходить их мы не будем. Кадры не записываются.
+ * Сбой канала или неподтверждённое «Я вошёл» заканчиваются понятным сообщением и повтором, а не лоудером.
  */
-export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: RemoteScreenProps) {
+export function RemoteScreen({
+  block,
+  nowMs,
+  createSocket,
+  retryDelays,
+  renewTicket,
+  doneTimeoutMs = DONE_TIMEOUT_MS,
+  firstFrameTimeoutMs = FIRST_FRAME_TIMEOUT_MS,
+}: RemoteScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -77,14 +112,24 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
   const [page, setPage] = useState<{ host: string; loading: boolean } | null>(null);
   const [result, setResult] = useState<"success" | { message: string } | null>(null);
   const [finishing, setFinishing] = useState(false);
+  /** «Я вошёл» не подтвердилось или не отправилось: показываем словами, кнопка снова доступна. */
+  const [finishNotice, setFinishNotice] = useState<string | null>(null);
+  const [frameSeen, setFrameSeen] = useState(false);
+  const [frameMissing, setFrameMissing] = useState(false);
+  const ended = result !== null || status === "ended";
 
   const send = useCallback((message: ClientMessage) => sessionRef.current?.send(message) ?? false, []);
 
   useEffect(() => {
+    setFrameSeen(false);
+    setFrameMissing(false);
+    setFinishNotice(null);
+    setFinishing(false);
     const session = new RemoteSession({
       origin: window.location.origin,
       first: { wsUrl: block.wsUrl, ticket: block.ticket },
       renew: async () => {
+        if (renewTicket) return renewTicket();
         const next = await call(
           api.POST("/api/v1/connections/{connection_id}/login-session", {
             params: { path: { connection_id: block.connectionId } },
@@ -97,15 +142,26 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
       onStatus: (next) => {
         setStatus(next);
         if (next === "live") {
+          setFrameMissing(false);
           const width = Math.round(wrapRef.current?.clientWidth || 390);
           const height = Math.round(Math.min(Math.max(window.innerHeight * 0.6, 420), 760));
           session.send({ t: "resize", w: width, h: height });
+        } else {
+          // The backend may still confirm the login; stop the spinner but let the person retry.
+          setFinishing(false);
+          if (next === "reconnecting") {
+            // A new screencast must prove itself: a silent channel shows the same message.
+            setFrameSeen(false);
+            setFrameMissing(false);
+          }
         }
       },
       onMessage: (message) => {
         switch (message.t) {
           case "frame":
             frameSize.current = { w: message.w, h: message.h };
+            setFrameSeen(true);
+            setFrameMissing(false);
             paintFrame(canvasRef.current, message);
             session.send({ t: "ack", seq: message.seq });
             break;
@@ -120,15 +176,23 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
             break;
           }
           case "needs":
+            // The person's «Я вошёл» was not enough (a step is still needed): never leave the
+            // button spinning forever; the hint below explains what to do.
+            setFinishing(false);
+            setFinishNotice(null);
             setNeeds({ what: message.what, hint: message.hint });
             break;
           case "success":
+            setFinishing(false);
+            setFinishNotice(null);
             setResult("success");
             break;
           case "expired":
-            setResult({ message: "Время входа истекло, экран закрыт. Начните вход заново." });
+            setFinishing(false);
+            setResult({ message: expiredMessage(message.reason) });
             break;
           case "error":
+            setFinishing(false);
             setResult({ message: message.detail || "Запасной экран не открылся. Начните вход заново." });
             break;
         }
@@ -140,7 +204,24 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
       session.close();
       sessionRef.current = null;
     };
-  }, [block.wsUrl, block.ticket, block.connectionId, createSocket, retryDelays]);
+  }, [block.wsUrl, block.ticket, block.connectionId, createSocket, retryDelays, renewTicket]);
+
+  // «Я вошёл» — просьба, а не факт: если сервер не подтвердил вход, показываем ошибку и повтор.
+  useEffect(() => {
+    if (!finishing) return;
+    const timer = setTimeout(() => {
+      setFinishing(false);
+      setFinishNotice(DONE_UNCONFIRMED_TEXT);
+    }, doneTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [finishing, doneTimeoutMs]);
+
+  // Медленный канал (чужой VPN, слабая сеть) не должен оставлять пустой экран без объяснения.
+  useEffect(() => {
+    if (status !== "live" || frameSeen || ended) return;
+    const timer = setTimeout(() => setFrameMissing(true), firstFrameTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [status, frameSeen, ended, firstFrameTimeoutMs]);
 
   const point = (event: { clientX: number; clientY: number }) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -230,12 +311,25 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
   };
 
   const finish = () => {
+    if (!send({ t: "done" })) {
+      setFinishing(false);
+      setFinishNotice(DONE_NOT_SENT_TEXT);
+      return;
+    }
+    setFinishNotice(null);
     setFinishing(true);
-    send({ t: "done" });
+  };
+
+  /** Перезапуск канала без перезагрузки страницы: свежий билет и новый сокет. */
+  const restart = () => {
+    setFrameSeen(false);
+    setFrameMissing(false);
+    setFinishing(false);
+    setFinishNotice(null);
+    sessionRef.current?.restart();
   };
 
   const leftMs = Date.parse(block.expiresAt) - nowMs;
-  const ended = result !== null || status === "ended";
 
   return (
     <Card className="flex flex-col gap-3" data-remote-screen={status} aria-label="Запасной экран входа">
@@ -257,6 +351,16 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
         <Banner tone="warning" icon="help" live>
           {NEEDS_TEXT[needs.what]}
           {needs.hint ? ` ${needs.hint}` : ""}
+        </Banner>
+      )}
+      {finishNotice && !ended && (
+        <Banner tone="warning" icon="warning" live>
+          {finishNotice}
+        </Banner>
+      )}
+      {frameMissing && !ended && (
+        <Banner tone="warning" icon="sync" live>
+          {NO_FRAME_TEXT}
         </Banner>
       )}
 
@@ -333,6 +437,11 @@ export function RemoteScreen({ block, nowMs, createSocket, retryDelays }: Remote
           >
             Я вошёл
           </Button>
+          {frameMissing && (
+            <Button variant="secondary" leadingIcon="sync" onClick={restart}>
+              Переподключиться
+            </Button>
+          )}
         </div>
       )}
     </Card>

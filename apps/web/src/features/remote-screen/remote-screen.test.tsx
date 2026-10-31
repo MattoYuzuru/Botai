@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Login } from "@/features/agent-blocks/types";
 import { encode, keyMessage, parseServerMessage, resolveSocketUrl, toRemotePoint } from "./protocol";
@@ -136,6 +137,19 @@ describe("сессия запасного экрана", () => {
     expect(onStatus).toHaveBeenLastCalledWith("live");
   });
 
+  it("перезапуск канала: новый билет и сокет сразу, без траты попыток переподключения", async () => {
+    const { session, renew, onStatus } = make();
+    session.start();
+    FakeSocket.all[0]?.open();
+    session.restart();
+    expect(onStatus).toHaveBeenCalledWith("reconnecting");
+    await waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(FakeSocket.all[1]?.url).toContain("ticket=t-2");
+    FakeSocket.all[1]?.open();
+    expect(onStatus).toHaveBeenLastCalledWith("live");
+  });
+
   it("success закрывает сессию и больше не переподключается", async () => {
     const { session, onMessage, onStatus } = make();
     session.start();
@@ -219,7 +233,7 @@ describe("сессия запасного экрана", () => {
 });
 
 describe("RemoteScreen", () => {
-  const renderScreen = () => {
+  const renderScreen = (props: Partial<ComponentProps<typeof RemoteScreen>> = {}) => {
     FakeSocket.all = [];
     render(
       <RemoteScreen
@@ -227,6 +241,7 @@ describe("RemoteScreen", () => {
         nowMs={Date.parse("2026-10-27T10:00:00Z")}
         createSocket={(url) => new FakeSocket(url)}
         retryDelays={[0, 0, 0]}
+        {...props}
       />,
     );
     return FakeSocket.all[0] as FakeSocket;
@@ -302,6 +317,86 @@ describe("RemoteScreen", () => {
     act(() => socket.receive({ t: "success" }));
     expect(screen.getByText(/Вход выполнен/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Я вошёл" })).toBeNull();
+  });
+
+  it("«вход не подтверждён» от сервера сбрасывает лоудер: кнопка снова доступна, подсказка видна", async () => {
+    const socket = renderScreen();
+    act(() => socket.open());
+    const button = screen.getByRole("button", { name: "Я вошёл" });
+    await userEvent.click(button);
+    expect(button).toBeDisabled(); // идёт ожидание подтверждения
+    act(() => socket.receive({ t: "needs", what: "input", hint: "Вход пока не подтверждён: завершите его" }));
+    expect(button).toBeEnabled();
+    expect(screen.getByText(/Вход пока не подтверждён/)).toBeInTheDocument();
+    // Повторная попытка отправляет новое «Готово», а не висит на первой.
+    await userEvent.click(button);
+    expect(socket.messages().filter((message) => message.t === "done")).toHaveLength(2);
+  });
+
+  it("таймаут подтверждения: понятная ошибка и кнопка повтора вместо вечного лоудера", async () => {
+    const socket = renderScreen({ doneTimeoutMs: 30 });
+    act(() => socket.open());
+    const button = screen.getByRole("button", { name: "Я вошёл" });
+    await userEvent.click(button);
+    expect(await screen.findByText(/Вход пока не подтвердился/)).toBeInTheDocument();
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    expect(socket.messages().filter((message) => message.t === "done")).toHaveLength(2);
+  });
+
+  it("ошибка сервера после «Я вошёл» — человеческий текст, а не лоудер", async () => {
+    const socket = renderScreen();
+    act(() => socket.open());
+    await userEvent.click(screen.getByRole("button", { name: "Я вошёл" }));
+    act(() => socket.receive({ t: "error", code: "login_failed", detail: "Сайт не пустил" }));
+    expect(screen.getByText("Сайт не пустил")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Я вошёл" })).toBeNull();
+  });
+
+  it("медленный канал: первый кадр не пришёл — сообщение и переподключение по кнопке", async () => {
+    const renew = vi.fn(async () => ({
+      wsUrl: "/api/v1/login-sessions/S2/ws",
+      ticket: "t-2",
+    }));
+    const socket = renderScreen({ firstFrameTimeoutMs: 30, renewTicket: renew });
+    act(() => socket.open());
+    expect(await screen.findByText(/Экран не прислал ни одного кадра/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Переподключиться" }));
+    await waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(FakeSocket.all[1]?.url).toContain("ticket=t-2");
+    act(() => FakeSocket.all[1]?.open());
+    expect(screen.queryByText(/Экран не прислал ни одного кадра/)).toBeNull();
+  });
+
+  it("после переподключения молчащий канал снова получает сообщение и повтор", async () => {
+    const renew = vi.fn(async () => ({
+      wsUrl: "/api/v1/login-sessions/S2/ws",
+      ticket: "t-2",
+    }));
+    const socket = renderScreen({ firstFrameTimeoutMs: 20, renewTicket: renew });
+    act(() => socket.open());
+    act(() => socket.receive({ t: "frame", seq: 1, mime: "image/jpeg", w: 390, h: 640, data: "AAAA" }));
+    act(() => socket.drop());
+    await waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    act(() => FakeSocket.all[1]?.open());
+    expect(await screen.findByText(/Экран не прислал ни одного кадра/)).toBeInTheDocument();
+  });
+
+  it("первый кадр пришёл — сообщения о мёртвом канале нет", () => {
+    const socket = renderScreen({ firstFrameTimeoutMs: 5 });
+    act(() => socket.open());
+    act(() => socket.receive({ t: "frame", seq: 1, mime: "image/jpeg", w: 390, h: 640, data: "AAAA" }));
+    return waitFor(() => {
+      expect(screen.queryByText(/Экран не прислал ни одного кадра/)).toBeNull();
+    });
+  });
+
+  it("экран закрыт после неподтверждённого «Я вошёл» — свой понятный текст", () => {
+    const socket = renderScreen();
+    act(() => socket.open());
+    act(() => socket.receive({ t: "expired", reason: "done_unconfirmed" }));
+    expect(screen.getByText(/Вход не подтвердился после «Я вошёл»/)).toBeInTheDocument();
   });
 
   it("обрыв связи — полоса «Связь прервалась… вход не потерян» и переподключение", async () => {

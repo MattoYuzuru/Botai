@@ -56,23 +56,6 @@ CLOSE_ABUSE = 1008
 CLOSE_NORMAL = 1000
 
 
-@dataclass(frozen=True, slots=True)
-class ScreenConfig:
-    ttl_s: float = 600.0  # a screen session lives 10 minutes ...
-    max_ttl_s: float = 1800.0  # ... extended by viewer activity up to 30
-    ticket_ttl_s: float = 60.0
-    max_fps: int = 30
-    window: int = 2  # frames in flight to the viewer
-    max_message_bytes: int = 8 * 1024
-    max_messages_per_s: float = 120.0
-    max_violations: int = 100
-    viewport_min: tuple[int, int] = (240, 240)
-    viewport_max: tuple[int, int] = (1920, 1920)
-    viewport_default: tuple[int, int] = (390, 760)
-    stall_s: float = 2.0  # no ack for this long: assume the frames in flight were lost
-    first_frame_wait_s: float = 0.3
-
-
 # --------------------------------------------------------------------------------------------
 # Wire messages
 # --------------------------------------------------------------------------------------------
@@ -144,28 +127,48 @@ class Viewer(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Profile:
-    quality: int  # JPEG quality, 25..80
+    quality: int  # JPEG quality, 40..85 by default
     fps: int  # at most this many frames per second to the viewer
 
 
+def _quality_limits(min_quality: int, start_quality: int, max_quality: int) -> tuple[int, int, int]:
+    """Clamp configured JPEG quality values to a workable range: (min, start, max)."""
+    low = max(1, min(100, min_quality))
+    high = max(low, min(100, max_quality))
+    return low, max(low, min(high, start_quality)), high
+
+
 class QualityController:
-    """Trades picture quality and frame rate against the viewer's acknowledgement round trip.
+    """Trades frame rate and picture quality against the viewer's acknowledgement round trip.
 
-    A slow link first loses quality (fewer bytes per frame), then frame rate; a fast one gets
-    both back, slowly. Changes are rare (at most one per second) because a quality change
-    restarts the screencast."""
+    The picture is what the person at the screen reads, so frame rate is the first lever: a slow
+    link drops the frame rate step by step (which does not restart the screencast) and only at
+    the frame-rate floor does the JPEG quality go down, never below `min_quality`. A fast link
+    brings the frame rate back first and the picture last. Changes are rare (at most one per
+    second) because a quality change restarts the screencast."""
 
-    MIN_QUALITY = 25
-    MAX_QUALITY = 80
+    MIN_QUALITY = 40
+    MAX_QUALITY = 85
+    START_QUALITY = 75
     SLOW_MS = 120.0
     FAST_MS = 45.0
     FPS_STEPS = (30, 24, 20, 15, 12, 10)
 
-    def __init__(self, *, max_fps: int = 30, start_quality: int = 65) -> None:
+    def __init__(
+        self,
+        *,
+        max_fps: int = 30,
+        start_quality: int = START_QUALITY,
+        min_quality: int = MIN_QUALITY,
+        max_quality: int = MAX_QUALITY,
+    ) -> None:
+        self._min_quality, self._start_quality, self._max_quality = _quality_limits(
+            min_quality, start_quality, max_quality
+        )
         self._steps = tuple(f for f in self.FPS_STEPS if f <= max_fps) or (max_fps,)
         if max_fps not in self._steps and max_fps > self._steps[0]:
             self._steps = (max_fps, *self._steps)
-        self.profile = Profile(start_quality, self._steps[0])
+        self.profile = Profile(self._start_quality, self._steps[0])
         self._ewma: float | None = None
         self._samples = 0
         self._last_change = float("-inf")
@@ -186,19 +189,21 @@ class QualityController:
         if self._samples < 4 or now - self._last_change < 1.0:
             return None
         p = self.profile
+        slower = self._step(p.fps, 1)
+        better = self._step(p.fps, -1)
         if self._ewma > self.SLOW_MS:
-            if p.quality > self.MIN_QUALITY:
-                new = Profile(max(self.MIN_QUALITY, p.quality - 10), p.fps)
-            elif self._step(p.fps, 1) != p.fps:
-                new = Profile(p.quality, self._step(p.fps, 1))
+            if slower != p.fps:  # frame rate first: the picture stays readable
+                new = Profile(p.quality, slower)
+            elif p.quality > self._min_quality:
+                new = Profile(max(self._min_quality, p.quality - 10), p.fps)
             else:
                 return None
             self._last_degrade = now
         elif self._ewma < self.FAST_MS and now - self._last_degrade > 3.0:
-            if self._step(p.fps, -1) != p.fps:
-                new = Profile(p.quality, self._step(p.fps, -1))
-            elif p.quality < self.MAX_QUALITY:
-                new = Profile(min(self.MAX_QUALITY, p.quality + 5), p.fps)
+            if better != p.fps:  # frame rate first here too: smoothness comes back
+                new = Profile(p.quality, better)
+            elif p.quality < self._max_quality:
+                new = Profile(min(self._max_quality, p.quality + 5), p.fps)
             else:
                 return None
         else:
@@ -207,6 +212,51 @@ class QualityController:
         self._last_change = now
         self._samples = 0
         return new
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenConfig:
+    ttl_s: float = 600.0  # a screen session lives 10 minutes ...
+    max_ttl_s: float = 1800.0  # ... extended by viewer activity up to 30
+    ticket_ttl_s: float = 60.0
+    max_fps: int = 30
+    min_quality: int = QualityController.MIN_QUALITY
+    start_quality: int = QualityController.START_QUALITY
+    max_quality: int = QualityController.MAX_QUALITY
+    window: int = 2  # frames in flight to the viewer
+    max_message_bytes: int = 8 * 1024
+    max_messages_per_s: float = 120.0
+    max_violations: int = 100
+    viewport_min: tuple[int, int] = (240, 240)
+    viewport_max: tuple[int, int] = (1920, 1920)
+    viewport_default: tuple[int, int] = (390, 760)
+    stall_s: float = 2.0  # no ack for this long: assume the frames in flight were lost
+    first_frame_wait_s: float = 0.3
+
+
+def screen_config_from_env() -> ScreenConfig:
+    """Quality limits of the remote screen, tunable without a rebuild.
+
+    `BOTAI_SCREEN_MAX_FPS`, `BOTAI_SCREEN_MIN_QUALITY`, `BOTAI_SCREEN_START_QUALITY` and
+    `BOTAI_SCREEN_MAX_QUALITY` override the defaults; an unusable value keeps the default
+    (QualityController clamps the accepted ones into a workable range)."""
+
+    def number(name: str, default: int) -> int:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            log.warning("ignoring %s=%r: not an integer", name, raw)
+            return default
+
+    return ScreenConfig(
+        max_fps=max(1, number("BOTAI_SCREEN_MAX_FPS", 30)),
+        min_quality=number("BOTAI_SCREEN_MIN_QUALITY", QualityController.MIN_QUALITY),
+        start_quality=number("BOTAI_SCREEN_START_QUALITY", QualityController.START_QUALITY),
+        max_quality=number("BOTAI_SCREEN_MAX_QUALITY", QualityController.MAX_QUALITY),
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -367,9 +417,15 @@ class ScreenSession:
         self.ws_url = ""
         self.expires_at = datetime.min
         self._closed = False
+        self._close_reason: str | None = None
         self._cdp: CDPSession | None = None
         self._viewer: Viewer | None = None
-        self._quality = QualityController(max_fps=config.max_fps)
+        self._quality = QualityController(
+            max_fps=config.max_fps,
+            start_quality=config.start_quality,
+            min_quality=config.min_quality,
+            max_quality=config.max_quality,
+        )
         self._viewport = config.viewport_default
         self._tasks: set[asyncio.Task[Any]] = set()
         self._latest: _Frame | None = None
@@ -454,6 +510,14 @@ class ScreenSession:
         return self._closed
 
     @property
+    def close_reason(self) -> str | None:
+        """Why the screen ended (`ttl`, `success`, `browser closed`, `mirrored`, ...).
+
+        The login flow tells a screen that ran out of time from one that was closed on purpose,
+        so a timeout becomes a clear error instead of a silent cancellation."""
+        return self._close_reason
+
+    @property
     def has_viewer(self) -> bool:
         return self._viewer is not None
 
@@ -466,6 +530,7 @@ class ScreenSession:
         if self._closed:
             return
         self._closed = True
+        self._close_reason = reason
         viewer, self._viewer = self._viewer, None
         if viewer is not None:
             if notify == "expired":
@@ -487,12 +552,20 @@ class ScreenSession:
             if task is not asyncio.current_task():
                 task.cancel()
         self._on_closed(self)
+        quality, rtt = self._quality.profile, self._quality.rtt_ms
         log.info(
-            "screen %s closed (%s): %d frames, %d inputs",
+            "screen %s closed (%s): %d frames, %d bytes, %d inputs, %d dropped, %d restarts, "
+            "quality=%d fps=%d rtt=%s",
             self.id,
             reason,
             self.stats.frames_sent,
+            self.stats.bytes_sent,
             self.stats.inputs,
+            self.stats.frames_dropped,
+            self.stats.restarts,
+            quality.quality,
+            quality.fps,
+            "unknown" if rtt is None else f"{rtt:.0f}ms",
         )
 
     async def _watch_ttl(self) -> None:
@@ -1203,6 +1276,7 @@ def get_screens(settings: Settings) -> ScreenRegistry:
         _registry = ScreenRegistry(
             secret=screen_secret(settings),
             public_base_url=settings.public_base_url,
+            config=screen_config_from_env(),
             internal_bind=_internal_bind(),
             remote_urls=_remote_urls(),
         )

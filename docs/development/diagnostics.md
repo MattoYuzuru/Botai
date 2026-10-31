@@ -64,7 +64,7 @@ Docker Compose передаёт его API, воркеру и прокси. Фа
 ещё не доказывает потерю браузерного входа.
 
 `browser.auth_permit` и `browser.auth_permit_refused` показывают окно шага входа
-([security.md](../architecture/security.md) §0.2). `browser.auth_permit` с `phase=request` — окно
+([security.md](../v4/02-architecture.md) §0.2). `browser.auth_permit` с `phase=request` — окно
 открыто для auth-фрейма (`window_ms`, `allow_host_count`), `outcome=rejected` с причиной — не
 открыто. С `phase=response` — POST пропущен: `navigation` отличает отправку формы от XHR/fetch,
 `post_count` — сколько запросов уже взяло окно. `browser.auth_permit_refused` — POST отклонён,

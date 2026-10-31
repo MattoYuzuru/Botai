@@ -1,0 +1,2019 @@
+{
+  "schemaVersion": 1,
+  "benchmarkVersion": "1.0.0",
+  "runId": "run-20261031-131305",
+  "date": "2026-10-31",
+  "startedAt": "2026-10-31T13:13:05+03:00",
+  "finishedAt": "2026-10-31T13:15:41+03:00",
+  "host": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.15",
+    "browserConfig": {
+      "mode": "auto",
+      "resolvedMode": "chrome-copy",
+      "loginScenarioMode": "chrome-fresh (real Chrome, empty profile)",
+      "sessionScenarioMode": "chrome-copy (real Chrome, copied owner profile)",
+      "headless": true,
+      "locale": "ru-RU",
+      "timezoneId": "Europe/Moscow"
+    }
+  },
+  "credentials": {
+    "policy": "primary secrets live in the macOS Keychain; the model and logs never see them",
+    "registeredSecretValues": 2,
+    "visibleToModelOrLogs": false
+  },
+  "scenarios": [
+    {
+      "id": "hse-login",
+      "title": "ВШЭ: живой вход по кредам из Keychain",
+      "level": "L3",
+      "status": "success",
+      "startedAt": "2026-10-31T13:13:05+03:00",
+      "finishedAt": "2026-10-31T13:14:15+03:00",
+      "durationSec": 69.442,
+      "steps": [
+        {
+          "name": "hse.entry",
+          "ok": true,
+          "detail": "opened https://lk.hse.ru/, title=SmartPoint - единый личный кабинет (ЕЛК) НИУ ВШЭ"
+        },
+        {
+          "name": "hse.login.form",
+          "ok": true,
+          "detail": "IdP login form at https://saml.hse.ru/realms/hse/protocol/openid-connect/auth?client_id=elk&redirect_uri=https://lk.hse.ru/api/keycloak-auth/&response_type=code&scope=openid&ui_l"
+        },
+        {
+          "name": "hse.login.fill",
+          "ok": true,
+          "detail": "typed login and password from the broker (values not logged)"
+        },
+        {
+          "name": "hse.login.submit",
+          "ok": true,
+          "detail": "submitted the IdP login form"
+        },
+        {
+          "name": "hse.schedule.open",
+          "ok": true,
+          "detail": "opened https://lk.hse.ru/schedule?begin_date=2026-10-26",
+          "durationSec": 7.153
+        },
+        {
+          "name": "hse.schedule.parse",
+          "ok": true,
+          "detail": "2 schedule records from 1 JSON responses; 2 time-like strings in DOM"
+        },
+        {
+          "name": "hse.api.discover",
+          "ok": true,
+          "detail": "14 distinct XHR/API endpoints from page traffic"
+        },
+        {
+          "name": "hse.api.safe_get",
+          "ok": true,
+          "detail": "GET https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26 -> 200, records=2",
+          "durationSec": 0.369
+        },
+        {
+          "name": "hse.schedule.api",
+          "ok": true,
+          "detail": "authenticated GET https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26 -> 200: 1 days, 1 lessons, 2 JSON records"
+        },
+        {
+          "name": "hse.moodle.sso_click",
+          "ok": true,
+          "detail": "entry page https://edu.hse.ru/my/courses.php"
+        },
+        {
+          "name": "hse.moodle.read",
+          "ok": true,
+          "detail": "authenticated=True, course links=62, url=https://edu.hse.ru/my/courses.php"
+        },
+        {
+          "name": "hse.moodle.form_action",
+          "ok": true,
+          "detail": "typed a public search query; GET results=20 (no write request was made)",
+          "durationSec": 17.246
+        },
+        {
+          "name": "hse.login.confirm",
+          "ok": true,
+          "detail": "authenticated=True; schedule records=2; login took 13.285s",
+          "durationSec": 55.374
+        }
+      ],
+      "barriers": [],
+      "metrics": {
+        "browserMode": "chrome-fresh",
+        "browserVersion": "Chrome/156.0.8078.74",
+        "credentials": {
+          "source": "macOS Keychain",
+          "services": [
+            "botai.live.hse.mail",
+            "botai.live.hse.password"
+          ],
+          "visibleToModelOrLogs": false,
+          "fieldsFilled": 2
+        },
+        "loginFormFields": [
+          {
+            "tag": "input",
+            "type": "text",
+            "name": "username",
+            "id": "username",
+            "autocomplete": ""
+          },
+          {
+            "tag": "input",
+            "type": "password",
+            "name": "password",
+            "id": "",
+            "autocomplete": ""
+          },
+          {
+            "tag": "input",
+            "type": "hidden",
+            "name": "credentialId",
+            "id": "id-hidden-input",
+            "autocomplete": ""
+          },
+          {
+            "tag": "input",
+            "type": "submit",
+            "name": "login",
+            "id": "",
+            "autocomplete": ""
+          }
+        ],
+        "loginDurationSec": 13.285,
+        "dom": {
+          "bodyTextLength": 682,
+          "anchors": 62,
+          "buttons": 16,
+          "formFields": 3,
+          "tableRows": 7,
+          "listItems": 8,
+          "headings": 8,
+          "timeLike": 2,
+          "dateLike": 0
+        },
+        "pageTitle": "SmartPoint - единый личный кабинет (ЕЛК) НИУ ВШЭ",
+        "bodyTextLength": 682,
+        "timePairsInDom": 2,
+        "scheduleRecords": 2,
+        "apiPayloads": [
+          {
+            "endpoint": "https://lk.hse.ru/api/get-myschedule",
+            "shape": {
+              "type": "list",
+              "length": 1,
+              "itemKeys": [
+                "date",
+                "lessons"
+              ]
+            },
+            "counts": {
+              "listRecords": 2,
+              "recordLikeRecords": 2,
+              "topKeys": [
+                [
+                  "date",
+                  1
+                ],
+                [
+                  "lessons",
+                  1
+                ],
+                [
+                  "auditorium",
+                  1
+                ],
+                [
+                  "building",
+                  1
+                ],
+                [
+                  "name",
+                  1
+                ],
+                [
+                  "lesson_type",
+                  1
+                ],
+                [
+                  "lesson_type_id",
+                  1
+                ],
+                [
+                  "begin_time",
+                  1
+                ],
+                [
+                  "end_time",
+                  1
+                ],
+                [
+                  "lecturer",
+                  1
+                ],
+                [
+                  "lesson_number",
+                  1
+                ],
+                [
+                  "parent_schedule",
+                  1
+                ],
+                [
+                  "url1",
+                  1
+                ],
+                [
+                  "url1_description",
+                  1
+                ],
+                [
+                  "url2",
+                  1
+                ]
+              ]
+            }
+          }
+        ],
+        "apiEndpoints": [
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-adfs-entry-point",
+            "calls": 4,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-footer",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-my-news",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-myschedule",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-user",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/keycloak-auth/",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": false,
+            "resourceType": "document"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/cart",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/compares",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/favorites",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/navigations/main",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/profile-fill-check",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/programs/recommendations",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "POST",
+            "endpoint": "https://privacy-cs.mail.ru/fp/",
+            "calls": 4,
+            "statuses": [
+              200
+            ],
+            "json": false,
+            "resourceType": "fetch"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth",
+            "calls": 2,
+            "statuses": [
+              302,
+              200
+            ],
+            "json": false,
+            "resourceType": "document"
+          }
+        ],
+        "apiEndpointCount": 14,
+        "safeGet": {
+          "url": "https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26",
+          "method": "GET",
+          "status": 200,
+          "inPage": {
+            "status": 200,
+            "json": true,
+            "listRecords": 2,
+            "recordLike": 2,
+            "deadlineLike": 0,
+            "days": 1,
+            "lessons": 1,
+            "keys": [],
+            "listLengths": []
+          },
+          "counts": {
+            "listRecords": 2,
+            "recordLikeRecords": 2,
+            "deadlineLikeRecords": 0,
+            "days": 1,
+            "lessons": 1
+          }
+        },
+        "scheduleApiRecords": 2,
+        "scheduleApiDays": 1,
+        "scheduleApiPairs": 1,
+        "scheduleDeadlineLikeRecords": 0,
+        "session": {
+          "matchedCookies": 15,
+          "domains": {
+            "saml.hse.ru": {
+              "count": 6,
+              "names": [
+                "AUTH_SESSION_ID",
+                "AUTH_SESSION_ID_LEGACY",
+                "KEYCLOAK_SESSION",
+                "KEYCLOAK_IDENTITY",
+                "KEYCLOAK_SESSION_LEGACY",
+                "KEYCLOAK_IDENTITY_LEGACY"
+              ]
+            },
+            ".hse.ru": {
+              "count": 5,
+              "names": [
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "_ym_uid",
+                "_ym_d",
+                "_ym_isad"
+              ]
+            },
+            "lk.hse.ru": {
+              "count": 4,
+              "names": [
+                "_pk_id.1.9a5c",
+                "_pk_ses.1.9a5c",
+                "domain_sid",
+                "tmr_detect"
+              ]
+            }
+          },
+          "totalCookiesInContext": 24,
+          "storageStateExported": true,
+          "localStorageKeys": [
+            "_ym32635220:0_reqNum",
+            "_ym32635220_lsid",
+            "_ym36283385:0_reqNum",
+            "_ym36283385_lsid",
+            "_ym57348160:0_reqNum",
+            "_ym57348160_lsid",
+            "_ym91678537:0_reqNum",
+            "_ym91678537_lsid",
+            "_ym97383787:0_reqNum",
+            "_ym97383787_lsid",
+            "_ym_retryReqs",
+            "_ym_synced",
+            "_ym_uid",
+            "access_token",
+            "check_adfs_session",
+            "id_token",
+            "locale_id",
+            "rb_sync_id",
+            "redirect_url",
+            "tmr_lvid",
+            "tmr_lvidTS",
+            "tmr_reqNum",
+            "tmr_trgfpid"
+          ]
+        },
+        "moodle": {
+          "moodleAuthenticated": true,
+          "moodleCourses": 62,
+          "moodleLinks": 62,
+          "moodleBodyTextLength": 18037,
+          "moodleUrl": "https://edu.hse.ru/my/courses.php",
+          "formAction": {
+            "page": "edu.hse.ru/course/search.php",
+            "fields": [
+              {
+                "tag": "input",
+                "type": "hidden",
+                "name": "areaids",
+                "id": "",
+                "autocomplete": ""
+              },
+              {
+                "tag": "input",
+                "type": "text",
+                "name": "q",
+                "id": "searchinput-6ae5bf6ef00686ae5bf6ec0acc9",
+                "autocomplete": "off"
+              }
+            ],
+            "filled": true,
+            "courseLinksAfterSearch": 20,
+            "courseLinksBeforeSearch": 0,
+            "submittedGet": true
+          }
+        },
+        "har": {
+          "entries": 630,
+          "sanitized": true
+        }
+      },
+      "proof": {
+        "loginUrl": "https://lk.hse.ru/",
+        "loginOutcome": {
+          "state": "authenticated",
+          "detail": "returned to lk.hse.ru"
+        },
+        "authenticated": true
+      },
+      "artifacts": [
+        {
+          "kind": "storage_state",
+          "path": "raw/hse-login/storage-state.json",
+          "note": "Playwright storage state of the live HSE session (0600, outside repo)"
+        },
+        {
+          "kind": "har",
+          "path": "raw/hse-login/network.har",
+          "note": "sanitized HAR of the login and read flow"
+        },
+        {
+          "kind": "network",
+          "path": "raw/hse-login/network.json",
+          "note": "API endpoint discovery from observed traffic"
+        },
+        {
+          "kind": "console",
+          "path": "raw/hse-login/console.json",
+          "note": "browser console, redacted"
+        },
+        {
+          "kind": "screenshots",
+          "path": "raw/hse-login/screenshots",
+          "note": "login and schedule frames"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "hse-session",
+      "title": "ВШЭ: чтение на сессии Chrome (без пароля)",
+      "level": "L3",
+      "status": "success",
+      "startedAt": "2026-10-31T13:14:15+03:00",
+      "finishedAt": "2026-10-31T13:15:19+03:00",
+      "durationSec": 64.327,
+      "steps": [
+        {
+          "name": "hse.session.extract",
+          "ok": true,
+          "detail": "24 HSE cookies in the copied Chrome profile (4 domains)"
+        },
+        {
+          "name": "hse.schedule.open",
+          "ok": true,
+          "detail": "opened https://lk.hse.ru/schedule?begin_date=2026-10-26",
+          "durationSec": 7.145
+        },
+        {
+          "name": "hse.schedule.parse",
+          "ok": true,
+          "detail": "4 schedule records from 2 JSON responses; 2 time-like strings in DOM"
+        },
+        {
+          "name": "hse.api.discover",
+          "ok": true,
+          "detail": "26 distinct XHR/API endpoints from page traffic"
+        },
+        {
+          "name": "hse.api.safe_get",
+          "ok": true,
+          "detail": "GET https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26 -> 200, records=2",
+          "durationSec": 0.462
+        },
+        {
+          "name": "hse.schedule.api",
+          "ok": true,
+          "detail": "authenticated GET https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26 -> 200: 1 days, 1 lessons, 2 JSON records"
+        },
+        {
+          "name": "hse.moodle.sso_click",
+          "ok": true,
+          "detail": "entry page https://edu.hse.ru/my/courses.php"
+        },
+        {
+          "name": "hse.moodle.read",
+          "ok": true,
+          "detail": "authenticated=True, course links=62, url=https://edu.hse.ru/my/courses.php"
+        },
+        {
+          "name": "hse.moodle.form_action",
+          "ok": true,
+          "detail": "typed a public search query; GET results=20 (no write request was made)",
+          "durationSec": 14.4
+        },
+        {
+          "name": "hse.session.confirm",
+          "ok": true,
+          "detail": "authenticated=True; schedule records=4"
+        }
+      ],
+      "barriers": [],
+      "metrics": {
+        "browserMode": "chrome-copy",
+        "browserVersion": "Chrome/156.0.8078.74",
+        "cookieSummary": {
+          "total": 3343,
+          "domains": {
+            "saml.hse.ru": {
+              "count": 6,
+              "names": [
+                "AUTH_SESSION_ID",
+                "AUTH_SESSION_ID_LEGACY",
+                "KEYCLOAK_SESSION",
+                "KEYCLOAK_SESSION_LEGACY",
+                "KEYCLOAK_IDENTITY_LEGACY",
+                "KEYCLOAK_IDENTITY"
+              ],
+              "expired": 0
+            },
+            ".hse.ru": {
+              "count": 13,
+              "names": [
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "_ym_uid",
+                "_ym_d",
+                "tracking",
+                "rete_user-id_.hse.ru",
+                "gdpr_confirm",
+                "rete_rete_marketing_session_3_last_utm_.hse.ru",
+                "rete_rete_marketing_session_3_last_external_referrer_.hse.ru",
+                "rete_rete_marketing_session_3_last_event_ts_.hse.ru",
+                "rete_rete-marketing-session-3-id_.hse.ru",
+                "rete_user_86d650ce-cf0a-4430-8a4f-4f6535205bf5_event_index_.hse.ru",
+                "mdd"
+              ],
+              "expired": 0
+            },
+            "lk.hse.ru": {
+              "count": 4,
+              "names": [
+                "_pk_id.1.9a5c",
+                "domain_sid",
+                "tmr_detect",
+                "_pk_ref.1.9a5c"
+              ],
+              "expired": 0
+            },
+            "edu.hse.ru": {
+              "count": 1,
+              "names": [
+                "MoodleSession"
+              ],
+              "expired": 0
+            }
+          },
+          "matches": 24
+        },
+        "dom": {
+          "bodyTextLength": 682,
+          "anchors": 62,
+          "buttons": 16,
+          "formFields": 3,
+          "tableRows": 7,
+          "listItems": 8,
+          "headings": 8,
+          "timeLike": 2,
+          "dateLike": 0
+        },
+        "pageTitle": "SmartPoint - единый личный кабинет (ЕЛК) НИУ ВШЭ",
+        "bodyTextLength": 682,
+        "timePairsInDom": 2,
+        "scheduleRecords": 4,
+        "apiPayloads": [
+          {
+            "endpoint": "https://lk.hse.ru/api/get-myschedule-soon",
+            "shape": {
+              "type": "dict",
+              "keys": [
+                "date",
+                "lessons"
+              ],
+              "lists": {
+                "lessons": 4
+              }
+            },
+            "counts": {
+              "listRecords": 4,
+              "recordLikeRecords": 4,
+              "topKeys": [
+                [
+                  "auditorium",
+                  4
+                ],
+                [
+                  "building",
+                  4
+                ],
+                [
+                  "name",
+                  4
+                ],
+                [
+                  "lesson_type",
+                  4
+                ],
+                [
+                  "lesson_type_id",
+                  4
+                ],
+                [
+                  "begin_time",
+                  4
+                ],
+                [
+                  "end_time",
+                  4
+                ],
+                [
+                  "lecturer",
+                  4
+                ],
+                [
+                  "lesson_number",
+                  4
+                ],
+                [
+                  "parent_schedule",
+                  4
+                ],
+                [
+                  "url1",
+                  4
+                ],
+                [
+                  "url1_description",
+                  4
+                ],
+                [
+                  "url2",
+                  4
+                ],
+                [
+                  "url2_description",
+                  4
+                ]
+              ]
+            }
+          },
+          {
+            "endpoint": "https://lk.hse.ru/api/get-myschedule",
+            "shape": {
+              "type": "list",
+              "length": 1,
+              "itemKeys": [
+                "date",
+                "lessons"
+              ]
+            },
+            "counts": {
+              "listRecords": 2,
+              "recordLikeRecords": 2,
+              "topKeys": [
+                [
+                  "date",
+                  1
+                ],
+                [
+                  "lessons",
+                  1
+                ],
+                [
+                  "auditorium",
+                  1
+                ],
+                [
+                  "building",
+                  1
+                ],
+                [
+                  "name",
+                  1
+                ],
+                [
+                  "lesson_type",
+                  1
+                ],
+                [
+                  "lesson_type_id",
+                  1
+                ],
+                [
+                  "begin_time",
+                  1
+                ],
+                [
+                  "end_time",
+                  1
+                ],
+                [
+                  "lecturer",
+                  1
+                ],
+                [
+                  "lesson_number",
+                  1
+                ],
+                [
+                  "parent_schedule",
+                  1
+                ],
+                [
+                  "url1",
+                  1
+                ],
+                [
+                  "url1_description",
+                  1
+                ],
+                [
+                  "url2",
+                  1
+                ]
+              ]
+            }
+          }
+        ],
+        "apiEndpoints": [
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-academic-data",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-adfs-entry-point",
+            "calls": 3,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-catalog-ranking",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-footer",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-grants",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-my-banner-news",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-my-news",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-mycontacts",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-myschedule",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-myschedule-soon",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-myservices2",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-popular-service",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-service",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-top-notifications",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/get-user",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/api/keycloak-auth/",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": false,
+            "resourceType": "document"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/cart",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/compares",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/favorites",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/navigations/main",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/profile-fill-check",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/dpo/rest/programs/recommendations",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://lk.hse.ru/payment-gate/elk/contracts",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "POST",
+            "endpoint": "https://lk.hse.ru/rest-api/camunda-gateway/task/find-task-by-user-mail",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "POST",
+            "endpoint": "https://privacy-cs.mail.ru/fp/",
+            "calls": 4,
+            "statuses": [
+              200
+            ],
+            "json": false,
+            "resourceType": "fetch"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth",
+            "calls": 1,
+            "statuses": [
+              302
+            ],
+            "json": false,
+            "resourceType": "document"
+          }
+        ],
+        "apiEndpointCount": 26,
+        "safeGet": {
+          "url": "https://lk.hse.ru/api/get-myschedule?begin_date=2026-10-26",
+          "method": "GET",
+          "status": 200,
+          "inPage": {
+            "status": 200,
+            "json": true,
+            "listRecords": 2,
+            "recordLike": 2,
+            "deadlineLike": 0,
+            "days": 1,
+            "lessons": 1,
+            "keys": [],
+            "listLengths": []
+          },
+          "counts": {
+            "listRecords": 2,
+            "recordLikeRecords": 2,
+            "deadlineLikeRecords": 0,
+            "days": 1,
+            "lessons": 1
+          }
+        },
+        "scheduleApiRecords": 2,
+        "scheduleApiDays": 1,
+        "scheduleApiPairs": 1,
+        "scheduleDeadlineLikeRecords": 0,
+        "session": {
+          "matchedCookies": 26,
+          "domains": {
+            "saml.hse.ru": {
+              "count": 6,
+              "names": [
+                "AUTH_SESSION_ID",
+                "AUTH_SESSION_ID_LEGACY",
+                "KEYCLOAK_SESSION",
+                "KEYCLOAK_SESSION_LEGACY",
+                "KEYCLOAK_IDENTITY",
+                "KEYCLOAK_IDENTITY_LEGACY"
+              ]
+            },
+            ".hse.ru": {
+              "count": 14,
+              "names": [
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "_ym_uid",
+                "_ym_d",
+                "tracking",
+                "rete_user-id_.hse.ru",
+                "gdpr_confirm",
+                "rete_rete_marketing_session_3_last_utm_.hse.ru",
+                "rete_rete_marketing_session_3_last_external_referrer_.hse.ru",
+                "rete_rete_marketing_session_3_last_event_ts_.hse.ru",
+                "rete_rete-marketing-session-3-id_.hse.ru",
+                "rete_user_86d650ce-cf0a-4430-8a4f-4f6535205bf5_event_index_.hse.ru"
+              ]
+            },
+            "lk.hse.ru": {
+              "count": 5,
+              "names": [
+                "_pk_id.1.9a5c",
+                "_pk_ref.1.9a5c",
+                "_pk_ses.1.9a5c",
+                "domain_sid",
+                "tmr_detect"
+              ]
+            },
+            "edu.hse.ru": {
+              "count": 1,
+              "names": [
+                "MoodleSession"
+              ]
+            }
+          },
+          "totalCookiesInContext": 42,
+          "storageStateExported": true,
+          "localStorageKeys": [
+            "_ym32635220:0_reqNum",
+            "_ym32635220_lsid",
+            "_ym36283385:0_reqNum",
+            "_ym36283385_lsid",
+            "_ym57348160:0_reqNum",
+            "_ym57348160_lsid",
+            "_ym91678537:0_reqNum",
+            "_ym91678537_lsid",
+            "_ym97383787:0_reqNum",
+            "_ym97383787_lsid",
+            "_ym_retryReqs",
+            "_ym_synced",
+            "_ym_uid",
+            "access_token",
+            "check_adfs_session",
+            "id_token",
+            "locale_id",
+            "rb_sync_id",
+            "redirect_url",
+            "tmr_lvid",
+            "tmr_lvidTS",
+            "tmr_reqNum",
+            "tmr_trgfpid"
+          ]
+        },
+        "moodle": {
+          "moodleAuthenticated": true,
+          "moodleCourses": 62,
+          "moodleLinks": 62,
+          "moodleBodyTextLength": 18037,
+          "moodleUrl": "https://edu.hse.ru/my/courses.php",
+          "formAction": {
+            "page": "edu.hse.ru/course/search.php",
+            "fields": [
+              {
+                "tag": "input",
+                "type": "hidden",
+                "name": "areaids",
+                "id": "",
+                "autocomplete": ""
+              },
+              {
+                "tag": "input",
+                "type": "text",
+                "name": "q",
+                "id": "searchinput-6ae5bfb0c8ac56ae5bfb0ab5669",
+                "autocomplete": "off"
+              }
+            ],
+            "filled": true,
+            "courseLinksAfterSearch": 20,
+            "courseLinksBeforeSearch": 0,
+            "submittedGet": true
+          }
+        },
+        "har": {
+          "entries": 582,
+          "sanitized": true
+        }
+      },
+      "proof": {
+        "entryTitle": "SmartPoint - единый личный кабинет (ЕЛК) НИУ ВШЭ",
+        "authenticated": true
+      },
+      "artifacts": [
+        {
+          "kind": "storage_state",
+          "path": "raw/hse-session/storage-state.json",
+          "note": "extracted HSE session (0600, outside repo)"
+        },
+        {
+          "kind": "har",
+          "path": "raw/hse-session/network.har",
+          "note": "sanitized HAR of the session read"
+        },
+        {
+          "kind": "network",
+          "path": "raw/hse-session/network.json",
+          "note": "API endpoint discovery"
+        },
+        {
+          "kind": "console",
+          "path": "raw/hse-session/console.json",
+          "note": "browser console, redacted"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cu-tasks",
+      "title": "ЦУ: Actual Student Tasks на живой сессии",
+      "level": "L3",
+      "status": "success",
+      "startedAt": "2026-10-31T13:15:20+03:00",
+      "finishedAt": "2026-10-31T13:15:40+03:00",
+      "durationSec": 20.534,
+      "steps": [
+        {
+          "name": "cu.session.extract",
+          "ok": true,
+          "detail": "56 CU cookies in the copied Chrome profile"
+        },
+        {
+          "name": "cu.tasks.open",
+          "ok": true,
+          "detail": "opened https://my.centraluniversity.ru/learn/tasks/actual-student-tasks; dynamic render=timeout after 10158ms",
+          "durationSec": 15.533
+        },
+        {
+          "name": "cu.api.discover",
+          "ok": true,
+          "detail": "12 distinct CU API/XHR endpoints while loading the page"
+        },
+        {
+          "name": "cu.tasks.parse",
+          "ok": true,
+          "detail": "7 task records from 2 JSON responses; 3 task-like links in DOM"
+        },
+        {
+          "name": "cu.api.safe_get",
+          "ok": true,
+          "detail": "GET https://my.centraluniversity.ru/api/micro-lms/tasks/student -> 200, records=174",
+          "durationSec": 1.262
+        },
+        {
+          "name": "cu.form.probe",
+          "ok": false,
+          "detail": "typed a public query into a search field; nothing was submitted"
+        },
+        {
+          "name": "cu.reference_harness",
+          "ok": true,
+          "detail": "external harness session-check=ok, active tasks=3"
+        }
+      ],
+      "barriers": [],
+      "metrics": {
+        "browserMode": "chrome-copy",
+        "browserVersion": "Chrome/156.0.8078.74",
+        "referenceHarnessSavedSession": {
+          "status": "error",
+          "detail": "{\n  \"error\": \"GET https://my.centraluniversity.ru/api/micro-lms/courses/student -> 401: {\\\"title\\\":\\\"Unauthorized\\\",\\\"status\\\":401,\\\"traceId\\\":\\\"00-4bef5cae3aa80f38c1dab069edca2150-cb3efe16e8a7c5bb-01"
+        },
+        "cookieSummary": {
+          "total": 3342,
+          "domains": {
+            "id.centraluniversity.ru": {
+              "count": 2,
+              "names": [
+                "AUTH_SESSION_ID",
+                "KEYCLOAK_IDENTITY"
+              ],
+              "expired": 0
+            },
+            ".centraluniversity.ru": {
+              "count": 22,
+              "names": [
+                "__P__wuid",
+                "_ym_uid",
+                "_ym_d",
+                "cu-wuid",
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "adrcid",
+                "_yasc",
+                "bff.cookie",
+                "stDeIdU",
+                "utmDataTimestamp",
+                "utmDataSource",
+                "utmDataMarkers",
+                "referrer",
+                "utm_source",
+                "acs_3",
+                "adrdel",
+                "utm_date_set",
+                "tmr_reqNum",
+                "vIdUid",
+                "stSeStTi",
+                "stLaEvTi"
+              ],
+              "expired": 0
+            },
+            ".cu.ru": {
+              "count": 22,
+              "names": [
+                "__P__wuid",
+                "stDeIdU",
+                "cu-wuid",
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "_ym_uid",
+                "_ym_d",
+                "cookie-accept",
+                "adrcid",
+                "_yasc",
+                "utmDataTimestamp",
+                "utmDataSource",
+                "utmDataMarkers",
+                "referrer",
+                "utm_source",
+                "utm_date_set",
+                "vIdUid",
+                "stSeStTi",
+                "acs_3",
+                "adrdel",
+                "stLaEvTi",
+                "tmr_reqNum"
+              ],
+              "expired": 0
+            },
+            ".id.centraluniversity.ru": {
+              "count": 4,
+              "names": [
+                "adrcid",
+                "_yasc",
+                "acs_3",
+                "adrdel"
+              ],
+              "expired": 0
+            },
+            "time.cu.ru": {
+              "count": 2,
+              "names": [
+                "MMUSERID",
+                "MMCSRF"
+              ],
+              "expired": 0
+            },
+            ".api.self-service-v2.centraluniversity.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ],
+              "expired": 0
+            },
+            ".note.cu.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ],
+              "expired": 0
+            },
+            ".my.centraluniversity.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ],
+              "expired": 0
+            },
+            ".api-statist.cu.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ],
+              "expired": 0
+            }
+          },
+          "matches": 56
+        },
+        "renderWaitMs": 10158,
+        "dom": {
+          "bodyTextLength": 1097,
+          "anchors": 19,
+          "buttons": 3,
+          "formFields": 4,
+          "tableRows": 7,
+          "listItems": 10,
+          "headings": 1,
+          "timeLike": 7,
+          "dateLike": 0
+        },
+        "bodyTextLength": 1097,
+        "taskLinksInDom": 3,
+        "apiEndpoints": [
+          {
+            "method": "POST",
+            "endpoint": "https://api-statist.cu.ru/gateway/v1/events",
+            "calls": 1,
+            "statuses": [
+              204
+            ],
+            "json": false,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/account/me",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/admin/configurations/lms-block-requests",
+            "calls": 1,
+            "statuses": [
+              204
+            ],
+            "json": false,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/hub/avatars/me",
+            "calls": 1,
+            "statuses": [
+              204
+            ],
+            "json": false,
+            "resourceType": "image"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/banners",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/calendar-events/slot-management/config",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/course-selection/student/campaigns",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/students/me",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/tasks/student",
+            "calls": 2,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/notification-hub/notifications/in-app/stats",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "GET",
+            "endpoint": "https://my.centraluniversity.ru/api/student-hub/students/me",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "xhr"
+          },
+          {
+            "method": "POST",
+            "endpoint": "https://public-thermostat-provider.cu.ru/api/v2/resolve",
+            "calls": 1,
+            "statuses": [
+              200
+            ],
+            "json": true,
+            "resourceType": "fetch"
+          }
+        ],
+        "apiEndpointCount": 12,
+        "taskRecords": 174,
+        "taskPayloads": [
+          {
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/tasks/student",
+            "shape": {
+              "type": "list",
+              "length": 7,
+              "itemKeys": [
+                "course",
+                "createdAt",
+                "deadline",
+                "evaluateAt",
+                "exercise",
+                "extraScore",
+                "id",
+                "isLateDaysEnabled",
+                "lateDays",
+                "longread",
+                "quizSessionId",
+                "rejectAt",
+                "reviewer",
+                "score",
+                "scoreSkillLevel",
+                "startedAt",
+                "state",
+                "submitAt",
+                "theme"
+              ]
+            },
+            "counts": {
+              "listRecords": 7,
+              "recordLikeRecords": 7,
+              "topKeys": [
+                [
+                  "id",
+                  7
+                ],
+                [
+                  "state",
+                  7
+                ],
+                [
+                  "score",
+                  7
+                ],
+                [
+                  "scoreSkillLevel",
+                  7
+                ],
+                [
+                  "isLateDaysEnabled",
+                  7
+                ],
+                [
+                  "extraScore",
+                  7
+                ],
+                [
+                  "createdAt",
+                  7
+                ],
+                [
+                  "startedAt",
+                  7
+                ],
+                [
+                  "submitAt",
+                  7
+                ],
+                [
+                  "rejectAt",
+                  7
+                ],
+                [
+                  "evaluateAt",
+                  7
+                ],
+                [
+                  "deadline",
+                  7
+                ],
+                [
+                  "lateDays",
+                  7
+                ],
+                [
+                  "exercise",
+                  7
+                ],
+                [
+                  "course",
+                  7
+                ]
+              ]
+            }
+          },
+          {
+            "endpoint": "https://my.centraluniversity.ru/api/micro-lms/tasks/student",
+            "shape": {
+              "type": "list",
+              "length": 7,
+              "itemKeys": [
+                "course",
+                "createdAt",
+                "deadline",
+                "evaluateAt",
+                "exercise",
+                "extraScore",
+                "id",
+                "isLateDaysEnabled",
+                "lateDays",
+                "longread",
+                "quizSessionId",
+                "rejectAt",
+                "reviewer",
+                "score",
+                "scoreSkillLevel",
+                "startedAt",
+                "state",
+                "submitAt",
+                "theme"
+              ]
+            },
+            "counts": {
+              "listRecords": 7,
+              "recordLikeRecords": 7,
+              "topKeys": [
+                [
+                  "id",
+                  7
+                ],
+                [
+                  "state",
+                  7
+                ],
+                [
+                  "score",
+                  7
+                ],
+                [
+                  "scoreSkillLevel",
+                  7
+                ],
+                [
+                  "isLateDaysEnabled",
+                  7
+                ],
+                [
+                  "extraScore",
+                  7
+                ],
+                [
+                  "createdAt",
+                  7
+                ],
+                [
+                  "startedAt",
+                  7
+                ],
+                [
+                  "submitAt",
+                  7
+                ],
+                [
+                  "rejectAt",
+                  7
+                ],
+                [
+                  "evaluateAt",
+                  7
+                ],
+                [
+                  "deadline",
+                  7
+                ],
+                [
+                  "lateDays",
+                  7
+                ],
+                [
+                  "exercise",
+                  7
+                ],
+                [
+                  "course",
+                  7
+                ]
+              ]
+            }
+          }
+        ],
+        "safeGet": {
+          "url": "https://my.centraluniversity.ru/api/micro-lms/tasks/student",
+          "method": "GET",
+          "status": 200,
+          "shape": {
+            "type": "list",
+            "length": 174,
+            "itemKeys": [
+              "course",
+              "createdAt",
+              "deadline",
+              "evaluateAt",
+              "exercise",
+              "extraScore",
+              "id",
+              "isLateDaysEnabled",
+              "lateDays",
+              "longread",
+              "quizSessionId",
+              "rejectAt",
+              "reviewer",
+              "score",
+              "scoreSkillLevel",
+              "startedAt",
+              "state",
+              "submitAt",
+              "theme"
+            ]
+          },
+          "counts": {
+            "listRecords": 174,
+            "recordLikeRecords": 174,
+            "deadlineLikeRecords": 174,
+            "days": 0,
+            "lessons": 0
+          },
+          "inPage": {
+            "status": 200,
+            "json": true,
+            "listRecords": 174,
+            "recordLike": 174,
+            "deadlineLike": 174,
+            "days": 0,
+            "lessons": 0,
+            "keys": [],
+            "listLengths": []
+          }
+        },
+        "tasksApiRecords": 174,
+        "tasksApiDeadlineLikeRecords": 174,
+        "formProbe": {
+          "submitted": false,
+          "fields": [
+            {
+              "tag": "input",
+              "type": "",
+              "name": "",
+              "id": "tui_4mvw8w9s8",
+              "autocomplete": "off"
+            },
+            {
+              "tag": "input",
+              "type": "",
+              "name": "",
+              "id": "",
+              "autocomplete": ""
+            },
+            {
+              "tag": "input",
+              "type": "",
+              "name": "",
+              "id": "tui_7mvw8w9sa",
+              "autocomplete": "off"
+            },
+            {
+              "tag": "input",
+              "type": "",
+              "name": "",
+              "id": "",
+              "autocomplete": ""
+            }
+          ]
+        },
+        "session": {
+          "matchedCookies": 56,
+          "domains": {
+            "id.centraluniversity.ru": {
+              "count": 2,
+              "names": [
+                "AUTH_SESSION_ID",
+                "KEYCLOAK_IDENTITY"
+              ]
+            },
+            ".centraluniversity.ru": {
+              "count": 22,
+              "names": [
+                "__P__wuid",
+                "_ym_uid",
+                "_ym_d",
+                "cu-wuid",
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "adrcid",
+                "_yasc",
+                "bff.cookie",
+                "stDeIdU",
+                "utmDataTimestamp",
+                "utmDataSource"
+              ]
+            },
+            ".cu.ru": {
+              "count": 22,
+              "names": [
+                "__P__wuid",
+                "stDeIdU",
+                "cu-wuid",
+                "tmr_lvid",
+                "tmr_lvidTS",
+                "_ym_uid",
+                "_ym_d",
+                "cookie-accept",
+                "adrcid",
+                "_yasc",
+                "utmDataTimestamp",
+                "utmDataSource"
+              ]
+            },
+            ".id.centraluniversity.ru": {
+              "count": 4,
+              "names": [
+                "adrcid",
+                "_yasc",
+                "acs_3",
+                "adrdel"
+              ]
+            },
+            "time.cu.ru": {
+              "count": 2,
+              "names": [
+                "MMUSERID",
+                "MMCSRF"
+              ]
+            },
+            ".api.self-service-v2.centraluniversity.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ]
+            },
+            ".note.cu.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ]
+            },
+            ".my.centraluniversity.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ]
+            },
+            ".api-statist.cu.ru": {
+              "count": 1,
+              "names": [
+                "_yasc"
+              ]
+            }
+          },
+          "totalCookiesInContext": 56,
+          "storageStateExported": true,
+          "localStorageKeys": [
+            "tbank_thermostat_id",
+            "tuiDark"
+          ]
+        },
+        "referenceHarness": {
+          "harness": "central-university-lms skill (Playwright, headless)",
+          "skillDir": "~/.agents/skills/central-university-lms",
+          "sessionCheck": {
+            "status": "ok",
+            "ready": true,
+            "publishedCourseCount": 2
+          },
+          "coursesCount": 2,
+          "deadlinesCount": 3,
+          "status": "ok"
+        },
+        "har": {
+          "entries": 779,
+          "sanitized": true
+        }
+      },
+      "proof": {
+        "tasksUrl": "https://my.centraluniversity.ru/learn/tasks/actual-student-tasks",
+        "finalUrl": "https://my.centraluniversity.ru/learn/tasks/actual-student-tasks",
+        "pageTitle": "Обучение – Центральный университет",
+        "authenticated": true
+      },
+      "artifacts": [
+        {
+          "kind": "storage_state",
+          "path": "raw/cu-tasks/storage-state.json",
+          "note": "extracted CU session (0600, outside repo)"
+        },
+        {
+          "kind": "reference_harness",
+          "path": "raw/cu-tasks/reference-harness-deadlines.json",
+          "note": "reference harness output on the same exported session (raw, private)"
+        },
+        {
+          "kind": "har",
+          "path": "raw/cu-tasks/network.har",
+          "note": "sanitized HAR of the CU tasks page"
+        },
+        {
+          "kind": "network",
+          "path": "raw/cu-tasks/network.json",
+          "note": "CU API endpoint discovery (task-loading endpoints)"
+        },
+        {
+          "kind": "console",
+          "path": "raw/cu-tasks/console.json",
+          "note": "browser console, redacted"
+        },
+        {
+          "kind": "screenshots",
+          "path": "raw/cu-tasks/screenshots",
+          "note": "Actual Student Tasks frame"
+        }
+      ],
+      "error": null
+    }
+  ],
+  "totals": {
+    "scenarios": 3,
+    "success": 3,
+    "partial": 0,
+    "blocked": 0,
+    "failed": 0,
+    "durationSec": 154.303
+  },
+  "artifactRoot": "~/.local/state/botai-v4-bench/2026-10-31/run-20261031-131305",
+  "artifactsPolicy": "raw session material (HAR, storage state, screenshots, cookies) stays outside the repository: ~/.local/state/botai-v4-bench/<date>/<run>/ (0700, files 0600)",
+  "harFilesSanitized": 3,
+  "secretSweep": {
+    "filesScanned": 14,
+    "filesRedacted": 0,
+    "redactedFiles": []
+  },
+  "repositoryCopy": true,
+  "note": "Sanitized copy for the public repository: statuses, counts, steps, endpoint templates; no cookies, tokens, login e-mail, personal data or absolute home paths."
+}

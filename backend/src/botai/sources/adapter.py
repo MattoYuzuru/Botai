@@ -1,4 +1,4 @@
-"""Adapter protocol and the data that crosses it (docs/adr/0005-source-adapter-factory.md).
+"""Adapter protocol and the data that crosses it (docs/v4/06-decisions.md).
 
 An adapter turns one connection's spec plus a session into `AdapterResult`: records by kind with
 provenance, extracted documents and per-endpoint outcomes. It never touches the database and never

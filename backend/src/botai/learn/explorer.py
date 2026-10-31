@@ -247,6 +247,20 @@ class Explorer:
     def _token_limit(self) -> int:
         return self.services.settings.botai_research_max_tokens if self._research else TOKEN_BUDGET
 
+    def _budget_detail(self, reason: str, *, summary: bool = True) -> str:
+        """An honest stop reason with the numbers the owner asked to see, never secrets."""
+        if self._research is None:
+            return reason
+        state = self._research.state
+        requests = state.memory.requests + state.other_requests
+        parts = [f"{state.memory.steps} шагов", f"{requests} запросов"]
+        if summary:
+            parts += [
+                f"{state.tokens} токенов",
+                f"{state.active_ms // 1000} с",
+            ]
+        return f"{reason} ({', '.join(parts)})"
+
     async def _research_for(self, info: ConnInfo) -> None:
         if not isinstance(self.ctx, ResearchContext):
             return
@@ -732,7 +746,13 @@ class Explorer:
                 )
             raise
         except BotaiError as err:
-            return await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
+            result = await self._fail(info, err.detail or "Не удалось подключить сайт", err.code)
+            if err.code is ErrorCode.SOURCE_NO_PROGRESS:
+                # A deliberate stop of a research that stopped finding anything is the task's
+                # failure, not a task that "finished with an error result": the queue and the
+                # events must agree on the reason, and the worker must not retry it.
+                raise
+            return result
 
     # --- extension of a source that works ---------------------------------------------------
 
@@ -1196,6 +1216,7 @@ class Explorer:
                     memory.resume_needed = True
                     self._research.state.phase = "observe"
                     await self._research.save()
+                    await self._research.end_slice()
                     raise JobDeferred("Продолжаю поиск доступных разделов")
             if self._foreign(info):
                 break
@@ -1384,20 +1405,32 @@ class Explorer:
             state = research.state
             if research.remaining_seconds() <= 0:
                 raise BotaiError(
-                    ErrorCode.SOURCE_UNAVAILABLE, "Исследование достигло общего бюджета времени"
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    self._budget_detail("Исследование достигло общего бюджета времени"),
                 )
-            if (
-                state.memory.requests + state.other_requests
-                >= self.services.settings.botai_research_max_requests
-            ):
+            used = state.memory.requests + state.other_requests
+            maximum = self.services.settings.botai_research_max_requests
+            # One page may cost several reads, and the most expensive one already seen is known:
+            # do not even open a browser when it cannot fit, so the total does not pass the max.
+            page_floor = max(1, state.memory.max_read_requests)
+            if used >= maximum or maximum - used < page_floor:
                 raise BotaiError(
-                    ErrorCode.SOURCE_RATE_LIMITED, "Исследование достигло общего бюджета чтений"
+                    ErrorCode.SOURCE_RATE_LIMITED,
+                    self._budget_detail(
+                        f"Исследование исчерпало бюджет чтений: {used} из {maximum} запросов",
+                        summary=False,
+                    ),
                 )
             if state.tokens >= self.services.settings.botai_research_max_tokens:
                 state.memory.exhausted = True
                 state.memory.stop_reason = "token_budget"
                 await research.save()
                 return Observations(origin=info.origin, limited=True, stop_reason="token_budget")
+            # The slice may not spend more reads than the research has left: a slice budget of
+            # 200 on top of a nearly spent total is what made the counter pass 2000.
+            request_room = maximum - used
+        else:
+            request_room = 200
         stage = await self.ui.stage("Смотрю страницы кабинета")
         entries = [url for url in self.intent.entry_urls if url_origin(url) == info.origin]
         start_urls = list(dict.fromkeys([*entries, *extra, info.origin + "/"]))
@@ -1423,7 +1456,7 @@ class Explorer:
                     if research.state.pending_active_ms <= 0:
                         raise BotaiError(
                             ErrorCode.SOURCE_UNAVAILABLE,
-                            "Исследование достигло общего бюджета времени",
+                            self._budget_detail("Исследование достигло общего бюджета времени"),
                         )
                     await research.save()
                 obs = await adaptive_observe(
@@ -1445,6 +1478,7 @@ class Explorer:
                         )
                         if research
                         else 90.0,
+                        requests=request_room,
                         tokens=min(150_000, max(0, self._token_limit() - self.tokens)),
                     ),
                     memory=research.state.memory if research else None,
@@ -1498,9 +1532,24 @@ class Explorer:
                 self._research.account_total(self.tokens)
                 await self._research.save()
             if not obs.auth_required and not obs.bot_protection:
+                if research is not None and obs.stop_reason == "request_budget":
+                    # The slice stopped on the whole-research request budget: say so with the
+                    # numbers instead of letting authoring hit the same wall later.
+                    used = research.state.memory.requests + research.state.other_requests
+                    maximum = self.services.settings.botai_research_max_requests
+                    await stage.finish("failed", "Бюджет чтений исчерпан")
+                    raise BotaiError(
+                        ErrorCode.SOURCE_RATE_LIMITED,
+                        self._budget_detail(
+                            f"Исследование исчерпало бюджет чтений: {used} из {maximum} запросов"
+                        ),
+                    )
                 self._observed_session = session
                 if self._research is not None and self._research.state.memory.resume_needed:
                     await stage.finish("ok", "Исследование сохранено, продолжаю просмотр")
+                    # A slice that changed nothing is counted against the honest stop, so a
+                    # source that yields only the same pages ends instead of being re-queued.
+                    await self._research.end_slice()
                     raise JobDeferred("Продолжаю исследование источника")
                 break
             if self._reauth_attempted:

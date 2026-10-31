@@ -803,6 +803,10 @@ class _SliceExpired(Exception):
     pass
 
 
+class _RequestBudgetReached(Exception):
+    """The whole research has no room for one more read: the next page is not even started."""
+
+
 _CSS_ESCAPE = re.compile(r"[0-9a-fA-F]{1,6}(?:\s)?")
 _GENERATED_POSITION = re.compile(r":nth-of-type\([1-9][0-9]*\)")
 _DATE_BINDING = re.compile(r"^\{(?:today|weekStart|(?:plusDays|minusDays):[0-9]{1,3})\}$")
@@ -923,6 +927,7 @@ class _MemorySlice:
     _tick: float = field(default_factory=time.monotonic)
     _network: int = 0
     _probed: int = 0
+    page_cost: int = 0  # requests of the most expensive single read so far
     slice_tokens: int = 0
     _sensitive_omitted: bool = False
 
@@ -958,17 +963,33 @@ class _MemorySlice:
         now = time.monotonic()
         self.memory.active_ms += max(0, int((now - self._tick) * 1000))
         self._tick = now
-        self.memory.requests += max(0, self.state.network_count - self._network)
+        spent = max(0, self.state.network_count - self._network)
+        self.memory.requests += spent
         self._network = self.state.network_count
         probed = max(0, self.state.probe_count - self._probed)
         self.memory.requests += probed  # a probe is a read of the source like any other
         self.memory.probes += probed
         self._probed = self.state.probe_count
+        self.page_cost = max(self.page_cost, spent + probed)
+
+    def may_read(self, *, page: bool) -> bool:
+        """Whether one more read fits the total request budget before it is started.
+
+        A page load costs an unknown number of requests, so the room is compared with the most
+        expensive read already made: starting a page with less room than that is exactly how the
+        budget was overrun in production (2005 of 2000). A read that only adds a request at a
+        time (a probe) reserves one. The check is a pre-check; a page that turns out to be more
+        expensive than every earlier one can still overshoot by its own remainder, and then the
+        next `stop()` and the honest count end the slice."""
+        self.account()
+        reserve = max(1, self.page_cost) if page else 1
+        return self.memory.requests + reserve <= self.limits.max_requests
 
     async def commit(self) -> None:
         self.account()
         state, memory = self.state, self.memory
         memory.browser_plans = dict(state.portable_plans)
+        memory.max_read_requests = max(memory.max_read_requests, self.page_cost)
         if _sanitize_memory_addresses(memory, state.redactor):
             self.reject_address()
         state.portable_plans = dict(memory.browser_plans)
@@ -1027,6 +1048,8 @@ class _MemorySlice:
                 self.memory.pending_url = None
             await self.commit()
             return False
+        if not self.may_read(page=True):
+            raise _RequestBudgetReached
         changed = await self.bounded(self.state.visit(url))
         if self.state.current_requested_url != url:
             self.memory.remember_negative("navigation_failed", url)
@@ -1034,6 +1057,14 @@ class _MemorySlice:
             self.memory.pending_url = None
         await self.commit()
         return changed
+
+    async def apply(self, decision: Decision) -> bool:
+        """Run one planner action, but never start a read that would overrun the request budget."""
+        if decision.action != "inspect" and not self.may_read(
+            page=decision.action in {"navigate", "use", "activate"}
+        ):
+            raise _RequestBudgetReached
+        return await self.bounded(self.state.apply(decision))
 
 
 def _planner_allocation(request: LlmRequest) -> int:
@@ -1078,7 +1109,7 @@ async def _resumable_observe(
     # the first page of a new handle, even when both happen to contain a link named l0.
     state.revision = generation * 1000
     state.visited.update(memory.visited)
-    run = _MemorySlice(state, memory, limits, checkpoint)
+    run = _MemorySlice(state, memory, limits, checkpoint, page_cost=memory.max_read_requests)
     if sensitive_omitted:
         run.reject_address()
     evidence: tuple[str, ...] = ()
@@ -1209,7 +1240,7 @@ async def _resumable_observe(
                                     continue
                                 stopped, memory.finished = "finished", True
                                 break
-                            changed = await run.bounded(state.apply(decision))
+                            changed = await run.apply(decision)
                             if memory.pending_url is not None:
                                 if state.current_requested_url != memory.pending_url:
                                     memory.remember_negative(
@@ -1253,6 +1284,12 @@ async def _resumable_observe(
                 memory.finished = not state.auth_required and not state.bot_protection
     except _SliceExpired:
         stopped = "timeout"
+        memory.abandon_planner()
+    except _RequestBudgetReached:
+        # No room for one more read of the source: stop before it, not after it overran the
+        # maximum. The planner allocation in flight is charged (the remote call may have run).
+        stopped = "request_budget"
+        memory.exhausted = True
         memory.abandon_planner()
     if state.auth_required or state.bot_protection:
         stopped = "authentication"

@@ -188,6 +188,31 @@ async def test_other_errors_fail_at_once_with_a_problem_event(env: Env) -> None:
     assert events[-1].data["type"].endswith("/login_failed")
 
 
+async def test_a_research_without_progress_fails_at_once_and_is_not_retried(env: Env) -> None:
+    """A source that stopped producing findings is not a temporary failure: retrying it after 1,
+    5 and 30 minutes is exactly the 23-minute loop the owner complained about."""
+
+    async def handler(ctx: JobContext, services: Services, payload: Payload) -> None:
+        raise BotaiError(
+            ErrorCode.SOURCE_NO_PROGRESS,
+            "Исследование перестало находить новое: 3 слайса подряд (76 шагов, 2000 запросов)",
+        )
+
+    _, conn, job_id = await _queue(env, JobKind.CONNECT)
+    env.start(env.worker({JobKind.CONNECT: handler}))
+    job = await env.wait_for(job_id, {"failed"})
+    assert job.attempts == 1
+    assert job.error is not None
+    assert job.error["code"] == "source_no_progress"
+    assert job.error["status"] == 400
+    events = await env.events(job_id)
+    assert events[-1].type == "error"
+    assert events[-1].data["code"] == "source_no_progress"
+    assert events[-1].data["jobId"] == job_id
+    assert events[-1].data["connectionId"] == conn
+    assert events[-1].data["type"].endswith("/source_no_progress")
+
+
 async def test_a_crash_is_reported_without_its_message(
     env: Env, caplog: pytest.LogCaptureFixture
 ) -> None:

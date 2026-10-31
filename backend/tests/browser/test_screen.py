@@ -40,6 +40,7 @@ from botai.browser.screen import (
     ScreenRegistry,
     ScreenSession,
     mint_ticket,
+    screen_config_from_env,
     verify_ticket,
 )
 from botai.contracts.agent_ui import InputBlock, LoginBlock
@@ -551,9 +552,10 @@ async def test_a_slow_viewer_gets_the_newest_frame_not_a_queue(
     assert rig.session.stats.frames_dropped >= 1
 
 
-def test_quality_drops_on_a_slow_link_and_recovers_on_a_fast_one() -> None:
-    q = QualityController(max_fps=30, start_quality=65)
-    assert q.profile.fps == 30
+def test_quality_keeps_the_picture_and_drops_frame_rate_first() -> None:
+    """On a slow link the picture stays readable: frame rate goes down first, quality last."""
+    q = QualityController(max_fps=30)
+    assert (q.profile.fps, q.profile.quality) == (30, QualityController.START_QUALITY)
     now = 0.0
     changes = []
     for _ in range(80):  # every ack takes 300 ms
@@ -561,19 +563,67 @@ def test_quality_drops_on_a_slow_link_and_recovers_on_a_fast_one() -> None:
         if (change := q.observe(300, now)) is not None:
             changes.append(change)
     assert changes
-    assert q.profile.quality == QualityController.MIN_QUALITY  # bytes first
-    assert q.profile.fps == 10  # then frames, down to the floor
+    assert changes[0].fps < 30  # the first adaptation is the frame rate, not the picture
+    assert changes[0].quality == QualityController.START_QUALITY
+    assert q.profile.fps == 10  # frames, down to the floor
+    assert q.profile.quality == QualityController.MIN_QUALITY  # only then bytes, never below
     low = q.profile
+    recovered = []
     for _ in range(600):  # the link recovers
         now += 0.2
-        q.observe(10, now)
+        if (change := q.observe(10, now)) is not None:
+            recovered.append(change)
+    assert recovered[0].fps > low.fps  # smoothness comes back first
+    assert recovered[0].quality == low.quality
     assert q.profile.fps == 30
-    assert q.profile.quality > low.quality
+    assert q.profile.quality > low.quality  # then the picture
 
 
 def test_a_lower_frame_rate_cap_is_respected() -> None:
     assert QualityController(max_fps=15).profile.fps == 15
     assert QualityController(max_fps=10).profile.fps == 10
+
+
+def test_quality_floor_and_ceiling_are_configurable() -> None:
+    q = QualityController(max_fps=24, start_quality=60, min_quality=45, max_quality=70)
+    assert (q.profile.fps, q.profile.quality) == (24, 60)
+    now = 0.0
+    for _ in range(200):  # a very slow link: the floor stops the degradation
+        now += 0.35
+        q.observe(400, now)
+    assert q.profile.fps == 10
+    assert q.profile.quality == 45
+    for _ in range(600):  # a fast link: the ceiling stops the recovery
+        now += 0.2
+        q.observe(10, now)
+    assert q.profile.quality == 70
+    assert q.profile.fps == 24
+
+
+def test_quality_settings_that_do_not_make_sense_are_clamped() -> None:
+    q = QualityController(start_quality=150, min_quality=90, max_quality=20)
+    assert q.profile.quality == 90  # start and max are clamped into [min, 100]
+    assert q.profile.fps == 30
+
+
+def test_screen_quality_defaults_are_higher_than_before() -> None:
+    assert QualityController.MIN_QUALITY == 40
+    assert QualityController.START_QUALITY == 75
+    assert QualityController.MAX_QUALITY == 85
+    config = ScreenConfig()
+    assert (config.min_quality, config.start_quality, config.max_quality) == (40, 75, 85)
+
+
+def test_screen_quality_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BOTAI_SCREEN_MIN_QUALITY", "45")
+    monkeypatch.setenv("BOTAI_SCREEN_START_QUALITY", "70")
+    monkeypatch.setenv("BOTAI_SCREEN_MAX_QUALITY", "90")
+    monkeypatch.setenv("BOTAI_SCREEN_MAX_FPS", "24")
+    config = screen_config_from_env()
+    assert (config.min_quality, config.start_quality, config.max_quality) == (45, 70, 90)
+    assert config.max_fps == 24
+    monkeypatch.setenv("BOTAI_SCREEN_START_QUALITY", "not-a-number")
+    assert screen_config_from_env().start_quality == QualityController.START_QUALITY
 
 
 def test_quality_changes_are_rare_and_need_evidence() -> None:
@@ -594,7 +644,10 @@ def test_ticket_roundtrip_and_tampering() -> None:
     assert verify_ticket(SECRET, ticket, now=now + 61) is None
     assert verify_ticket(b"o" * 32, ticket, now=now) is None
     body, _, mac = ticket.partition(".")
-    assert verify_ticket(SECRET, body + "." + mac[:-2] + "AA", now=now) is None
+    flipped_body = ("A" if body[0] != "A" else "B") + body[1:]
+    assert verify_ticket(SECRET, flipped_body + "." + mac, now=now) is None
+    flipped_mac = mac[:-2] + ("AA" if mac[-2:] != "AA" else "AB")
+    assert verify_ticket(SECRET, body + "." + flipped_mac, now=now) is None
     assert verify_ticket(SECRET, "garbage", now=now) is None
 
 
@@ -842,6 +895,7 @@ async def test_the_session_expires_and_its_browser_is_destroyed(
     await client.until(lambda: client.close_code is not None, within=5)
     assert client.close_code == 4000
     assert client.of("expired")[0]["reason"] == "ttl"
+    assert rig.session.close_reason == "ttl"  # the login flow can tell a timeout from a close
     await _until(_handle_closed(rig.handle))
     assert (rig.worker or rig.registry).find(rig.user, rig.conn) is None
 

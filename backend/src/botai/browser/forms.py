@@ -25,8 +25,8 @@ _OTP = re.compile(
     re.IGNORECASE,
 )
 _USER = re.compile(
-    r"user|login|e-?mail|\bmail\b|account|uname|логин|почт|пользовател|идентификатор|"
-    r"student|студент",
+    r"user|login|e-?mail|\bmail\b|account|uname|credential|логин|почт|пользовател|идентификатор|"
+    r"student|студент|учетн|учётн|phone|телефон|mobile",
     re.IGNORECASE,
 )
 _SEARCH = re.compile(r"search|поиск|найти|искать", re.IGNORECASE)
@@ -37,7 +37,9 @@ _AUTH_CODE = re.compile(
     re.IGNORECASE,
 )
 _AUTH_CONTEXT = re.compile(
-    r"log[-_ ]?in|sign[-_ ]?in|\bauth(?:entication)?\b|\bsso\b|вход|войти|авторизац",
+    r"log[-_ ]?in|sign[-_ ]?in|signon|logon|\bauth(?:entication)?\b|\bsso\b|\bidp\b|identity|"
+    r"oauth|openid|saml|shibboleth|keycloak|adfs|realm|вход|войти|авторизац|аутентификац|"
+    r"учетн|учётн",
     re.IGNORECASE,
 )
 _NEWSLETTER = re.compile(r"newsletter|subscrib|подписк|рассылк", re.IGNORECASE)
@@ -347,12 +349,22 @@ def login_entry_selector(snapshot: PageSnapshot) -> str | None:
     return None
 
 
+_PASSWORD_INPUT = re.compile(r"<input\b[^>]*\btype\s*=\s*[\"']?password", re.IGNORECASE)
+
+
 def has_credential_fields(snapshot: PageSnapshot) -> bool:
-    """True if the page asks for a login, password or code (so it cannot be the logged-in page)."""
+    """True if the page asks for a login, password or code (so it cannot be the logged-in page).
+
+    A password control counts even when it is hidden or not mirrored: scripts reveal such a
+    field later, and the login guard must not take a page that is still asking for credentials
+    for the cabinet (`auth_ui_missing` incidents). A page whose scanner returned no forms at
+    all but whose HTML has a password input counts too."""
     for form in snapshot.forms:
         if _step_from_form(form, snapshot.url, snapshot.title) is not None:
             return True
-    return False
+        if any((field.input_type or "").lower() == "password" for field in form.fields):
+            return True
+    return not snapshot.forms and bool(_PASSWORD_INPUT.search(snapshot.html))
 
 
 # -- learned steps ---------------------------------------------------------------------------

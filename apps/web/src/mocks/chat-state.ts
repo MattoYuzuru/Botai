@@ -1,6 +1,6 @@
 /**
  * Состояние чата мок-режима: треды, сообщения, задания, вложения. Форма — по контракту агент-хаба v3
- * (`docs/plan/agent-hub-v3.md` §3.2, §3.6). «Агент» мока и обработчики лежат рядом (`chat-agent.ts`, `chat-handlers.ts`).
+ * (`docs/v4/05-implementation-plan.md` §3.2, §3.6). «Агент» мока и обработчики лежат рядом (`chat-agent.ts`, `chat-handlers.ts`).
  */
 import type { MessageOut, ThreadOut } from "@/api/v3";
 import { isTaskKind } from "@/api/v3";

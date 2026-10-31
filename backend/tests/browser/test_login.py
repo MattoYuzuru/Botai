@@ -73,6 +73,7 @@ class FakeLink:
         self.needs_calls: list[tuple[str, str]] = []
         self.succeeded = False
         self.close_reason: str | None = None
+        self.close_notify: str | None = None
 
     def idle_s(self) -> float:
         return self.idle
@@ -90,9 +91,10 @@ class FakeLink:
     async def succeed(self) -> None:
         self.succeeded = True
 
-    async def close(self, reason: str) -> None:
+    async def close(self, reason: str, *, notify: str | None = None) -> None:
         self.closed = True
         self.close_reason = reason
+        self.close_notify = notify
 
 
 Human = Callable[[PlaywrightHandle, FakeLink], Awaitable[None]]
@@ -668,6 +670,89 @@ async def test_done_from_the_screen_submits_the_prefilled_form(
     assert await works(session)
 
 
+async def test_a_done_the_site_never_confirms_ends_with_a_clear_error(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Я вошёл» is a request: if nothing confirms it and the person stays quiet, the login
+    fails with a message instead of a spinner that can wait for the full human_wait_s."""
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        await asyncio.sleep(FAST.poll_s)
+        link.request_done()
+
+    rig = make_rig(human=human, timing=replace(FAST, done_grace_s=0.6))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
+    monkeypatch.setattr("botai.browser.login.learn_probe", AsyncMock(return_value=None))
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(BotaiError) as exc:
+        await asyncio.wait_for(rig.ensure(Student()), timeout=8.0)
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert "не подтвердился" in exc.value.detail
+    assert asyncio.get_running_loop().time() - started < FAST.human_wait_s
+    await rig.screens.settle()
+    (link,) = rig.screens.links
+    assert link.closed is True
+    assert link.close_reason == "done_unconfirmed"
+    assert link.close_notify == "expired"  # the viewer is told why the screen ended
+    assert link.succeeded is False
+    assert not await rig.vault.has(rig.user, rig.conn, SecretKind.SESSION)
+
+
+async def test_done_does_not_hammer_the_site_with_forced_checks(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forced check may navigate to the entry page: «Я вошёл» must not refresh it every second
+    while the flow waits for a confirmation that never comes."""
+    forced: list[bool] = []
+    original = LoginFlow._try_finish
+
+    async def counting(
+        self: LoginFlow, run: Any, snap: Any, *, force: bool = False
+    ) -> SessionState | None:
+        forced.append(force)
+        return await original(self, run, snap, force=force)
+
+    monkeypatch.setattr(LoginFlow, "_try_finish", counting)
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.request_done()
+        await asyncio.sleep(FAST.poll_s * 8)
+        await link.close("synthetic stop")
+
+    rig = make_rig(human=human, timing=replace(FAST, done_grace_s=5.0))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
+    with pytest.raises(JobCancelled):
+        await asyncio.wait_for(rig.ensure(Student()), timeout=10.0)
+    await rig.screens.settle()
+    assert len(forced) > FAST.max_forced_checks  # the loop kept polling
+    assert sum(forced) <= FAST.max_forced_checks + 1  # ...but only a few checks were forced
+
+
+async def test_a_quiet_normal_form_after_the_human_typed_returns_to_native_fields(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """The person worked on the screen once; when a recognised form appears and they stop
+    touching the screen, the flow goes back to the faster native fields instead of keeping
+    the laggy screen open."""
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True  # the person typed on the screen
+        await handle.page.goto(f"{ORIGIN}/plain/login")
+        link.idle = 1.0  # ...and has been quiet since
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
+    student = Student()
+    session, ctx = await rig.ensure(student)
+    await rig.screens.settle()
+    assert await works(session)
+    (link,) = rig.screens.links
+    assert link.close_reason == "mirrored"
+    assert [kind for kind, _ in student.asked] == ["login", "password"]
+    assert student.count("password") == 1  # typed once, reused by the form after the screen
+    assert any(isinstance(b, TextBlock) and "обычная форма" in b.markdown for b in ctx.blocks)
+
+
 async def test_a_page_nobody_taught_us_is_handed_to_the_human(
     make_rig: Callable[..., Rig],
 ) -> None:
@@ -694,6 +779,25 @@ async def test_the_human_not_finishing_cancels_the_job(make_rig: Callable[..., R
     rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
     with pytest.raises(JobCancelled):
         await rig.ensure(Student())
+
+
+async def test_a_screen_that_times_out_without_confirmation_is_a_clear_error(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """The screen running out of time used to cancel the job silently; the student must be
+    told the login was not confirmed instead."""
+
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        await asyncio.sleep(FAST.poll_s * 2)
+        await link.close("ttl", notify="expired")
+
+    rig = make_rig(human=human, timing=replace(FAST, human_wait_s=5.0))
+    rig.store.seed_preset(ORIGIN, preset_dict(f"{ORIGIN}/captcha/login"))
+    with pytest.raises(BotaiError) as exc:
+        await asyncio.wait_for(rig.ensure(Student()), timeout=8.0)
+    assert exc.value.code == ErrorCode.LOGIN_FAILED
+    assert "не подтвердился" in exc.value.detail
+    await rig.screens.settle()
 
 
 @pytest.mark.parametrize(
@@ -953,23 +1057,42 @@ async def test_bot_protection_is_reported_without_retries_or_a_screen(
     assert len(gateway._handles) == opened
 
 
-async def test_a_screen_mode_preset_goes_straight_to_the_human(
+async def test_a_screen_mode_preset_mirrors_a_form_it_recognises(
     make_rig: Callable[..., Rig],
 ) -> None:
-    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
-        link.human_control = True
-        await handle.page.fill("#u", data.USERNAME)
-        await handle.page.fill("#p", data.PASSWORD)
-        await handle.page.click("button[type=submit]")
+    """A screen learned for this site is not a ban on native fields.
 
-    rig = make_rig(human=human)
+    The owner's complaint: the fallback screen is laggy and worse than the native fields. When
+    the page now shows a credential form the detector understands, the flow fills it natively
+    instead of opening the screen just because it was needed once.
+    """
+    rig = make_rig()
     rig.store.seed_preset(ORIGIN, {**preset_dict(f"{ORIGIN}/plain/login"), "mode": "screen"})
     student = Student()
     session, ctx = await rig.ensure(student)
     await rig.screens.settle()
     assert await works(session)
-    assert student.asked == []  # nothing was mirrored
-    assert [b for b in ctx.blocks if isinstance(b, LoginBlock)]
+    assert [k for k, _ in student.asked] == ["login", "password"]  # native fields, not a screen
+    assert not [block for block in ctx.blocks if isinstance(block, LoginBlock)]
+    assert rig.screens.links == []
+
+
+async def test_a_screen_mode_preset_still_hands_an_unrecognised_page_to_the_human(
+    make_rig: Callable[..., Rig],
+) -> None:
+    async def human(handle: PlaywrightHandle, link: FakeLink) -> None:
+        link.human_control = True
+        await handle.page.goto(f"{ORIGIN}/plain/login")
+        await handle.page.fill("#u", data.USERNAME)
+        await handle.page.fill("#p", data.PASSWORD)
+        await handle.page.click("button[type=submit]")
+
+    rig = make_rig(human=human)
+    rig.store.seed_preset(ORIGIN, {**preset_dict(f"{ORIGIN}/download-less-page"), "mode": "screen"})
+    session, ctx = await rig.ensure(Student())
+    await rig.screens.settle()
+    assert await works(session)
+    assert [type(block) for block in ctx.blocks if isinstance(block, LoginBlock)] == [LoginBlock]
     assert rig.store.presets[ORIGIN][-1]["mode"] == "screen"
 
 

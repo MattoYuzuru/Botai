@@ -1,7 +1,17 @@
 # Бенчмарк агента
 
-Выбирает модель и режим рассуждения по измерениям. Методика и матрица —
-[docs/plan/benchmark.md](../docs/plan/benchmark.md); реализация — `backend/src/botai/agent/bench.py`.
+Статус: **v3-бенчмарк B1–B4** (исторический, для прежней архитектуры) и
+**живой бенчмарк v4** в `bench/live/`. Целевая методика и результаты —
+[docs/v4/04-benchmark.md](../docs/v4/04-benchmark.md); реализация v3 —
+`backend/src/botai/agent/bench.py`.
+
+## Живой бенчмарк v4 (`bench/live/`)
+
+Скрипт, который берёт креды из macOS Keychain (secret broker), входит/читает
+сессию, собирает HAR и метрики и складывает санитизированную сводку в
+`docs/v4/_evidence/benchmark/`, а сырые артефакты — вне репозитория. Запуск и
+сценарии — [docs/v4/04-benchmark.md](../docs/v4/04-benchmark.md).
+
 
 ## Что есть
 
