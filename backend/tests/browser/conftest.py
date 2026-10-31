@@ -24,6 +24,7 @@ from cryptography.x509.oid import NameOID
 from botai.browser.egress import ProxyEgress
 from botai.browser.gateway import PlaywrightGateway
 from botai.browser.proxy import EgressProxy, derive_key
+from tests.browser.local_site import LocalSite, create_local_site
 from tests.fakeuni.app import create_fakeuni
 from tests.fakeuni.login import ASSET_HOST, SIBLING_HOST
 
@@ -98,6 +99,13 @@ async def serve(app: Any) -> AsyncIterator[int]:
     finally:
         server.should_exit = True
         await task
+
+
+@pytest.fixture(scope="session")
+async def local_site() -> AsyncIterator[LocalSite]:
+    """A plain loopback HTTP site for the full-control browser (no proxy, no TLS)."""
+    async with serve(create_local_site()) as port:
+        yield LocalSite(base_url=f"http://127.0.0.1:{port}", port=port)
 
 
 @pytest.fixture(scope="session")

@@ -76,6 +76,8 @@ BUDGETS: dict[str, float] = {
     JobKind.INGEST.value: 600.0,
     JobKind.CONNECT.value: 1800.0,
     JobKind.REPAIR.value: 1800.0,
+    # Experimental v4 harness run: one agent task; its own soft limits stop it earlier.
+    JobKind.AGENT.value: 1800.0,
 }
 
 

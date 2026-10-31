@@ -1842,6 +1842,10 @@ class PlaywrightGateway:
         self._clock = clock or SystemClock()
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        # A separate Chromium for the v4 agent (browser/control.py): direct network, no proxy,
+        # no allowlist and no login guards. Its contexts never meet the login contexts above.
+        self._control_browser: Browser | None = None
+        self._control_launch: tuple[bool, bool] | None = None
         self._launch_lock = asyncio.Lock()
         self._by_user: dict[str, PlaywrightHandle] = {}
         self._user_locks: dict[str, asyncio.Lock] = {}
@@ -1887,6 +1891,48 @@ class PlaywrightGateway:
             self._browser.on("disconnected", self._on_disconnected)
             return self._browser
 
+    async def playwright(self) -> Playwright:
+        """The Playwright driver, shared with the v4 full-control browser (`browser/control.py`)."""
+        async with self._launch_lock:
+            if self._playwright is None:
+                self._playwright = await self._start_playwright()
+            return self._playwright
+
+    async def control_browser(
+        self, *, headless: bool = True, sandbox: bool | None = None
+    ) -> Browser:
+        """A Chromium for the agent's full browser control: direct network, no proxy, no guard.
+
+        The login browser above resolves no DNS of its own and needs the EgressProxy; this one
+        is a plain Chromium. It is started once per gateway and closed by `aclose`; each
+        `browser/control.py` session opens its own context on top of it."""
+        effective_sandbox = self._sandbox if sandbox is None else sandbox
+        async with self._launch_lock:
+            if self._control_browser is not None and self._control_browser.is_connected():
+                if self._control_launch != (headless, effective_sandbox):
+                    log.debug("control browser keeps its first launch options")
+                return self._control_browser
+            if self._playwright is None:
+                self._playwright = await self._start_playwright()
+            log.info(
+                "starting control Chromium (sandbox %s, headless %s)",
+                "on" if effective_sandbox else "off",
+                headless,
+            )
+            self._control_browser = await self._playwright.chromium.launch(
+                headless=headless,
+                chromium_sandbox=effective_sandbox,
+                args=[
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-breakpad",
+                    "--disable-component-update",
+                    "--disable-features=Translate,MediaRouter,OptimizationHints",
+                ],
+            )
+            self._control_launch = (headless, effective_sandbox)
+            return self._control_browser
+
     async def _start_playwright(self) -> Playwright:
         """Start the driver. Its temporary directory (Chromium's profile) goes to `tmp_dir`,
         which a deployment points at tmpfs."""
@@ -1914,6 +1960,10 @@ class PlaywrightGateway:
     async def aclose(self) -> None:
         for handle in list(self._handles):
             await handle.close()
+        control, self._control_browser = self._control_browser, None
+        if control is not None:
+            with contextlib.suppress(PlaywrightError):
+                await control.close()
         async with self._launch_lock:
             if self._browser is not None:
                 with contextlib.suppress(PlaywrightError):

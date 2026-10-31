@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botai.local/contracts/tools.schema.json",
+  "title": "BotAI tool contract: ToolSpec и ToolResult",
+  "description": "Единый протокол инструментов агента v4 (docs/v4/02-architecture.md §4.3–4.4, D-022) и Python-модели `botai.agent.v4.protocol`. ToolSpec описывает инструмент: имя, JSON-схему аргументов, таймаут, класс политики, идемпотентность и сериализацию. ToolResult — данные, а не текст для модели: результат структурирован, большие тела вынесены в артефакты. Значения первичных секретов не попадают ни в спеку, ни в аргументы, ни в результат: для них есть secret_use/secret_request и хендлы (D-008, D-031).",
+  "oneOf": [
+    { "$ref": "#/$defs/toolSpec" },
+    { "$ref": "#/$defs/toolResult" }
+  ],
+  "$defs": {
+    "policy": {
+      "type": "string",
+      "enum": ["read", "write_soft", "write_destructive", "money", "auth"],
+      "description": "Класс политики автономии (D-006, D-025): read — чтение; write_soft — обратимое действие; write_destructive — удаление/отзыв/сдача; money — деньги; auth — смена пароля/почты/выход. Класс говорит, что делает вызов; решение auto/ask/never принимает policy engine."
+    },
+    "artifact": {
+      "type": "object",
+      "description": "Ссылка на большой результат (страница, JSON, HAR, файл, скриншот). Байты живут в artifact store; здесь метаданные.",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": {
+          "type": "string",
+          "enum": ["page", "json", "file", "har", "screenshot", "log", "doc", "other"],
+          "description": "Рекомендуемый словарь ARTIFACT_KINDS из db/models.py; протокол принимает строку и проверяет словарь на стороне сервиса."
+        },
+        "bytes": { "type": "integer", "minimum": 0, "default": 0 },
+        "sha256": { "type": "string", "default": "" },
+        "url": { "type": ["string", "null"] }
+      }
+    },
+    "toolError": {
+      "type": "object",
+      "description": "Структурированная ошибка инструмента. Текст не содержит секретов; retryable управляет повтором, hint — подсказкой модели.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Машинный код, например egress_blocked, timeout, invalid_arguments, policy_denied."
+        },
+        "detail": { "type": "string", "default": "" },
+        "retryable": { "type": "boolean", "default": false },
+        "hint": { "type": ["string", "null"] }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "description": "Собственная бухгалтерия вызова: время. Стоимость модели считается отдельно (llm_usage).",
+      "additionalProperties": false,
+      "required": ["ms"],
+      "properties": {
+        "ms": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "toolSpec": {
+      "type": "object",
+      "title": "ToolSpec",
+      "description": "Описание инструмента, которое видит модель. Реестр инструментов — данные; исполнение — на стороне tool layer, где проверяется политика. Совпадает с `botai.agent.v4.protocol.ToolSpec`.",
+      "additionalProperties": false,
+      "required": ["name", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "snake_case, группа по префиксу: http_*, browser_*, fs_*, code_*, secret_*, source_*, rag_*, memory_*, job_*, trace_*, action_*."
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema аргументов (draft 2020-12). Протокол требует type=object, additionalProperties=false и чтобы required были объявлены в properties.",
+          "required": ["type", "additionalProperties"],
+          "properties": {
+            "type": { "const": "object" },
+            "additionalProperties": { "const": false }
+          }
+        },
+        "timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "default": 30,
+          "description": "Таймаут вызова в секундах (протокол: default 30, max 600)."
+        },
+        "policy": { "$ref": "#/$defs/policy", "default": "read" },
+        "idempotent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Повтор с теми же аргументами безопасен; действия дополнительно несут ключ идемпотентности."
+        },
+        "max_result_chars": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 2000000,
+          "default": 20000,
+          "description": "Предел результата, дальше — артефакт/усечение."
+        },
+        "serial_only": {
+          "type": "boolean",
+          "default": false,
+          "description": "Инструмент нельзя запускать параллельно с другими: меняет общее состояние или небезопасно отменяется."
+        }
+      }
+    },
+    "toolResult": {
+      "type": "object",
+      "title": "ToolResult",
+      "description": "Результат инструмента: данные и метаданные, а не текст для модели. Большие тела заменяются ссылкой на артефакт; обрезанное помечается truncated. Совпадает с `botai.agent.v4.protocol.ToolResult`; успешный результат не несёт error, неуспешный обязан.",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean", "default": true },
+        "summary": { "type": "string", "default": "" },
+        "data": {
+          "description": "Произвольные JSON-данные результата; большие — в артефактах.",
+          "type": ["object", "array", "string", "number", "integer", "boolean", "null"]
+        },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" }, "default": [] },
+        "truncated": { "type": "boolean", "default": false },
+        "next": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Курсор/подсказка продолжения (пагинация, следующая страница); null — продолжения нет."
+        },
+        "error": {
+          "description": "Заполняется, когда ok=false; успешный результат error не несёт.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/toolError" }]
+        },
+        "cost": { "$ref": "#/$defs/cost" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
+          "then": { "required": ["error"] }
+        },
+        {
+          "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+          "then": { "properties": { "error": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

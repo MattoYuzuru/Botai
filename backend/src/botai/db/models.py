@@ -7,7 +7,7 @@ UNIQUE(connection_id, external_id) for idempotent upserts.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -38,6 +38,10 @@ from botai.db.base import Base, pk_ulid, ts_now
 
 FK_USER = "users.id"
 FK_CONN = "connections.id"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _user_fk() -> Mapped[str]:
@@ -709,3 +713,390 @@ class AuditLog(Base):
     )  # action_executed | injection_blocked | ...
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = ts_now()
+
+
+# --- sources v4: the live record an agent keeps about one source ---------------------------------
+#
+# Additive to v3: `connections` keep working; nothing is renamed or migrated here. A v4 source is
+# identified inside its space by `identity_key` — a normalized address, `link:<sha256>` of a private
+# calendar link, `file:<sha256>` of an uploaded file or `mail:<box>` — never by origin, so a second
+# cabinet, table or calendar of one university is a second row. Playbooks are versioned knowledge:
+# a declarative spec and/or parser code, activated by the service and never executed here.
+# See docs/v4/03-sources-and-ux.md §1-2 and docs/v4/14-sources-backend.md.
+
+SOURCE_STATUSES = (
+    "draft",
+    "probing",
+    "learning",
+    "waiting_user",
+    "active",
+    "syncing",
+    "stale",
+    "needs_reauth",
+    "needs_link",
+    "error",
+    "disabled",
+    "archived",
+)
+SOURCE_TRUST_LEVELS = ("high", "normal", "low")
+SOURCE_NATURE_KINDS = (
+    "site",
+    "portal",
+    "lms",
+    "api",
+    "calendar",
+    "sheet",
+    "doc",
+    "file",
+    "mail",
+    "feed",
+    "other",
+)
+SOURCE_DATA_KINDS = (
+    "schedule",
+    "deadlines",
+    "assignments",
+    "courses",
+    "grades",
+    "people",
+    "locations",
+    "news",
+    "documents",
+    "messages",
+)
+PLAYBOOK_LANGUAGES = ("declarative", "python", "js")
+ARTIFACT_KINDS = ("page", "json", "file", "har", "screenshot", "log", "doc", "other")
+
+
+def _in_list(values: tuple[str, ...]) -> str:
+    """SQL for a CHECK constraint: the vocabulary is repeated in the migration, so one place wins."""
+    return ", ".join(f"'{value}'" for value in values)
+
+
+class Playbook(Base):
+    """How to read a source: a declarative spec and/or code, with versions and health.
+
+    `owner_id` NULL means the playbook is shared (D-018); otherwise only its owner sees it.
+    Never executed in this process: the runner takes a version into the sandbox.
+    """
+
+    __tablename__ = "playbooks"
+    __table_args__ = (
+        Index("ix_playbooks_university_id", "university_id"),
+        Index("ix_playbooks_owner_id", "owner_id"),
+        CheckConstraint(f"language IN ({_in_list(PLAYBOOK_LANGUAGES)})", name="language_valid"),
+    )
+    id: Mapped[str] = pk_ulid()
+    university_id: Mapped[str | None] = mapped_column(
+        String(50), ForeignKey("universities.id", ondelete="SET NULL")
+    )
+    owner_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey(FK_USER, ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    language: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="declarative", server_default="declarative"
+    )
+    current_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    health: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    created_at: Mapped[datetime] = ts_now()
+
+
+class PlaybookVersion(Base):
+    """One revision of a playbook: spec JSON and/or code, tests, canary, checksum.
+
+    Exactly one active version per playbook (`uq_playbook_versions_active`); the prior active one
+    stays for rollback. `created_by_run` points at the job that wrote it, when a job did.
+    """
+
+    __tablename__ = "playbook_versions"
+    __table_args__ = (
+        UniqueConstraint("playbook_id", "version"),
+        Index(
+            "uq_playbook_versions_active",
+            "playbook_id",
+            unique=True,
+            postgresql_where=text("active"),
+        ),
+        CheckConstraint("spec IS NOT NULL OR code IS NOT NULL", name="payload_present"),
+    )
+    id: Mapped[str] = pk_ulid()
+    playbook_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    spec: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    code: Mapped[str | None] = mapped_column(Text)
+    tests: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    canary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    checksum: Mapped[str | None] = mapped_column(String(64))
+    created_by_run: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = ts_now()
+
+
+class Source(Base):
+    """A source of one university: where data lives, how it is read and how healthy it is."""
+
+    __tablename__ = "sources"
+    __table_args__ = (
+        # The only uniqueness: one live record per normalized identity inside a space. A partial
+        # index keeps the intent explicit (rows always have an identity; a future NULL would not
+        # collide).
+        Index(
+            "uq_sources_space_identity_key",
+            "space_id",
+            "identity_key",
+            unique=True,
+            postgresql_where=text("identity_key IS NOT NULL"),
+        ),
+        Index("ix_sources_space_id_status", "space_id", "status"),
+        Index("ix_sources_playbook_id", "playbook_id"),
+        CheckConstraint(f"status IN ({_in_list(SOURCE_STATUSES)})", name="status_valid"),
+        CheckConstraint(f"trust IN ({_in_list(SOURCE_TRUST_LEVELS)})", name="trust_valid"),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    space_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("spaces.id", ondelete="CASCADE"), nullable=False
+    )
+    # Kept as a convenience join key: a space names the university; v3 keeps "materials" spaces.
+    university_id: Mapped[str | None] = mapped_column(
+        String(50), ForeignKey("universities.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    entry_url: Mapped[str | None] = mapped_column(Text)  # the UI page, secret query removed
+    identity_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    kinds: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft", server_default="draft"
+    )
+    playbook_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("playbooks.id", ondelete="SET NULL")
+    )
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    auth_ref: Mapped[str | None] = mapped_column(String(200))  # Vault handle name, never a secret
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    trust: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="normal", server_default="normal"
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    disabled_from: Mapped[str | None] = mapped_column(String(20))  # status to restore on enable
+    created_at: Mapped[datetime] = ts_now()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )
+
+
+class SourceArtifact(Base):
+    """What a run read or saved: a page, JSON, file, HAR, screenshot, log or document.
+
+    Bytes live outside the database under `storage_ref`; `sha256` is the content address used for
+    deduplication and provenance.
+    """
+
+    __tablename__ = "source_artifacts"
+    __table_args__ = (
+        Index("ix_source_artifacts_source_id_captured_at", "source_id", "captured_at"),
+        Index("ix_source_artifacts_sha256", "sha256"),
+        CheckConstraint(f"kind IN ({_in_list(ARTIFACT_KINDS)})", name="kind_valid"),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    source_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    url: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    size: Mapped[int | None] = mapped_column(Integer)
+    storage_ref: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    captured_at: Mapped[datetime] = ts_now()
+    run_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    step: Mapped[int | None] = mapped_column(Integer)
+
+
+class SourceState(Base):
+    """The small mutable state of a source's reading: cursor, site map and found endpoints."""
+
+    __tablename__ = "source_state"
+    source_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_revision: Mapped[int | None] = mapped_column(Integer)
+    cursor: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    site_map: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    endpoints: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )
+
+
+class SourcePriority(Base):
+    """Order of sources for one data kind of one university: first alive source is the primary.
+
+    A setting, not an architectural ceiling (03-sources-and-ux §4.1): any number of sources can be
+    listed, the order only decides which one wins a conflict for that kind.
+    """
+
+    __tablename__ = "source_priorities"
+    space_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(30), primary_key=True)
+    source_ids: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )
+
+
+# --- RAG (phase 2.5) ----------------------------------------------------------------------------
+
+
+class ChunkEmbedding(Base):
+    """The vector of one chunk for one embedding model, plus the provenance of the indexed text.
+
+    Portable storage is `embedding` JSONB: it works on plain `postgres:17` (dev, CI, production) and
+    needs no extension. `pgvector` is the planned acceleration for this same table, not a
+    prerequisite: when the images carry the `vector` extension, a separate migration adds
+    `embedding_vec vector(384)` and an HNSW index while the JSONB value stays the source of truth
+    (docs/v4/18-rag.md). Vectors of different models coexist: the unique key is `(chunk_id, model)`,
+    so re-embedding with another provider does not destroy the previous one.
+    """
+
+    __tablename__ = "chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint("chunk_id", "model", name="uq_chunk_embeddings_chunk_model"),
+        Index("ix_chunk_embeddings_user_id_model", "user_id", "model"),
+        Index("ix_chunk_embeddings_source_id", "source_id"),
+        Index("ix_chunk_embeddings_content_hash", "content_hash"),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    chunk_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("chunks.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # Set when the text came from a v4 source artifact; NULL for v3 documents and chat material.
+    source_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    artifact_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("source_artifacts.id", ondelete="SET NULL")
+    )
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    # sha256 of the embedded text: deduplication and the cache key, never a secret.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+    url: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(300))
+    kind: Mapped[str | None] = mapped_column(String(20))  # artifact kind or document kind
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trust: Mapped[str | None] = mapped_column(String(10))  # source trust level at capture time
+    created_at: Mapped[datetime] = ts_now()
+
+
+# --- v4 agent runs and traces (task-16, docs/v4/15-runtime-wiring.md) ----------------------------
+
+
+class AgentRun(Base):
+    """One v4 agent runtime run: status and counters; steps are `agent_run_events` (D-014).
+
+    Additive to the v3 tables: `job_id` is only a link for provenance and is nulled when the job
+    row is purged, so the trace outlives the short lived queue row.
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("ix_agent_runs_user_started", "user_id", "started_at"),
+        Index("ix_agent_runs_job", "job_id"),
+    )
+    run_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    user_id: Mapped[str] = _user_fk()
+    job_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    task: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    steps: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    event_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = ts_now()
+
+
+class AgentRunEvent(Base):
+    """One step of a v4 agent trace: model call, tool call/result, limit, pause, finish (D-014).
+
+    `payload` is bounded and already secret-free when written: tool handlers mask primary secrets
+    (docs/v4/15-runtime-wiring.md §4). `seq` is the runtime's monotonic event number inside a run.
+    """
+
+    __tablename__ = "agent_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_agent_run_events_run_seq"),
+        Index("ix_agent_run_events_run_seq", "run_id", "seq"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    step: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)

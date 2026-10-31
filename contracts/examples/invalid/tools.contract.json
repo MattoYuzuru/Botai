@@ -1,0 +1,69 @@
+[
+  {
+    "description": "У спеки нет имени — инструмент нельзя вызвать.",
+    "parameters": { "type": "object", "additionalProperties": false },
+    "timeout_s": 30,
+    "policy": "read",
+    "idempotent": true
+  },
+  {
+    "name": "http_request",
+    "description": "Неизвестный класс политики.",
+    "parameters": { "type": "object", "additionalProperties": false },
+    "timeout_s": 30,
+    "policy": "allow_everything",
+    "idempotent": true
+  },
+  {
+    "name": "http_request",
+    "description": "Таймаут за нижней границей.",
+    "parameters": { "type": "object", "additionalProperties": false },
+    "timeout_s": 0,
+    "policy": "read",
+    "idempotent": true
+  },
+  {
+    "name": "http_request",
+    "description": "Исполнитель инструмента не сериализуется в спецификацию.",
+    "parameters": { "type": "object", "additionalProperties": false },
+    "timeout_s": 30,
+    "policy": "read",
+    "idempotent": true,
+    "handler": "botai.agent.v4.tools.http:run"
+  },
+  {
+    "name": "http_request",
+    "description": "Аргументы должны быть строгой объектной схемой.",
+    "parameters": { "type": "object" },
+    "timeout_s": 30,
+    "policy": "read",
+    "idempotent": true
+  },
+  {
+    "name": "Bad Name",
+    "description": "Имя не snake_case.",
+    "parameters": { "type": "object", "additionalProperties": false },
+    "timeout_s": 30,
+    "policy": "read",
+    "idempotent": true
+  },
+  {
+    "ok": false,
+    "summary": "ошибка без описания",
+    "data": null,
+    "artifacts": [],
+    "truncated": false,
+    "next": null,
+    "cost": { "ms": 5 }
+  },
+  {
+    "ok": true,
+    "summary": "успех не должен нести error",
+    "data": null,
+    "artifacts": [],
+    "truncated": false,
+    "next": null,
+    "error": { "code": "unexpected", "detail": "", "retryable": false, "hint": null },
+    "cost": { "ms": 5 }
+  }
+]

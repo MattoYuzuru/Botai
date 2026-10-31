@@ -743,6 +743,278 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sources
+         * @description Sources of the user; optionally of one space, one status and one kind.
+         */
+        get: operations["list_sources_api_v1_sources_get"];
+        put?: never;
+        /**
+         * Create Source
+         * @description Create a source. A duplicate identity answers 409, never a silent replace.
+         */
+        post: operations["create_source_api_v1_sources_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Source */
+        get: operations["get_source_api_v1_sources__source_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Source */
+        patch: operations["update_source_api_v1_sources__source_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Source Artifacts */
+        get: operations["list_source_artifacts_api_v1_sources__source_id__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/canary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Canary Source
+         * @description Run a version as a canary; it becomes activatable only after a successful canary.
+         */
+        post: operations["canary_source_api_v1_sources__source_id__canary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable Source */
+        post: operations["disable_source_api_v1_sources__source_id__disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enable Source */
+        post: operations["enable_source_api_v1_sources__source_id__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/playbook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Source Playbook */
+        get: operations["get_source_playbook_api_v1_sources__source_id__playbook_get"];
+        put?: never;
+        /**
+         * Create Source Playbook
+         * @description Create and attach a playbook record; versions are added separately.
+         */
+        post: operations["create_source_playbook_api_v1_sources__source_id__playbook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/playbook/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Source Versions */
+        get: operations["list_source_versions_api_v1_sources__source_id__playbook_versions_get"];
+        put?: never;
+        /**
+         * Add Source Version
+         * @description Add an inactive version; `activate` requires a successful canary of that version.
+         */
+        post: operations["add_source_version_api_v1_sources__source_id__playbook_versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/playbook/versions/{version}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Source Version */
+        post: operations["activate_source_version_api_v1_sources__source_id__playbook_versions__version__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe Source
+         * @description Try a candidate spec/code (or the active version) without changing the source status.
+         */
+        post: operations["probe_source_api_v1_sources__source_id__probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repair Source
+         * @description Run a candidate spec/code or a version; on `activate` persist it as the new version first.
+         *
+         *     The candidate is written as an inactive version, its canary result is stored, and only a
+         *     successful run is activated. A failed candidate stays for inspection and changes nothing.
+         */
+        post: operations["repair_source_api_v1_sources__source_id__repair_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Source State */
+        get: operations["get_source_state_api_v1_sources__source_id__state_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Source
+         * @description Run the active (or the named) version; the runner records freshness and state itself.
+         */
+        post: operations["sync_source_api_v1_sources__source_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/sync/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sync Stream
+         * @description SSE progress of one sync: `status`, `read` per endpoint, then `done` or `error`.
+         */
+        get: operations["sync_stream_api_v1_sources__source_id__sync_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/spaces": {
         parameters: {
             query?: never;
@@ -874,6 +1146,24 @@ export interface paths {
          *     (FR-054); null goes back to the default. A BotAI setting, nothing is sent to the university.
          */
         put: operations["set_primary_source_api_v1_spaces__space_id__primary_source_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/spaces/{space_id}/priorities/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Priority */
+        get: operations["get_priority_api_v1_spaces__space_id__priorities__kind__get"];
+        /** Set Priority */
+        put: operations["set_priority_api_v1_spaces__space_id__priorities__kind__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1057,6 +1347,36 @@ export interface components {
             /** Fieldshash */
             fieldsHash: string;
         };
+        /** ArtifactOut */
+        ArtifactOut: {
+            /**
+             * Capturedat
+             * Format: date-time
+             */
+            capturedAt: string;
+            /** Contenttype */
+            contentType: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Metadata */
+            metadata: {
+                [key: string]: unknown;
+            };
+            /** Runid */
+            runId: string | null;
+            /** Sha256 */
+            sha256: string;
+            /** Size */
+            size: number | null;
+            /** Sourceid */
+            sourceId: string;
+            /** Step */
+            step: number | null;
+            /** Url */
+            url: string | null;
+        };
         /** AttachmentOut */
         AttachmentOut: {
             /**
@@ -1107,6 +1427,11 @@ export interface components {
             file: string;
             /** Note */
             note?: string | null;
+        };
+        /** CanaryIn */
+        CanaryIn: {
+            /** Version */
+            version?: number | null;
         };
         /** ConnectionCreate */
         ConnectionCreate: {
@@ -1530,6 +1855,21 @@ export interface components {
             /** Url */
             url: string | null;
         };
+        /** NormalizedRecordOut */
+        NormalizedRecordOut: {
+            /** Externalid */
+            externalId: string;
+            /** Fields */
+            fields: {
+                [key: string]: unknown;
+            };
+            /** Kind */
+            kind: string;
+            /** Openurl */
+            openUrl: string | null;
+            /** Sourceurl */
+            sourceUrl: string | null;
+        };
         /** PendingRef */
         PendingRef: {
             /** Blockid */
@@ -1555,6 +1895,110 @@ export interface components {
             provenance: components["schemas"]["Provenance"];
             /** Role */
             role: string;
+        };
+        /**
+         * PlaybookCreateIn
+         * @description POST /sources/{id}/playbook: create and attach a playbook to the source.
+         */
+        PlaybookCreateIn: {
+            /**
+             * Language
+             * @default declarative
+             */
+            language: string;
+            /**
+             * Shared
+             * @default false
+             */
+            shared: boolean;
+            /** Title */
+            title: string;
+            /** Universityid */
+            universityId?: string | null;
+        };
+        /** PlaybookOut */
+        PlaybookOut: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Currentversion */
+            currentVersion: number;
+            /** Health */
+            health: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id: string;
+            /** Language */
+            language: string;
+            /** Ownerid */
+            ownerId: string | null;
+            /** Provenance */
+            provenance: {
+                [key: string]: unknown;
+            };
+            /** Title */
+            title: string;
+            /** Universityid */
+            universityId: string | null;
+        };
+        /** PlaybookVersionIn */
+        PlaybookVersionIn: {
+            /**
+             * Activate
+             * @default false
+             */
+            activate: boolean;
+            /** Canary */
+            canary?: {
+                [key: string]: unknown;
+            } | null;
+            /** Code */
+            code?: string | null;
+            /** Spec */
+            spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** Tests */
+            tests?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** PlaybookVersionOut */
+        PlaybookVersionOut: {
+            /** Active */
+            active: boolean;
+            /** Canary */
+            canary: {
+                [key: string]: unknown;
+            } | null;
+            /** Checksum */
+            checksum: string | null;
+            /** Code */
+            code: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Createdbyrun */
+            createdByRun: string | null;
+            /** Id */
+            id: string;
+            /** Playbookid */
+            playbookId: string;
+            /** Spec */
+            spec: {
+                [key: string]: unknown;
+            } | null;
+            /** Tests */
+            tests: {
+                [key: string]: unknown;
+            }[];
+            /** Version */
+            version: number;
         };
         /**
          * PoolUsageOut
@@ -1595,6 +2039,44 @@ export interface components {
         PrimarySourceIn: {
             /** Connectionid */
             connectionId?: string | null;
+        };
+        /** PriorityIn */
+        PriorityIn: {
+            /** Sourceids */
+            sourceIds?: string[];
+        };
+        /** PriorityOut */
+        PriorityOut: {
+            /** Kind */
+            kind: string;
+            /** Sourceids */
+            sourceIds: string[];
+            /** Spaceid */
+            spaceId: string;
+        };
+        /**
+         * ProbeIn
+         * @description A candidate spec/code to try without saving it (or a version to re-run as a probe).
+         */
+        ProbeIn: {
+            /** Code */
+            code?: string | null;
+            /**
+             * Language
+             * @default python
+             */
+            language: string;
+            /**
+             * Persist
+             * @default false
+             */
+            persist: boolean;
+            /** Spec */
+            spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** Version */
+            version?: number | null;
         };
         /** Provenance */
         Provenance: {
@@ -1645,6 +2127,28 @@ export interface components {
             /** Upto */
             upTo?: string | null;
         };
+        /** ReadOutcomeOut */
+        ReadOutcomeOut: {
+            /** Artifactid */
+            artifactId: string | null;
+            error: components["schemas"]["RunErrorOut"] | null;
+            /** Format */
+            format: string;
+            /** Itemsinvalid */
+            itemsInvalid: number;
+            /** Itemsseen */
+            itemsSeen: number;
+            /** Itemsvalid */
+            itemsValid: number;
+            /** Name */
+            name: string;
+            /** Ok */
+            ok: boolean;
+            /** Status */
+            status: number | null;
+            /** Url */
+            url: string | null;
+        };
         /** RegisterRequest */
         RegisterRequest: {
             /** Displayname */
@@ -1661,6 +2165,83 @@ export interface components {
              * Format: password
              */
             password: string;
+        };
+        /** RepairIn */
+        RepairIn: {
+            /**
+             * Activate
+             * @default false
+             */
+            activate: boolean;
+            /** Code */
+            code?: string | null;
+            /**
+             * Language
+             * @default python
+             */
+            language: string;
+            /** Spec */
+            spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** Version */
+            version?: number | null;
+        };
+        /** RunErrorOut */
+        RunErrorOut: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+            /** Read */
+            read: string | null;
+            /** Retryable */
+            retryable: boolean;
+        };
+        /** RunReportOut */
+        RunReportOut: {
+            /** Artifactids */
+            artifactIds: string[];
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Cursor */
+            cursor: {
+                [key: string]: unknown;
+            } | null;
+            /** Errors */
+            errors: components["schemas"]["RunErrorOut"][];
+            /**
+             * Finishedat
+             * Format: date-time
+             */
+            finishedAt: string;
+            /** Notes */
+            notes: string[];
+            /** Ok */
+            ok: boolean;
+            /** Persisted */
+            persisted: boolean;
+            /** Reads */
+            reads: components["schemas"]["ReadOutcomeOut"][];
+            /** Records */
+            records: components["schemas"]["NormalizedRecordOut"][];
+            /** Recordstruncated */
+            recordsTruncated: boolean;
+            /** Run */
+            run: string;
+            /** Sourceid */
+            sourceId: string;
+            /** Sourcestatus */
+            sourceStatus: string | null;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+            /** Version */
+            version: number | null;
         };
         /** ScheduleEventOut */
         ScheduleEventOut: {
@@ -1740,6 +2321,145 @@ export interface components {
              */
             kind: "courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news" | "documents";
         };
+        /**
+         * SourceCreateIn
+         * @description POST /sources: exactly one way to name the source's identity, plus its kinds.
+         */
+        SourceCreateIn: {
+            /** Authref */
+            authRef?: string | null;
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** Filesha256 */
+            fileSha256?: string | null;
+            /** Kinds */
+            kinds?: string[];
+            /**
+             * Link
+             * @description Личная ссылка календаря
+             */
+            link?: string | null;
+            /** Mailbox */
+            mailbox?: string | null;
+            /** Playbookid */
+            playbookId?: string | null;
+            /** Spaceid */
+            spaceId: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * SourceOut
+         * @description A source as the application shows it: no secrets, only the identity digest and state.
+         */
+        SourceOut: {
+            /** Authref */
+            authRef: string | null;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Disabledfrom */
+            disabledFrom: string | null;
+            /** Entryurl */
+            entryUrl: string | null;
+            /** Id */
+            id: string;
+            /** Kinds */
+            kinds: string[];
+            /** Lasterror */
+            lastError: {
+                [key: string]: unknown;
+            } | null;
+            /** Lastsyncat */
+            lastSyncAt: string | null;
+            /** Playbookid */
+            playbookId: string | null;
+            /** Priority */
+            priority: number;
+            /** Spaceid */
+            spaceId: string;
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+            /** Trust */
+            trust: string;
+            /** Universityid */
+            universityId: string | null;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+        };
+        /**
+         * SourcePatch
+         * @description Fields a caller may change on a source; every field is optional.
+         */
+        SourcePatch: {
+            /** Authref */
+            authRef?: string | null;
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Entryurl */
+            entryUrl?: string | null;
+            /** Identity */
+            identity?: string | null;
+            /** Kinds */
+            kinds?: string[] | null;
+            /** Lasterror */
+            lastError?: {
+                [key: string]: unknown;
+            } | null;
+            /** Lastsyncat */
+            lastSyncAt?: string | null;
+            /** Playbookid */
+            playbookId?: string | null;
+            /** Priority */
+            priority?: number | null;
+            /** Status */
+            status?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Trust */
+            trust?: string | null;
+        };
+        /** SourceStateOut */
+        SourceStateOut: {
+            /** Cursor */
+            cursor: {
+                [key: string]: unknown;
+            };
+            /** Endpoints */
+            endpoints: {
+                [key: string]: unknown;
+            }[];
+            /** Lastrevision */
+            lastRevision: number | null;
+            /** Sitemap */
+            siteMap: {
+                [key: string]: unknown;
+            };
+            /** Sourceid */
+            sourceId: string;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+        };
         /** SpaceCreate */
         SpaceCreate: {
             /** Homepageurl */
@@ -1783,6 +2503,11 @@ export interface components {
             timeZone?: string | null;
             /** Title */
             title?: string | null;
+        };
+        /** SyncIn */
+        SyncIn: {
+            /** Version */
+            version?: number | null;
         };
         /** ThreadCreate */
         ThreadCreate: {
@@ -3301,6 +4026,605 @@ export interface operations {
             };
         };
     };
+    list_sources_api_v1_sources_get: {
+        parameters: {
+            query?: {
+                space_id?: string | null;
+                status?: string | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_source_api_v1_sources_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_source_api_v1_sources__source_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_source_api_v1_sources__source_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_source_artifacts_api_v1_sources__source_id__artifacts_get: {
+        parameters: {
+            query?: {
+                kind?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    canary_source_api_v1_sources__source_id__canary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CanaryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_source_api_v1_sources__source_id__disable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_source_api_v1_sources__source_id__enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_source_playbook_api_v1_sources__source_id__playbook_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_source_playbook_api_v1_sources__source_id__playbook_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybookCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_source_versions_api_v1_sources__source_id__playbook_versions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookVersionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_source_version_api_v1_sources__source_id__playbook_versions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybookVersionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookVersionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activate_source_version_api_v1_sources__source_id__playbook_versions__version__activate_post: {
+        parameters: {
+            query?: {
+                require_canary?: boolean;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookVersionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    probe_source_api_v1_sources__source_id__probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repair_source_api_v1_sources__source_id__repair_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RepairIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_source_state_api_v1_sources__source_id__state_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_source_api_v1_sources__source_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_stream_api_v1_sources__source_id__sync_stream_get: {
+        parameters: {
+            query?: {
+                version?: number | null;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_spaces_api_v1_spaces_get: {
         parameters: {
             query?: never;
@@ -3615,6 +4939,74 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_priority_api_v1_spaces__space_id__priorities__kind__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriorityOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_priority_api_v1_spaces__space_id__priorities__kind__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PriorityIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriorityOut"];
+                };
             };
             /** @description Validation Error */
             422: {

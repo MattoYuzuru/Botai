@@ -1,6 +1,6 @@
 import { Button, EmptyState } from "@botai/design";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
-import type { ComponentType } from "react";
+import { type ComponentType, useEffect } from "react";
 import { Screen } from "@/app/screen";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { ListSkeleton } from "./parts";
@@ -14,6 +14,7 @@ import { LocationsSection } from "./sections/locations";
 import { NewsSection } from "./sections/news";
 import { PeopleSection } from "./sections/people";
 import { useSectionScope } from "./use-section";
+import { useStudyUiMode } from "./v4/flag";
 
 const BODIES: Record<StudyKind, ComponentType<{ ctx: SectionContext }>> = {
   courses: CoursesSection,
@@ -35,6 +36,14 @@ export function SectionScreen({ kind, space }: { kind: string; space?: string })
   const router = useRouter();
   const navigate = useNavigate();
   const def: SectionDef | undefined = SECTION_BY_KIND.get(kind);
+  // В v4 «Источники» и «Документы и вложения» — не места навигации (03-sources-and-ux.md §5.5):
+  // источники живут на экране вуза, документы — в его карточке. Прямая старая ссылка ведёт на «Учёбу».
+  const v4 = useStudyUiMode() === "v4";
+  const retired = v4 && (kind === "connections" || kind === "documents");
+  useEffect(() => {
+    if (retired) void navigate({ to: "/study", replace: true });
+  }, [retired, navigate]);
+  if (retired) return null;
   const back = () => {
     if (router.history.canGoBack()) router.history.back();
     else void navigate({ to: "/study" });

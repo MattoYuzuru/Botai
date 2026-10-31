@@ -34,8 +34,21 @@ class Settings(BaseSettings):
     botai_kek: SecretStr = SecretStr("")
     botai_kek_id: str = "k1"
 
-    llm_provider: Literal["deepseek", "mock"] = "mock"
+    # v4: DeepSeek (as in v3), Anthropic Claude, any OpenAI-compatible endpoint, or the scripted
+    # mock of tests. The v3 path still understands deepseek|mock; `agent_engine` decides which
+    # engine runs (v3 by default until phase 2 is accepted).
+    llm_provider: Literal["deepseek", "anthropic", "openai_compat", "mock"] = "mock"
     deepseek_api_key: SecretStr = SecretStr("")
+    # Anthropic Messages API (Claude): key and base URL; models per tier.
+    anthropic_api_key: SecretStr = SecretStr("")
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_model_fast: str = "claude-haiku-4-5"
+    anthropic_model_pro: str = "claude-sonnet-4-5"
+    # Any OpenAI-compatible `/chat/completions` endpoint (OpenAI, Ollama, vLLM, LiteLLM).
+    llm_openai_base_url: str = "https://api.openai.com/v1"
+    llm_openai_api_key: SecretStr = SecretStr("")
+    llm_openai_model_fast: str = "gpt-4.1-mini"
+    llm_openai_model_pro: str = "gpt-4.1"
     exa_api_key: SecretStr = SecretStr("")
     search_mode: Literal["auto", "off", "exa", "deepseek"] = "auto"
     search_deadline_s: float = Field(default=15.0, ge=0.1, le=60)
