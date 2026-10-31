@@ -43,7 +43,7 @@ type Provenance = {
 | `Fact` | `id, spaceId, question, answer, sources[], confirmedAt, staleAfter, confidence` |
 
 `Connection.status`: `draft | learning | active | syncing | stale | needs_reauth | error | disabled`.
-`Connection.kind`: `lms | schedule | portal | sheet | document | mail | other`.
+`Connection.kind`: `portal | lms | schedule | site | sheet | doc | document | calendar | other` (`sheet` — таблица, `doc` — документ или страница по ссылке, `document` — загруженный файл; почта в MVP не подключается). Источников одного вида у вуза может быть сколько угодно ([FR-055](../product/requirements.md)).
 
 Правило уникальности: `(connectionId, externalId)` уникально для каждой
 сущности. Если у источника нет стабильного id, Normalizer строит
@@ -173,15 +173,16 @@ Cookie/Bearer policy, nested collections/from, dateTime composition, bounded wee
 
 ```ts
 type AgentUiBlock =
-  | { type: "text";     id: string; markdown: string; quickReplies?: string[] }
+  | { type: "text";     id: string; markdown: string; quickReplies?: string[];
+      quote?: { text: string; blockId?: string }; picked?: boolean }
   | { type: "thinking"; id: string; stage: string; detail?: string; at: string }
   | { type: "choice";   id: string; question: string; mode: "single" | "multi";
       options: { value: string; label: string; hint?: string }[]; required: boolean }
   | { type: "input";    id: string; question: string; placeholder?: string;
       inputKind: "text" | "url" | "number" | "date" | "email" | "password" | "code";
-      required: boolean; secret?: boolean; autocomplete?: string }
+      required: boolean; secret?: boolean; login?: boolean; maxLength?: number; autocomplete?: string }
   | { type: "confirm";  id: string; question: string;
-      confirmLabel: string; cancelLabel: string }
+      confirmLabel: string; cancelLabel: string; details?: string }
   | { type: "summary";  id: string; title: string;
       groups: { title: string; items: { label: string; value: string; sourceUrl?: string }[] }[] }
   | { type: "approval"; id: string; proposal: ActionProposal }
@@ -198,7 +199,10 @@ type AgentUiBlock =
 type AgentUiAnswer = { blockId: string; values: string[] | string | boolean };
 ```
 
-`quickReplies` (≤4 по ≤60 знаков) — кнопки быстрых ответов под последним ответом; `plan` обновляется
+`quickReplies` (≤4 по ≤60 знаков) — кнопки быстрых ответов под последним ответом; `quote` (≤200 знаков) — цитата вопроса,
+на который отвечает сообщение студента, `picked` — сообщение составлено выбором из вопроса; `input.login` — поле формы
+входа, его значение не показывается и не читается моделью; `confirm.details` (markdown, ≤2000) — что подтверждается, в одном
+сообщении с вопросом и кнопками (подробно — [conversation.md](../../contracts/conversation.md)); `plan` обновляется
 блоком с тем же `id`; `task` — карточка фоновой задачи, ведущая в тред, где она живёт; `attachment` —
 вложение сообщения студента. В `markdown` допустимы GFM-таблицы и блок кода ` ```chart ` с JSON
 графика; ссылки приложения — `botai://threads|connections|documents|attachments/{id}`.
@@ -232,27 +236,33 @@ type ActionProposal = {
 
 ## 6. HTTP и потоки
 
-### REST (`contracts/openapi.yaml`, набросок)
+### REST (`backend/openapi.json`)
+
+Обзор. Источник правды — `backend/openapi.json`: его создаёт FastAPI, а `./scripts/gen.sh` регенерирует вместе с типами
+веб-клиента, и CI проверяет расхождение.
 
 | Метод и путь | Назначение |
 |---|---|
-| `POST /api/v1/auth/invite/redeem` | Активация приглашения |
-| `GET /api/v1/me` | Профиль, пространства, квоты |
-| `POST /api/v1/spaces` · `GET /api/v1/spaces` | Пространство вуза студента (повтор возвращает то же, `200`) · все его вузы с `shortTitle` и `aliases` |
-| `GET /api/v1/spaces/{id}/connections` | Источники вуза: человеческий `title`, `kind`, `entryUrl`, `threadId`, `activeTask`. Источник создаёт агент в треде, а не REST |
-| `GET /api/v1/connections/{id}` · `DELETE` | Состояние, отключение |
-| `POST /api/v1/connections/{id}/login-session` | Открыть сессию входа (вернёт `wsUrl`) |
-| `POST /api/v1/connections/{id}/sync` | Ручная синхронизация |
-| `GET /api/v1/schedule?from&to&spaceId?` | Общий календарь; занятия нескольких источников одного вуза склеены (`sources`, `disagreement`, FR-054) |
+| `POST /api/v1/auth/register` · `/auth/login` · `/auth/logout` · `POST /auth/invites` | Регистрация по приглашению, вход и выход; приглашение выпускает владелец |
+| `GET /api/v1/me` · `GET/DELETE /me/memory` · `DELETE /me/memory/{id}` | Профиль, пространства, квоты; заметки агента о студенте |
+| `GET /api/v1/universities?q=` | Выученный реестр и подсказки по названию (адресов и интеграций не создаёт) |
+| `POST /api/v1/spaces` · `GET /spaces` · `PATCH`/`DELETE /spaces/{id}` | Пространство вуза студента (повтор возвращает то же, `200`) · все его вузы с `shortTitle` и `aliases` |
+| `GET /api/v1/spaces/{id}/connections` | Источники вуза: человеческий `title`, `kind`, `entryUrl`, `threadId`, `activeTask`, `scheduleRole`. Число источников вуза не ограничено ([FR-055](../product/requirements.md)) |
+| `POST /api/v1/spaces/{id}/connections` | REST-путь создания источника (повторы по origin и виду, пока источник в `draft` или `learning`). Веб-клиент его не вызывает: источник создаёт агент в треде |
+| `GET /api/v1/connections/{id}` · `DELETE` | Состояние, удаление |
+| `POST /api/v1/connections/{id}/login-session` · `/sync` · `/repair` · `/conversation` | Открыть сессию входа (вернёт `wsUrl`); ручная синхронизация; починка; тред задачи источника |
+| `PUT /api/v1/connections/{id}/secrets` · `DELETE /connections/{id}/password` | Токен или ключ источника (`ical_url` не принимается: ссылка календаря идёт только защищённым полем задачи); забыть пароль |
 | `PUT /api/v1/spaces/{id}/primary-source` · `POST /api/v1/connections/{id}/disable` · `/enable` | Основной источник расписания вуза; обратимое отключение и включение источника (FR-054) |
-| `GET /api/v1/deadlines` · `/courses` · `/grades` · `/people` | Домен |
-| `POST /api/v1/chat/threads` · `POST /api/v1/chat/threads/{id}/messages` | Чат |
-| `POST /api/v1/chat/threads/{id}/answers` | Ответ на `AgentUiBlock` |
-| `POST /api/v1/spaces/{id}/documents/url` · `/documents/upload` · `DELETE /api/v1/documents/{id}` | Подключить таблицу/документ/ссылку (в том числе Google по ссылке) или файл |
+| `GET /api/v1/schedule?from&to&spaceId?` · `/today` | Общий календарь и «Сегодня»; занятия нескольких источников одного вуза склеены (`sources`, `disagreement`, FR-054) |
+| `GET /api/v1/deadlines` · `/courses` · `/grades` · `/people` · `/news` · `/spaces/{id}/sections` | Домен и разделы пространства |
+| `GET/POST /api/v1/chat/threads` · `PATCH`/`DELETE /chat/threads/{id}` · `GET .../messages` · `POST .../messages` · `POST .../read` · `GET .../runtime` · `GET .../context` · `POST .../calendar-link` | Треды чата ([conversation.md](../../contracts/conversation.md)) |
+| `POST /api/v1/jobs/{id}/answers` · `GET /jobs/{id}` · `POST /jobs/{id}/cancel` | Ответ на `AgentUiBlock` задачи, её состояние, отмена |
+| `POST /api/v1/spaces/{id}/documents/url` · `/documents/upload` · `GET /spaces/{id}/documents` · `DELETE /api/v1/documents/{id}` | Подключить таблицу/документ/ссылку (в том числе Google по ссылке) или файл |
 | `POST /api/v1/attachments` · `GET /{id}` · `GET /{id}/content` · `DELETE /{id}` | Файлы чата до 20 МиБ: тип по байтам, отдача без исполнения HTML |
+| `POST /api/v1/speech/transcribe` | Диктовка: речь в текст ([speech-to-text.md](../development/speech-to-text.md)) |
 | `POST /api/v1/actions/{id}/approve` · `/reject` | Write-действия |
 | `GET /api/v1/jobs/{id}/events` | SSE потока задания |
-| `GET /api/v1/usage` | Расход токенов и квота |
+| `GET /api/v1/usage` · `/usage/pool` | Расход токенов и квота; расход пула (только владелец) |
 
 ### SSE (`GET /jobs/{id}/events`)
 

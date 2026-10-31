@@ -11,8 +11,13 @@
 | `recipe.schema.json` | Explorer, RecipeStore, Runner |
 | `login-preset.schema.json` | BrowserSvc, Explorer |
 | `agent-ui.schema.json` | ChatAgent, Explorer, PWA |
-| `openapi.yaml` | PWA, API |
+| `adapter-spec.schema.json` | Explorer, RecipeStore, Runner |
+| `recipe-v2.md` | Explorer, Runner, lint (описание рецепта v2) |
+| `account-reset.md` | API, PWA (сброс данных аккаунта) |
+| `calendar-link-vectors.json` | Сервер и веб-клиент (общие случаи для личной ссылки календаря) |
 | `events.md` | API, PWA, BrowserSvc |
+
+REST описывает не файл в этом каталоге, а `backend/openapi.json`: его создаёт FastAPI, `./scripts/gen.sh` регенерирует.
 
 ## Правила
 
@@ -22,6 +27,6 @@
    `openapi-typescript` для REST, `json-schema-to-typescript` для схем.
    Сгенерированные файлы коммитятся и проверяются в CI на расхождение.
 3. Каждая схема сопровождается валидными и невалидными фикстурами в
-   `contracts/fixtures/`; CI проверяет обе стороны.
+   `contracts/examples/valid/` и `contracts/examples/invalid/`; CI проверяет обе стороны.
 4. Никакое поле ответа API не содержит секрет, cookie, пароль или токен.
    Это проверяется тестом, а не соглашением.

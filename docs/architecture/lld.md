@@ -1,6 +1,6 @@
 # BotAI — Low-Level Design
 
-Статус: **описание реализации**, обновлено 2026-10-29. Модули, интерфейсы, таблицы и состояния. Это карта для
+Статус: **описание реализации**, обновлено 2026-10-31. Модули, интерфейсы, таблицы и состояния. Это карта для
 пяти параллельных потоков работ: у каждого модуля один владелец ([план](../plan/workstreams.md)).
 Общая картина — [HLD](hld.md).
 
@@ -9,7 +9,7 @@ Job claim fencing, зашифрованный checkpoint, frontier и канди
 кооперативное продолжение и общие бюджеты. [План](../plan/source-research-refactor.md)
 разделяет целевую архитектуру и реализованные этапы. [Factory v2](factory-v2.md) описывает
 новые per-request auth bindings, deterministic data DSL и verified browser replay;
-[ADR-0012](../adr/0012-verified-source-factory-v2.md) фиксирует совместимость и producer gate.
+[ADR-0012](../adr/0012-verified-source-factory-v2.md) фиксирует совместимость; переключатели producer и движка удалены 2026-10-30.
 
 ## 1. Раскладка репозитория
 
@@ -42,8 +42,9 @@ flowchart TB
 | `browser` | W2 | Пул Chromium, LoginFlow (зеркало формы), запасной экран (WS), снятие сессии, EgressProxy |
 | `sources` | W3 | Фабрика адаптеров, `recipe` (JSON и HTML), `moodle_ws`, `ical`, `document`, Runner, Normalizer, планировщик sync |
 | `learn` | W3 | Explorer, lint спецификаций, canary, версии и откат, repair |
-| `agent` | W5 | DeepSeek-провайдер, чат, классификация вопроса, инструменты только на чтение, поиск FTS, факты, ActionBroker |
+| `agent` | W5 | DeepSeek-провайдер, единый агент треда (харнес, инструменты данных, источников и живого чтения [только GET]), поиск FTS, факты, ActionBroker ([харнес](agent-harness.md)) |
 | `search` | W5 | Публичный Web Search, privacy gate, Exa/DeepSeek, deadline/retries/cooldown, нормализация и учёт |
+| `speech` | — | Диктовка: `SpeechToText`, Groq через EgressProxy и реле, квота на пользователя ([speech-to-text.md](../development/speech-to-text.md)); добавлен после первых пяти потоков |
 | `apps/web`, `packages/design` | W4 | PWA, дизайн-система, Варя |
 
 ## 2. Ключевые интерфейсы (`botai.core`)
@@ -155,6 +156,11 @@ erDiagram
 пользовательской области. Миграция и ограничения отката —
 [deployment.md](../plan/deployment.md).
 
+Склейка расписания нескольких источников одного вуза (FR-054): `spaces.primary_schedule_connection_id` (выбор основного
+источника, FK `ON DELETE SET NULL`), `connections.disabled_from` (статус до отключения: отключение обратимо),
+`agent_choices` (кнопки, которые ставит приложение перед сменой основного источника и перед отключением). Число
+источников вуза схемой не ограничено ([FR-055](../product/requirements.md), [план](../plan/many-sources.md)).
+
 Полные столбцы — в `backend/src/botai/db/models.py` (источник правды) и миграциях.
 
 ## 4. Состояния
@@ -178,8 +184,8 @@ stateDiagram-v2
     stale --> repairing: канарейка или жалоба в чате
     repairing --> active: новая ревизия прошла canary
     repairing --> error: не удалось, нужен человек
-    active --> disabled: студент отключил
-    disabled --> [*]
+    active --> disabled: студент отключил из любого статуса (прежний в disabled_from)
+    disabled --> active: студент включил; возвращается прежний статус (stale, needs_reauth, error, draft)
 ```
 
 ### Задание
