@@ -1,10 +1,10 @@
 # Навигатор по документации
 
-Состояние проекта на 2026-10-31: **идёт пивот v4 — свободный harness**.
-Production работает на прежней архитектуре; целевая описана в
-[docs/v4/](v4/README.md). Прежние ADR и ограничительные документы удалены:
-рабочее дерево — только v4, история — в git. Первая точка входа — [README](../README.md),
-решения владельца — [QUESTIONS.md](../QUESTIONS.md).
+Состояние проекта на 2026-10-31: **пивот v4 реализован в коде, идёт приёмка и включение в
+production.** Production пока работает на `BOTAI_AGENT_ENGINE=v3`; v4 включается флагом после
+деплоя и приёмки. Целевая архитектура и статус — [docs/v4/](v4/README.md). Прежние ADR и
+ограничительные документы удалены: рабочее дерево — только v4, история — в git. Первая точка
+входа — [README](../README.md), решения владельца — [QUESTIONS.md](../QUESTIONS.md).
 
 ## По задаче
 
@@ -12,12 +12,14 @@ Production работает на прежней архитектуре; целе
 |---|---|
 | Понять, зачем пивот и что меняется | [Манифест v4](v4/README.md) |
 | Узнать, что решено и что отменено | [Решения v4](v4/06-decisions.md) |
-| Начать реализацию | [План реализации](v4/05-implementation-plan.md), [handoff для Claude](v4/07-handoff-claude.md) |
+| Продолжить реализацию/приёмку | [План реализации](v4/05-implementation-plan.md), [handoff](v4/07-handoff-claude.md), [статус](v4/README.md#статус-реализации-2026-10-31-третья-итерация) |
 | Понять целевую архитектуру | [Архитектура v4](v4/02-architecture.md) |
 | Разобраться с источниками и интерфейсом «Учёба» | [Источники и UX](v4/03-sources-and-ux.md) |
+| Понять, как устроен v4-движок в продукте | [Runtime wiring](v4/15-runtime-wiring.md), [executor](v4/13-executor.md) |
+| Понять источники, runner, RAG, действия | [14](v4/14-sources-backend.md)–[16](v4/16-sources-runner-tools.md), [18](v4/18-rag.md), [19](v4/19-actions.md) |
 | Проверить живой вуз | [Бенчмарк](v4/04-benchmark.md), [проверки](development/testing.md) |
 | Понять, как было и почему | [Аудит as-is](v4/01-as-is.md) |
-| Прочитать свидетельства с production | [Live-evidence](v4/_evidence/live-prod.md), [бенчмарк](v4/_evidence/benchmark/) |
+| Прочитать свидетельства с production | [Live-evidence](v4/_evidence/live-prod.md), [v4-агент L2/L3](v4/_evidence/2026-10-31-v4-agent/README.md) |
 | Понять, что продукт делает | [Требования](product/requirements.md) |
 | Сделать экран или компонент | [Стайлгайд](design/styleguide.md) |
 | Сделать маскота, прогресс или пустое состояние | [Маскот](design/mascot.md), [вендоренная Варя](design/vendor.md) |

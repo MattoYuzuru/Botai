@@ -9,6 +9,7 @@ const source = (patch: Partial<StudySource> = {}): StudySource => ({
   status: "active",
   lastSyncAt: null,
   errorDetail: null,
+  errorCode: null,
   entryUrl: "https://my.fakeuni.test/learn",
   origin: "https://my.fakeuni.test",
   threadId: null,

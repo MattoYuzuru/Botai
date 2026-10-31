@@ -1,14 +1,19 @@
 # 18. RAG: эмбеддинги, гибридный поиск, индекс артефактов источников
 
-Статус: **фаза 2.5 реализована (task-19)**, 2026-10-31. Добавлено аддитивно рядом с v3-FTS:
-новые таблица и миграция, новые модули `search/embeddings.py`, `search/hybrid.py`, `search/rag.py`,
-инструменты `rag_search`/`rag_ingest` в `agent/v4/tools/rag.py`, 31 тест в `backend/tests/search/`
-(все `tests/search` — 78 passed). Существующий полнотекстовый поиск v3 не изменён.
+Статус: **фаза 2.5 реализована, pgvector включён (2026-10-31).** Добавлено аддитивно рядом
+с v3-FTS: новые таблица и миграции, модули `search/embeddings.py`, `search/pgvector.py`,
+`search/hybrid.py`, `search/rag.py`, инструменты `rag_search`/`rag_ingest` в
+`agent/v4/tools/rag.py`, ops-команда `python -m botai.ops.reindex_rag`, тесты в
+`backend/tests/search/` и `backend/tests/db/`. Существующий полнотекстовый поиск v3 не изменён.
 
-Критерий фазы 2.5 («вопрос по документу/странице отвечается со ссылкой; эмбеддинги реально
-используются — тест на различие семантически близких чанков») закрыт на mock-эмбеддингах в тестах и
-на локальном провайдере в коде; живой прогон на проде с RAG-ответом агентом ещё не проводился
-(LLM-цикл — фаза 1/3, REST — отдельная задача).
+Гибридный поиск использует настоящий pgvector (`ORDER BY embedding_vec <=> …`) там, где есть
+extension и колонка нужной ширины, и честно откатывается на JSONB-bounded-scan иначе
+(`vector_backend` в результате: `pgvector` | `jsonb` | `none`). Критерий фазы 2.5
+(«вопрос по документу/странице отвечается со ссылкой; эмбеддинги реально используются»)
+закрыт тестами: семантически близкий чанк, который JSONB-скан с `vector_scan_limit` не видит,
+векторная нога возвращает первой. Живой прогон API-провайдера эмбеддингов не выполнен:
+в окружении нет ключа эмбеддингов (DeepSeek не отдаёт `/embeddings`) — это честно записано
+в §11.
 
 ## 1. Что где лежит
 
@@ -17,14 +22,17 @@
 | Провайдеры эмбеддингов | `search/embeddings.py` | интерфейс `EmbeddingProvider`, локальный hashing, API (OpenAI-совместимый), mock, LRU-кэш, батчи, ретраи, стоимость |
 | Гибридный поиск | `search/hybrid.py` | FTS + vector, reciprocal-rank fusion, rerank (лексика + свежесть + trust), провенанс в результате |
 | Индексация и сервис запроса | `search/rag.py` | `RagSettings`, чанкинг, `RagIndexer` (артефакты/документы/текст), `RagQueryService`, фича-флаг |
-| Модель | `db/models.py` → `ChunkEmbedding` | `chunk_embeddings`: вектор + провенанс, `(chunk_id, model)` уникален |
-| Миграция | `db/migrations/versions/20261031_b7e2c4a91d3f_chunk_embeddings.py` | аддитивно; `down_revision = e5a1c9b7d342` (sources v4), head `b7e2c4a91d3f` |
+| Модель | `db/models.py` → `ChunkEmbedding` | `chunk_embeddings`: JSONB-вектор (канон) + `embedding_vec vector(N)` (pgvector), провенанс, `(chunk_id, model)` уникален |
+| pgvector | `search/pgvector.py` | `VectorType`, детект extension/колонки/ширины раз за процесс, SQL-запись и поиск `<=>`, backfill JSONB→vector |
+| Миграции | `db/migrations/versions/20261031_b7e2c4a91d3f_chunk_embeddings.py`, `20261031_f2b7d9c4a6e8_chunk_embeddings_pgvector.py` | аддитивно: таблица, затем extension `vector` + колонка + HNSW (CONCURRENTLY) + backfill; downgrade оставляет extension |
 | Инструменты | `agent/v4/tools/rag.py` | `rag_search`, `rag_ingest`, `build_rag_tools` |
-| Тесты | `tests/search/test_rag_{embeddings,ingest,hybrid,tools}.py` + `support.py` | 31 тест |
+| Ops-команда | `botai.ops.reindex_rag` | `python -m botai.ops.reindex_rag --email E [--source-id S]` — индексация артефактов и backfill векторов, без вывода содержимого |
+| Тесты | `tests/search/*`, `tests/db/test_pgvector_migration.py` | миграция/детект/векторная нога/деградация/артефакты |
 
 ```
-alembic heads  ->  b7e2c4a91d3f (head)
-цепочка:        d9f3a1c7e582 -> e5a1c9b7d342 (sources v4) -> b7e2c4a91d3f (chunk_embeddings)
+alembic heads  ->  f2b7d9c4a6e8 (head)
+цепочка:        a8d4f1c2b6e9 -> c3f7a2b9d4e1 (sources domain) -> d6b8f2a14c73 (actions)
+                -> f2b7d9c4a6e8 (pgvector)
 ```
 
 ## 2. Таблица `chunk_embeddings`
@@ -41,6 +49,7 @@ alembic heads  ->  b7e2c4a91d3f (head)
 | `dimension` | int | длина вектора |
 | `content_hash` | text 64 | sha256 текста: дедуп и ключ кэша, не секрет |
 | `embedding` | JSONB | сам вектор (канон, портируемо) |
+| `embedding_vec` | `vector(N)` | pgvector-копия для HNSW-поиска; `NULL` у строк, вписанных до миграции/с другой шириной (backfill заполняет совпадающие) |
 | `url`, `title`, `kind` | text / 300 / 20 | цитата и вид материала (artifact kind или document kind) |
 | `captured_at` | timestamptz | когда материал прочитан источником |
 | `trust` | text 10 | trust источника на момент снимка (`high/normal/low`) |
@@ -54,43 +63,43 @@ alembic heads  ->  b7e2c4a91d3f (head)
 падения существующего FTS. Отдельная таблица даёт: разные модели рядом, провенанс на строку,
 дедуп по `content_hash`, и аддитивную миграцию без касания v3.
 
-## 3. pgvector: решение и точный план перехода
+## 3. pgvector: сделано (2026-10-31)
 
-**Решение сейчас — fallback JSONB, extension `vector` не требуется.** Причины:
+**Решение: pgvector включён; JSONB остаётся каноном и fallback.** Исторический контекст:
+сначала был только JSONB-bounded-scan, потому что dev/CI/prod жили на `postgres:17-alpine`
+без extension, а миграция с `CREATE EXTENSION` уронила бы rollout. Теперь образы переключены
+(`pgvector/pgvector:pg17` в `ops/compose.dev.yaml`, `ops/compose.prod.yaml`, CI; тот же PG 17,
+`pgdata` переиспользуется), а `remote-deploy.sh` поднимает Postgres до миграций — поэтому
+extension-миграция безопасна.
 
-1. dev, CI и production используют `postgres:17-alpine` (`ops/compose.dev.yaml:7`,
-   `ops/compose.prod.yaml:51`, `.github/workflows/ci.yml:22`) — extension `vector` там недоступен,
-   а менять образ прода в этой задаче нельзя: деплой сразу после выкладки фазы 2.5.
-2. Миграция обязана быть аддитивной и не ломать rollout: `CREATE EXTENSION` в том же прогоне
-   уронил бы миграцию на всех трёх контурах.
-3. На pet-масштабе (тысячи чанков) точный косинус по JSONB с bounded-scan (`vector_scan_limit`,
-   по умолчанию 500) укладывается в десятки миллисекунд; pgvector нужен для роста корпуса, не для
-   запуска.
+Что реализовано:
 
-Поэтому `hybrid.vector_candidates` — единственное место, которое знает о физическом хранении
-вектора: bounded `select` + косинус в Python. Замена на `<=>` не меняет интерфейс.
+1. **Миграция `f2b7d9c4a6e8`** (после `d6b8f2a14c73`): `CREATE EXTENSION IF NOT EXISTS vector`,
+   `chunk_embeddings.embedding_vec vector(BOTAI_RAG_DIMENSION|384)`, one-pass backfill JSONB→vector
+   для строк той же ширины (остальные остаются `NULL` по дизайну), HNSW
+   `USING hnsw (embedding_vec vector_cosine_ops)` строится CONCURRENTLY (сначала удаляется
+   невалидный одноимённый индекс). Downgrade удаляет колонку/индекс и **оставляет** extension:
+   другие данные могут им пользоваться, а снятие extension — отдельное решение.
+2. **Модель** `ChunkEmbedding.embedding_vec` (свой `VectorType`, без Python-зависимости
+   pgvector), `RagIndexer` пишет оба представления; JSONB — источник правды, `embedding_vec`
+   можно перезаполнить backfill'ом/переиндексацией.
+3. **`search/pgvector.py`** — детект доступности один раз на процесс (extension + колонка +
+   ширина провайдера), SQL-запись `CAST(CAST(:v AS real[]) AS vector(N))`, backfill, детект
+   несовпадения ширины с одним предупреждением (без значений).
+4. **`hybrid.vector_candidates`** — при доступном pgvector один SQL
+   `ORDER BY embedding_vec <=> CAST(CAST(:q AS real[]) AS vector(N)) LIMIT :k`; иначе прежний
+   JSONB bounded scan. Результат честно помечает `vector_backend` (`pgvector|jsonb|none`),
+   наружу в payload инструмента это не добавлено (контракт `rag_search` не менялся).
+5. **Ops-команда** `python -m botai.ops.reindex_rag --email E [--source-id S]` — индексация
+   артефактов источников и backfill векторов, батчами, без вывода содержимого.
+6. **Тесты**: миграционный round-trip (+EXPLAIN доказывает использование HNSW), векторная нога
+   реально включена и находит семантически близкий чанк, который JSONB-скан с
+   `vector_scan_limit=2` не видит; деградация при несовпадении ширины с одним warning; двойная
+   запись/backfill/артефакты/ops.
 
-**План перехода (отдельная задача, когда образ можно менять):**
-
-1. Образы: `postgres:17-alpine` → `pgvector/pgvector:pg17` в `ops/compose.dev.yaml`,
-   `ops/compose.prod.yaml` и в service `postgres` файла `.github/workflows/ci.yml` (образ official,
-   pg17, тот же major; данные в `pgdata` совместимы, повторный `initdb` не нужен).
-2. Новая миграция (после `b7e2c4a91d3f`): `CREATE EXTENSION IF NOT EXISTS vector` +
-   `ALTER TABLE chunk_embeddings ADD COLUMN embedding_vec vector(384)` (фиксированная размерность —
-   `BOTAI_RAG_DIMENSION`/модель) + HNSW-индекс
-   `CREATE INDEX ... USING hnsw (embedding_vec vector_cosine_ops)` (CONCURRENTLY вне транзакции, как
-   другие тяжёлые индексы проекта).
-3. Модель: `ChunkEmbedding.embedding_vec` (`Mapped[Any]`, тип vector не тянем в Python-зависимости),
-   `RagIndexer` пишет оба представления, JSONB остаётся источником правды и fallback.
-4. `hybrid.vector_candidates`: если колонка и extension есть — один SQL
-   `ORDER BY embedding_vec <=> CAST(:q AS vector) LIMIT :k` (проверка наличия — по
-   `pg_attribute`/`pg_extension`, один раз на процесс); иначе текущий JSONB-путь.
-5. Тест `tests/db/test_schema.py` должен видеть новую колонку; тест RAG-поиска получает ветку
-   `pytest.mark.skipif(not pgvector_available)` — в CI без образа она skip, с образом — работает.
-6. Приёмка: тот же набор тестов + замер latency/recall на снапшоте корпуса.
-
-Пока этого нет, `dimension`/`model` в JSONB-таблице позволяют переиндексировать всё в новый формат
-без потери старых данных.
+**Размерность фиксируется миграцией.** `BOTAI_RAG_DIMENSION` должен быть выставлен до первой
+миграции/переиндексации; смена провайдера на другую ширину требует новой миграции и
+переиндексации (JSONB при этом не теряется и продолжает работать через fallback).
 
 ## 4. Провайдеры эмбеддингов (`search/embeddings.py`)
 
@@ -218,18 +227,29 @@ uv run --frozen pytest tests/core/test_architecture.py -q   # 2 passed (HTTP-gua
 
 ## 11. Ограничения и что осталось
 
-* **Живого RAG-прогона нет**: LLM-цикл (фаза 1/3) ещё не подключён к инструментам, REST не
-  добавлен. Тесты доказывают механику, не качество ответа модели.
+* **Живого прогона API-провайдера эмбеддингов нет**: в окружении нет ключа эмбеддингов
+  (DeepSeek не отдаёт `/embeddings`), поэтому `ApiEmbeddings` проверен только mock-transport'ом
+  (батчи/ретраи/парсинг/отсутствие утечки ключа). Что докажет: владелец выставляет
+  `BOTAI_RAG_PROVIDER=api`, `BOTAI_RAG_API_ENDPOINT`, `BOTAI_EMBEDDING_API_KEY`,
+  `BOTAI_RAG_DIMENSION=<ширина модели>` **до** миграции/переиндексации, затем
+  `python -m botai.ops.reindex_rag --email E --source-id S` и один `rag_search` с
+  `vector_backend="pgvector"` и ненулевым `usage.costUsd`.
 * **Локальный провайдер — не семантика**, а hashing+trigrams (лексическая близость). Настоящая
-  семантика — только с `BOTAI_RAG_PROVIDER=api`; живой вызов API в тестах не проверялся
-  (MockTransport), нужен L2/L3-прогон с ключом владельца.
-* **pgvector не включён**: JSONB + bounded scan; план перехода — п. 3. До перехода `dimension`
-  можно менять только переиндексацией.
+  семантика — только с API-провайдером.
+* **Автоиндексации после run нет**: артефакты индексируются инструментом `rag_ingest` или
+  ops-командой `reindex_rag`; хук после sync источника сознательно не подключён в этой итерации
+  (`build_indexer`/`reindex_source_artifacts` — готовые точки подключения). Это осознанный
+  остаток, а не забытый вызов.
+* **REST/RAG-эндпоинта нет**: поиск доступен агенту инструментом и через сервис; отдельный
+  публичный роут — не делали (контракт не менялся).
+* **Recall/latency на реальном корпусе не измерялись**: порядок доказывается синтетическим
+  тестом, где векторная нога находит то, что JSONB-скан с `vector_scan_limit` не видит; на
+  pet-масштабе этого достаточно, при росте корпуса — замер по снапшоту.
+* **Ширина вектора фиксируется миграцией**: смена провайдера на другую размерность требует новой
+  миграции и переиндексации; JSONB при этом не теряется и продолжает работать fallback'ом.
 * **Retention**: старые снапшоты одного источника после изменения текста не удаляются (это
   сознательно: свежесть видна); очистка — отдельная задача вместе с retention артефактов.
 * **Ранжирование эвристическое** (RRF + лексика + свежесть), без cross-encoder rerank; веса
   вынесены в константы, при живых прогонах их надо подбирать по метрикам.
-* **API-провайдер** использует `core.http.build_client` с allowlist из одного host endpoint —
-  при появлении egress-прокси в v4 это надо пересмотреть вместе с `agent/v4/http.py`.
-* **Очередь/задания**: индексация пока вызывается кодом (инструмент/будущий job), фоновой
-  автоиндексации артефактов после run ещё нет.
+* **Очередь/задания**: индексация не ставится фоновой job'ой; сборка чанков идёт в процессе
+  вызывающего (инструмент/ops), большие корпуса стоит вынести в job при необходимости.

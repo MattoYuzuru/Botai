@@ -66,6 +66,7 @@ log = logging.getLogger("botai.agent.v4.runtime")
 
 Pricing = Callable[[LlmUsage, datetime], float]
 Clock = Callable[[], datetime]
+Mask = Callable[[str], str]
 Monotonic = Callable[[], float]
 Emit = Callable[..., Awaitable[None]]
 
@@ -79,6 +80,15 @@ LIMIT_STATUS: dict[str, RunStatus] = {
 
 CONTENT_IN_TRACE_CHARS = 4_000
 RESULT_IN_TRACE_CHARS = 4_000
+
+
+def _carries_task(messages: Sequence[LlmMessage], task: str) -> bool:
+    """Whether the checkpoint already contains this exact instruction as a user message."""
+    wanted = " ".join(task.split())
+    return any(
+        message.role == "user" and message.content and " ".join(message.content.split()) == wanted
+        for message in messages
+    )
 
 
 def default_pricing(usage: LlmUsage, at: datetime) -> float:
@@ -224,6 +234,55 @@ def _neutralize_source_tags(text: str) -> str:
     return _SOURCE_TAG.sub(lambda match: "‹" + (match.group(1) or "") + "source_data", text)
 
 
+def _mask_value(value: Any, mask: Mask) -> Any:
+    """Mask every string inside tool data (dicts/lists keep their shape); numbers stay numbers."""
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, list):
+        return [_mask_value(item, mask) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_value(item, mask) for item in value)
+    if isinstance(value, dict):
+        return {key: _mask_value(item, mask) for key, item in value.items()}
+    return value
+
+
+def mask_result(result: ToolResult, mask: Mask) -> ToolResult:
+    """Mask a tool result before it reaches the model or the trace (D-008/D-014, one place).
+
+    Tools are independent processes/files/HTTP clients: a parser can print a profile e-mail, a file
+    can contain a password, an API can echo a token. Every handler may mask on its own (the browser
+    tools do), but the boundary that actually hands the result to the model is the runtime, so the
+    run's masker is applied here to the summary, data, error text and artifact URLs. This keeps a
+    resumed run and a trace written later just as masked as the live conversation.
+    """
+    error = result.error
+    masked_error = (
+        error.model_copy(
+            update={
+                "detail": mask(error.detail),
+                "hint": mask(error.hint) if error.hint is not None else None,
+            }
+        )
+        if error is not None
+        else None
+    )
+    artifacts = tuple(
+        artifact.model_copy(update={"url": mask(artifact.url)})
+        if artifact.url is not None
+        else artifact
+        for artifact in result.artifacts
+    )
+    return result.model_copy(
+        update={
+            "summary": mask(result.summary),
+            "data": _mask_value(result.data, mask),
+            "error": masked_error,
+            "artifacts": artifacts,
+        }
+    )
+
+
 def _wrap_result(tool_name: str, result: ToolResult, max_chars: int) -> tuple[str, bool]:
     body = _neutralize_source_tags(result.to_model_text())
     truncated = result.truncated or len(body) > max_chars
@@ -231,6 +290,20 @@ def _wrap_result(tool_name: str, result: ToolResult, max_chars: int) -> tuple[st
         body = body[:max_chars].rstrip() + "\n[…обрезано: результат не влез целиком]"
     safe_name = re.sub(r"[^a-z0-9_]", "", tool_name.lower())[:40] or "tool"
     return f'<source_data tool="{safe_name}">\n{body}\n</source_data>', truncated
+
+
+def _mask_json(value: Any, mask: Mask) -> Any:
+    """Mask strings inside a trace payload while keeping its JSON shape (arguments, results)."""
+    return _json_safe(_mask_value(value, mask))
+
+
+def _mask_message(message: LlmMessage, mask: Mask) -> LlmMessage:
+    """The checkpoint copy of a message: no primary secret in content or tool-call arguments."""
+    tool_calls = [
+        call.model_copy(update={"arguments": _mask_value(dict(call.arguments), mask)})
+        for call in message.tool_calls
+    ]
+    return message.model_copy(update={"content": mask(message.content), "tool_calls": tool_calls})
 
 
 def _json_safe(value: Any) -> Any:
@@ -266,12 +339,16 @@ class AgentRuntime:
         pricing: Pricing | None = None,
         clock: Clock | None = None,
         monotonic: Monotonic = time.monotonic,
+        mask: Mask | None = None,
     ) -> None:
         self._control: RunControlView = control or _NullControl()
         self._approve = approve
         self._pricing: Pricing = pricing or default_pricing
         self._clock: Clock = clock or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
+        # The run's secret masker (secret broker): applied to every tool result before the model
+        # and the trace see it. Identity when the caller has no secrets (tests, read-only runs).
+        self._mask: Mask = mask or (lambda text: text)
 
     async def run(
         self,
@@ -307,6 +384,11 @@ class AgentRuntime:
         if system:
             convo.append(LlmMessage(role="system", content=system))
         convo.extend(task.messages)
+        # The task instruction is the first thing the model must see; a resumed run passes its
+        # checkpoint in `messages` (which already ends with the instruction) and must not get it
+        # twice, or the model would see the same request as two separate asks.
+        if not _carries_task(task.messages, task.task):
+            convo.append(LlmMessage(role="user", content=task.task))
         context = ToolContext(
             run_id=task.run_id,
             task=task.task,
@@ -444,7 +526,7 @@ class AgentRuntime:
                     "model_call",
                     step=steps,
                     duration_ms=call_ms,
-                    payload=_model_payload(response, call_cost),
+                    payload=_model_payload(response, call_cost, self._mask),
                 )
                 if response.tool_calls:
                     convo.append(
@@ -518,7 +600,11 @@ class AgentRuntime:
             events=tuple(events),
         )
 
-        checkpoint = tuple(message for message in convo if message.role != "system")
+        # The checkpoint is persisted/resumed and shown in traces: mask it even though the live
+        # conversation keeps the model's own turns exactly as the provider produced them.
+        checkpoint = tuple(
+            _mask_message(message, self._mask) for message in convo if message.role != "system"
+        )
         log.info(
             "v4 run %s status=%s steps=%d tools=%d tokens=%d cost_usd=%.6f",
             task.run_id,
@@ -623,10 +709,11 @@ class AgentRuntime:
                 payload={
                     "call_id": call.id,
                     "tool": call.name,
-                    "arguments": _json_safe(call.arguments),
+                    "arguments": _mask_json(call.arguments, self._mask),
                     "skipped": "too_many_calls",
                 },
             )
+            result = mask_result(result, self._mask)
             text, _ = _wrap_result(call.name, result, 2_000)
             await emit(
                 "tool_result",
@@ -641,13 +728,14 @@ class AgentRuntime:
             payload={
                 "call_id": call.id,
                 "tool": call.name,
-                "arguments": _json_safe(call.arguments),
+                "arguments": _mask_json(call.arguments, self._mask),
                 "policy": tool.spec.policy if tool else None,
             },
         )
         result = await self._run_tool(call, tool, context, step)
         duration_ms = int((self._monotonic() - started) * 1000)
         result = result.model_copy(update={"cost": ToolCost(ms=duration_ms)})
+        result = mask_result(result, self._mask)
         max_chars = _effective_chars(tool, limits)
         text, truncated = _wrap_result(call.name, result, max_chars)
         if truncated and not result.truncated:
@@ -744,7 +832,7 @@ def _limit_payload(
     }
 
 
-def _model_payload(response: LlmResponse, cost_usd: float) -> dict[str, Any]:
+def _model_payload(response: LlmResponse, cost_usd: float, mask: Mask) -> dict[str, Any]:
     usage = response.usage
     return {
         "model": usage.model,
@@ -754,10 +842,10 @@ def _model_payload(response: LlmResponse, cost_usd: float) -> dict[str, Any]:
         "reasoning": usage.reasoning,
         "latency_ms": usage.latency_ms,
         "cost_usd": round(cost_usd, 6),
-        "content": response.content[:CONTENT_IN_TRACE_CHARS],
+        "content": mask(response.content[:CONTENT_IN_TRACE_CHARS]),
         "reasoning_present": response.reasoning_content is not None,
         "tool_calls": [
-            {"id": call.id, "name": call.name, "arguments": _json_safe(call.arguments)}
+            {"id": call.id, "name": call.name, "arguments": _mask_json(call.arguments, mask)}
             for call in response.tool_calls
         ],
     }

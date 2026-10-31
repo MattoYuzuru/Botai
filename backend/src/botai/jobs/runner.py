@@ -68,6 +68,27 @@ def retry_failures(payload: dict[str, Any], attempt: int) -> int:
     return max(0, attempt - 1)
 
 
+# A handler may ask the queue for one follow-up task (the v4 connect asks for a sync, a drifted
+# sync asks for a repair). It is queued only after this job is terminal, so the queue dedupe sees a
+# finished task and creates a real second one instead of returning the running job itself.
+FOLLOW_UP_KEY = "_next_job"
+FOLLOW_UP_KINDS = frozenset({JobKind.SYNC.value, JobKind.REPAIR.value})
+
+
+def follow_up_of(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+    raw = result.get(FOLLOW_UP_KEY)
+    return raw if isinstance(raw, dict) else None
+
+
+def without_follow_up(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The stored result without the internal queue instruction (never shown to a client)."""
+    if not isinstance(result, dict) or FOLLOW_UP_KEY not in result:
+        return result
+    return {key: value for key, value in result.items() if key != FOLLOW_UP_KEY}
+
+
 # Active-time budgets per kind (lld.md §5). Time spent waiting for the student is not counted.
 BUDGETS: dict[str, float] = {
     JobKind.SYNC.value: 120.0,
@@ -482,6 +503,8 @@ class Worker:
         input_revision: int | None = None,
     ) -> None:
         now = self.services.clock.now()
+        follow_up = follow_up_of(result) if state == "done" else None
+        stored = without_follow_up(result)
         async with self.services.db() as session:
             connection = None
             if state == "cancelled":
@@ -494,7 +517,7 @@ class Worker:
                 if input_revision is not None and dialogue.input_revision(row) != input_revision:
                     raise JobInputChanged
                 row.state = state
-                row.result = result
+                row.result = stored
                 row.finished_at = now
                 row.locked_by = None
                 row.locked_at = None
@@ -511,11 +534,13 @@ class Worker:
         diagnostic_event(
             "job.complete",
             state=state,
-            outcome=(result or {}).get("status"),
-            error_code=(result or {}).get("detail"),
+            outcome=(stored or {}).get("status"),
+            error_code=(stored or {}).get("detail"),
         )
         if state == "done":
-            await self._ask_for_login_after(job, result)
+            await self._ask_for_login_after(job, stored)
+        if follow_up is not None:
+            await self._enqueue_follow_up(job, follow_up)
 
     async def _ask_for_login_after(self, job: Claimed, result: dict[str, Any] | None) -> None:
         """A sync that ended because the student has to log in again says so in the thread of the
@@ -547,6 +572,36 @@ class Worker:
                 await announce_login_needed(session, conn, now)
         except Exception:  # the sync itself is done; a missing prompt must not fail it
             log.exception("could not ask for a login after the sync of %s", job.connection_id)
+
+    async def _enqueue_follow_up(self, job: Claimed, follow_up: dict[str, Any]) -> None:
+        """Queue the task a finished handler asked for; a bad request is logged, never fatal."""
+        kind_raw = follow_up.get("kind")
+        if not isinstance(kind_raw, str) or kind_raw not in FOLLOW_UP_KINDS:
+            log.warning("job %s requested an unknown follow-up %r", job.id, kind_raw)
+            return
+        connection_id = follow_up.get("connection_id") or job.connection_id
+        payload = follow_up.get("payload")
+        delay_s = follow_up.get("delay_seconds")
+        delay = (
+            timedelta(seconds=float(delay_s))
+            if isinstance(delay_s, int | float) and not isinstance(delay_s, bool) and delay_s > 0
+            else timedelta(0)
+        )
+        try:
+            follow_up_id = await self.services.queue.enqueue(
+                JobKind(kind_raw),
+                user_id=job.user_id,
+                connection_id=str(connection_id) if connection_id else None,
+                payload=payload if isinstance(payload, dict) else None,
+                run_after=self.services.clock.now() + delay,
+                dedupe=True,
+            )
+        except Exception:
+            # The finished job is already committed: losing its follow-up must not retry it.
+            log.exception("could not enqueue the follow-up of job %s", job.id)
+            return
+        diagnostic_event("job.follow_up", state="queued", error_code=kind_raw)
+        log.info("job %s queued follow-up %s (%s)", job.id, follow_up_id, kind_raw)
 
     async def _fail(
         self,

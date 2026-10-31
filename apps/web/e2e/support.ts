@@ -50,15 +50,17 @@ export async function expectSheetReady(page: Page, title: string) {
  * Интерактивные элементы с зоной нажатия меньше 44×44 px. Расширение через `::before` учитывается
  * попаданием `elementFromPoint`; ссылка внутри предложения — часть текста (WCAG 2.5.8) и пропускается.
  */
-export async function findSmallTapTargets(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
+export async function findSmallTapTargets(page: Page, scope?: string): Promise<string[]> {
+  return page.evaluate((scopeSelector) => {
     const found: string[] = [];
     const selector = "button, a[href], [role=checkbox], [role=radio], [role=switch], [role=combobox]";
+    const root = scopeSelector ? document.querySelector(scopeSelector) : document;
+    if (!root) return found;
     const reaches = (element: Element, x: number, y: number) => {
       const hit = document.elementFromPoint(x, y);
       return Boolean(hit && (hit === element || element.contains(hit)));
     };
-    for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+    for (const element of root.querySelectorAll<HTMLElement>(selector)) {
       if (getComputedStyle(element).display === "inline") continue;
       const target = element.closest("label") ?? element;
       target.scrollIntoView({ block: "center", inline: "center" });
@@ -80,7 +82,7 @@ export async function findSmallTapTargets(page: Page): Promise<string[]> {
       }
     }
     return found;
-  });
+  }, scope ?? null);
 }
 
 /** Любой текст на странице не меньше 13 px. */

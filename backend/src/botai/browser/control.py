@@ -1666,7 +1666,7 @@ class BrowserControl:
             if target is not None:
                 return BotaiError(ErrorCode.NOT_FOUND, f"{action}: не дождались элемента ({where})")
             return BotaiError(
-                ErrorCode.SOURCE_UNAVAILABLE, f"{action}: не дождались ответа ({where})"
+                ErrorCode.BROWSER_TIMEOUT, f"{action}: не дождались ответа страницы ({where})"
             )
         message = str(exc).lower()
         if "closed" in message or "target page" in message or "crashed" in message:

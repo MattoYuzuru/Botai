@@ -1,10 +1,13 @@
 # Local development Postgres. One shared container for all worktrees (runtime owner: coordinator).
 # Tests create and drop their own database per run (botai_test_<random>), so parallel agents
 # do not collide. Never `down -v` this project to fix a test.
+# pgvector image on purpose (docs/v4/18-rag.md §3): extension `vector` must exist in dev, CI and
+# production, otherwise the RAG migration and the vector branch of hybrid search fail. Same PG 17
+# major as before, so the `pgdata` volume is reused without initdb.
 name: botai-dev
 services:
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: botai
       POSTGRES_PASSWORD: botai

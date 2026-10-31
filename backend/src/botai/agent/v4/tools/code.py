@@ -80,12 +80,18 @@ class CodeExecTool:
             "Выполнить код в песочнице задачи: python, javascript (Node.js) или bash. Сеть "
             "доступна (фаза 1: свободный harness). Рабочая директория — workspace задачи: "
             "относительные пути читают/пишут те же файлы, что fs_*; созданные файлы перечислены "
-            "в files. Возвращаются stdout/stderr/exit_code; лимиты времени и вывода ограничены."
+            "в files. Возвращаются stdout/stderr/exit_code; лимиты времени и вывода ограничены. "
+            "Обязательный аргумент — code (строка с исходным кодом), а не command."
         ),
         parameters=object_schema(
             {
                 "language": {"type": "string", "enum": ["python", "javascript", "bash"]},
-                "code": {"type": "string", "minLength": 1, "maxLength": 200000},
+                "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200000,
+                    "description": "Исходный код для исполнения (строка), не command.",
+                },
                 "files": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},

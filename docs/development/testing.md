@@ -16,7 +16,7 @@
 | **L0** — юнит | Чистая логика: схемы, нормализация, склейка, lint playbook, дизайн-токены (`pytest`, `vitest`) | Нет | Нет | Локально, CI | Все |
 | **L1** — интеграция на фикстурах | API + Postgres + worker + Chromium против `fakeuni` на loopback; LLM — `ScriptedLlm` | Только loopback | Нет (`LLM_PROVIDER=mock`) | Локально, CI | Все |
 | **L2** — живая модель | Агент действительно справляется: черновик/починка playbook, чтение SPA, ответ по данным, действия | API модели | `DEEPSEEK_API_KEY` / Claude | Локально | Владелец или агент по поручению |
-| **L3** — живой вуз | Настоящий вход, сессия, API, динамическая страница, действие, свой парсер, RAG-ответ | Вуз + модель | Да | Локально (`bench/live/`) и на production | Агент-оператор + владелец |
+| **L3** — живой вуз | Настоящий вход, сессия, API, динамическая страница, действие, свой парсер, RAG-ответ | Вуз + модель | Да | Локально (`bench/live/` — примитивы, `bench/v4/` — агент) и на production | Агент-оператор + владелец |
 | **L4** — сравнение | Те же задачи решает внешний harness (Codex/Claude Code/скрипт), результаты сравнимы | Да | Да | Локально | Владелец/агент |
 
 Правила:
@@ -48,7 +48,7 @@
 ## Команды
 
 ```bash
-make db            # Postgres для разработки (127.0.0.1:55432)
+make db            # Postgres для разработки (127.0.0.1:55432, образ pgvector/pgvector:pg17)
 make check         # ruff, ruff format, pyright strict, pytest; Biome, tsc, vitest; make gen
 make test-backend
 make test-web
@@ -56,13 +56,25 @@ make test-web
 # L2: живая модель (ключ из .env, не печатается)
 cd backend && BOTAI_LIVE_LLM=1 BOTAI_ENV_FILE=../.env uv run --frozen pytest -q -m live_llm
 
-# агентский бенчмарк L2
+# агентский бенчмарк L2 (v3-путь)
 make bench SCENARIO=B4 ARGS="--models flash --profiles low,high --repeats 3"
 
-# L3: живой вуз (креды из Keychain, артефакты вне репозитория)
+# v4-песочница кода: образ нужен для docker-gated тестов и контейнерного executor'а
+docker build -f ops/docker/sandbox.Dockerfile -t botai-sandbox:test .
+cd backend && BOTAI_SANDBOX_IMAGE=botai-sandbox:test \
+  uv run --frozen pytest tests/agent/v4/test_executor_container.py -q
+
+# v4-агент (тот же wiring, что у job AGENT): L2 на fakeuni ($0) и L3 на живом вузе
+backend/.venv/bin/python -m bench.v4.run_agent --scenario l2-fakeuni
+backend/.venv/bin/python -m bench.v4.run_agent --scenario live-hse   # BOTAI_LIVE_LLM=1, Keychain
+
+# L3: живой вуз (примитивы harness: креды из Keychain, артефакты вне репозитория)
 python -m bench.live.run --scenario login
 python -m bench.live.run --scenario cu-tasks
 python -m bench.live.run --scenario hse-schedule
+
+# миграции: upgrade/downgrade проверяются на одноразовой БД (тесты делают это сами)
+make migrate
 ```
 
 Точные сценарии, флаги и ожидаемые результаты — [04-benchmark.md](../v4/04-benchmark.md).
@@ -121,21 +133,31 @@ loopback) и модель (`ScriptedLlm`). Студента играет `Studen
 
 ## L3: живой бенчмарк
 
-- Запускается [`bench/live/`](../../bench/live/), дизайн — [04-benchmark.md](../v4/04-benchmark.md).
-- Креды — из secret broker; вход/сессия/чтение/действия логируются в
-  санитизированные артефакты; пароль не попадает никуда.
-- Сценарии: login, session extraction, API discovery, dynamic page («Actual
-  Student Tasks»), action/write, code parser, RAG answer, repair.
-- Метрики: успех, время, шаги, токены/стоимость, полнота данных, найденные
-  эндпоинты, барьеры (капча, 403, challenge), что помогло.
-- Результаты — `bench/results/live-<дата>.json` (санитизировано) и раздел в
-  [04-benchmark.md](../v4/04-benchmark.md); сырые — вне репозитория.
+- Примитивы: [`bench/live/`](../../bench/live/) — вход, сессия, API discovery, динамическая
+  страница, метрики, санитизированные артефакты; дизайн — [04-benchmark.md](../v4/04-benchmark.md).
+- Агент v4: [`bench/v4/`](../../bench/v4/) — строит настоящий `build_agent_wiring`, реальная
+  модель и Chromium, креды только через `secret_request`/Vault; L2 — `--scenario l2-fakeuni`
+  (mock-модель, $0), L3 — `--scenario live-hse` (Keychain-креды, живой вход/SSO/расписание).
+  В репозиторий едет санитизированная сводка, сырое — вне него.
+- Креды — из secret broker; первичные секреты не попадают в промпт/логи/артефакты; вывод
+  инструментов маскируется `SecretBroker.mask` (включая `code_exec`).
+- Сценарии: login, session extraction, API discovery, dynamic page («Actual Student Tasks»),
+  action/write, code parser, RAG answer, repair.
+- Метрики: успех, время, шаги, токены/стоимость, полнота данных, найденные эндпоинты,
+  барьеры (капча, 403, challenge), что помогло.
+- Результаты — `bench/results/live-<дата>.json` + `docs/v4/_evidence/<дата>/` (санитизировано)
+  и раздел в [04-benchmark.md](../v4/04-benchmark.md); сырые — вне репозитория.
 
 ## CI и приёмка релиза
 
 CI (GitHub Actions) выполняет L0/L1 и сборки; живых ключей и кредов не получает.
-Приёмка выпуска: зелёный CI на полном SHA → миграции на копии → deploy того же
-SHA → health/`revision` у всех сервисов → live smoke и L3-сценарий → отчёт в PR.
+В backend-job собирается образ `botai-sandbox:ci` и docker-gated тесты
+`ContainerExecutor` реально запускаются (не skip); Postgres в CI — `pgvector/pgvector:pg17`,
+миграции с `CREATE EXTENSION vector` проходят. Deploy-workflow собирает и app-, и
+sandbox-образ и тегирует их одним commit SHA; `remote-deploy.sh` тянет оба, сверяет
+`org.opencontainers.image.revision`, поднимает Postgres до миграций и убирает остатки
+sandbox-контейнеров. Приёмка выпуска: зелёный CI на полном SHA → миграции на копии →
+deploy того же SHA → health/`revision` у всех сервисов → live smoke и L3-сценарий → отчёт.
 
 ## Что требуется от PR
 

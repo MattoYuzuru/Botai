@@ -21,13 +21,13 @@ class RagSeed:
     sessions: SessionFactory
     users: list[str] = field(default_factory=list)
 
-    async def user(self, name: str = "Тест") -> str:
+    async def user(self, name: str = "Тест", *, email: str | None = None) -> str:
         user_id = new_id()
         async with self.sessions() as session:
             session.add(
                 User(
                     id=user_id,
-                    email=f"{user_id.lower()}@example.test",
+                    email=email or f"{user_id.lower()}@example.test",
                     display_name=name,
                     password_hash="x",
                 )
@@ -150,6 +150,7 @@ class RagSeed:
         document_id: str,
         model: str,
         vector: list[float],
+        vec: list[float] | None = None,
         source_id: str | None = None,
         artifact_id: str | None = None,
         captured_at: datetime | None = None,
@@ -157,23 +158,24 @@ class RagSeed:
         trust: str | None = None,
     ) -> str:
         embedding_id = new_id()
+        row = ChunkEmbedding(
+            id=embedding_id,
+            user_id=user_id,
+            chunk_id=chunk_id,
+            document_id=document_id,
+            source_id=source_id,
+            artifact_id=artifact_id,
+            model=model,
+            dimension=len(vector),
+            content_hash=hashlib.sha256(b"seed").hexdigest(),
+            embedding=vector,
+            kind=kind,
+            captured_at=captured_at,
+            trust=trust,
+        )
+        if vec is not None:  # the derived pgvector column; NULL means "JSONB only"
+            row.embedding_vec = vec
         async with self.sessions() as session:
-            session.add(
-                ChunkEmbedding(
-                    id=embedding_id,
-                    user_id=user_id,
-                    chunk_id=chunk_id,
-                    document_id=document_id,
-                    source_id=source_id,
-                    artifact_id=artifact_id,
-                    model=model,
-                    dimension=len(vector),
-                    content_hash=hashlib.sha256(b"seed").hexdigest(),
-                    embedding=vector,
-                    kind=kind,
-                    captured_at=captured_at,
-                    trust=trust,
-                )
-            )
+            session.add(row)
             await session.commit()
         return embedding_id

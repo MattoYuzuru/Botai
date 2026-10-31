@@ -21,6 +21,134 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/action-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Action Policies
+         * @description All explicit policy rows of the current user.
+         */
+        get: operations["list_action_policies_api_v1_action_policies_get"];
+        /**
+         * Upsert Action Policy
+         * @description Create or update one row. `global` has no `scope_id`; `site` accepts a host or URL.
+         */
+        put: operations["upsert_action_policy_api_v1_action_policies_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/action-policies/effective": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Effective Action Policies
+         * @description The resolved mode of every class for one scope (what would happen to a new action).
+         */
+        get: operations["effective_action_policies_api_v1_action_policies_effective_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/action-policies/{policy_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Action Policy
+         * @description Delete one row: the class falls back to the documented default for that scope.
+         */
+        delete: operations["delete_action_policy_api_v1_action_policies__policy_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Actions
+         * @description The action journal, newest first (redacted: no secret values were ever stored).
+         */
+        get: operations["list_actions_api_v1_actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/{action_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Action
+         * @description One journal row (proposal, decision, executed request summary, result).
+         */
+        get: operations["get_action_api_v1_actions__action_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/{action_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Action
+         * @description Approve or deny an `ask` action. The decision is journaled; execution belongs to the run.
+         *
+         *     The journal intentionally contains no request body/header values, so the API cannot send an
+         *     HTTP action itself: the run that proposed it executes the approved row, and a retry with the
+         *     same idempotency key picks up the decision. `409` when the row is not waiting for a decision.
+         */
+        post: operations["decide_action_api_v1_actions__action_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actions/{proposal_id}/approve": {
         parameters: {
             query?: never;
@@ -49,6 +177,66 @@ export interface paths {
         put?: never;
         /** Reject Action */
         post: operations["reject_action_api_v1_actions__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Run
+         * @description Enqueue one `AGENT` run; the response carries the ids needed to read its trace.
+         */
+        post: operations["create_run_api_v1_agent_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run
+         * @description The run row of this owner; another user's run is not found, never leaked.
+         */
+        get: operations["get_run_api_v1_agent_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run Events
+         * @description Trace steps after `afterSeq`, oldest first; a replayed sequence is never written twice.
+         */
+        get: operations["get_run_events_api_v1_agent_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1296,6 +1484,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActionOut */
+        ActionOut: {
+            /** Actionclass */
+            actionClass: string;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Decidedat */
+            decidedAt: string | null;
+            /** Decision */
+            decision: string;
+            /** Executedat */
+            executedAt: string | null;
+            /** Id */
+            id: number;
+            /** Idempotencykey */
+            idempotencyKey: string | null;
+            /** Intent */
+            intent: string;
+            /** Jobid */
+            jobId: string | null;
+            /** Mode */
+            mode: string;
+            /** Proposal */
+            proposal: {
+                [key: string]: unknown;
+            };
+            /** Request */
+            request: {
+                [key: string]: unknown;
+            } | null;
+            /** Result */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** Rollback */
+            rollback: {
+                [key: string]: unknown;
+            } | null;
+            /** Runid */
+            runId: string | null;
+            /** Scopeid */
+            scopeId: string | null;
+            /** Scopekind */
+            scopeKind: string;
+            /** Sourceid */
+            sourceId: string | null;
+        };
         /** ActiveTask */
         ActiveTask: {
             /** Connectionid */
@@ -1326,6 +1564,101 @@ export interface components {
              * @enum {string}
              */
             state: "queued" | "running" | "waiting_user";
+        };
+        /**
+         * AgentRunAccepted
+         * @description The queued run: the job to follow with the existing job SSE and the trace to read here.
+         */
+        AgentRunAccepted: {
+            /** Jobid */
+            jobId: string;
+            /** Runid */
+            runId: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+        };
+        /**
+         * AgentRunCreate
+         * @description A natural-language task; the thread/space/connection only give it a place and provenance.
+         */
+        AgentRunCreate: {
+            /** Connectionid */
+            connectionId?: string | null;
+            /** Spaceid */
+            spaceId?: string | null;
+            /** Task */
+            task: string;
+            /** Threadid */
+            threadId?: string | null;
+        };
+        /**
+         * AgentRunEventOut
+         * @description One trace step: model call, tool call/result, limit, pause, error or finish (D-014).
+         */
+        AgentRunEventOut: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Durationms */
+            durationMs: number;
+            /** Kind */
+            kind: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Seq */
+            seq: number;
+            /** Step */
+            step: number;
+        };
+        /**
+         * AgentRunEventsOut
+         * @description A page of the trace; `has_more` tells the caller to repeat with `after_seq=last seq`.
+         */
+        AgentRunEventsOut: {
+            /** Events */
+            events: components["schemas"]["AgentRunEventOut"][];
+            /** Hasmore */
+            hasMore: boolean;
+            /** Runid */
+            runId: string;
+        };
+        /**
+         * AgentRunOut
+         * @description The run's durable row (`agent_runs`), not a live in-memory state.
+         */
+        AgentRunOut: {
+            /** Costusd */
+            costUsd: number;
+            /** Eventcount */
+            eventCount: number;
+            /** Finishedat */
+            finishedAt: string | null;
+            /** Jobid */
+            jobId: string | null;
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+            /** Runid */
+            runId: string;
+            /** Startedat */
+            startedAt: string | null;
+            /** Status */
+            status: string;
+            /** Steps */
+            steps: number;
+            /** Task */
+            task: string;
+            /** Totaltokens */
+            totalTokens: number;
         };
         /**
          * AnswerIn
@@ -1570,6 +1903,17 @@ export interface components {
             /** Url */
             url: string | null;
         };
+        /**
+         * DecisionIn
+         * @description Resolve an `ask` action: `approve` unblocks execution by the proposing run, `deny` closes it.
+         */
+        DecisionIn: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "deny";
+        };
         /** DialogueReceipt */
         DialogueReceipt: {
             /**
@@ -1588,6 +1932,27 @@ export interface components {
              * @enum {string}
              */
             status: "accepted" | "applied" | "superseded" | "rejected";
+        };
+        /**
+         * DiscoveredEndpointOut
+         * @description A JSON API endpoint a browser plan observed (kept in the source state for the next sync).
+         */
+        DiscoveredEndpointOut: {
+            /** Contenttype */
+            contentType?: string | null;
+            /** Method */
+            method: string;
+            /** Name */
+            name: string;
+            /**
+             * Observed
+             * @default true
+             */
+            observed: boolean;
+            /** Status */
+            status?: number | null;
+            /** Url */
+            url: string;
         };
         /** DocumentFromUrl */
         DocumentFromUrl: {
@@ -1634,6 +1999,37 @@ export interface components {
             documentId: string | null;
             /** Jobid */
             jobId: string;
+        };
+        /**
+         * DomainCountsOut
+         * @description What a sync wrote into the product domain for one reading kind.
+         */
+        DomainCountsOut: {
+            /** Inserted */
+            inserted: number;
+            /** Skipped */
+            skipped: number;
+            /** Unchanged */
+            unchanged: number;
+            /** Updated */
+            updated: number;
+        };
+        /** EffectivePolicyOut */
+        EffectivePolicyOut: {
+            /** Actionclass */
+            actionClass: string;
+            /** Escalated */
+            escalated?: string | null;
+            /** Limits */
+            limits: {
+                [key: string]: number;
+            };
+            /** Mode */
+            mode: string;
+            /** Scopeid */
+            scopeId: string | null;
+            /** Scopekind */
+            scopeKind: string;
         };
         /** EventAttribute */
         EventAttribute: {
@@ -2001,6 +2397,59 @@ export interface components {
             version: number;
         };
         /**
+         * PolicyIn
+         * @description Upsert one policy row: (scope_kind, scope_id, action_class) is the identity.
+         */
+        PolicyIn: {
+            /**
+             * Actionclass
+             * @enum {string}
+             */
+            actionClass: "read" | "write_soft" | "write_destructive" | "money" | "auth";
+            /** Limits */
+            limits?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "auto" | "ask" | "never";
+            /** Note */
+            note?: string | null;
+            /** Scopeid */
+            scopeId?: string | null;
+            /**
+             * Scopekind
+             * @enum {string}
+             */
+            scopeKind: "global" | "site" | "space" | "source";
+        };
+        /** PolicyOut */
+        PolicyOut: {
+            /** Actionclass */
+            actionClass: string;
+            /** Id */
+            id: string;
+            /** Limits */
+            limits: {
+                [key: string]: unknown;
+            };
+            /** Mode */
+            mode: string;
+            /** Note */
+            note: string | null;
+            /** Scopeid */
+            scopeId: string | null;
+            /** Scopekind */
+            scopeKind: string;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+        };
+        /**
          * PoolUsageOut
          * @description Owner's view of the shared key: who spends what.
          */
@@ -2210,6 +2659,12 @@ export interface components {
             cursor: {
                 [key: string]: unknown;
             } | null;
+            /** Discoveredendpoints */
+            discoveredEndpoints: components["schemas"]["DiscoveredEndpointOut"][];
+            /** Domain */
+            domain: {
+                [key: string]: components["schemas"]["DomainCountsOut"];
+            };
             /** Errors */
             errors: components["schemas"]["RunErrorOut"][];
             /**
@@ -2680,6 +3135,221 @@ export interface operations {
             };
         };
     };
+    list_action_policies_api_v1_action_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyOut"][];
+                };
+            };
+        };
+    };
+    upsert_action_policy_api_v1_action_policies_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    effective_action_policies_api_v1_action_policies_effective_get: {
+        parameters: {
+            query?: {
+                url?: string | null;
+                source_id?: string | null;
+                space_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EffectivePolicyOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_action_policy_api_v1_action_policies__policy_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_actions_api_v1_actions_get: {
+        parameters: {
+            query?: {
+                source_id?: string | null;
+                action_class?: string | null;
+                decision?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_action_api_v1_actions__action_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_action_api_v1_actions__action_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_action_api_v1_actions__proposal_id__approve_post: {
         parameters: {
             query?: never;
@@ -2732,6 +3402,104 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_run_api_v1_agent_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRunCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_api_v1_agent_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_events_api_v1_agent_runs__run_id__events_get: {
+        parameters: {
+            query?: {
+                afterSeq?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunEventsOut"];
+                };
             };
             /** @description Validation Error */
             422: {

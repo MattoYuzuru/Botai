@@ -263,8 +263,8 @@ export function AttachmentsSection() {
                     title: "Положение о сессии",
                     url: "botai://documents/doc-2",
                     internal: {
-                      href: "/study/documents",
-                      label: "Открыть документ в «Учёбе»",
+                      href: "/study",
+                      label: "Открыть документы в «Учёбе»",
                       icon: "document",
                     },
                   },

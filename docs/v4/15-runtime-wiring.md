@@ -1,16 +1,17 @@
-# Runtime wiring: экспериментальный путь v4 за флагом (фаза 1, task-16)
+# Runtime wiring: v4 как продуктовый движок (фаза 1, task-16 → интеграция 31.10)
 
-Статус: **сделано (фаза 1, экспериментальный путь), 2026-10-31.** Связывает готовые части
-фазы 1: runtime (task-12), полный браузер (task-13), executor (task-14) — в один job-путь,
-который включается `BOTAI_AGENT_ENGINE=v4` и не трогает v3. Основание:
-[02-architecture.md](02-architecture.md) §3–§4, [05-implementation-plan.md](05-implementation-plan.md)
-фаза 1, [D-001](06-decisions.md), [D-003](06-decisions.md), [D-008](06-decisions.md),
-[D-009](06-decisions.md), [D-014](06-decisions.md).
+Статус: **сделано 2026-10-31.** Связывает runtime, полный браузер, контейнерный executor,
+источники/RAG/действия и job-путь в продукт, который включается `BOTAI_AGENT_ENGINE=v4` и не
+трогает v3. Основание: [02-architecture.md](02-architecture.md) §3–§4,
+[05-implementation-plan.md](05-implementation-plan.md) фаза 1, [D-001](06-decisions.md),
+[D-003](06-decisions.md), [D-008](06-decisions.md), [D-009](06-decisions.md),
+[D-014](06-decisions.md).
 
 Компоненты: `backend/src/botai/agent/v4/factory.py` (сборка), `handlers.py` (job `AGENT`),
-`tools/browser.py`, `tools/code.py`, `tools/secrets.py`, `trace_store.py`; таблицы
-`agent_runs`/`agent_run_events` и миграция; тесты `tests/agent/v4/`, `tests/jobs/test_agent_v4.py`,
-`tests/db/test_agent_traces_migration.py`.
+`dispatch.py` (CONNECT/SYNC/REPAIR), `job_runtime.py` (фазы), `api.py` (HTTP запусков/трасс),
+`tools/{browser,code,secrets,sources,rag,actions}.py`, `trace_store.py`; таблицы
+`agent_runs`/`agent_run_events`; тесты `tests/agent/v4/`, `tests/jobs/test_agent_{v4,dispatch_v4}.py`,
+`tests/jobs/test_v4_dispatch_table.py`, `tests/api/test_agent_runs.py`, `tests/db/`.
 
 ## 1. Что собрано
 
@@ -21,7 +22,7 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
 |---|---|---|
 | `runtime` | `AgentRuntime` (task-12) | цикл «провайдер → tools → ответ», трассы и лимиты |
 | `provider` | `providers.factory.build_provider(settings)` или инъекция | `mock` в тестах, DeepSeek/Anthropic/OpenAI по настройкам |
-| `executor` | `build_executor(settings, workspace)` | `LocalExecutor` только вне `ENV=prod` (§3) |
+| `executor` | `build_executor(settings, workspace)` | в production — контейнерная песочница, вне prod — `LocalExecutor` (§3) |
 | `workspace` | `workspace_for(root, run_id)` | каталог задачи (`<root>/<run_id>`), файлы общие для `code_exec`/`fs_*` |
 | `control` | `launch_browser_control(services, workspace, mask)` | Chromium на run; `upload_root=workspace`, `redact_body=broker.mask` |
 | `broker` | `SecretBroker(vault, user_id, scope_id)` | handle'ы первичных секретов и маскирование (§4) |
@@ -36,7 +37,9 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
   `browser_screenshot`, `browser_cookies`, `browser_storage`, `browser_network`,
   `browser_tabs`, `browser_download`, `browser_upload`, `browser_session`;
 - код: `code_exec` (python/javascript/bash через executor; `javascript` → `js` на стыке);
-- секреты: `secret_request`, `secret_use`.
+- секреты: `secret_request`, `secret_use`;
+- при `agent_engine=v4` дополнительно источники (`source_*`), RAG (`rag_*` при
+  `BOTAI_RAG_ENABLED`, иначе честно отсутствуют) и действия (`action_propose/execute/history`).
 
 `with_browser=False` собирает run без Chromium (дев-тесты, дешёвые задачи): браузерных
 инструментов в наборе нет, остальное работает.
@@ -67,31 +70,31 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
 workspace; `_browser` — запускать ли Chromium (по умолчанию да). Лимиты из payload не
 принимаются: они берутся из настроек.
 
-**Программный вход** (пока без HTTP-роута, чтобы не менять OpenAPI/клиенты в этой итерации):
+**HTTP API запусков и трасс** (`agent/v4/api.py`; при `agent_engine=v3` — 404 с честным
+сообщением): `POST /api/v1/agent/runs` (`AgentRunCreate {task, threadId?, spaceId?,
+connectionId?}` → 202 `AgentRunAccepted {jobId, runId, status}`, `run_id` известен до старта),
+`GET /api/v1/agent/runs/{run_id}` (`AgentRunOut`: провайдер, модель, шаги, токены, стоимость,
+событий) и `GET /api/v1/agent/runs/{run_id}/events?afterSeq&limit` (`AgentRunEventsOut`,
+`hasMore`). Чужой run → 404. Программный вход `enqueue_agent_run(...)` остаётся для фоновых
+сценариев.
 
-```python
-from botai.agent.v4.factory import enqueue_agent_run
-
-job_id = await enqueue_agent_run(
-    services, user_id=owner_id, task="Открой кабинет ВШЭ, найди расписание и сохрани его"
-)
-```
-
-`enqueue_agent_run` кладёт job `AGENT` в обычную очередь (`PgJobQueue`, dedupe=False), так что
-статус, события и SSE-карточка задачи работают существующими средствами. HTTP-эндпоинт
-`POST /api/v1/agent/runs` (и UI-кнопка) — отдельная задача, когда эксперимент перестанет быть
-экспериментом; контракты не менялись.
+**Job-путь продукта при `agent_engine=v4`** (`dispatch.py`, `worker.handler_table(settings)`):
+`CONNECT` идёт v4-агентом с браузером/секретами/`source_*` (pre-created source в space, фазы
+login→research→sync пишутся в статус job/SSE по фактически вызванным инструментам, `TextBlock`
+с карточками источников, follow-up детерминированный `SYNC` — только после терминального
+CONNECT); `SYNC` — детерминированный replay runner'а без модели (dedupe/retry сохраняются);
+`REPAIR` — сначала детерминированно, при дрейфе — v4-агент, затем sync. Старые соединения без
+v4-source и «календарь по ссылке» остаются на v3-мосте (явно помечено). `CHAT` пока остаётся
+v3: v4-чату нужна совместимость истории/вложений/asking-блоков/SSE — записано в §8.
 
 ## 3. Флаг и запрет local-исполнителя в prod
 
 - `BOTAI_AGENT_ENGINE=v3` (по умолчанию) — всё как раньше; job `AGENT`, если его всё же
   поставить, честно падает.
-- `BOTAI_AGENT_ENGINE=v4` — экспериментальный путь доступен. `build_executor` —
-  единственная точка выбора исполнителя: при `ENV=prod` он бросает `AgentWiringError`
-  («LocalExecutor запрещён в ENV=prod…»), и handler превращает это в ошибку job'а.
-  Причина: local-код не изолирован от ФС/процессов worker'а, где лежат `DATABASE_URL`,
-  `BOTAI_KEK`, ключи провайдеров и Vault (см. [13-executor.md](13-executor.md) §2).
-  Production-v4 пойдёт через `ContainerExecutor` (пока заглушка); пока prod-v4 не включён.
+- `BOTAI_AGENT_ENGINE=v4` — продуктовый путь доступен. `build_executor` — единственная точка
+  выбора исполнителя: при `ENV=prod` это `ContainerExecutor` (Docker-песочница, см.
+  [13-executor.md](13-executor.md) §5), а `BOTAI_AGENT_EXECUTOR=local` в prod — громкая ошибка
+  конфигурации (`AgentWiringError`), без тихого запуска кода рядом с секретами worker'а.
 - Мягкие лимиты `agent_limits_*` (steps/seconds/tokens/usd, hard stop, auto_continue)
   маппятся в `RunLimits` функцией `run_limits_from_settings` — без стен, `None` = без предела
   ([10-limits-and-research.md](10-limits-and-research.md), D-009).
@@ -110,11 +113,15 @@ job_id = await enqueue_agent_run(
 - Значения handle'ов живут в памяти `SecretBroker` этого run'а: после рестарта/resume run
   спросит секрет заново (Vault-запись при этом уже есть; персистентный реестр handle'ов —
   следующая итерация фазы 1.4).
-- Маскирование: `broker.mask` передаётся в `browser_*` инструменты (текст страницы, JS-результаты,
-  тела сети/HAR) и в `ControlConfig.redact_body` (тела до записи в лог/HAR). Дополнительно
-  пассивные `browser_network`/HAR скрывают credential-заголовки (`authorization`, `cookie`,
-  `set-cookie`, `x-api-key`, …) — значения cookie при этом доступны через явный
-  `browser_cookies`/`browser_session` (D-008: сессия — рабочий материал).
+- Маскирование: `broker.mask` передаётся в `browser_*` инструменты (текст страницы,
+  JS-результаты, тела сети/HAR) и в `ControlConfig.redact_body` (тела до записи в лог/HAR).
+  **С 31.10 runtime применяет маскер ко всем `ToolResult`** (stdout/stderr `code_exec`,
+  `fs_*`, `http_request`, `trace_read`, `source_*`), к аргументам tool_call'ов в трассе и к
+  чекпоинту resume — поэтому парсер, напечатавший первичный секрет, не отдаёт его модели,
+  трассе и продолжению. Дополнительно пассивные `browser_network`/HAR скрывают
+  credential-заголовки (`authorization`, `cookie`, `set-cookie`, `x-api-key`, …) — значения
+  cookie при этом доступны через явный `browser_cookies`/`browser_session` (D-008: сессия —
+  рабочий материал).
 
 ## 5. Трассы в БД
 
@@ -166,29 +173,32 @@ uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run 
 | браузерные инструменты, файлы в workspace, маскирование сети/HAR, сессия | `tests/agent/v4/test_agent_browser_tools.py` |
 | полный run: кабинет → расписание → файл → ответ, трасса; soft step limit | `tests/agent/v4/test_agent_run_e2e.py` |
 | `AGENT` job через worker, `agent_runs`/`agent_run_events`, отказ при v3 | `tests/jobs/test_agent_v4.py` |
+| HTTP API запусков/трасс, владение, 404 на v3, пагинация событий | `tests/api/test_agent_runs.py` |
+| CONNECT/SYNC/REPAIR через v4 на fakeuni через настоящие Worker/Postgres | `tests/jobs/test_agent_dispatch_v4.py` |
+| таблица handler'ов: v3 не меняется, v4 заменяет ровно CONNECT/SYNC/REPAIR | `tests/jobs/test_v4_dispatch_table.py` |
+| маскирование выводов инструментов и чекпоинта | `tests/agent/v4/test_runtime_masking.py` |
 | миграция upgrade/downgrade/upgrade | `tests/db/test_agent_traces_migration.py` |
 
-Живой L2/L3 через этот путь пока не прогонялся (нужны ключ модели и вуз): эксперимент
-доказан на mock-провайдере + настоящем Chromium/executor, как требует план фазы 1; живой
-benchmark — следующая приёмка.
+Живой L3 через этот путь прогонялся независимо (lane E): вход в ВШЭ по кредам из Keychain,
+SSO, обнаружение `GET /api/get-myschedule`, 543 записи в файлы и ответ — функциональный успех;
+сертификация — после маскирования выводов и финального прогона. Свидетельства и честные
+барьеры — [_evidence/2026-10-31-v4-agent/](_evidence/2026-10-31-v4-agent/README.md).
 
 ## 8. Ограничения и что дальше
 
-- **Нет HTTP-эндпоинта и UI** для постановки runs: вход программный
-  (`enqueue_agent_run`), чтобы не менять OpenAPI и клиентов внутри фазы 1.
-- **Нет сохранения `result.messages`** в БД для resume после рестарта: runtime возвращает
-  чекпоинт, трасса в БД есть, но job-путь его не переиспользует; resume после паузы/лимита —
-  следующая итерация (нужен `run_state` в `jobs.payload` или отдельной таблице).
-- **`ask_user` блокирует job** (worker ждёт ответа через существующий `JobContext.ask`);
-  парковка в `waiting_user` без удержания слота — отдельная задача (§4.5 архитектуры).
-- **Секреты**: реестр handle'ов в памяти run'а; `env`/`code`-подстановка секретов в executor
-  не сделана (только HTTP и браузерное поле) — фаза 1.4.
+- **Чат остаётся v3.** v4-чату нужна совместимость истории треда, вложений, asking/approval
+  блоков и SSE-проекции — отдельная задача; v3-чат не сломан и продолжает работать.
+- **Нет resume после рестарта:** runtime возвращает чекпоинт (уже замаскированный), но job-путь
+  не переставляет paused/limit run автоматически; `run_state` в `jobs.payload` — следующий шаг.
+- **`ask_user` держит слот worker'а** (парковка `waiting_user` без удержания — отдельная задача).
+- **Секреты в `code_exec` env не подставляются** (только HTTP/поле формы через `secret_use`);
+  вывод кода маскируется, но сами значения в env/файлы не передаются — осознанно.
 - **Стриминга нет**: ответ модели приходит целиком; SSE шага — в трассе.
-- **Prod**: local-executor запрещён, container-executor — заглушка; `ENV=prod` +
-  `agent_engine=v4` честно падает до реализации контейнера.
-- **Ретенция** `agent_runs`/`agent_run_events` и API чтения трасс владельцем — вместе с UI.
-- v3-путь не менялся: флаг по умолчанию `v3`, старые job kinds/обработчики и тесты работают
-  как раньше.
+- **Ретенции трасс нет**: `agent_runs`/`agent_run_events` растут медленно (десятки строк на run),
+  TTL — вместе с UI чтения трасс.
+- **v3-мосты**: старые соединения без v4-source и CONNECT календаря по ссылке идут v3-путём
+  (помечено в коде); после приёмки v4 их нужно перевести/удалить.
+- v3-путь не менялся при `agent_engine=v3`: старые job kinds/обработчики и тесты работают.
 
 ## 9. Ссылки
 

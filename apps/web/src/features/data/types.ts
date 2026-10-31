@@ -4,7 +4,6 @@ export type { Course, Grade, NewsItem, Person } from "@/api/v3-data";
 
 type Schemas = components["schemas"];
 
-export type DocumentRow = Schemas["DocumentOut"];
 export type DocumentStarted = Schemas["DocumentStarted"];
 export type SectionKind = Schemas["SectionOut"]["kind"];
 export type EventKind = Schemas["ScheduleEventOut"]["kind"];

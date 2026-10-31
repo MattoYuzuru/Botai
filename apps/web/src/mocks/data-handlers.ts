@@ -84,7 +84,7 @@ interface MockJob {
   document?: S["DocumentOut"];
 }
 
-/** Применяет вариант данных к подключениям: так проверяются состояния `repairing`, `reauth` и `error`. */
+/** Применяет вариант данных к подключениям и источникам: так проверяются состояния `repairing`, `waiting` и `error`. */
 function applyVariant(db: MockDb, variant: DataVariant | null) {
   if (!variant || variant === "quiet") return;
   const target = db.connections.find((c) => c.kind === "portal") ?? db.connections[0];
@@ -95,6 +95,18 @@ function applyVariant(db: MockDb, variant: DataVariant | null) {
     target.status = "error";
     target.errorCode = "source_unavailable";
     target.errorDetail = "Сайт вуза не отвечает уже вторые сутки.";
+  }
+  // «Учёба» v4 читает источники: те же состояния, тем же смыслом, чтобы экран и старые данные не расходились.
+  const source =
+    db.sources.find((row) => row.spaceId === target.spaceId && row.kinds.includes("portal")) ??
+    db.sources.find((row) => row.spaceId === target.spaceId);
+  if (!source) return;
+  source.updatedAt = new Date(db.now()).toISOString();
+  if (variant === "repairing") source.status = "probing";
+  if (variant === "waiting") source.status = "waiting_user";
+  if (variant === "error") {
+    source.status = "error";
+    source.lastError = { code: "source_unavailable", detail: "Сайт вуза не отвечает уже вторые сутки." };
   }
 }
 

@@ -12,7 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from botai.actions.api import router as actions_router
 from botai.agent.router import router as agent_router
+from botai.agent.v4.api import router as agent_v4_router
 from botai.attachments.limits import UploadSizeLimit
 from botai.attachments.router import router as attachments_router
 from botai.auth.router import router as auth_router
@@ -112,6 +114,8 @@ def create_app() -> FastAPI:
         attachments_router,
         speech_router,
         agent_router,
+        agent_v4_router,
+        actions_router,
     ):
         app.include_router(r)
 

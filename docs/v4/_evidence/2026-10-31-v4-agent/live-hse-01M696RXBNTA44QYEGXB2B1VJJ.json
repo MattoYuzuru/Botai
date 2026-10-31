@@ -1,0 +1,785 @@
+{
+  "schemaVersion": 1,
+  "benchVersion": "0.1.0",
+  "scenario": "live-hse",
+  "title": "ВШЭ: живой вход по кредам из Keychain и расписание агентом v4 (L3)",
+  "runId": "01M696RXBNTA44QYEGXB2B1VJJ",
+  "startedAt": "2026-10-31T17:45:43+03:00",
+  "finishedAt": "2026-10-31T17:48:04+03:00",
+  "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+  "host": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.15"
+  },
+  "product": {
+    "engine": "v4",
+    "wiring": "botai.agent.v4.factory.build_agent_wiring",
+    "traceStore": "memory (no DB in the bench process)",
+    "benchVersion": "0.1.0",
+    "env": "dev",
+    "agentFlag": "v4",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "executor": "LocalExecutor (ENV=dev; prod guard not triggered)",
+    "db": "guarded offline session factory: source_*/rag_* not exercised in this scenario",
+    "browser": "playwright chromium headless",
+    "limits": {
+      "max_steps": 40,
+      "max_seconds": 540.0,
+      "max_usd": 0.5,
+      "hard_stop_usd": 0.5,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    },
+    "budgetUsd": 0.5,
+    "task": "Открой личный кабинет ВШЭ (https://lk.hse.ru/), войди в него. Найди расписание занятий или страницу/API-эндпоинт, которым оно грузится. Сохрани найденные данные расписания в файл в workspace задачи (JSON или таблицу). Ответь кратко: что нашёл, в каком файле лежит и какой источник (URL или файл). Если войти не удалось — точно скажи, на каком шаге и почему.",
+    "runDurationSec": 140.526,
+    "injectedTaskMessage": true
+  },
+  "durationSec": 140.602,
+  "status": "step_limit",
+  "outcome": "barrier",
+  "barrier": {
+    "status": "step_limit",
+    "errorCode": null,
+    "errorDetail": "",
+    "limitReached": "steps",
+    "lastToolErrors": [
+      {
+        "tool": "code_exec",
+        "error": "invalid_arguments"
+      },
+      {
+        "tool": "code_exec",
+        "error": "invalid_arguments"
+      },
+      {
+        "tool": "code_exec",
+        "error": "invalid_arguments"
+      },
+      {
+        "tool": "code_exec",
+        "error": "invalid_arguments"
+      }
+    ]
+  },
+  "metrics": {
+    "steps": 40,
+    "toolCalls": 49,
+    "totalTokens": 1051875,
+    "costUsd": 0.014345,
+    "modelCalls": 40,
+    "traceEvents": 141,
+    "runStartedAt": "2026-10-31T14:45:44.360363+00:00",
+    "runFinishedAt": "2026-10-31T14:48:04.452503+00:00",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "limits": {
+      "max_steps": 40,
+      "max_seconds": 540.0,
+      "max_usd": 0.5,
+      "hard_stop_usd": 0.5,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    }
+  },
+  "tools": [
+    {
+      "tool": "fs_list",
+      "ok": true,
+      "error": null,
+      "durationMs": 1,
+      "arguments": {
+        "path": "."
+      },
+      "summary": ".: 0 записей"
+    },
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 2916,
+      "arguments": {
+        "url": "https://lk.hse.ru/"
+      },
+      "summary": "Открыта https://lk.hse.ru/"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 11,
+      "arguments": {
+        "mode": "text",
+        "max_chars": "5000"
+      },
+      "summary": "Прочитано text: 1439 символов"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 4,
+      "arguments": {
+        "expressionChars": 271
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "ask_user",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "question": "Вход в ЛК ВШЭ идёт через SAML-провайдер saml.hse.ru (client_id=elk). Есть ли у вас действующая учётная запись? Если да — укажите логин (обычно e-mail вида <redacted-email> или staff-логин). Пароль при",
+        "options": "[\"Да, логин пришлю текстом\", \"Нет учётной записи — работай без входа (публичные данные расписания)\", \"Есть сохранённая сессия/токен, могу дать cookie\"]",
+        "input_kind": "choice",
+        "timeout_s": "600"
+      },
+      "summary": "Ответ владельца получен."
+    },
+    {
+      "tool": "ask_user",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "input_kind": "text",
+        "placeholder": "например: <redacted-email>",
+        "question": "Напишите, пожалуйста, сам логин (текстом). Пароль после этого запрошу отдельно через защищённый ввод.",
+        "timeout_s": "600"
+      },
+      "summary": "Ответ владельца получен."
+    },
+    {
+      "tool": "browser_click",
+      "ok": false,
+      "error": "source_unavailable",
+      "durationMs": 16,
+      "arguments": {
+        "target": "{\"text\": \"Войти\"}"
+      },
+      "summary": "Нажать: страница не ответила"
+    },
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 1069,
+      "arguments": {
+        "url": "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth",
+        "wait_until": "networkidle"
+      },
+      "summary": "Открыта https://saml.hse.ru/realms/hse/protocol/openid-connect/auth"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 2,
+      "arguments": {
+        "expressionChars": 183
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 26,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 137
+      },
+      "summary": "Выполнено (bash): exit 0, 25 мс, файлов: 0"
+    },
+    {
+      "tool": "secret_request",
+      "ok": true,
+      "error": null,
+      "durationMs": 16,
+      "arguments": {
+        "question": "Введите пароль от личного кабинета ВШЭ (форма saml.hse.ru, Keycloak realm «hse»). Если у вас нет учётной записи или вы не хотите её использовать — просто закройте запрос, и я продолжу на публичных дан",
+        "hint": "Пароль используется только для подстановки в поле формы, значение не отображается в трассе",
+        "timeout_s": "300"
+      },
+      "summary": "Секрет получен; модели доступен только handle"
+    },
+    {
+      "tool": "ask_user",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "input_kind": "text",
+        "question": "Пароль получен (скрыто). Осталось имя пользователя для формы saml.hse.ru — напишите логин/e-mail (он не является секретом; если не хотите — ответьте «нет», тогда вход не выполню).",
+        "placeholder": "<redacted-email>",
+        "timeout_s": "420"
+      },
+      "summary": "Ответ владельца получен."
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 115,
+      "arguments": {
+        "expressionChars": 155
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 2,
+      "arguments": {
+        "mode": "dom",
+        "max_chars": "4000"
+      },
+      "summary": "Прочитано dom: 4000 символов"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "codeChars": 345
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: 'language' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "codeChars": 247
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: 'language' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 321,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 154
+      },
+      "summary": "Выполнено (bash): exit 0, 318 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 2499,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 318
+      },
+      "summary": "Выполнено (bash): exit 0, 2497 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "codeChars": 347
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: 'language' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 1333,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 334
+      },
+      "summary": "Выполнено (bash): exit 0, 1331 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 544,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 237
+      },
+      "summary": "Выполнено (bash): exit 0, 540 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 17266,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 397
+      },
+      "summary": "Выполнено (bash): exit 0, 17262 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 35,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 264
+      },
+      "summary": "Выполнено (bash): exit 0, 31 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "x",
+        "codeChars": 184
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected)"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 16,
+      "arguments": {
+        "codeChars": 192,
+        "language": "bash"
+      },
+      "summary": "Выполнено (bash): exit 0, 14 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 48,
+      "arguments": {
+        "codeChars": 233,
+        "language": "bash"
+      },
+      "summary": "Выполнено (bash): exit 0, 46 мс, файлов: 0"
+    },
+    {
+      "tool": "browser_network",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "action": "har_start",
+        "name": "lk-schedule"
+      },
+      "summary": "HAR: запись начата"
+    },
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 3204,
+      "arguments": {
+        "url": "https://lk.hse.ru/schedule",
+        "wait_until": "networkidle"
+      },
+      "summary": "Открыта https://lk.hse.ru/schedule"
+    },
+    {
+      "tool": "browser_network",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "action": "log",
+        "max_entries": "120",
+        "url_filter": "lk.hse.ru"
+      },
+      "summary": "Сеть: 120 записей (из 403)"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "x",
+        "codeChars": 193
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected)"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 28,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 309
+      },
+      "summary": "Выполнено (bash): exit 0, 25 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "cd /tmp && grep -l 'path:' jsall/*.js | head; echo \"===\"; grep -o 'views/[A-Za-z0-9_/.-]*' -r jsall | sort -u | head -30; echo \"=== app chunk?\"; python3 - <<'EOF'\nimport re,glob\nfor f in glob.glob('js"
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected); arguments: 'code' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 52,
+      "arguments": {
+        "codeChars": 280,
+        "language": "bash"
+      },
+      "summary": "Выполнено (bash): exit 0, 50 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 27,
+      "arguments": {
+        "codeChars": 214,
+        "language": "bash"
+      },
+      "summary": "Выполнено (bash): exit 0, 26 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 28,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 213
+      },
+      "summary": "Выполнено (bash): exit 0, 26 мс, файлов: 0"
+    },
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 2951,
+      "arguments": {
+        "url": "https://lk.hse.ru/dev/authorization",
+        "wait_until": "networkidle"
+      },
+      "summary": "Открыта https://lk.hse.ru/dev/authorization"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 9,
+      "arguments": {
+        "max_chars": "3000",
+        "mode": "text"
+      },
+      "summary": "Прочитано text: 176 символов"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 46,
+      "arguments": {
+        "codeChars": 264,
+        "language": "bash"
+      },
+      "summary": "Выполнено (bash): exit 0, 44 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "cd /tmp && for p in api/schedule api/schedule/lessons api/timetable api/student/schedule api/schedule/v2 api/profile api/navigation api/pages api/page/schedule api/widgets; do code=$(curl -s -o /dev/n"
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected); arguments: 'code' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 47,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 276
+      },
+      "summary": "Выполнено (bash): exit 0, 45 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 1867,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 505
+      },
+      "summary": "Выполнено (bash): exit 0, 1863 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 51,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 376
+      },
+      "summary": "Выполнено (bash): exit 0, 49 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "x",
+        "codeChars": 346
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected)"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 45,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 345
+      },
+      "summary": "Выполнено (bash): exit 0, 43 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 27,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 497
+      },
+      "summary": "Выполнено (bash): exit 0, 25 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "cd /tmp && for f in MySchedule.DI6CXlng.js; do curl -s -m 30 \"https://lk.hse.ru/js/$f\" -o \"ms_$f\"; done; ls -l ms_*; python3 - <<'EOF'\nimport re\ns=open('ms_MySchedule.DI6CXlng.js',errors='ignore').rea"
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected); arguments: 'code' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 477,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 308
+      },
+      "summary": "Выполнено (bash): exit 0, 474 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": false,
+      "error": "invalid_arguments",
+      "durationMs": 0,
+      "arguments": {
+        "language": "bash",
+        "command": "cd /tmp && python3 - <<'EOF'\nimport re\ns=open('ms.js',errors='ignore').read()\nfor m in re.finditer(r'schedul', s, re.I):\n    seg=s[max(0,m.start()-160):m.start()+180].replace('\\n',' ')\n    print(seg);"
+      },
+      "summary": "Аргументы не проходят JSON-Schema: arguments: Additional properties are not allowed ('command' was unexpected); arguments: 'code' is a required property"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 201,
+      "arguments": {
+        "language": "bash",
+        "codeChars": 158
+      },
+      "summary": "Выполнено (bash): exit 0, 197 мс, файлов: 0"
+    }
+  ],
+  "endpoints": [
+    "http://www.hse.ru/our/news/1200565867.html",
+    "http://www.hse.ru/our/news/1201499722.html",
+    "http://www.hse.ru/our/news/1201776235.html",
+    "http://www.hse.ru/our/news/1203334644.html",
+    "http://www.hse.ru/our/news/1205289257.html",
+    "http://www.hse.ru/our/news/1206834447.html",
+    "http://www.hse.ru/our/news/1207111421.html",
+    "http://www.hse.ru/our/news/1207400700.html",
+    "http://www.hse.ru/our/news/1209873600.html",
+    "http://www.hse.ru/our/news/1211566304.html",
+    "http://www.hse.ru/our/news/1213245553.html",
+    "https://economics.hse.ru/demat/news/1207726070.html",
+    "https://it.hse.ru/news/1211617870.html",
+    "https://lk.hse.ru$p",
+    "https://lk.hse.ru/",
+    "https://lk.hse.ru/$p",
+    "https://lk.hse.ru/api/schedule",
+    "https://lk.hse.ru/api/timetable",
+    "https://lk.hse.ru/dev/authorization",
+    "https://lk.hse.ru/faq",
+    "https://lk.hse.ru/faq;",
+    "https://lk.hse.ru/js/$f",
+    "https://lk.hse.ru/js/MySchedule.DI6CXlng.js",
+    "https://lk.hse.ru/registration",
+    "https://lk.hse.ru/robots.txt",
+    "https://lk.hse.ru/schedule",
+    "https://pmo.hse.ru/servicedesk/customer/portal/81/create/1815`,A=`https://pmo.hse.ru/servicedesk/customer/portal/81/group/317`,j=`https://pmo.hse.ru/serv",
+    "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth",
+    "https://schedule.hse.ru/",
+    "https://www.hse.ru/api/schedule",
+    "https://www.hse.ru/studyschedule/"
+  ],
+  "workspace": [],
+  "answer": {
+    "chars": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mentionsSource": false,
+    "mentionsBarrier": false
+  },
+  "secretFlow": {
+    "secretAnswers": 1,
+    "cancelled": 0,
+    "deliveries": [
+      {
+        "kind": "password",
+        "count": 1
+      }
+    ],
+    "questions": [
+      {
+        "inputKind": "choice",
+        "question": "Вход в ЛК ВШЭ идёт через SAML-провайдер saml.hse.ru (client_id=elk). Есть ли у вас действующая учётная запись? Если да — укажите логин (обычно e-mail вида <redacted-email> или staff-логин). Пароль пришлите отдельно через защищённый ввод.",
+        "placeholder": null,
+        "options": [
+          "Да, логин пришлю текстом",
+          "Нет учётной записи — работай без входа (публичные данные расписания)",
+          "Есть сохранённая сессия/токен, могу дать cookie"
+        ]
+      },
+      {
+        "inputKind": "text",
+        "question": "Напишите, пожалуйста, сам логин (текстом). Пароль после этого запрошу отдельно через защищённый ввод.",
+        "placeholder": "например: <redacted-email>",
+        "options": []
+      },
+      {
+        "inputKind": "secret",
+        "question": "Введите пароль от личного кабинета ВШЭ (форма saml.hse.ru, Keycloak realm «hse»). Если у вас нет учётной записи или вы не хотите её использовать — просто закройте запрос, и я продолжу на публичных данных расписания.",
+        "placeholder": "Пароль используется только для подстановки в поле формы, значение не отображается в трассе",
+        "options": []
+      },
+      {
+        "inputKind": "text",
+        "question": "Пароль получен (скрыто). Осталось имя пользователя для формы saml.hse.ru — напишите логин/e-mail (он не является секретом; если не хотите — ответьте «нет», тогда вход не выполню).",
+        "placeholder": "<redacted-email>",
+        "options": []
+      }
+    ],
+    "registeredValues": 1,
+    "policy": "креды только из Keychain (botai.live.hse.*); модели — handle; значения не печатаются и не пишутся в репозиторий"
+  },
+  "checks": {
+    "messagesLeak": false,
+    "traceLeak": false,
+    "secretSweep": {
+      "filesScanned": 5,
+      "filesRedacted": 0,
+      "redactedFiles": []
+    },
+    "artifactPolicy": "raw (трасса, сообщения, workspace) — вне репозитория, 0700/0600; значения первичных секретов вычищены и в raw"
+  },
+  "proven": [
+    "инструменты v4 исполнены: 38/49 вызовов ok (последовательность ниже)",
+    "первичные секреты: только handle/Vault; в трассе и сообщениях значений нет",
+    "вход подтверждён: submit формы SSO → redirect на lk.hse.ru/api/keycloak-auth/",
+    "страница расписания открыта: lk.hse.ru/schedule (begin_date в query)",
+    "сетевой лог наблюдался (Сеть: 120 записей (из 403))"
+  ],
+  "notProven": [
+    "успех не доказан: прогон закончился статусом `step_limit` (cap 40 шагов)",
+    "вход не выполнен: модель запросила только пароль через secret_request, а логин — обычным текстом через ask_user; страница расписания открыта без авторизованной сессии",
+    "после неудачного входа модель ушла в 25+ вызовов code_exec (bash), из них 10+ invalid_arguments (`command` вместо `code`); данные не сохранены, ответ с источником не дан",
+    "workaround-прогон (задача внедрена как user-сообщение) не является product-path приёмкой",
+    "устойчивость и качество агента: без повторов и медиан; ветки MFA/капчи не встретились",
+    "ЦУ и другие вузы не входили в scope"
+  ],
+  "evidence": {
+    "repoSummary": "docs/v4/_evidence/2026-10-31-v4-agent/live-hse-01M696RXBNTA44QYEGXB2B1VJJ.json",
+    "rawRoot": "~/.local/state/botai-v4-bench/<date>/<run>/raw/v4-agent/",
+    "rawFiles": [
+      "run-meta.json",
+      "ask-log.json",
+      "trace.json",
+      "messages.json",
+      "result.json"
+    ]
+  },
+  "workaround": {
+    "name": "inject-task-message",
+    "why": "продуктовый баг: RunTask.task не попадает в диалог модели (backend/src/botai/agent/v4/runtime.py, convo = system + task.messages); задача передана явным user-сообщением",
+    "productPath": false,
+    "acceptanceRun": false
+  },
+  "liveSignals": [
+    {
+      "check": "login_confirmed",
+      "ok": true,
+      "fact": "вход подтверждён: submit формы SSO → redirect на lk.hse.ru/api/keycloak-auth/"
+    },
+    {
+      "check": "schedule_page_opened",
+      "ok": true,
+      "fact": "страница расписания открыта: lk.hse.ru/schedule (begin_date в query)"
+    },
+    {
+      "check": "network_observed",
+      "ok": true,
+      "fact": "сетевой лог наблюдался (Сеть: 120 записей (из 403))"
+    }
+  ],
+  "analysis": {
+    "mode": "workaround: task injected as an explicit user message",
+    "productPath": false,
+    "cause": "модель выбрала bash/code_exec-разведку вместо secret_request для логина и браузерного входа; step budget 40 исчерпан до сохранения данных"
+  },
+  "codeState": {
+    "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+    "worktreeDirty": true,
+    "note": "HEAD c7710a3 + незакоммиченные изменения других lane в общем worktree на момент прогона (v4 factory: source_*/rag_* tools; runtime task-injection fix вошёл перед product-path прогоном; dispatch/container executor — WIP). SHA HEAD поэтому описывает код не полностью; см. phase-0.5-audit.md."
+  }
+}

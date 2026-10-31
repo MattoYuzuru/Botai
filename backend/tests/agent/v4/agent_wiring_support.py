@@ -15,11 +15,22 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.core.clock import SystemClock
 from botai.core.queue import InMemoryJobQueue
 from botai.core.vault import InMemoryVault
 from botai.settings import Settings
+
+# A session factory for wiring tests that never executes a source/rag tool: the engine is v4, so
+# the tools must be registered, but the test does not own a database. `db=None` states the opposite
+# on purpose and proves the wiring refuses to run without its product collaborators.
+_UNSET = object()
+
+
+def unbound_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(expire_on_commit=False)
+
 
 SECRET_MARKER = "P@ssw0rd-FIXTURE-MARKER"
 SCHEDULE_ROWS = (
@@ -139,6 +150,7 @@ def fake_services(
     *,
     settings: Settings | None = None,
     vault: InMemoryVault | None = None,
+    db: Any = _UNSET,
 ) -> Any:
     """A services stand-in for DB-free tests: settings, vault, clock and an in-memory queue."""
     return SimpleNamespace(
@@ -146,7 +158,7 @@ def fake_services(
         vault=vault or InMemoryVault(),
         clock=SystemClock(),
         browser=None,
-        db=None,
+        db=unbound_sessionmaker() if db is _UNSET else db,
         queue=InMemoryJobQueue(),
         embedder=None,
         search=None,

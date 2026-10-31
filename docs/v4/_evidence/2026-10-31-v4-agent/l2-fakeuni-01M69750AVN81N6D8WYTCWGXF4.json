@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "benchVersion": "0.1.0",
+  "scenario": "l2-fakeuni",
+  "title": "fakeuni: connect-подобный сценарий инструментами v4, mock-модель (L2, $0)",
+  "runId": "01M69750AVN81N6D8WYTCWGXF4",
+  "startedAt": "2026-10-31T17:52:18+03:00",
+  "finishedAt": "2026-10-31T17:52:22+03:00",
+  "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+  "host": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.15"
+  },
+  "product": {
+    "engine": "v4",
+    "wiring": "botai.agent.v4.factory.build_agent_wiring",
+    "traceStore": "memory (no DB in the bench process)",
+    "benchVersion": "0.1.0",
+    "env": "test",
+    "agentFlag": "v4",
+    "provider": "mock",
+    "model": "mock",
+    "executor": "LocalExecutor",
+    "db": "guarded offline session factory: source_*/rag_* not exercised in this scenario",
+    "browser": "playwright chromium headless",
+    "limits": {
+      "max_steps": 12,
+      "max_seconds": 180.0,
+      "max_usd": 0.01,
+      "hard_stop_usd": 0.01,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    },
+    "runDurationSec": 1.795
+  },
+  "durationSec": 4.111,
+  "status": "answer",
+  "outcome": "success",
+  "barrier": null,
+  "metrics": {
+    "steps": 7,
+    "toolCalls": 6,
+    "totalTokens": 0,
+    "costUsd": 0.0,
+    "modelCalls": 7,
+    "traceEvents": 21,
+    "runStartedAt": "2026-10-31T14:52:21.819342+00:00",
+    "runFinishedAt": "2026-10-31T14:52:21.982806+00:00",
+    "provider": "mock",
+    "model": "mock",
+    "limits": {
+      "max_steps": 12,
+      "max_seconds": 180.0,
+      "max_usd": 0.01,
+      "hard_stop_usd": 0.01,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    }
+  },
+  "tools": [
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 46,
+      "arguments": {
+        "url": "http://127.0.0.1:62733/"
+      },
+      "summary": "Открыта http://127.0.0.1:62733/"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 9,
+      "arguments": {
+        "mode": "links"
+      },
+      "summary": "Прочитано links: 66 символов"
+    },
+    {
+      "tool": "browser_click",
+      "ok": true,
+      "error": null,
+      "durationMs": 90,
+      "arguments": {
+        "target": "{\"text\": \"Расписание\"}"
+      },
+      "summary": "Нажато; url http://127.0.0.1:62733/cabinet"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 4,
+      "arguments": {
+        "mode": "tables"
+      },
+      "summary": "Прочитано tables: 118 символов"
+    },
+    {
+      "tool": "fs_write",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "path": "schedule.json",
+        "contentChars": 192
+      },
+      "summary": "schedule.json: 238 байт (overwrite)"
+    },
+    {
+      "tool": "fs_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "path": "schedule.json"
+      },
+      "summary": "schedule.json: 192 из 192 символов"
+    }
+  ],
+  "endpoints": [
+    "http://127.0.0.1:62733/",
+    "http://127.0.0.1:62733/cabinet"
+  ],
+  "workspace": [
+    {
+      "path": "schedule.json",
+      "bytes": 238,
+      "sha256": "9f81ca443bcd18a37000534ef80404c8efe11ff76b171ed1604ce93326b78632",
+      "containsEmail": false,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "rows",
+        "source"
+      ],
+      "records": 2,
+      "scheduleLike": true
+    }
+  ],
+  "answer": {
+    "chars": 78,
+    "sha256": "4f04dfb21db8eef2b541b645fc24a4287f7b2103236a67a43d5d5ecbe2147d15",
+    "mentionsSource": true,
+    "mentionsBarrier": false
+  },
+  "secretFlow": {},
+  "checks": {
+    "messagesLeak": false,
+    "traceLeak": false,
+    "secretSweep": {
+      "filesScanned": 4,
+      "filesRedacted": 0,
+      "redactedFiles": []
+    },
+    "artifactPolicy": "raw вне репозитория; первичных секретов в сценарии нет"
+  },
+  "proven": [
+    "v4-wiring исполняет connect-подобный сценарий инструментами: навигация → чтение ссылок → клик → таблица → файл → проверка файла, без рецепта в коде",
+    "fakeuni — тот же L1-стенд, что в тестах (`create_agent_site`), браузер настоящий",
+    "mock-модель: детерминированно и без стоимости; токенов/денег не тратится",
+    "инструменты v4 исполнены: 6/6 вызовов ok (последовательность ниже)"
+  ],
+  "notProven": [
+    "качество LLM не проверяется: решения заскриптованы mock-провайдером",
+    "L2 fakeuni не заменяет L3 живого вуза (D-010)",
+    "прямого аналога `make bench` для v4 нет: make bench меряет v3-путь и тратит деньги"
+  ],
+  "evidence": {
+    "repoSummary": "docs/v4/_evidence/2026-10-31-v4-agent/l2-fakeuni-01M69750AVN81N6D8WYTCWGXF4.json",
+    "rawRoot": "~/.local/state/botai-v4-bench/<date>/<run>/raw/v4-agent/",
+    "rawFiles": [
+      "trace.json",
+      "messages.json",
+      "result.json"
+    ]
+  },
+  "liveSignals": [],
+  "comparisonWithMakeBench": {
+    "makeBench": "python -m botai.agent.bench (`make bench`): v3-путь (handle_chat/learn), DeepSeek, throw-away Postgres + synthetic university; money caps $3 за запуск и $12 всего (bench/results/ledger.json); нужен BOTAI_LIVE_LLM=1",
+    "thisL2": "v4 runtime + MockProvider + настоящий Chromium на fakeuni; $0, без БД",
+    "verdict": "сравнение не «яблоко к яблоку»: make bench меряет качество модели на v3; v4-бенчмарка L2 (план 4.3) пока нет — этот сценарий доказывает только tool-loop v4"
+  },
+  "codeState": {
+    "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+    "worktreeDirty": true,
+    "note": "HEAD c7710a3 + незакоммиченные изменения других lane в общем worktree на момент прогона (v4 factory: source_*/rag_* tools; runtime task-injection fix вошёл перед product-path прогоном; dispatch/container executor — WIP). SHA HEAD поэтому описывает код не полностью; см. phase-0.5-audit.md."
+  }
+}

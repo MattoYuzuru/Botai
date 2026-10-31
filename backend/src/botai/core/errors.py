@@ -24,6 +24,10 @@ class ErrorCode(StrEnum):
     RECIPE_DRIFT = "recipe_drift"
     RECIPE_REJECTED = "recipe_rejected"
     EGRESS_BLOCKED = "egress_blocked"
+    # The page/browser did not respond in time: the site is not down, the action timed out. Kept
+    # apart from `source_unavailable` so the model and the owner do not read a timeout as a broken
+    # source (live L3 showed the misleading code on clicks/waits after SSO).
+    BROWSER_TIMEOUT = "browser_timeout"
     # actions
     ACTION_CHANGED = "action_changed"
     ACTION_EXPIRED = "action_expired"
@@ -55,6 +59,7 @@ class ErrorCode(StrEnum):
 
 _STATUS: dict[ErrorCode, int] = {
     ErrorCode.NOT_FOUND: 404,
+    ErrorCode.BROWSER_TIMEOUT: 504,
     ErrorCode.FORBIDDEN: 403,
     ErrorCode.UNAUTHORIZED: 401,
     ErrorCode.VALIDATION: 422,

@@ -12,12 +12,10 @@ import { UniversityPanelV4 } from "./university-panel-v4";
 import type { StudySource } from "./use-study-sources";
 
 /**
- * «Учёба» v4 (03-sources-and-ux.md §5.1–§5.4): вуз — карточка, источник — живая запись с видами и статусом.
- * Отдельных разделов «Источники», «Документы и вложения» и пространства «Мои материалы» здесь нет:
- * документы показываются в карточке вуза, а «Мои материалы» отфильтрованы (сервер их больше не создаёт).
- *
- * Включается флагом `studyUi=v4`/`VITE_STUDY_SOURCES_V4=1` (см. `flag.ts`); без флага работает старый
- * `StudyScreen`, поэтому экран можно принимать и откатывать, не ломая расписание и чат.
+ * «Учёба» (03-sources-and-ux.md §5, D-013) — единственный экран раздела, без фича-флага: вуз — карточка,
+ * источник — живая запись с видами и статусом. Отдельных разделов «Источники», «Документы и вложения» и
+ * пространства «Мои материалы» нет: документы — артефакты источников в карточке вуза, источники — здесь,
+ * данные — производные разделы ниже.
  */
 export function StudyScreenV4() {
   const directory = useSpaceDirectory();
@@ -25,10 +23,8 @@ export function StudyScreenV4() {
   const nowMs = useNow(30_000);
   const online = useOnline();
   const [opened, setOpened] = useState<{ source: StudySource; space: SpaceInfo } | null>(null);
-  // Источник — часть вуза. Пространства без вуза остаются в старых данных («Мои материалы»), но в v4
-  // интерфейсе не показываются: вуз — единственная единица экрана.
-  const universities = scope.spaces.filter((space) => space.universityId !== null);
-  const universityCount = directory.spaces.filter((space) => space.universityId !== null).length;
+  // Вуз — единственная единица экрана: пространства без вуза в директорию не попадают (useSpaceDirectory).
+  const universities = scope.spaces;
   const state = resolveDataState({
     hasData: directory.connectionsLoaded,
     isEmpty: false,
@@ -60,7 +56,7 @@ export function StudyScreenV4() {
           <Skeleton className="h-14 rounded-lg" />
           <Skeleton className="h-14 rounded-lg" />
         </div>
-      ) : universityCount === 0 ? (
+      ) : universities.length === 0 ? (
         <div data-screen="study" data-state="empty">
           <ConnectPrompt />
         </div>

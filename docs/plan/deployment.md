@@ -208,6 +208,103 @@ downgrade/re-upgrade. Downgrade убирает индексы, колонку и
 скрытия данных отключённого источника. Downgrade удаляет индекс, таблицу и колонки (выбор основного и запомненные
 прежние статусы теряются) и не является штатным rollback.
 
+## pgvector: образ Postgres, collation и проверка восстановления (2026-10-31)
+
+RAG v4 включает extension `vector` ([18-rag](../v4/18-rag.md) §3, D-011), поэтому образ
+Postgres заменён на `pgvector/pgvector:pg17` во всех трёх контурах: `ops/compose.dev.yaml`,
+`ops/compose.prod.yaml` и service `postgres` в CI. Тот же major 17, `pgdata` переиспользуется
+без `initdb`; меняется только baselib (musl → glibc), поэтому после первого запуска нужно
+проверить collation.
+
+**Порядок выпуска изменён в `remote-deploy.sh`.** Раньше миграции шли до обновления
+контейнеров; теперь сначала `dc up -d postgres` + `pg_isready`, потом `migrate`, потом
+остальные сервисы. Иначе миграция `f2b7d9c4a6e8` с `CREATE EXTENSION vector` выполнилась бы
+против старого сервера без extension и уронила бы rollout.
+
+**Точка восстановления проверена.** 2026-10-31 перед выкладкой снят `pg_dump -Fc`
+(`/srv/botai/backups/manual-pre-v4-20261031T144443Z.dump`) и восстановлен в отдельную
+временную БД: совпали `users=4, connections=7, chat_messages=287, schedule_events=169`,
+`alembic_version=a8d4f1c2b6e9`. Временная БД удалена. Штатный `remote-deploy.sh` перед DDL
+всё равно снимает зашифрованный дамп — это отдельная, автоматическая точка.
+
+**Collation после смены базового образа.** На существующем томе выполнить:
+
+```bash
+ssh mnema 'sudo -n docker exec botai-postgres-1 psql -U botai -d botai -tAc \
+  "SELECT datcollversion; SHOW server_version;"'
+ssh mnema 'sudo -n docker logs botai-postgres-1 2>&1 | grep -i collation | head'
+```
+
+Если Postgres предупреждает о несовпадении версии collation — обновить её и переиндексировать
+текстовые индексы (база pet-масштаба, простой короткий):
+
+```bash
+ssh mnema 'sudo -n docker exec botai-postgres-1 psql -U botai -d botai -c \
+  "ALTER DATABASE botai REFRESH COLLATION VERSION;"'
+ssh mnema 'sudo -n docker exec botai-postgres-1 psql -U botai -d botai -c \
+  "REINDEX DATABASE botai CONCURRENTLY;"'
+```
+
+Если новый образ не поднимается на старом томе — вернуть прежний `IMAGE_TAG` нельзя
+(в compose уже новый образ): поднять Postgres из `pgvector/pgvector:pg17` с чистым томом не
+нужно; правильный откат — остановить API/worker, поднять контейнер на прежнем
+`postgres:17-alpine` (тот же том), убедиться в `pg_isready`, затем восстановить данные из
+проверенного дампа в отдельную БД и адресно перенести строки, если они потерялись. Данные
+аккаунта владельца можно пересоздать (D-016), но без нужды не пересоздаются.
+
+## v4-агент в production: sandbox, docker socket, включение (2026-10-31)
+
+`BOTAI_AGENT_ENGINE=v3` — текущий движок; `v4` включается одной строкой в
+`/srv/botai/compose.vars` после приёмки. v4-путь в production исполняет код агента **только**
+в Docker-песочнице (`BOTAI_AGENT_EXECUTOR=container`; local в `ENV=prod` — громкая ошибка
+конфигурации, [13-executor](../v4/13-executor.md) §2).
+
+| Что | Где |
+|---|---|
+| Образ песочницы | `ghcr.io/mattoyuzuru/botai-sandbox:<SHA>` — собирается CI вместе с app-образом, тянется и сверяется по revision label в `remote-deploy.sh` |
+| Docker CLI | в app-образе (стадия `docker:29.5.2-cli`); API и worker ходят на `/var/run/docker.sock` |
+| Группа сокета | `DOCKER_GID` в `compose.vars` (на сервере `986`), Compose передаёт `group_add` |
+| Directorии | `/srv/botai/agent-workspaces`, `/srv/botai/source-artifacts` — `0700`, UID 10001; создаются один раз `bootstrap-server.sh` |
+| Bind-mount | воркер и sandbox видят один и тот же абсолютный путь workspace (хостовый bind), поэтому executor не угадывает путь |
+| Секреты | sandbox не получает `BOTAI_*`, `DATABASE_URL`, KEK, ключи провайдеров; `--read-only`, `--cap-drop ALL`, `no-new-privileges`, cgroups, сеть разрешена (D-003) |
+| Остатки | CI удаляет контейнеры с label `botai.agent.sandbox=1` перед запуском новых; executor удаляет свой контейнер сам |
+
+**Включение v4.** Добавить в `/srv/botai/compose.vars` строку `BOTAI_AGENT_ENGINE=v4` и
+выпустить обычный деплой (Actions → deploy → Run workflow с `diagnostics=keep`) либо
+перезапустить `api` и `worker` из `/srv/botai` с `--env-file compose.vars`; `compose.vars`
+при обычном деплое не перезаписывается (скрипт меняет только `IMAGE_TAG`/`BOTAI_DIAGNOSTICS`).
+
+Проверка после включения:
+
+```bash
+# движок виден в контейнерах
+ssh mnema 'sudo -n docker exec botai-api-1    python -c "from botai.settings import Settings; print(Settings().agent_engine)"'
+ssh mnema 'sudo -n docker exec botai-worker-1 python -c "from botai.settings import Settings; print(Settings().agent_engine)"'
+# docker-сокет и CLI доступны воркеру
+ssh mnema 'sudo -n docker exec botai-worker-1 docker version --format "{{.Server.Version}}"'
+# образ песочницы на месте (сверить тег с текущим IMAGE_TAG и revision label)
+ssh mnema 'sudo -n docker image ls ghcr.io/mattoyuzuru/botai-sandbox --format "{{.Tag}} {{.CreatedAt}}" | head -3'
+ssh mnema 'sudo -n -u botai-deploy sed -n "s/^IMAGE_TAG=//p" /srv/botai/compose.vars'
+```
+
+Функциональный smoke — одна небольшая v4-задача через очередь (стоит несколько тысяч
+токенов модели): поставить `AGENT` job из контейнера api/worker и проверить, что job
+завершился `done`, в `agent_runs`/`agent_run_events` есть шаги, а `code_exec` реально
+исполнился в sandbox-контейнере (в `docker ps -a --filter label=botai.agent.sandbox=1`
+не остаётся остатков). Живой вход в вуз после включения проверяет владелец через обычный
+вход/подключение: ключи и пароли вводятся в UI, а не в деплое.
+
+**Возможный риск, принятый владельцем.** Docker-сокет даёт процессам api/worker
+root-эквивалент на хосте (через него запускаются sibling-контейнеры). Это осознанный обмен:
+приложение и так держит Vault KEK и ключи провайдеров, проект — pet на двух человек (D-001);
+sandbox-контейнер сокета не получает и секретов worker'а не видит. Если это станет
+неприемлемо, следующий шаг — отдельный sandbox-агент (daemon) с узким API вместо сокета.
+
+**Откат v4.** Вернуть `BOTAI_AGENT_ENGINE=v3` в `compose.vars`, перезапустить `api` и
+`worker`; незавершённые v4-jobs завершатся понятной ошибкой (не тихим переходом на v3),
+`agent_runs` остаются в БД. Sandbox-образ можно оставить: он не мешает v3. Удалять
+`agent-workspaces`/`source-artifacts` без нужды нельзя — там артефакты источников.
+
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
 | Параметр | Значение |
@@ -282,6 +379,49 @@ flowchart LR
 5. При сбое остановить rollout, восстановить прежний образ/настройки согласно ограничениям
    миграции и проверить здоровье. Автоматический rollback не отменяет DDL и не возвращает
    прежние ключи `app.secrets`; для данных нужна проверенная точка восстановления.
+
+## Caddy: access-лог, таймауты, наблюдаемость (0.5.5)
+
+С 2026-10-31 блок `botai.mnema.app` в `/etc/caddy/Caddyfile` ведёт access-лог: без него
+инциденты 09 §4 (499/504, волны 403 на `/login-sessions/*/ws`) были недоказуемы — виден
+только факт обрыва, а не кто и на каком запросе оборвал. Точный блок хранится в
+[ops/deploy/caddy-botai.conf](../../ops/deploy/caddy-botai.conf): его можно сравнить с
+сервером и воспроизвести.
+
+| Параметр | Значение |
+|---|---|
+| Файл | `/var/log/caddy/botai-access.log` (`caddy:caddy`, `0600`; читается только с `sudo`) |
+| Ротация | размер 20 МиБ, 10 копий, хранение 30 дней; лог вне Docker и не входит в образ |
+| query | вырезается целиком: в URI остаётся `?REDACTED` (там бывают коды, токены, ключ-ссылки) |
+| Заголовки | `Cookie`, `Authorization`, `Proxy-Authorization`, `X-Api-Key`, `X-Forwarded-For` удалены; `Set-Cookie` удалён |
+| IP | маскируется до `/24` (IPv4) и `/48` (IPv6) — сеть/провайдер отличимы, точный адрес не пишется |
+| Таймауты | `dial_timeout 2s`, `response_header_timeout 30s`: зависший upstream даёт 504 быстро |
+| Стримы | `flush_interval -1` сохранён; WS виден как `101` с длительностью, SSE — как долгий ответ |
+
+**Повторное применение.** Caddy правится вручную (CI его не трогает): бэкап
+`/etc/caddy/Caddyfile.bak-<UTC>`, блок из `caddy-botai.conf`, затем
+`caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile` (синтаксис),
+`sudo -u caddy caddy validate …` и `systemctl reload caddy` — **reload**, не restart.
+Важная ловушка: `caddy validate` от `root` создаёт файл лога `root:root`, после чего
+reload падает с `permission denied` (проверено 2026-10-31). Validate запускается от
+пользователя `caddy` либо после него делается `chown caddy:caddy /var/log/caddy/botai-access.log`.
+Откат — вернуть `Caddyfile` из бэкапа и `systemctl reload caddy`.
+
+**Сводка и «алерты».** Отдельного канала уведомлений в проекте нет (D-001: pet-проект),
+поэтому алерт — это журнал сервера с понятным событием. `ops/deploy/caddy-access-report.sh`
+считает по логу 5xx, 403 на WS удалённого экрана, 499/оборванные соединения, WS и ответы
+дольше 10 с; код возврата `2` — превышение порогов. На сервере скрипт установлен как
+`/usr/local/sbin/caddy-access-report.sh` и запускается ежедневным cron
+`/etc/cron.d/botai-access-report` (отчёт — `/var/log/caddy/botai-report.log`, превышение —
+предупреждение в journal). Ручной прогон:
+
+```bash
+sudo /usr/local/sbin/caddy-access-report.sh --since 2026-10-31   # или --all
+```
+
+Закрытые коды WebSocket (`close_reason`, `close_code`) в access-лог не попадают: он
+показывает `101` и длительность. Их по-прежнему пишет диагностика приложения
+(`BOTAI_DIAGNOSTICS=on`, события экрана) — см. [диагностику](../development/diagnostics.md).
 
 ## Первоначальная подготовка (исторический порядок, один раз)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -42,12 +43,22 @@ elif args[0] == 'compose':
         count = int(count_file.read_text()) + 1 if count_file.exists() else 1
         count_file.write_text(str(count))
         shutil.copyfile(root / 'compose.vars', root / ('up_' + str(count) + '.vars'))
-        if failure == 'update' and count == 1:
+        # `up -d postgres` recreates Postgres before migrations; a later `up -d --remove-orphans`
+        # is the actual application rollout. Only the first application rollout can be made to
+        # fail here (the rollback re-runs it and must succeed to prove the recovery path).
+        app_up = '--remove-orphans' in args
+        marker = root / 'app_up_seen'
+        if app_up and failure == 'update' and not marker.exists():
+            marker.write_text('1')
             sys.exit(1)
 elif args[:2] == ['image', 'ls']:
     print('0123456789ab 2026-10-28 00:00:00')
 elif args[:2] == ['image', 'inspect']:
-    print(os.environ.get('IMAGE_REVISION', ''))
+    sandbox = any('botai-sandbox' in str(arg) for arg in args)
+    if sandbox:
+        print(os.environ.get('SANDBOX_REVISION', os.environ.get('IMAGE_REVISION', '')))
+    else:
+        print(os.environ.get('IMAGE_REVISION', ''))
 """
 CURL = """#!/usr/bin/env python3
 import os, sys
@@ -55,7 +66,13 @@ from pathlib import Path
 root = Path(os.environ['FAKE_DEPLOY_ROOT'])
 count = int((root / 'up_count').read_text())
 failure = os.environ.get('FAIL_AT')
-sys.exit(1 if failure == 'rollback_health' or failure == 'health' and count == 1 else 0)
+if failure == 'rollback_health':
+    sys.exit(1)
+# A failed deploy must fail for the whole health retry loop, but the rollback's own application
+# rollout (count 3) must recover - otherwise the rollback path itself is never exercised.
+if failure == 'health' and count == 2:
+    sys.exit(1)
+sys.exit(0)
 """
 
 
@@ -105,6 +122,10 @@ def deployment(tmp_path: Path) -> Deployment:
     original = f"IMAGE_TAG={OLD_TAG}\nPOSTGRES_PASSWORD=fixture-db-secret\n"
     (tmp_path / "compose.vars").write_text(original)
     (tmp_path / "app.secrets").write_text("BOTAI_KEK=fixture-key\n")
+    # The v4 runtime host dirs are created once by bootstrap-server.sh in production; the deploy
+    # only checks that they exist (CI cannot chown them).
+    (tmp_path / "agent-workspaces").mkdir()
+    (tmp_path / "source-artifacts").mkdir()
     env = {
         **os.environ,
         "FAKE_DEPLOY_ROOT": str(tmp_path),
@@ -333,9 +354,11 @@ def test_failed_deploy_restores_image_and_exact_previous_toggle(
     assert result.returncode == 1, result.stderr
     assert (deployment.root / "compose.vars").read_text() == original
     if failure in {"update", "health"}:
-        assert (deployment.root / "up_2.vars").read_text() == original
+        # Postgres-first deploy does one PostgreSQL up, one application up (failed), then the
+        # rollback's application up; the rollback writes the previous compose.vars.
+        assert (deployment.root / "up_3.vars").read_text() == original
     else:
-        assert not (deployment.root / "up_count").exists()
+        assert not (deployment.root / "up_2.vars").exists()
     assert not list(deployment.root.glob(".compose.vars.rollback.*"))
 
 
@@ -354,3 +377,40 @@ def test_invalid_stored_mode_is_not_silently_overwritten(deployment: Deployment)
     assert result.returncode == 64
     assert (deployment.root / "compose.vars").read_text() == original
     assert not (deployment.root / "commands.jsonl").exists()
+
+
+def test_postgres_is_recreated_before_migrations(deployment: Deployment) -> None:
+    """The pgvector image switch needs the new postgres up before the extension migration."""
+    deployment.env["HAS_POSTGRES"] = "1"
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 0, result.stderr
+    commands = [
+        json.loads(line) for line in (deployment.root / "commands.jsonl").read_text().splitlines()
+    ]
+    flattened = [" ".join(command) for command in commands if command[:1] == ["compose"]]
+    postgres_up = next(
+        i for i, line in enumerate(flattened) if " up " in f" {line} " and "postgres" in line
+    )
+    migrate = next(i for i, line in enumerate(flattened) if "migrate" in line)
+    assert postgres_up < migrate
+
+
+def test_missing_v4_runtime_dirs_fail_loudly(deployment: Deployment) -> None:
+    shutil.rmtree(deployment.root / "agent-workspaces")
+    result = deployment.run(NEW_TAG)
+    assert result.returncode == 78
+    assert "bootstrap-server.sh" in result.stderr
+    assert not (deployment.root / "commands.jsonl").exists()
+
+
+def test_sandbox_image_is_pulled_and_its_revision_checked(deployment: Deployment) -> None:
+    revision = NEW_TAG + "0" * 28
+    deployment.env["IMAGE_REVISION"] = revision
+    deployment.env["SANDBOX_REVISION"] = "f" * 40
+    result = deployment.run(NEW_TAG, "keep", revision)
+    assert result.returncode == 1
+    assert "sandbox image revision mismatch" in result.stderr
+    commands = (deployment.root / "commands.jsonl").read_text()
+    assert "botai-sandbox:" in commands
+    assert '"migrate"' not in commands
+    assert (deployment.root / "compose.vars").read_text() == deployment.original

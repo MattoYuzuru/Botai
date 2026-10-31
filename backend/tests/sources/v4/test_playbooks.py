@@ -186,7 +186,14 @@ async def test_checksum_recognizes_identical_content(tx_sessionmaker: Sm, accoun
 async def test_shared_playbook_is_visible_and_editable_by_both(
     tx_sessionmaker: Sm, account: Account, second_account: Account
 ) -> None:
+    # Shared playbooks are global in one database (D-018): committed integration tests of the same
+    # test database may legitimately leave shared rows visible, so compare against the set that
+    # existed before this test instead of demanding an empty database.
     async with tx_sessionmaker() as session:
+        before = {
+            row.id
+            for row in await playbooks.list_playbooks(session, user_id=second_account.user_id)
+        }
         shared = await playbooks.create_playbook(
             session, user_id=account.user_id, title="Общий", shared=True
         )
@@ -208,7 +215,7 @@ async def test_shared_playbook_is_visible_and_editable_by_both(
     assert version.version == 1
     async with tx_sessionmaker() as session:
         theirs = await playbooks.list_playbooks(session, user_id=second_account.user_id)
-        assert [row.id for row in theirs] == [shared.id]
+        assert {row.id for row in theirs} == before | {shared.id}
         with pytest.raises(BotaiError) as exc:
             await playbooks.get_playbook(
                 session, user_id=second_account.user_id, playbook_id=private.id

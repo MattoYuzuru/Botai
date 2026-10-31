@@ -113,15 +113,21 @@ async def test_loop_runs_a_tool_and_returns_the_answer() -> None:
     assert seen[0][0] == {"text": "привет"}
     assert seen[0][1] == result.run_id
 
-    # The second request carries the assistant tool call and the tool result, ids intact.
+    # The first request opens with the task instruction itself (a live run once asked the owner
+    # "what should I do" because only the checkpoint was sent); the second request carries the
+    # assistant tool call and the tool result, ids intact.
+    first = provider.requests[0]
+    assert [message.role for message in first.messages] == ["system", "user", "user"]
+    assert first.messages[-1].content == "проверка цикла"
     second = provider.requests[1]
     assert [message.role for message in second.messages] == [
         "system",
         "user",
+        "user",
         "assistant",
         "tool",
     ]
-    assistant, tool_message = second.messages[2], second.messages[3]
+    assistant, tool_message = second.messages[3], second.messages[4]
     assert assistant.tool_calls[0].name == "echo"
     assert tool_message.tool_call_id == "c1"
     assert '<source_data tool="echo">' in text_of(tool_message)
@@ -169,7 +175,7 @@ async def test_multi_step_tool_chain_is_kept_in_the_conversation() -> None:
     )
     assert result.steps == 3
     roles = [message.role for message in provider.requests[2].messages]
-    assert roles == ["system", "user", "assistant", "tool", "assistant", "tool"]
+    assert roles == ["system", "user", "user", "assistant", "tool", "assistant", "tool"]
 
 
 # --- errors are data ----------------------------------------------------------------------------
@@ -460,7 +466,9 @@ async def test_a_run_can_resume_from_its_checkpoint() -> None:
     )
     assert first.status == "step_limit"
     assert first.can_resume
-    assert [message.role for message in first.messages] == ["user", "assistant", "tool"]
+    # The checkpoint keeps the instruction (it was sent once) and must not lose it on resume.
+    assert [message.role for message in first.messages] == ["user", "user", "assistant", "tool"]
+    assert any(message.content == "проверка цикла" for message in first.messages)
 
     second_provider = MockProvider.from_responses(answer("продолжение"))
     second = await runtime.run(
@@ -473,7 +481,8 @@ async def test_a_run_can_resume_from_its_checkpoint() -> None:
     assert second.status == "answer"
     assert second.content == "продолжение"
     roles = [message.role for message in second_provider.requests[0].messages]
-    assert roles == ["user", "assistant", "tool"]
+    assert roles == ["user", "user", "assistant", "tool", "user"]
+    assert second_provider.requests[0].messages[-1].content == "продолжение"
     assert "echo" in json.dumps(second_provider.requests[0].messages[2].model_dump())
 
 

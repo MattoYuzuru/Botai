@@ -1,9 +1,12 @@
-# Исполнение кода агентом: local executor (фаза 1.2)
+# Исполнение кода агентом: local executor и контейнерная песочница (фаза 1.2)
 
-Статус: **сделано (фаза 1, local/дев-режим), 2026-10-31.** Реализует пункт 1.2 плана
+Статус: **сделано 2026-10-31.** Реализует пункт 1.2 плана
 ([05-implementation-plan.md](05-implementation-plan.md)) и инструмент `code_exec` из
 [02-architecture.md](02-architecture.md) §6 / §4.4. Код:
-`backend/src/botai/agent/v4/executor/`; тесты: `backend/tests/agent/v4/test_executor.py`.
+`backend/src/botai/agent/v4/executor/`; тесты: `backend/tests/agent/v4/test_executor.py`
+(local) и `backend/tests/agent/v4/test_executor_container.py` (Docker sandbox, docker-gated).
+Local-режим — для дев-машины и тестов; в production (и в контейнере worker'а) код агента
+исполняется **только** `ContainerExecutor` (Docker-песочница), [D-003](06-decisions.md).
 
 Документ объясняет: API, что local-режим реально гарантирует и чего не гарантирует,
 какие лимиты и как их проверять, как это подключается к runtime и что осталось до
@@ -21,7 +24,7 @@
 | `Workspace` | каталог одной задачи агента; файлы переживают вызовы. `create(root=None)` (временный каталог) / `create(path)` (каталог вызывающего), `resolve`, `write_text`, `read_text`, `list_files`, `snapshot`, `internal_dir`, `cleanup`, контекстный менеджер |
 | `Executor` (Protocol) | `workspace`, `limits`, `async run(ExecRequest) -> ExecResult`; local и будущий container реализуют один интерфейс |
 | `LocalExecutor` | реализация на процессе хоста (см. §2) |
-| `ContainerExecutor` | явная заглушка будущей контейнерной песочницы: любой `run` бросает `ExecutorUnavailable`; **без fallback** на local |
+| `ContainerExecutor` | Docker-песочница production: один эфемерный контейнер на вызов `docker run --rm`, workspace — bind-mount, non-root uid 10001, read-only root, cgroups; без fallback на local |
 | `ExecutorError` / `WorkspacePathError` / `ExecutorUnavailable` | отказ исполнителя/пути/отсутствующий runtime; это не ошибка кода агента |
 
 ```python
@@ -107,6 +110,52 @@ enforcing'ает это: при `ENV=prod` выбирается только к�
 Итог: local-режим — «песочница по договорённости» для кода, который пишет владелец/агент
 на своей машине; недоверенный код исполняется только в контейнере (§5).
 
+### Контейнерный режим (`ContainerExecutor`)
+
+`ContainerExecutor` запускает **один эфемерный контейнер на один `ExecRequest`**
+(`docker run --rm`, образ `BOTAI_SANDBOX_IMAGE`), а не один долгоживущий на задачу. Причина:
+лимиты (время/память) задаются на вызов и могут сужаться запросом, таймаут обязан убивать
+контейнер вместе с детьми; свежий контейнер повторяет семантику свежего процесса
+`LocalExecutor` и не переносит процессы между вызовами. Файлы переживают вызовы через
+bind-mount workspace, `HOME`/`TMPDIR`/`XDG_*` — внутри workspace, поэтому `pip --user`/кэш
+остаются в задаче. Цена — старт контейнера ≈0.2–1 с на `code_exec`.
+
+Гарантии (проверены docker-gated тестами):
+
+- `--read-only` корень, `tmpfs` на `/tmp`, `--cap-drop ALL`, `no-new-privileges:true`;
+- non-root `uid 10001`; workspace смонтирован `rw` в `/workspace` (файлы доступны и воркеру);
+- сеть разрешена (D-003): песочница ходит в интернет, как и агент, но не видит БД/Vault;
+- окружение контейнера — **только явный allowlist** (`PATH`, `HOME` внутри workspace, локаль,
+  `PYTHON*`, `TZ`); родительские `BOTAI_*`, `DATABASE_URL`, KEK, ключи провайдеров не
+  передаются; docker-сокет и docker CLI внутри песочницы отсутствуют;
+- cgroups: `--memory`/`--memory-swap` без swap, `--pids-limit`, `--cpus`, `--ulimit`
+  `cpu`/`nofile`/`fsize`; wall-таймаут — `docker kill` + `docker rm -f` (умирает init и все
+  дети), `--rm` на случай штатного выхода; stdout/stderr обрезаются как в local-режиме;
+- каждый контейнер помечен `botai.agent.sandbox=1` и workspace-hash'ем: деплой и оператор
+  могут подмести остатки `docker rm -f $(docker ps -aq --filter label=botai.agent.sandbox=1)`;
+- preflight один раз на executor: `docker image inspect` + пробный контейнер, который читает
+  маркер и пишет файл в bind-mount — так проверяется, что демон видит **тот же абсолютный
+  путь** и uid 10001 может писать; иначе — громкий `ExecutorUnavailable`, никогда не fallback
+  на процесс хоста.
+
+Разворачивание (production): образ `ghcr.io/mattoyuzuru/botai-sandbox:<SHA>` собирает CI
+вместе с app-образом; `remote-deploy.sh` тянет его, сверяет `org.opencontainers.image.revision`
+и убирает оставшиеся sandbox-контейнеры. API и worker получают Docker CLI (из
+`docker:29.5.2-cli`, без демона), `/var/run/docker.sock` и `group_add: DOCKER_GID` (хост-группа
+docker); каталоги `/srv/botai/agent-workspaces` и `/srv/botai/source-artifacts` (`0700`,
+UID 10001) создаются один раз `bootstrap-server.sh` и монтируются в контейнеры по тем же
+абсолютным путям. Настройки: `BOTAI_AGENT_EXECUTOR=auto|local|container` (в `ENV=prod`
+допустим только container, local — громкая ошибка), `BOTAI_SANDBOX_IMAGE`,
+`BOTAI_SANDBOX_DOCKER_HOST` (опционально), `BOTAI_AGENT_WORKSPACE_ROOT`. Детали деплоя —
+[deployment.md](../plan/deployment.md#v4-агент-в-production-sandbox-docker-socket-включение-2026-10-31).
+
+Границы: workspace песочницы — общий `rw` с воркером (агент пишет туда свои файлы, воркер их
+читает/индексирует), поэтому «секреты воркера» защищены не монтированием, а тем, что их нет в
+workspace. Docker-сокет у api/worker — root-эквивалент на хосте (осознанный обмен pet-проекта,
+D-001/D-016); песочница сокета не получает. На macOS в контейнерном режиме нужен Docker,
+видящий путь workspace (Colima делит `/Users`), и запись uid 10001 — иначе preflight честно
+падает; CI и production Linux этих ограничений не имеют.
+
 ## 3. Языки и окружение запуска
 
 | Язык | Интерпретатор | Как задаётся |
@@ -149,14 +198,15 @@ enforcing'ает это: при `ENV=prod` выбирается только к�
 слое трасс; исполнитель отдаёт пути в workspace). Имена языков: инструмент архитектуры
 говорит `javascript`, `ExecRequest.language` — `"js"`; адаптер в инструменте.
 
-**Контейнерный executor (следующая итерация, `ContainerExecutor`).** Тот же
-`ExecRequest/ExecResult`: один контейнер на задачу/пользователя, workspace — том,
-код — non-root, read-only корень, `no-new-privileges`, без `docker.sock` и доступа к
-БД/Vault; сеть разрешена; CPU/память/pids/диск — cgroups (поэтому memory-лимит станет
-надёжным для всех языков, включая node). Runtime ничего не меняет: меняется только
-wiring (`Executor` выбирается конфигом), а `LocalExecutor` остаётся для дев-машины и
-тестов. Секреты в коде: будущие `env_secret_handles` подставляет исполнитель, значения
-не попадают в вывод (маскирование — в слое секретов/трасс).
+**Контейнерный executor (`ContainerExecutor`).** Тот же `ExecRequest/ExecResult`: один
+эфемерный контейнер на вызов, workspace — bind-mount абсолютного пути, код — non-root
+uid 10001, read-only корень, `no-new-privileges`, без `docker.sock` и доступа к БД/Vault;
+сеть разрешена; CPU/память/pids — cgroups (memory-лимит работает и для node). Runtime ничего
+не меняет: исполнитель выбирается одним местом — `agent/v4/factory.py::build_executor`
+(в `ENV=prod` это всегда `ContainerExecutor`; `BOTAI_AGENT_EXECUTOR=local` в prod — ошибка
+конфигурации; `BOTAI_AGENT_EXECUTOR=container` включает песочницу и вне prod). `LocalExecutor`
+остаётся для дев-машины и тестов. Секреты в env песочницы не попадают: агент получает их
+только через `secret_use` (HTTP/поле формы), вывод маскируется слоем секретов.
 
 ## 6. Как проверять
 
@@ -177,26 +227,57 @@ cd backend && uv run --frozen pytest tests/agent/v4 -q
   файлы запроса пишутся до запуска, приватный каталог скрыт;
 - path traversal: `../`, абсолютные пути, симлинк наружу — отказ до записи;
 - truncation: оба потока обрезаны, процесс не убит своим выводом;
-- заглушка `ContainerExecutor` падает явно, `LocalExecutor` проходит `runtime_checkable`
-  протокол; self-created workspace чистится `close()`, после `close()` запуск — ошибка.
+- `LocalExecutor` проходит `runtime_checkable` протокол; self-created workspace чистится
+  `close()`, после `close()` запуск — ошибка.
 
 Валидацию Linux-лимитов (которую macOS не может прогнать локально) проверяли отдельно
 в Linux-контейнере: `RLIMIT_AS`/`RLIMIT_DATA` 128 MiB применяются, `bytearray(512 MiB)`
 → `MemoryError`; `RLIMIT_AS` для node подтверждён как неприменимый (V8 падает на старте).
 
+Контейнерная песочница (`tests/agent/v4/test_executor_container.py`, docker-gated; CI собирает
+`botai-sandbox:ci` и гоняет их, локально нужен Docker/Colima и образ
+`docker build -f ops/docker/sandbox.Dockerfile -t botai-sandbox:test .`):
+
+```bash
+cd backend && BOTAI_SANDBOX_IMAGE=botai-sandbox:test \
+  uv run --frozen pytest tests/agent/v4/test_executor_container.py tests/agent/v4/test_executor.py -q
+```
+
+Покрыто: python/js/bash; персистентность файлов двумя вызовами; файлы запроса пишутся до
+запуска; свежий pid-namespace на вызов (фоновый `setsid`-ребёнок не переживает вызов);
+env isolation (`BOTAI_*`, `BOTAI_KEK`, `DATABASE_URL`, ключи провайдеров, docker-сокет и CLI
+внутри песочницы отсутствуют; `HOME`/cwd в `/workspace`); read-only корень + writable
+`/tmp` + uid 10001; `docker kill` по wall-таймауту (включая детей), executor остаётся
+рабочим; cgroups memory/pids (аллокация 512 MiB убивается при лимите 128 MiB, fork-storm
+останавливается `pids.max`); RLIMIT_CPU; truncation 1024/1024; параллельные executor'ы
+изолированы; `close()` идемпотентен, контейнеров не остаётся; отсутствие Docker CLI/образа/
+недоступный демон → `ExecutorUnavailable` с понятным текстом; prod/dev-матрица выбора
+executor'а; сквозной `code_exec` через настоящий runtime пишет и читает файл в песочнице.
+
 ## 7. Ограничения и риски (сводка)
 
 1. Local-режим не изолирует файловую систему/сеть/процессы — только лимиты и окружение;
-   недоверенный код — только контейнер (§2, §5).
-2. Память на macOS не ограничена; для node — нигде, пока нет cgroups.
+   недоверенный код — только контейнер (§2, §5). В `ENV=prod` local — ошибка конфигурации.
+2. Память на macOS не ограничена; в контейнерном режиме — cgroups для всех языков (включая
+   node); для local-режима на Linux — `RLIMIT_AS`/`RLIMIT_DATA` best-effort.
 3. `preexec_fn` не потокобезопасен; local-режим полагается на то, что код пишет владелец.
 4. Нет stdin у процесса (DEVNULL) и нет стриминга вывода: только результат после
    завершения/таймаута (стриминг — `code_job`/трассы, следующая итерация).
-5. Долгий код (`code_job`, отдельный run) не реализован: wall-таймаут — потолок.
+5. Долгий код (`code_job`, отдельный run) не реализован: wall-таймаут — потолок (300 с).
 6. Пакеты (`pip/npm install`) не ставятся исполнителем специально — код может ставить их
-   сам через сеть; кэш/эфемерное окружение — задача контейнера (архитектура §6).
+   сам через сеть; в контейнерном режиме кэш/`HOME` живут в workspace задачи (переживают
+   вызовы), но не между задачами; тёплого пула контейнеров нет — старт ≈0.2–1 с на вызов.
 7. Артефакты/RAG/трассы для созданных файлов — на стороне runtime; исполнитель отдаёт
    только пути в workspace.
+8. Контейнерный workspace — общий `rw` с воркером (по нему читаются созданные файлы),
+   поэтому граница — не монтирование, а отсутствие секретов в workspace и env песочницы.
+9. Docker-сокет у api/worker даёт root-эквивалент на хосте; песочница сокета не получает.
+   Это осознанный обмен pet-проекта (D-001), описан в deployment.md; альтернатива на будущее —
+   отдельный sandbox-агент с узким API.
+10. На macOS контейнерный режим требует Docker, видящего путь workspace (Colima делит
+    `/Users`) и записи uid 10001; иначе preflight падает громко (это не production-путь).
+11. Образ песочницы собирается CI под тот же commit SHA, что и app-образ; `--pull never`
+    в executor'е: отсутствующий образ — ошибка деплоя, а не тихая загрузка в середине задачи.
 
 ## 8. Ссылки
 
@@ -210,3 +291,7 @@ cd backend && uv run --frozen pytest tests/agent/v4 -q
   здесь — только точка стыковки через `Executor`).
 - `docs/v4/12-browser-control.md` — браузерный слой (соседняя часть инструментов фазы 1;
   пишется параллельно).
+- [deployment.md](../plan/deployment.md) — sandbox-образ, docker-сокет, каталоги, включение
+  v4 в production и откат.
+- `ops/docker/sandbox.Dockerfile`, `ops/docker/app.Dockerfile`, `ops/deploy/remote-deploy.sh`,
+  `ops/compose.prod.yaml` — разворачивание песочницы.

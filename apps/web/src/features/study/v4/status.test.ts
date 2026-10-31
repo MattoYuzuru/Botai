@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SourceStatusV4 } from "@/api/sources-v4";
+import type { SourceStatusV4 } from "@/api/sources";
 import {
   dataKindsOf,
   describeSourceKind,

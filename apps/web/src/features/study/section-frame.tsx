@@ -25,13 +25,10 @@ export function SectionFrame({
   ctx,
   state,
   children,
-  actions,
 }: {
   ctx: SectionContext;
   state: DataState;
   children: ReactNode;
-  /** Бизнес-действия раздела над списком («Добавить документ»). */
-  actions?: ReactNode;
 }) {
   const nowMs = useNow(30_000);
   const router = useRouter();
@@ -51,7 +48,6 @@ export function SectionFrame({
     >
       <div data-screen={`study-${ctx.def.kind}`} data-state={state} className="flex flex-col gap-4">
         <SourceNotices spaces={ctx.scope.spaces} nowMs={nowMs} />
-        {actions}
         {children}
       </div>
     </Screen>

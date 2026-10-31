@@ -2,14 +2,19 @@
 
 A run resolves a playbook version (or an inline candidate spec/code), fetches the endpoints
 through the single v4 HTTP client factory, saves artifacts into a content-addressed store, parses
-declarative fields or executes the version's parser code in the executor sandbox, coerces records
-with the existing `sources.normalize.coerce` and reports counts, errors and provenance.
+declarative fields, executes the version's parser code in the executor sandbox, or replays a
+`browser` plan through the injected browser factory — and coerces records with the existing
+`sources.normalize.coerce` before reporting counts, errors and provenance.
 
-Nothing here evaluates agent code: `code` goes to `Executor.run` (LocalExecutor by default), a
-separate process with its own workspace. Nothing here writes the domain tables either: v4 sources
-have no `connection_id`, and adding `source_id` to the domain is a separate migration. The runner
-therefore returns normalized records in the report and persists artifacts, cursor/site map and the
-source status/freshness; the domain write is the next step (docs/v4/16-sources-runner-tools.md).
+A `sync` also writes the normalized records into the product domain with `source_id` provenance
+(`sources.v4.domain`), idempotently by `(source_id, external_id)`: the UI, chat and RAG read the
+same domain tables as the v3 path, and the two paths never touch each other's rows.
+
+Nothing here evaluates agent code in this process: `code` goes to the injected `Executor` (the
+wiring decides local vs container; `ENV=prod` without an injected factory is refused, see
+`_executor_for_code`). A browser plan gets a session from the injected `BrowserFactory`, which
+carries the source's cookies/storage state; observed JSON answers are parsed exactly like HTTP
+reads, so a client-side page works without DOM scraping and the found endpoints are kept in state.
 """
 
 from __future__ import annotations
@@ -21,44 +26,47 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent.v4.executor import ExecRequest, Executor, LocalExecutor, Workspace
+from botai.agent.v4.executor import (
+    ExecRequest,
+    Executor,
+    ExecutorUnavailable,
+    LocalExecutor,
+    Workspace,
+)
 from botai.agent.v4.http import build_client
 from botai.contracts.specs import Kind
 from botai.core.clock import Clock, SystemClock
+from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import PlaybookVersion, Source, Space
+from botai.settings import get_settings
 from botai.sources import extract
 from botai.sources.adapter import Record
 from botai.sources.normalize import coerce
-from botai.sources.v4 import artifacts, identity, playbooks, service, state
+from botai.sources.v4 import artifacts, domain, identity, playbooks, service, state
+from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 
 RunKind = Literal["probe", "sync", "repair", "canary"]
 ProgressHook = Callable[[Mapping[str, Any]], Awaitable[None]]
 SecretReader = Callable[[str], Awaitable[str | None]]
+SessionReader = Callable[[Source], Awaitable[Mapping[str, Any] | None]]
 ExecutorFactory = Callable[[], Executor]
+BrowserFactory = browser_v4.BrowserFactory
 
 DEFAULT_TIMEZONE = "Europe/Moscow"
 MAX_REPORT_RECORDS = 200
 MAX_ERROR_DETAIL = 2000
+MAX_BROWSER_TEXT = 100_000
 
-V4_TO_KIND: dict[str, Kind] = {
-    "schedule": "scheduleEvents",
-    "deadlines": "deadlines",
-    "assignments": "assignments",
-    "courses": "courses",
-    "grades": "grades",
-    "people": "people",
-    "locations": "locations",
-    "news": "news",
-}
-KIND_TO_V4: dict[Kind, str] = {kind: name for name, kind in V4_TO_KIND.items()}
+V4_TO_KIND: dict[str, Kind] = kinds_vocab.READING_KINDS
+KIND_TO_V4: dict[Kind, str] = kinds_vocab.KIND_TO_READING
 SITE_IDENTITY_PREFIXES = ("http://", "https://")
 
 
@@ -95,13 +103,44 @@ class ReadSpec(BaseModel):
     min_items: int = Field(default=0, ge=0)
 
 
-class PlaybookSpecV1(BaseModel):
-    """The declarative half of a playbook version. Its `version` is the spec format, not a revision."""
+class BrowserStepSpec(BaseModel):
+    """One step of a browser plan (`contracts/playbook.schema.json` → `browser.steps[]`)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    action: Literal[
+        "goto", "click", "type", "press", "select", "wait", "eval", "read", "download", "upload"
+    ]
+    target: str | None = Field(default=None, max_length=2000)
+    value: str | None = Field(default=None, max_length=64_000)
+    secret_handle: str | None = Field(default=None, alias="secretHandle", max_length=120)
+    timeout_s: float | None = Field(default=None, alias="timeoutSeconds", ge=0.1, le=300)
+
+
+class BrowserPlanSpec(BaseModel):
+    """A browser plan: how to make the page itself request its data, with the source's session."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    base_url: str | None = Field(default=None, alias="baseUrl", max_length=2000)
+    steps: list[BrowserStepSpec] = Field(min_length=1, max_length=50)
+
+
+class PlaybookSpecV1(BaseModel):
+    """The declarative half of a playbook version. Its `version` is the spec format, not a revision.
+
+    A spec is a plain HTTP reading (`reads`), a browser plan (`browser`), or both: a browser plan
+    first replays the page, and reads whose address the page itself requested are parsed from the
+    observed answer (network-first) instead of being fetched again.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     version: Literal[1] = 1
+    # The reading path of this spec. `browser` is a first-class format, not a fallback hint.
+    format: Literal["declarative", "browser"] = "declarative"
     reads: list[ReadSpec] = Field(default_factory=list, max_length=50)
+    browser: BrowserPlanSpec | None = None
     timeout_s: float = Field(default=30.0, ge=1, le=300)
 
     @model_validator(mode="after")
@@ -109,7 +148,13 @@ class PlaybookSpecV1(BaseModel):
         names = [read.name for read in self.reads]
         if len(names) != len(set(names)):
             raise ValueError("read names must be unique")
+        if self.format == "browser" and self.browser is None:
+            raise ValueError("format=browser требует browser-план (browser.steps)")
         return self
+
+    @property
+    def is_browser(self) -> bool:
+        return self.browser is not None
 
 
 class CodeRecord(BaseModel):
@@ -210,6 +255,11 @@ class RunReport(BaseModel):
     cursor: dict[str, Any] | None = None
     notes: list[str] = Field(default_factory=list)
     persisted: bool = False
+    # What a sync wrote into the product domain, per reading kind: inserted/updated/unchanged/
+    # skipped. Empty for probe/canary/repair (only a sync owns the domain) and for a failed sync.
+    domain: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # JSON API endpoints a browser plan observed and the next sync can prefer over DOM scraping.
+    discovered_endpoints: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LiveReadResult(BaseModel):
@@ -254,6 +304,16 @@ class _Parsed:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class _BrowserRun:
+    """What a browser plan produced for the run: evidence, captured reads and its own errors."""
+
+    outcome: browser_v4.BrowserOutcome = field(default_factory=browser_v4.BrowserOutcome)
+    fetched: list[_Fetched] = field(default_factory=list)
+    errors: list[RunError] = field(default_factory=list)
+    artifact_ids: list[str] = field(default_factory=list)
+
+
 class SourceRunner:
     """Runs playbook versions of v4 sources. One runner = one session/user; call it per request."""
 
@@ -269,6 +329,9 @@ class SourceRunner:
         cookies: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         secret_reader: SecretReader | None = None,
+        session_reader: SessionReader | None = None,
+        browser_factory: BrowserFactory | None = None,
+        env: Literal["dev", "test", "prod"] | None = None,
         workspace_root: Path | None = None,
         report_record_limit: int = MAX_REPORT_RECORDS,
     ) -> None:
@@ -281,9 +344,13 @@ class SourceRunner:
         self._cookies = dict(cookies or {})
         self._headers = dict(headers or {})
         self._secret_reader = secret_reader
+        self._session_reader = session_reader
+        self._browser_factory = browser_factory
+        self._env = env
         self._workspace_root = workspace_root
         self._report_record_limit = max(1, report_record_limit)
         self._progress: ProgressHook | None = None
+        self._session_state_cache: dict[str, Mapping[str, Any] | None] = {}
 
     # --- public runs ---------------------------------------------------------------------------
 
@@ -391,7 +458,7 @@ class SourceRunner:
             transport=self._transport,
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=20.0, pool=10.0),
             headers=headers,
-            cookies=dict(self._cookies),
+            cookies=await self._http_cookies(source),
         )
         try:
             response = await client.request(method, resolved, json=body, timeout=60.0)
@@ -528,6 +595,8 @@ class SourceRunner:
             errors.append(RunError(code="playbook_required", detail=detail))
         if spec is not None and code_payload is None:
             errors.extend(self._check_declarative(spec))
+            if spec.is_browser:
+                errors.extend(self._check_browser(spec))
         if errors:
             finished = self._clock.now()
             return RunReport(
@@ -547,13 +616,27 @@ class SourceRunner:
                 "run": run,
                 "sourceId": source.id,
                 "reads": len(spec.reads) if spec else 0,
+                "browser": bool(spec is not None and spec.is_browser),
             }
         )
-        fetched: list[_Fetched] = []
+        browser_run = _BrowserRun()
+        if spec is not None and spec.is_browser:
+            browser_run = await self._run_browser(source, spec, persist=persist)
+            errors.extend(browser_run.errors)
+        # Network-first: reads whose address the page itself requested are parsed from the observed
+        # answer; only the rest goes over HTTP (with the same session cookies).
+        fetched: list[_Fetched] = list(browser_run.fetched)
         outcomes: list[ReadOutcome] = []
-        if spec is not None and spec.reads:
-            fetched, outcomes, fetch_errors = await self._fetch_all(source, spec, persist=persist)
-            errors.extend(fetch_errors)
+        if not errors and spec is not None and spec.reads:
+            captured = {item.read.name for item in fetched}
+            remaining = [read for read in spec.reads if read.name not in captured]
+            if remaining:
+                http_fetched, http_outcomes, fetch_errors = await self._fetch_all(
+                    source, spec, persist=persist, only=remaining
+                )
+                fetched.extend(http_fetched)
+                outcomes.extend(http_outcomes)
+                errors.extend(fetch_errors)
         parsed = _Parsed()
         if not errors:
             if code_payload is not None:
@@ -565,6 +648,7 @@ class SourceRunner:
         errors.extend(parsed.errors)
         all_outcomes = [*outcomes, *parsed.outcomes]
         counts = dict(parsed.counts)
+        discovered = browser_run.outcome.endpoints()
         report_ok = not errors and self._meets_minimum(spec, all_outcomes)
         if not report_ok and not errors:
             errors.append(
@@ -587,14 +671,25 @@ class SourceRunner:
             records=parsed.records[: self._report_record_limit],
             records_truncated=len(parsed.records) > self._report_record_limit,
             errors=errors,
-            artifact_ids=[o.artifact_id for o in all_outcomes if o.artifact_id],
+            artifact_ids=[
+                *browser_run.artifact_ids,
+                *(outcome.artifact_id for outcome in all_outcomes if outcome.artifact_id),
+            ],
             cursor=parsed.cursor,
-            notes=[*notes, *parsed.notes],
+            notes=[*notes, *browser_run.outcome.notes, *parsed.notes],
             persisted=False,
+            discovered_endpoints=discovered,
         )
         if persist and run in ("sync", "repair"):
             report = await self._persist(
-                report, source, spec, version_row, update_status=run == "sync"
+                report,
+                source,
+                spec,
+                version_row,
+                update_status=run == "sync",
+                write_domain=run == "sync",
+                records=parsed.records,
+                pages=[page.url for page in browser_run.outcome.pages],
             )
         if run == "canary" and version_row is not None:
             await self._record_canary(report)
@@ -612,7 +707,12 @@ class SourceRunner:
     # --- fetching ------------------------------------------------------------------------------
 
     async def _fetch_all(
-        self, source: Source, spec: PlaybookSpecV1, *, persist: bool
+        self,
+        source: Source,
+        spec: PlaybookSpecV1,
+        *,
+        persist: bool,
+        only: Sequence[ReadSpec] | None = None,
     ) -> tuple[list[_Fetched], list[ReadOutcome], list[RunError]]:
         fetched: list[_Fetched] = []
         outcomes: list[ReadOutcome] = []
@@ -622,10 +722,10 @@ class SourceRunner:
             transport=self._transport,
             timeout=httpx.Timeout(connect=10.0, read=spec.timeout_s, write=20.0, pool=10.0),
             headers=headers,
-            cookies=dict(self._cookies),
+            cookies=await self._http_cookies(source),
         )
         try:
-            for read in spec.reads:
+            for read in only if only is not None else spec.reads:
                 try:
                     url = self._read_url(source, read.url)
                 except ValueError as exc:
@@ -752,11 +852,334 @@ class SourceRunner:
                 headers.setdefault("authorization", f"Bearer {secret}")
         return headers
 
+    async def _session_state(self, source: Source) -> Mapping[str, Any] | None:
+        """The source's Playwright storage state (cookies/localStorage), when the session knows it.
+
+        One lookup per runner: the same state feeds the browser context and the HTTP cookie jar, so
+        a session stored in the Vault works for both reading paths without being returned anywhere.
+        """
+        if source.id not in self._session_state_cache:
+            state: Mapping[str, Any] | None = None
+            if source.auth_ref and self._session_reader is not None:
+                state = await self._session_reader(source)
+            self._session_state_cache[source.id] = state
+        return self._session_state_cache[source.id]
+
+    async def _http_cookies(self, source: Source) -> dict[str, str]:
+        cookies = dict(self._cookies)
+        state = await self._session_state(source)
+        if state:
+            cookies.update(browser_v4.cookie_pairs(state))
+        return cookies
+
+    # --- browser playbooks ---------------------------------------------------------------------
+
+    def _check_browser(self, spec: PlaybookSpecV1) -> list[RunError]:
+        plan = spec.browser
+        if plan is None:
+            return [RunError(code="recipe_rejected", detail="format=browser без browser-плана")]
+        errors: list[RunError] = []
+        if plan.base_url is not None and not plan.base_url.startswith(SITE_IDENTITY_PREFIXES):
+            errors.append(
+                RunError(
+                    code="recipe_rejected",
+                    detail="browser.baseUrl должен быть абсолютным http(s)-адресом",
+                )
+            )
+        for index, step in enumerate(plan.steps, start=1):
+            label = f"browser.steps[{index}] ({step.action})"
+            if step.action == "upload":
+                errors.append(
+                    RunError(
+                        code="recipe_rejected",
+                        detail=f"{label}: шаг upload пока не поддержан (нет источника файлов)",
+                    )
+                )
+            if step.action == "goto" and not step.target:
+                errors.append(RunError(code="recipe_rejected", detail=f"{label}: нет адреса"))
+            if step.action in ("click", "select", "download") and not step.target:
+                errors.append(RunError(code="recipe_rejected", detail=f"{label}: нет цели"))
+            if step.action == "type" and (
+                not step.target or (not step.value and not step.secret_handle)
+            ):
+                errors.append(
+                    RunError(code="recipe_rejected", detail=f"{label}: нужна цель и текст/секрет")
+                )
+            if step.action == "press" and not step.value:
+                errors.append(RunError(code="recipe_rejected", detail=f"{label}: нет клавиши"))
+            if step.action == "select" and step.value is None:
+                errors.append(RunError(code="recipe_rejected", detail=f"{label}: нет значения"))
+            if step.action == "eval" and not step.value:
+                errors.append(RunError(code="recipe_rejected", detail=f"{label}: нет выражения"))
+            if (
+                step.action == "read"
+                and step.value is not None
+                and step.value not in browser_v4.READ_MODES
+            ):
+                errors.append(
+                    RunError(
+                        code="recipe_rejected",
+                        detail=f"{label}: режим {step.value!r}, есть {browser_v4.READ_MODES}",
+                    )
+                )
+            if (
+                step.action == "wait"
+                and not step.target
+                and step.value not in ("networkidle", "navigation")
+            ):
+                errors.append(
+                    RunError(
+                        code="recipe_rejected",
+                        detail=f"{label}: нужен селектор или networkidle/navigation",
+                    )
+                )
+        return errors
+
+    async def _run_browser(
+        self, source: Source, spec: PlaybookSpecV1, *, persist: bool
+    ) -> _BrowserRun:
+        """Replay the plan with the source's session; collect pages, JSON answers and artifacts."""
+        run = _BrowserRun()
+        plan = spec.browser
+        if plan is None:
+            return run
+        if self._browser_factory is None:
+            run.errors.append(
+                RunError(
+                    code="browser_unavailable",
+                    detail="Браузерный playbook не исполнен: wiring не передал браузерный контур",
+                )
+            )
+            return run
+        state = await self._session_state(source)
+        try:
+            async with self._browser_factory(state) as session:
+                for index, step in enumerate(plan.steps, start=1):
+                    await self._emit({"event": "read", "name": f"browser:{index}", "url": None})
+                    try:
+                        await self._browser_step(session, step, source, plan, persist, run)
+                    except BotaiError as exc:
+                        code, retryable = _browser_error_code(exc)
+                        run.errors.append(
+                            RunError(
+                                code=code,
+                                detail=_short(exc),
+                                read=f"browser:{index}",
+                                retryable=retryable,
+                            )
+                        )
+                        break
+                # Evidence is collected even after a failed step: what was seen is what happened.
+                run.outcome.responses = browser_v4.observed_responses(session.network_log())
+                final_url = session.url()
+                if final_url.startswith(SITE_IDENTITY_PREFIXES):
+                    html = await session.page_html(MAX_BROWSER_TEXT)
+                    page = browser_v4.PageSnapshot(url=final_url, html=html)
+                    run.outcome.pages.append(page)
+                    if persist:
+                        artifact_id = await self._artifact(
+                            source.id,
+                            final_url,
+                            html.encode("utf-8"),
+                            format="html",
+                            content_type="text/html",
+                            status=200,
+                            read_name="browser:page",
+                        )
+                        if artifact_id:
+                            run.artifact_ids.append(artifact_id)
+                if persist:
+                    for response in run.outcome.responses:
+                        artifact_id = await self._artifact(
+                            source.id,
+                            response.url,
+                            response.body.encode("utf-8"),
+                            format="json",
+                            content_type=response.content_type,
+                            status=response.status,
+                            read_name="browser:api",
+                        )
+                        if artifact_id:
+                            run.artifact_ids.append(artifact_id)
+                if run.outcome.responses:
+                    run.outcome.notes.append(
+                        f"браузер: наблюдал {len(run.outcome.responses)} JSON-ответов API"
+                    )
+        except BotaiError as exc:
+            code, retryable = _browser_error_code(exc)
+            run.errors.append(RunError(code=code, detail=_short(exc), retryable=retryable))
+        except Exception as exc:  # a broken browser must be an honest run error, not a crash
+            run.errors.append(RunError(code="browser_failed", detail=_short(exc), retryable=True))
+        run.fetched = self._captured_reads(source, spec, run.outcome)
+        return run
+
+    async def _browser_step(
+        self,
+        session: browser_v4.BrowserSession,
+        step: BrowserStepSpec,
+        source: Source,
+        plan: BrowserPlanSpec,
+        persist: bool,
+        run: _BrowserRun,
+    ) -> None:
+        action = step.action
+        target = browser_v4.target_of(step.target) if step.target else None
+        if action == "goto":
+            await session.navigate(self._browser_url(source, plan, step.target or ""))
+            return
+        if action == "click":
+            assert target is not None
+            await session.click(target)
+            return
+        if action == "type":
+            assert target is not None
+            text = step.value
+            if step.secret_handle is not None:
+                text = await self._typed_secret(step.secret_handle)
+            if text is None:
+                raise BotaiError(ErrorCode.VALIDATION, "Шаг type без текста")
+            await session.type(target, text)
+            return
+        if action == "press":
+            await session.press(target, step.value or "")
+            return
+        if action == "select":
+            assert target is not None
+            await session.select(target, step.value or "")
+            return
+        if action == "wait":
+            if target is not None:
+                await session.wait("selector", step.target, step.timeout_s)
+            elif step.value == "networkidle":
+                await session.wait("network_idle", None, step.timeout_s)
+            else:
+                await session.wait("navigation", None, step.timeout_s)
+            return
+        if action == "eval":
+            result = await session.eval_js(step.value or "")
+            if persist:
+                payload = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
+                artifact_id = await self._artifact(
+                    source.id,
+                    "",
+                    payload,
+                    format="json",
+                    content_type="application/json",
+                    status=200,
+                    read_name="browser:eval",
+                )
+                if artifact_id:
+                    run.artifact_ids.append(artifact_id)
+            return
+        if action == "read":
+            mode = step.value or "text"
+            text = await session.read(mode, target, MAX_BROWSER_TEXT)
+            if persist and text:
+                artifact_id = await self._artifact(
+                    source.id,
+                    session.url(),
+                    text.encode("utf-8"),
+                    format="html" if mode in ("dom", "html") else "text",
+                    content_type="text/html" if mode in ("dom", "html") else "text/plain",
+                    status=200,
+                    read_name=f"browser:read:{mode}",
+                    kind="page" if mode in ("dom", "html") else "other",
+                )
+                if artifact_id:
+                    run.artifact_ids.append(artifact_id)
+            return
+        if action == "download":
+            assert target is not None
+            data, filename, url = await session.download(target)
+            if persist:
+                artifact_id = await self._artifact(
+                    source.id,
+                    url or "",
+                    data,
+                    format="binary",
+                    content_type=None,
+                    status=200,
+                    read_name="browser:download",
+                    kind="file",
+                    metadata_extra={"filename": filename},
+                )
+                if artifact_id:
+                    run.artifact_ids.append(artifact_id)
+            return
+
+    async def _typed_secret(self, handle: str) -> str:
+        """Resolve a `secretHandle` for a `type` step; the value is typed, never reported."""
+        if self._secret_reader is None:
+            raise BotaiError(
+                ErrorCode.VALIDATION,
+                f"Шаг type с секретом {handle!r}: секрет-брокер не подключён",
+            )
+        secret = await self._secret_reader(handle)
+        if secret is None:
+            raise BotaiError(ErrorCode.VALIDATION, f"Шаг type: секрет {handle!r} не найден в Vault")
+        return secret
+
+    def _browser_url(self, source: Source, plan: BrowserPlanSpec, raw: str) -> str:
+        value = raw.strip()
+        if value.startswith(SITE_IDENTITY_PREFIXES):
+            return value
+        base = plan.base_url or source.entry_url
+        if not base and source.identity_key.startswith(SITE_IDENTITY_PREFIXES):
+            base = source.identity_key
+        if not base:
+            raise BotaiError(
+                ErrorCode.VALIDATION,
+                "Относительный адрес браузерного шага без baseUrl/entry_url источника",
+            )
+        return urljoin(base.rstrip("/") + "/", value)
+
+    def _captured_reads(
+        self, source: Source, spec: PlaybookSpecV1, outcome: browser_v4.BrowserOutcome
+    ) -> list[_Fetched]:
+        """Reads the page itself already answered: parsed from the capture instead of re-fetched."""
+        fetched: list[_Fetched] = []
+        for read in spec.reads:
+            try:
+                wanted = urlsplit(self._read_url(source, read.url))
+            except ValueError:
+                continue
+            if read.format == "json":
+                for response in outcome.responses:
+                    if not _same_endpoint(wanted, urlsplit(response.url)):
+                        continue
+                    fetched.append(
+                        _Fetched(
+                            read=read,
+                            url=response.url,
+                            sanitized_url=self._sanitize(response.url) or response.url,
+                            status=response.status,
+                            content_type=response.content_type,
+                            body=response.body.encode("utf-8"),
+                        )
+                    )
+                    break
+            elif read.format == "html":
+                for page in outcome.pages:
+                    if not _same_endpoint(wanted, urlsplit(page.url)):
+                        continue
+                    fetched.append(
+                        _Fetched(
+                            read=read,
+                            url=page.url,
+                            sanitized_url=self._sanitize(page.url) or page.url,
+                            status=200,
+                            content_type="text/html",
+                            body=page.html.encode("utf-8"),
+                        )
+                    )
+                    break
+        return fetched
+
     # --- declarative parsing -------------------------------------------------------------------
 
     def _check_declarative(self, spec: PlaybookSpecV1) -> list[RunError]:
         errors: list[RunError] = []
-        if not spec.reads:
+        if not spec.reads and not spec.is_browser:
             errors.append(RunError(code="recipe_rejected", detail="В spec нет ни одного read"))
         for read in spec.reads:
             if read.kind is None:
@@ -960,14 +1383,9 @@ class SourceRunner:
         for item in fetched:
             extension = {"json": "json", "html": "html", "text": "txt"}[item.read.format]
             files[f"reads/{item.read.name}.{extension}"] = item.text()
-        executor = (
-            self._executor_factory()
-            if self._executor_factory is not None
-            else LocalExecutor(
-                workspace=Workspace.create(self._workspace_root),
-            )
-        )
+        executor: Executor | None = None
         try:
+            executor = self._executor_for_code()
             result = await executor.run(
                 ExecRequest(
                     language=language if language in ("python", "js") else "python",
@@ -976,12 +1394,15 @@ class SourceRunner:
                     timeout_s=(spec.timeout_s if spec else 30.0) + 30.0,
                 )
             )
-        except Exception as exc:  # executor refused or unavailable: an honest run error
+        except ExecutorUnavailable as exc:
+            parsed.errors.append(RunError(code="executor_unavailable", detail=_short(exc)))
+            return parsed
+        except Exception as exc:  # executor refused or failed: an honest run error
             parsed.errors.append(RunError(code="executor_failed", detail=_short(exc)))
             return parsed
         finally:
-            if isinstance(executor, LocalExecutor):
-                executor.close()
+            if executor is not None:
+                self._close_executor(executor)
         if not result.ok:
             parsed.errors.append(
                 RunError(
@@ -1064,6 +1485,35 @@ class SourceRunner:
             parsed.notes.append(output.notes)
         return parsed
 
+    def _environment(self) -> str:
+        """The environment of this process: injected by wiring, else the current settings."""
+        if self._env is not None:
+            return self._env
+        return get_settings().env
+
+    def _executor_for_code(self) -> Executor:
+        """Where parser code runs. The wiring's factory is the only ticket into this host.
+
+        A missing factory is not an invitation to run agent code locally: outside dev/test the
+        worker holds the database credentials and the Vault KEK, so prod without a container
+        executor fails loudly instead (docs/v4/13-executor.md §2).
+        """
+        if self._executor_factory is not None:
+            return self._executor_factory()
+        if self._environment() == "prod":
+            raise ExecutorUnavailable(
+                "Код playbook в ENV=prod исполняет только container executor из wiring; "
+                "LocalExecutor на worker'е с секретами запрещён"
+            )
+        return LocalExecutor(workspace=Workspace.create(self._workspace_root))
+
+    @staticmethod
+    def _close_executor(executor: Executor) -> None:
+        """Release a per-run executor; the container executor may own a self-created workspace."""
+        close = getattr(executor, "close", None)
+        if callable(close):
+            close()
+
     # --- persistence and reporting -------------------------------------------------------------
 
     async def _persist(
@@ -1074,6 +1524,9 @@ class SourceRunner:
         version_row: PlaybookVersion | None,
         *,
         update_status: bool = True,
+        write_domain: bool = False,
+        records: Sequence[NormalizedRecord] = (),
+        pages: Sequence[str] = (),
     ) -> RunReport:
         now = self._clock.now()
         if update_status and source.status not in ("disabled", "archived"):
@@ -1098,13 +1551,27 @@ class SourceRunner:
                         "at": now.isoformat(),
                     },
                 )
+        domain_counts: dict[str, dict[str, int]] = {}
+        if write_domain and report.ok and records:
+            # Only a successful sync owns the domain: a partial/failed run must not half-write it
+            # and then claim freshness. Rows are upserted by (source_id, external_id).
+            domain_counts = await domain.write_records(
+                self._session,
+                user_id=self._user_id,
+                source=source,
+                records=records,
+                now=now,
+                revision=version_row.version if version_row else None,
+            )
+        site_map = {"browser_pages": [url for url in pages if url]} if pages else {}
         await state.upsert_source_state(
             self._session,
             user_id=self._user_id,
             source_id=source.id,
             last_revision=version_row.version if version_row else None,
             cursor=report.cursor if report.cursor is not None else None,
-            endpoints=self._endpoints(spec),
+            site_map=site_map or None,
+            endpoints=_merge_endpoints(self._endpoints(spec), report.discovered_endpoints),
         )
         await self._session.commit()
         status = (
@@ -1116,7 +1583,9 @@ class SourceRunner:
                 else "error"
             )
         )
-        return report.model_copy(update={"persisted": True, "source_status": status})
+        return report.model_copy(
+            update={"persisted": True, "source_status": status, "domain": domain_counts}
+        )
 
     async def _record_canary(self, report: RunReport) -> None:
         if report.version is None:
@@ -1163,6 +1632,7 @@ class SourceRunner:
         status: int,
         read_name: str,
         kind: str | None = None,
+        metadata_extra: Mapping[str, Any] | None = None,
     ) -> str | None:
         digest = hashlib.sha256(data).hexdigest()
         storage_ref: str | None = None
@@ -1182,7 +1652,12 @@ class SourceRunner:
             content_type=content_type,
             size=len(data),
             storage_ref=storage_ref,
-            metadata={"read": read_name, "status": status, "format": format},
+            metadata={
+                "read": read_name,
+                "status": status,
+                "format": format,
+                **dict(metadata_extra or {}),
+            },
             captured_at=self._clock.now(),
         )
         return row.id
@@ -1218,6 +1693,58 @@ class SourceRunner:
             return identity.normalize_url(url)
         except Exception:  # a weird read URL must not break the report
             return None
+
+
+def _same_endpoint(wanted: SplitResult, observed: SplitResult) -> bool:
+    """Whether a read address names the same endpoint as an observed response.
+
+    Scheme and host must match; a trailing slash is not a different endpoint. A read without a
+    query matches the endpoint regardless of what the page added to it (the page's own request is
+    the source of truth); a read with a query must match it exactly.
+    """
+    if wanted.scheme.casefold() != observed.scheme.casefold():
+        return False
+    if (wanted.hostname or "") != (observed.hostname or ""):
+        return False
+    if _default_port(wanted) != _default_port(observed):
+        return False
+    if wanted.path.rstrip("/") != observed.path.rstrip("/"):
+        return False
+    return not (wanted.query and wanted.query != observed.query)
+
+
+def _default_port(parts: SplitResult) -> int | None:
+    if parts.port is not None:
+        return parts.port
+    return {"http": 80, "https": 443}.get(parts.scheme.casefold())
+
+
+def _merge_endpoints(
+    declared: Sequence[Mapping[str, Any]], discovered: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Spec endpoints plus the API endpoints a browser observed, deduplicated by method+URL."""
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for endpoint in [*declared, *discovered]:
+        key = (str(endpoint.get("method", "GET")).upper(), str(endpoint.get("url", "")))
+        if key in seen or not key[1]:
+            continue
+        seen.add(key)
+        merged.append(dict(endpoint))
+    return merged
+
+
+def _browser_error_code(exc: BotaiError) -> tuple[str, bool]:
+    """The report error code of a failed browser step: honest, retryable only for transport."""
+    if exc.code == ErrorCode.SOURCE_UNAVAILABLE:
+        return "source_unavailable", True
+    if exc.code == ErrorCode.NOT_FOUND:
+        return "read_failed", False
+    if exc.code == ErrorCode.VALIDATION:
+        return "recipe_rejected", False
+    if exc.code == ErrorCode.NOT_IMPLEMENTED:
+        return "browser_unavailable", False
+    return "browser_failed", False
 
 
 def _v4_kind(raw: str) -> str | None:

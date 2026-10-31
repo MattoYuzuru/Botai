@@ -1,23 +1,29 @@
 # 16. Sources v4: runner, агентские инструменты и REST/SSE
 
-Статус: **реализовано, 2026-10-31** (фаза 2.2–2.3 плана). Поверх схемы и сервиса
+Статус: **реализовано 2026-10-31** (фаза 2.2–2.3 и добивка 31.10). Поверх схемы и сервиса
 [14-sources-backend.md](14-sources-backend.md) добавлены playbook-runner, восемь инструментов
-`source_*` для агентского runtime и REST/SSE `/api/v1/sources`. v3 не тронут: старые
-`sources/*.py`, `agent/tools*.py` и `connections` работают как раньше. Модель — 
-[03-sources-and-ux.md](03-sources-and-ux.md) §2–4, план — [05-implementation-plan.md](05-implementation-plan.md) §2.2–2.3.
+`source_*` для агентского runtime и REST/SSE `/api/v1/sources`; затем — **запись в домен с
+`source_id`**, **Vault-сессии и браузерные playbook'и**, **network-first чтение** и каталог
+артефактов. v3 не тронут: старые `sources/*.py`, `agent/tools*.py` и `connections` работают
+как раньше. Модель — [03-sources-and-ux.md](03-sources-and-ux.md) §2–4, план —
+[05-implementation-plan.md](05-implementation-plan.md) §2.2–2.3.
 
 ## 1. Что добавлено
 
 | Слой | Файлы | Что делает |
 |---|---|---|
-| Runner | `backend/src/botai/sources/v4/runner.py` | probe/sync/repair/canary: читает endpoint'ы, парсит declarative-поля или исполняет код парсера в executor'е, сохраняет артефакты/состояние/статус, отдаёт `RunReport` |
+| Runner | `backend/src/botai/sources/v4/runner.py` | probe/sync/repair/canary: читает endpoint'ы, парсит declarative-поля или исполняет код парсера в executor'е, сохраняет артефакты/состояние/статус, пишет домен при sync, отдаёт `RunReport` |
+| Запись в домен | `backend/src/botai/sources/v4/domain.py` | upsert по `(source_id, external_id)` в 8 доменных таблиц с провенансом; v3-строки не трогаются |
+| Браузер | `backend/src/botai/sources/v4/browser.py` | `format=browser` + `browser_plan` (goto/click/type/press/select/wait/read/eval/download), session из Vault/профиля |
+| Сессии | `backend/src/botai/sources/v4/secrets.py` | `VaultSessionReader` (`session:`/`profile:` → Playwright storage state); bearer — `VaultSecretReader` |
+| Wiring | `backend/src/botai/sources/v4/wiring.py` | production-сборка runner'а: Vault, артефакты, контейнерный executor в prod (LocalExecutor запрещён), Chromium |
 | Инструменты | `backend/src/botai/agent/v4/tools/sources.py` | `SourceToolkit` и восемь `ToolHandler` (`source_*`) под протокол `agent/v4/protocol.py` |
 | REST/SSE | `backend/src/botai/sources/v4/router.py` | `/api/v1/sources*`, playbook/версии, artifacts, state, priorities, SSE прогресса sync |
-| Схемы API | `backend/src/botai/sources/v4/schemas.py` | входы/выходы REST + `RunReportOut` (camelCase) |
-| Хранилище артефактов | `backend/src/botai/sources/v4/artifacts.py` | `ArtifactStore`, `ArtifactBlob`, `FileArtifactStore` (content-addressed каталог) |
+| Схемы API | `backend/src/botai/sources/v4/schemas.py` | входы/выходы REST + `RunReportOut` (camelCase, `domain`, `discoveredEndpoints`) |
+| Хранилище артефактов | `backend/src/botai/sources/v4/artifacts.py` | `ArtifactStore`, `ArtifactBlob`, `FileArtifactStore` (content-addressed каталог, retention) |
 | Книга прогонов | `service.py` (`mark_synced`, `mark_error`), `playbooks.py` (`record_canary`, `set_playbook_health`, `get_playbook_version`) | свежесть/ошибки источника, canary-результат и health playbook'а |
 | Регистрация | `backend/src/botai/main.py` | `sources.v4.router` включён в приложение всегда (2 строки, согласовано с Lead) |
-| Тесты | `backend/tests/sources/v4/{test_runner,test_api,test_tools}.py` + прежние | L1 fakeuni: раннер, API, инструменты |
+| Тесты | `backend/tests/sources/v4/*`, `tests/db/test_domain_source_id_migration.py` | L1 fakeuni: раннер, API, инструменты, домен, браузер, сессии, retention |
 
 Включается одним env: **`BOTAI_AGENT_ENGINE=v4`** (`settings.agent_engine`). Роутер
 зарегистрирован всегда (стабильный OpenAPI), но на v3 каждый его endpoint отвечает
@@ -196,46 +202,45 @@ savepoint'ом и отвечает 409 с названием первого ис
 
 ## 6. Как включать и что осталось
 
-**Включение.** `BOTAI_AGENT_ENGINE=v4` и `make gen` (OpenAPI/TS-типы) после стабилизации
-контрактов; роутер уже в приложении. Инструменты подключаются к runtime в task-16:
-`build_source_tools(SourceToolkit(sm=services.db, transport=None, artifact_store=<каталог>,
-secret_reader=<Vault-хук>))` и регистрируются в реестре runtime при `agent_engine == "v4"`.
+**Включение.** `BOTAI_AGENT_ENGINE=v4` (роутер уже в приложении; при v3 — 404 с понятным
+текстом). Инструменты подключает `build_agent_wiring` при `agent_engine=v4`:
+`build_source_tools(SourceToolkit(...))` + `rag_*` (при `BOTAI_RAG_ENABLED`). Production-сборка
+runner'а — `sources/v4/wiring.py` (Vault, `FileArtifactStore(BOTAI_SOURCE_ARTIFACTS_DIR)`,
+контейнерный executor, Chromium); `source_executor_factory` держит workspace под
+`BOTAI_AGENT_WORKSPACE_ROOT`.
+
+**Сделано в этой итерации:** запись в домен с `source_id`/провенансом и идемпотентным
+re-sync; Vault-сессии (bearer и storage state) и `secretHandle` в браузерной форме;
+browser-формат playbook; контентные артефакты с retention; network-first (наблюдённые
+XHR/fetch JSON парсятся без повторного запроса, endpoints попадают в state/report);
+prod-guard (в `ENV=prod` без контейнерного executor — `executor_unavailable`, код не
+исполняется на хосте worker'а); закрытие любого executor'а.
 
 **Осталось (по приоритету):**
 
-1. **Запись в домен.** Нужна миграция `source_id` (nullable на переходе) в
-   `courses/schedule_events/assignments/deadlines/grades/people/locations/news_items` и
-   нормализатор v4 → эти таблицы; сейчас runner отдаёт нормализованные записи в отчёте, а
-   UI/чат/RAG читают старый домен. До этого v4-источники полезны только агенту через отчёты.
-2. **Сессии и секреты по-настоящему.** `secret_reader` должен читать Vault по `auth_ref`,
-   cookie/bearer — из `browser/control`/`browser/profiles` (task-13), а не из аргументов
-   конструктора; первичный секрет (пароль/MFA/ключ-ссылка) в модель и отчёт не попадает.
-3. **Browser-формат playbook.** `format=browser` + `browser_plan` — через `browser/control`;
-   сейчас раннер такие версии отвергает структурной ошибкой.
-4. **Каталог артефактов.** `FileArtifactStore` принимает путь; место (том/настройка) определяет
-   wiring/деплой. Без store артефакты пишутся только метаданными (`storage_ref=None`).
-5. **Задачи и планировщик.** `sync`/`canary` — синхронные вызовы и SSE; фоновые job'ы
-   (`SYNC/REPAIR`), расписание, дедупликация и статусы в `jobs` — общий wiring task-16.
-6. **RAG.** Индексация `source_artifacts` в `chunks` (task-19) и `rag_ingest`/`rag_search` для
-   runtime; контент артефактов уже content-addressed и доступен.
-7. **UI.** «Учёба» v4 (task-18) читает `/api/v1/sources*`; карточка источника — playbook,
-   версии, canary, артефакты, state, «починить», «спросить агента».
-8. **Контракты.** `contracts/playbook.schema.json` и `contracts/tools.schema.json` уже появились
-   параллельно; надо согласовать с `PlaybookSpecV1`/CodeOutput раннера и прогнать `make gen` —
-   финальную генерацию делает Lead.
+1. **Чтение v4-данных продуктовыми экранами.** Строки домена с `source_id` уже пишутся, но
+   расписание/задания/оценки/новости читают v3-подключения; нужна склейка/overlay v4-источников
+   (`source_priorities`, провенанс, отключённые источники) — следующий backend-шаг, вместе с
+   удалением «Мои материалы» из модели.
+2. **REST-sync в API остаётся inline.** Браузерный sync из REST поднимает Chromium в контейнере
+   API (у него увеличены tmpfs/shm/mem); правильнее ставить `SYNC` job в worker — техдолг
+   (сейчас API получает docker-сокет/ресурсы под это).
+3. **RAG-автоиндексация после run** не подключена: `rag_ingest`/`python -m botai.ops.reindex_rag`
+   — поддерживаемый путь; хук в runner — задел в `build_indexer`/`reindex_source_artifacts`.
+4. **Retention и связь с RAG.** Ссылочный набор retention покрывает `source_artifacts` и
+   `source_state`; когда RAG начнёт ссылаться на артефакт из чанка, эту ссылку нужно добавить в
+   `referenced_storage_refs`.
+5. **`upload` в browser playbook** структурно отклоняется (нет источника файла для загрузки);
+   остальные действия формы покрыты.
+6. **Планировщик.** `sync`/`canary` из UI — синхронные/SSE; фоновые расписания, автоповтор и
+   health-watch — фаза 3.3 (не входила).
+7. **SSE:** `Last-Event-ID`/повтор после реконнекта для долгих sync не реализован (поток
+   одноразовый, отчёт дублируется в `done`).
 
 ## 7. Открытые вопросы
 
-1. **Формат spec:** сейчас `PlaybookSpecV1` в runner'е — источник правды; контракт
-   `playbook.schema.json` (параллельная задача) может разойтись. Нужно свести к одной схеме
-   и валидировать версию до записи.
-2. **Строгость canary:** активация требует `canary.ok=true`; для откатов/ручных правок есть
-   `require_canary=False`. Нужно ли отдельное право «активировать без canary» в политике
-   автономии (D-006) или это всегда действие владельца?
-3. **Домен:** писать строки напрямую в существующие таблицы (после `source_id`) или сначала в
-   отдельный буфер, чтобы провенанс/дедуп v3 и v4 не конфликтовали? Предложение — общий
-   `domain/repo` с `source_id` и склейка при чтении, как в 03 §4.
-4. **Хранение артефактов:** каталог/том и ретенция (HAR/скриншоты/страницы) — настройка
-   владельца; чистильщик должен уважать процитированные артефакты (RAG).
-5. **SSE:** нужен ли `Last-Event-ID`/повтор после реконнекта для долгих sync (сейчас стрим
-   одноразовый, отчёт дублируется в `done`).
+1. **Активация без canary** (`require_canary=False`) есть для откатов/ручных правок; нужен ли
+   явный класс действия/политика для «активировать без canary» — открыто.
+2. **SSE-повторы** для долгих sync (см. §6.7).
+3. **Формат spec:** `PlaybookSpecV1` раннера и `contracts/playbook.schema.json` сведены;
+   менять версию формата — только через контракт.

@@ -6,16 +6,21 @@
 управляет браузером и выполняет учебные действия. Веб-приложение (PWA), ставится
 ярлыком на телефон, открывается из России без VPN.
 
-**Статус на 31 октября 2026: идёт пивот v4 — переход от ограниченного MVP к
-свободному harness.** Production (https://botai.mnema.app) работает на старой
-архитектуре; новая описана в [docs/v4/](docs/v4/README.md) и реализуется по
-[плану](docs/v4/05-implementation-plan.md). Всё, что противоречит v4, устарело.
+**Статус на 31 октября 2026: пивот v4 реализован в коде, идёт приёмка и включение в
+production.** Production (https://botai.mnema.app) пока работает на `BOTAI_AGENT_ENGINE=v3`;
+v4-движок, контейнерная песочница кода, источники v4, RAG с pgvector, UI «Учёба» без флага и
+политика действий уже в репозитории и включаются флагом после деплоя. Статус, честные gaps и
+план — [docs/v4/README.md](docs/v4/README.md), [handoff](docs/v4/07-handoff-claude.md).
 
-**Пилот 2026-10-31 (реализовано):** фаза 0 — мягкие лимиты, feature-flag `agent_engine`, остановка research без прогресса; login UX — native-first, ограниченное подтверждение «Я вошёл», качество/реконнект удалённого экрана. Документы — [08](docs/v4/08-login-ux.md), [09](docs/v4/09-prod-login-incidents.md), [10](docs/v4/10-limits-and-research.md).
+**Сделано 2026-10-31:** фазы 0–3.1 пивота — мягкие лимиты, login UX, Caddy-наблюдаемость;
+свободный runtime с инструментами/браузером/песочницей; источники v4 с записью в домен,
+браузерными playbook'ами и pgvector; UI «Учёба» v4; действия по политике `auto/ask/never`.
+Детали — [docs/v4/](docs/v4/README.md).
 
-**Живой бенчмарк 2026-10-31:** 3/3 сценария успешно — вход в ВШЭ по кредам из
-Keychain (значения не видны модели), чтение сессии Chrome, 174 задания ЦУ на
-динамической странице. Детали и ограничения — [docs/v4/04-benchmark.md](docs/v4/04-benchmark.md).
+**Живой L3 v4-агента 2026-10-31:** независимый прогон прошёл вход в ВШЭ по кредам из Keychain,
+SSO, нашёл endpoint расписания и сохранил 543 записи в файлы, дал ответ со ссылками
+(честные границы и барьеры — [docs/v4/04-benchmark.md](docs/v4/04-benchmark.md) §11,
+санитизированные свидетельства — [docs/v4/_evidence/2026-10-31-v4-agent/](docs/v4/_evidence/2026-10-31-v4-agent/README.md)).
 
 ## В чём идея
 
@@ -55,7 +60,7 @@ Keychain (значения не видны модели), чтение сесс�
 | [Источники и UX](docs/v4/03-sources-and-ux.md) | Модель источников, playbook'и, склейка, интерфейс «Учёба» |
 | [Бенчмарк](docs/v4/04-benchmark.md) | Живой L3 с секретным вводом кредов, метрики, результаты |
 | [Аудит as-is](docs/v4/01-as-is.md) | Что было ограничено, где, зачем и что сломается при отмене |
-| [Handoff для Claude](docs/v4/07-handoff-claude.md) | Постановка следующей команде |
+| [Handoff](docs/v4/07-handoff-claude.md) | Что осталось следующей команде: приёмка, v4-чат, read-path |
 | [Требования](docs/product/requirements.md) · [Решения](QUESTIONS.md) | Продуктовое поведение и ответы владельца |
 | [Проверки](docs/development/testing.md) · [Деплой](docs/plan/deployment.md) | Как проверять и выкладывать |
 | [Стайлгайд](docs/design/styleguide.md) · [Маскот](docs/design/mascot.md) | Дизайн-система и Варя |
@@ -63,17 +68,21 @@ Keychain (значения не видны модели), чтение сесс�
 ## Запуск
 
 ```bash
-make db           # Postgres для разработки
+make db           # Postgres для разработки (pgvector/pgvector:pg17)
 make check        # линтеры, типы, тесты, генерация
 make dev-api      # API на :8000
 make dev-worker   # фоновый воркер
 make dev-web      # PWA на :5173
-make bench        # агентский бенчмарк L2
+make bench        # агентский бенчмарк L2 (v3-путь)
+
+# v4-агент: тот же wiring, что у job AGENT (L2 fakeuni — $0, L3 HSE — Keychain)
+backend/.venv/bin/python -m bench.v4.run_agent --scenario l2-fakeuni
+backend/.venv/bin/python -m bench.v4.run_agent --scenario live-hse
 ```
 
-Живой бенчмарк с настоящими кредами — `bench/live/` (см.
-[docs/v4/04-benchmark.md](docs/v4/04-benchmark.md)). Креды выдаются через macOS
-Keychain, не печатаются и не попадают в репозиторий.
+Живой бенчмарк с настоящими кредами — `bench/live/` (примитивы) и `bench/v4/`
+(агент), см. [docs/v4/04-benchmark.md](docs/v4/04-benchmark.md). Креды выдаются через
+macOS Keychain, не печатаются и не попадают в репозиторий.
 
 ## Откуда что взято
 

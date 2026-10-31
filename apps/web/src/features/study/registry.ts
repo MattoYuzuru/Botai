@@ -2,8 +2,12 @@ import type { IconName } from "@botai/design";
 import type { Section } from "@/api/types";
 import type { SectionKind } from "@/features/data/types";
 
-/** Вид раздела «Учёбы»: ключ экрана. Это не всегда `kind` API: «Источники» есть у любого пространства. */
-export type StudyKind = "courses" | "grades" | "people" | "locations" | "news" | "documents" | "connections";
+/**
+ * Вид раздела «Учёбы»: ключ экрана и вид данных источника. «Документы» — не место хранения: документы
+ * показываются в карточке вуза и источника, а «Источники» живут на самом экране «Учёбы» (D-013,
+ * docs/v4/03-sources-and-ux.md §5.5), поэтому строк в реестре для них нет.
+ */
+export type StudyKind = "courses" | "grades" | "people" | "locations" | "news";
 
 export interface SectionDef {
   kind: StudyKind;
@@ -11,19 +15,16 @@ export interface SectionDef {
   icon: IconName;
   /** Адрес экрана-списка; пространство передаётся в `?space=`. */
   route: `/study/${StudyKind}`;
-  /**
-   * Вид раздела в ответе `/spaces/{id}/sections`. `null` — у раздела нет данных такого вида (Источники): в списке
-   * разделов вуза его строки нет, источники показаны на самом экране «Учёба», а адрес остаётся для управления.
-   */
-  source: SectionKind | null;
+  /** Вид раздела в ответе `/spaces/{id}/sections`. */
+  source: Exclude<SectionKind, "scheduleEvents" | "deadlines">;
   /** Что здесь лежит — для пустого состояния. */
   empty: { title: string; description: string };
 }
 
 /**
- * Реестр разделов «Учёбы» (styleguide §7.1): `{ kind, title, icon, route }`. Порядок фиксирован — Предметы,
- * Оценки, Преподаватели, Аудитории, Новости, Документы и вложения, Источники (управление). Раздел появляется,
- * только если у источников есть данные этого вида; новый вид добавляет строку сюда, а не новую вкладку.
+ * Реестр разделов «Учёбы» (styleguide §7.1): `{ kind, title, icon, route }`. Порядок фиксирован —
+ * Предметы, Оценки, Преподаватели, Аудитории, Новости. Раздел появляется, только если у источников есть
+ * данные этого вида; новый вид — строка сюда, а не новая вкладка.
  */
 export const SECTION_REGISTRY: readonly SectionDef[] = [
   {
@@ -72,25 +73,6 @@ export const SECTION_REGISTRY: readonly SectionDef[] = [
     source: "news",
     empty: { title: "Новостей пока нет", description: "Они появятся, когда источник опубликует новости." },
   },
-  {
-    kind: "documents",
-    title: "Документы и вложения",
-    icon: "document",
-    route: "/study/documents",
-    source: "documents",
-    empty: {
-      title: "Документов пока нет",
-      description: "Добавьте ссылку или файл здесь или пришлите их в чат — BotAI прочитает их.",
-    },
-  },
-  {
-    kind: "connections",
-    title: "Источники",
-    icon: "connection",
-    route: "/study/connections",
-    source: null,
-    empty: { title: "Источников пока нет", description: "Добавьте источник через чат — он появится здесь." },
-  },
 ];
 
 export const SECTION_BY_KIND: ReadonlyMap<string, SectionDef> = new Map(
@@ -98,6 +80,12 @@ export const SECTION_BY_KIND: ReadonlyMap<string, SectionDef> = new Map(
 );
 
 export const isStudyKind = (value: string): value is StudyKind => SECTION_BY_KIND.has(value);
+
+/**
+ * Адреса прежних мест «Учёбы»: «Источники» и «Документы и вложения» больше не экраны (D-013,
+ * 03-sources-and-ux.md §5.5). Прямая старая ссылка ведёт на «Учёбу», а не в пустоту.
+ */
+export const RETIRED_STUDY_KINDS: ReadonlySet<string> = new Set(["connections", "documents"]);
 
 export interface VisibleSection {
   def: SectionDef;
@@ -107,21 +95,12 @@ export interface VisibleSection {
 
 /**
  * Какие разделы показать в списке вуза: виды из ответа сервера в порядке реестра, у которых есть данные.
- * Виды, которых нет в реестре (расписание, задания — у них свои вкладки), и «Источники» пропускаются.
+ * Виды, которых нет в реестре (расписание, задания — у них свои вкладки), пропускаются.
  */
 export function visibleSections(sections: readonly Section[]): VisibleSection[] {
   const counts = new Map(sections.map((section) => [section.kind, section.count]));
   return SECTION_REGISTRY.flatMap((def): VisibleSection[] => {
-    if (def.source === null) return [];
     const count = counts.get(def.source) ?? 0;
     return count > 0 ? [{ def, count }] : [];
   });
-}
-
-/**
- * Производные разделы v4-«Учёбы» (03-sources-and-ux.md §5.5): «Документы и вложения» больше не отдельное
- * место — документы живут в карточке вуза, поэтому раздела в списке нет; «Источники» отсутствуют и раньше.
- */
-export function visibleSectionsV4(sections: readonly Section[]): VisibleSection[] {
-  return visibleSections(sections).filter(({ def }) => def.kind !== "documents");
 }

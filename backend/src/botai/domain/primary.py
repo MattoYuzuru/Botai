@@ -133,6 +133,8 @@ async def coverage_of(
     )
     regular: dict[str, list[tuple[datetime, datetime]]] = {}
     for connection_id, first, last, kind, title in rows.all():
+        if connection_id is None:  # rows are selected by connection_id.in_(ids), never NULL
+            continue
         if is_regular(kind, title, first, last):
             regular.setdefault(connection_id, []).append((first, last))
     found = {cid: Coverage.of_classes(classes) for cid, classes in regular.items()}

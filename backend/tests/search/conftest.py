@@ -7,14 +7,23 @@ all RAG rows hang off `users.id` with `ON DELETE CASCADE`.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from botai.db.models import User
+from botai.search import pgvector
 from tests.search.support import RagSeed, SessionFactory
+
+
+@pytest.fixture(autouse=True)
+def reset_pgvector_state() -> Iterator[None]:
+    """The detection is cached per process; every test starts from a fresh catalog read."""
+    pgvector.reset_state_cache()
+    yield
+    pgvector.reset_state_cache()
 
 
 @pytest.fixture

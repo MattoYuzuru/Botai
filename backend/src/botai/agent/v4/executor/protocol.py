@@ -4,7 +4,8 @@ An agent writes code; the runtime hands it to an `Executor` and gets back stdout
 exit code, the files the code created and whether the run hit a limit. This module is data and
 path arithmetic only — no process is started here. `LocalExecutor`
 (`botai.agent.v4.executor.local`) runs code in a separate process on the same host for the dev
-and local mode of phase 1; the container implementation is planned (D-003, phase 1.2).
+and local mode of phase 1; `ContainerExecutor` (`botai.agent.v4.executor.container`) runs it in a
+non-root Docker sandbox for production (D-003, phase 1.2).
 
 A workspace belongs to one agent task. Files persist between executor calls, so the agent can
 write a parser in one call and use it in the next. Every path that enters the workspace goes

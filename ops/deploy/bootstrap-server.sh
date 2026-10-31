@@ -19,6 +19,12 @@ chmod 600 "/home/${USER_NAME}/.ssh/authorized_keys"
 
 install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$ROOT" "$ROOT/backups"
 
+# v4 agent runtime: persistent per-run workspaces (code_exec/fs_* files, source parser artifacts)
+# and content-addressed source artifacts. Owned by the app UID 10001 (the containers run as that
+# user); the worker bind-mounts these host paths at the SAME absolute path, so the container
+# executor can bind-mount the same path for sandbox containers (docs/v4/13-executor.md §5).
+install -d -m 700 -o 10001 -g 10001 "$ROOT/agent-workspaces" "$ROOT/source-artifacts"
+
 umask 077
 if [ ! -f "$ROOT/app.secrets" ]; then
   {
@@ -33,6 +39,12 @@ if [ ! -f "$ROOT/compose.vars" ]; then
     printf 'IMAGE_TAG=latest\n'
     printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)"
   } > "$ROOT/compose.vars"
+fi
+# The v4 sandbox runs as a sibling container: the worker needs the host docker group id to talk to
+# /var/run/docker.sock. Non-secret; kept in compose.vars so `compose` can pass it as group_add.
+if ! grep -q '^DOCKER_GID=' "$ROOT/compose.vars"; then
+  docker_gid="$(getent group docker | cut -d: -f3 || true)"
+  printf 'DOCKER_GID=%s\n' "${docker_gid:?docker group must exist}" >> "$ROOT/compose.vars"
 fi
 chown "$USER_NAME:$USER_NAME" "$ROOT/app.secrets" "$ROOT/compose.vars"
 chmod 600 "$ROOT/app.secrets" "$ROOT/compose.vars"

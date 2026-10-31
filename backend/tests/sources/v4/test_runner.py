@@ -382,3 +382,78 @@ async def test_unknown_source_is_not_found(tx_sessionmaker: Sm, account: Account
     async with tx_sessionmaker() as session:
         with pytest.raises(BotaiError):
             await SourceRunner(session, user_id=account.user_id).sync("no-such-source")
+
+
+async def test_prod_refuses_parser_code_without_an_injected_executor(
+    tx_sessionmaker: Sm, account: Account, fakeuni_transport: Any, fakeuni_cookies: dict[str, str]
+) -> None:
+    """In ENV=prod the worker must not run agent code locally: no factory means no sandbox."""
+    source = await make_source(tx_sessionmaker, account)
+    async with tx_sessionmaker() as session:
+        report = await SourceRunner(
+            session,
+            user_id=account.user_id,
+            transport=fakeuni_transport,
+            cookies=fakeuni_cookies,
+            env="prod",
+        ).probe(source.id, spec=CODE_SPEC, code=CODE)
+    assert not report.ok
+    assert report.errors[0].code == "executor_unavailable"
+    assert report.records == []  # the code never ran
+
+
+async def test_injected_executor_factory_is_the_only_code_path(
+    tx_sessionmaker: Sm, account: Account, fakeuni_transport: Any, fakeuni_cookies: dict[str, str]
+) -> None:
+    """Wiring passes the sandbox: the runner uses that factory instead of inventing a local one."""
+    from botai.agent.v4.executor import LocalExecutor
+
+    calls: list[str] = []
+
+    def factory() -> LocalExecutor:
+        calls.append("built")
+        return LocalExecutor()
+
+    source = await make_source(tx_sessionmaker, account)
+    async with tx_sessionmaker() as session:
+        report = await SourceRunner(
+            session,
+            user_id=account.user_id,
+            transport=fakeuni_transport,
+            cookies=fakeuni_cookies,
+            executor_factory=factory,
+            env="prod",
+        ).probe(source.id, spec=CODE_SPEC, code=CODE)
+    assert report.ok, report.errors
+    assert calls == ["built"]
+    assert report.counts == {"schedule": 4}
+
+
+async def test_any_injected_executor_is_closed_after_the_run(
+    tx_sessionmaker: Sm, account: Account, fakeuni_transport: Any, fakeuni_cookies: dict[str, str]
+) -> None:
+    """A per-run executor (local or container) may own a workspace: the runner always releases it."""
+    from botai.agent.v4.executor import ExecResult
+
+    class ClosingExecutor:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def run(self, request: Any) -> ExecResult:
+            return ExecResult(stdout='{"records": []}', stderr="", exit_code=0, duration_ms=1)
+
+        def close(self) -> None:
+            self.closed = True
+
+    executor = ClosingExecutor()
+    source = await make_source(tx_sessionmaker, account)
+    async with tx_sessionmaker() as session:
+        report = await SourceRunner(
+            session,
+            user_id=account.user_id,
+            transport=fakeuni_transport,
+            cookies=fakeuni_cookies,
+            executor_factory=lambda: executor,
+        ).probe(source.id, spec=CODE_SPEC, code=CODE)
+    assert report.ok, report.errors
+    assert executor.closed is True

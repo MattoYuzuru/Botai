@@ -1,8 +1,10 @@
 """Code-execution sandbox of the v4 agent (phase 1.2): Executor, requests, results, workspaces.
 
-The runtime calls `Executor.run(ExecRequest) -> ExecResult`; `LocalExecutor` runs the code in a
-bounded process on this host for the dev/local mode, and `ContainerExecutor` is the explicit
-placeholder for the isolated sandbox container of the next iteration. See docs/v4/13-executor.md.
+The runtime calls `Executor.run(ExecRequest) -> ExecResult` and does not care what is behind it:
+`LocalExecutor` runs the code in a bounded process on this host for the dev/local mode, and
+`ContainerExecutor` runs it in a throwaway non-root Docker container with cgroup limits for
+production (`botai.agent.v4.factory.build_executor` picks one by config). See
+docs/v4/13-executor.md.
 """
 
 from botai.agent.v4.executor.container import DEFAULT_IMAGE, ContainerExecutor

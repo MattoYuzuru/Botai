@@ -3,15 +3,19 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { connectionsQuery, spacesQuery, universitiesQuery } from "@/api/queries";
 import { connectUniversityLink } from "@/features/data/chat-links";
-import { spaceShortTitle } from "@/features/data/use-space-directory";
+import { spaceShortTitle, universitySpaces } from "@/features/data/use-space-directory";
 import { useActiveSpaceId, useActiveSpaceStore } from "./active-space";
 import { summarizeConnections } from "./space-status";
 
-/** Вузы пользователя со сводным состоянием источников: по одному запросу подключений на вуз. */
+/**
+ * Вузы пользователя со сводным состоянием источников: по одному запросу подключений на вуз.
+ * Пространств без вуза в переключателе нет: «Мои материалы» больше не единица интерфейса (D-013).
+ */
 export function useSwitcherSpaces(): { spaces: SwitcherSpace[]; ready: boolean } {
-  const { data: spaces } = useQuery(spacesQuery);
+  const { data: allSpaces } = useQuery(spacesQuery);
   const { data: universities } = useQuery(universitiesQuery(""));
   const online = useOnline();
+  const spaces = universitySpaces(allSpaces);
   const results = useQueries({ queries: (spaces ?? []).map((space) => connectionsQuery(space.id)) });
   const ready = Boolean(spaces) && results.every((result) => !result.isPending);
   const switcher = (spaces ?? []).map((space, index): SwitcherSpace => {
@@ -32,7 +36,7 @@ export function useSwitcherSpaces(): { spaces: SwitcherSpace[]; ready: boolean }
 export function ConnectedSpaceSwitcher() {
   const { spaces } = useSwitcherSpaces();
   const { data } = useQuery(spacesQuery);
-  const activeId = useActiveSpaceId(data);
+  const activeId = useActiveSpaceId(universitySpaces(data));
   const select = useActiveSpaceStore((state) => state.select);
   const nowMs = useNow(60_000);
   const navigate = useNavigate();

@@ -42,7 +42,7 @@ describe("чат на весь экран: шапка, история, исто�
     expect(row).toHaveAttribute("aria-expanded", "false");
     await user.click(row);
     const internal = within(sources).getByRole("link", { name: /Открыть подключение в «Учёбе»/ });
-    expect(internal).toHaveAttribute("href", "/study/connections");
+    expect(internal).toHaveAttribute("href", "/study");
     expect(internal).not.toHaveAttribute("target");
     // Внешняя страница — в новой вкладке.
     expect(within(sources).getByRole("link", { name: /Расписание на сайте вуза/ })).toHaveAttribute(
@@ -50,7 +50,7 @@ describe("чат на весь экран: шапка, история, исто�
       "_blank",
     );
     await user.click(internal);
-    await waitFor(() => expect(router.state.location.pathname).toBe("/study/connections"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/study"));
   });
 
   it("шкала контекста в шапке: число из ответа сервера, шит с сегментами и источниками", async () => {
@@ -272,8 +272,8 @@ describe("ответ агента: таблицы, курсив, ссылки, �
   it("ответ из документов: источник-документ — внутренняя ссылка «Открыть документ в «Учёбе»»", async () => {
     const { user } = await openNewChat();
     await ask(user, "Какие правила сдачи курсовых?");
-    const link = await screen.findByRole("link", { name: /Открыть документ в «Учёбе»/ }, wait);
-    expect(link).toHaveAttribute("href", "/study/documents");
+    const link = await screen.findByRole("link", { name: /Открыть документ/ }, wait);
+    expect(link).toHaveAttribute("href", "/study");
   });
 
   it("«Не знаю: …» помечено «Не уверен», источника нет и он не имитируется", async () => {

@@ -164,7 +164,9 @@ async def test_paused_before_the_first_step_returns_a_checkpoint_without_a_model
     assert result.status == "paused"
     assert result.can_resume
     assert provider.requests == []
-    assert [message.role for message in result.messages] == ["user"]
+    # A paused run keeps the full starting context, including the instruction, in the checkpoint.
+    assert [message.role for message in result.messages] == ["user", "user"]
+    assert result.messages[-1].content == "проверка цикла"
     stored = await store.get_run(result.run_id)
     assert stored is not None
     assert stored.status == "paused"

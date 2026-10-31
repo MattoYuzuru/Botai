@@ -84,7 +84,7 @@ describe.each(SCREENS)("SourceStatusBar на экране %s", (_name, path, scr
 
   it("вуз называется своим именем, а не адресом сайта: shortTitle пространства важнее справочника", async () => {
     const [hse] = current.db.spaces;
-    if (hse) Object.assign(hse, { title: "lk.fakeuni.test", shortTitle: "НИУ ВШЭ", universityId: null });
+    if (hse) Object.assign(hse, { title: "lk.fakeuni.test", shortTitle: "НИУ ВШЭ" });
     renderApp(path);
     const bar = await screen.findByRole("list", { name: "Статусы вузов" });
     const first = within(bar).getAllByRole("button")[0] as HTMLElement;

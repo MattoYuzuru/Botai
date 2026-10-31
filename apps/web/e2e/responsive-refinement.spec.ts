@@ -60,12 +60,21 @@ async function openWithThreeSpaces(page: Page) {
     const path = "/src/mocks/db.ts";
     const { createDb, persistDb, ulid } = await import(/* @vite-ignore */ path);
     const db = createDb("stale");
+    db.universities.push({
+      id: "u-synthetic",
+      title: "Синтетический университет",
+      shortTitle: "СУ",
+      aliases: [],
+      accentHue: 325,
+      origins: ["https://synth.fakeuni.test"],
+      thirdPartyWarning: null,
+    });
     const third = {
       ...db.spaces[0],
       id: ulid(),
       title: "Синтетический университет",
       shortTitle: "СУ",
-      universityId: null,
+      universityId: "u-synthetic",
     };
     db.spaces.push(third);
     db.connections.push({ ...db.connections[0], id: ulid(), spaceId: third.id });

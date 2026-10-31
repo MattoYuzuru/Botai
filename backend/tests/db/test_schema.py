@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -91,3 +93,33 @@ async def test_research_checkpoint_is_private_one_to_one_with_cascade(engine: As
     }
     assert sum(kind == "p" for kind, _ in constraints) == 1
     assert sum(kind == "f" and on_delete == "c" for kind, on_delete in constraints) == 3
+
+
+async def test_chunk_embeddings_has_pgvector_column_and_hnsw_index(engine: AsyncEngine) -> None:
+    """pgvector is real schema here: extension, fixed-width column and a cosine HNSW index.
+
+    The `vector` type is not reflected by SQLAlchemy (no pgvector Python dependency), so the generic
+    `test_models_match_migrations` cannot compare it; this test asserts the physical shape directly.
+    """
+    dimension = int(os.environ.get("BOTAI_RAG_DIMENSION", "384"))
+    async with engine.connect() as conn:
+        extension = await conn.scalar(
+            text("SELECT extversion FROM pg_extension WHERE extname='vector'")
+        )
+        column = await conn.scalar(
+            text(
+                "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                "WHERE attrelid = 'chunk_embeddings'::regclass AND attname = 'embedding_vec' "
+                "AND NOT attisdropped"
+            )
+        )
+        index = await conn.scalar(
+            text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE indexname = 'ix_chunk_embeddings_embedding_vec_hnsw'"
+            )
+        )
+    assert extension, "the vector extension must be installed by the migration"
+    assert column == f"vector({dimension})"
+    assert index is not None
+    assert "USING hnsw (embedding_vec vector_cosine_ops)" in str(index)

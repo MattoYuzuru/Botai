@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-export { findSmallTapTargets, findTinyText, open } from "./support";
+export { expectSheetReady, findSmallTapTargets, findTinyText, open } from "./support";
 
 /**
  * Документ не шире заданной ширины. В мобильной эмуляции (`isMobile`) браузер при переполнении сам

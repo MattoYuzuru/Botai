@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # One image for api, worker and egress proxy. Built in CI: GitHub runners reach the Playwright CDN.
 
+# The Docker CLI only (no daemon): the worker starts the v4 agent sandbox container through the
+# host's /var/run/docker.sock (docs/v4/13-executor.md §5). Pinned to the official CLI image tag;
+# only the single static-ish binary is copied, so the app image does not grow by a whole image.
+FROM docker:29.5.2-cli AS dockercli
+
 FROM node:22-bookworm-slim AS web
 WORKDIR /src
 RUN npm i -g pnpm@12.4.2
@@ -24,6 +29,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 RUN playwright install --with-deps chromium \
     && apt-get update && apt-get install -y --no-install-recommends openssh-client \
     && rm -rf /var/lib/apt/lists/*
+# The Docker CLI is only useful in the worker (sandbox executor); it is a harmless few megabytes in
+# api/proxy and keeps one image for the whole stack. It never carries or needs a secret.
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY backend/alembic.ini ./
 COPY backend/src src
 RUN uv sync --frozen --no-dev

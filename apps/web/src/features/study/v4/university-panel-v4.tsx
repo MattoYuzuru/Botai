@@ -1,5 +1,6 @@
 import {
   Badge,
+  Banner,
   Button,
   Card,
   formatAgo,
@@ -12,14 +13,14 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { sectionsQuery } from "@/api/queries";
+import { priorityQuery } from "@/api/sources";
 import { documentsQuery } from "@/features/data/queries";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
-import { visibleSectionsV4 } from "../registry";
+import { visibleSections } from "../registry";
 import { addSourceLinkV4, askUniversityLink, sourceChatLinks } from "./chat-links-v4";
 import { SourceRow } from "./source-row-v4";
-import { summarizeSources } from "./status";
-import type { StudySource } from "./use-study-sources";
-import { useStudySources } from "./use-study-sources";
+import { dataKindsOf, describeSourceStatus, summarizeSources } from "./status";
+import { type StudySource, useStudySources } from "./use-study-sources";
 
 const DOCUMENT_KIND_LABEL: Record<string, string> = {
   file: "Файл",
@@ -29,9 +30,9 @@ const DOCUMENT_KIND_LABEL: Record<string, string> = {
 const SHOWN_DOCUMENTS = 3;
 
 /**
- * Блок вуза на v4-«Учёбе» (03-sources-and-ux.md §5.2): шапка со сводным статусом, источники строками,
- * «Добавить источник» и «Спросить агента» — оба ведут в тот же агентский тред, документы вуза (без
- * отдельного раздела «Документы и вложения») и производные разделы с данными.
+ * Блок вуза на «Учёбе» (03-sources-and-ux.md §5.2): шапка со сводным статусом, источники строками,
+ * «Добавить источник» и «Спросить агента» — оба ведут в тот же агентский тред, документы вуза (это
+ * артефакты его источников, отдельного места для них нет) и производные разделы с данными.
  */
 export function UniversityPanelV4({
   space,
@@ -43,8 +44,8 @@ export function UniversityPanelV4({
   onOpenSource: (source: StudySource) => void;
 }) {
   const sections = useQuery({ ...sectionsQuery(space.id), refetchInterval: 60_000 });
-  const visible = sections.data ? visibleSectionsV4(sections.data) : null;
-  const { sources, mode, loading } = useStudySources(space);
+  const visible = sections.data ? visibleSections(sections.data) : null;
+  const { sources, mode, loading, error } = useStudySources(space);
   const documents = useQuery(documentsQuery(space.id));
   const abbreviated = space.shortTitle !== space.title;
   const summary = summarizeSources(sources.map((source) => source.status));
@@ -52,6 +53,7 @@ export function UniversityPanelV4({
   const attentionChat = attention ? sourceChatLinks(attention, space.title).repair : null;
   const lastSync = latestSync(sources);
   const docs = (documents.data?.data ?? []).slice().sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
+  const scheduleRole = useScheduleRole(space, sources);
 
   return (
     <section
@@ -72,6 +74,9 @@ export function UniversityPanelV4({
             <Badge tone={summary.tone} icon={summary.icon}>
               {summary.label}
             </Badge>
+          ) : loading || error ? (
+            // Пока неизвестно, что с источниками, «пусто» не утверждаем: это либо загрузка, либо сбой.
+            <span>{error ? "Источники не загрузились" : "Загружаем источники"}</span>
           ) : (
             <span>Источников пока нет</span>
           )}
@@ -88,8 +93,12 @@ export function UniversityPanelV4({
         </div>
       </div>
 
-      <Card padding="sm" data-part="sources-v4" className="flex flex-col">
-        {loading ? (
+      <Card padding="sm" data-part="sources-v4" className="flex flex-col gap-2">
+        {error ? (
+          <Banner tone="info" icon="sync" live>
+            Не удалось загрузить источники. Обновление идёт в фоне — данные появятся сами.
+          </Banner>
+        ) : loading ? (
           <div role="status" aria-busy="true" className="flex flex-col gap-2 p-2">
             <span className="sr-only">Загрузка источников</span>
             <Skeleton className="h-14 rounded-md" />
@@ -103,7 +112,14 @@ export function UniversityPanelV4({
         ) : (
           <ul aria-label={`Источники: ${space.shortTitle}`}>
             {sources.map((source) => (
-              <SourceRow key={source.id} source={source} space={space} nowMs={nowMs} onOpen={onOpenSource} />
+              <SourceRow
+                key={source.id}
+                source={source}
+                space={space}
+                nowMs={nowMs}
+                scheduleRole={scheduleRole.of(source)}
+                onOpen={onOpenSource}
+              />
             ))}
           </ul>
         )}
@@ -120,7 +136,7 @@ export function UniversityPanelV4({
         </div>
       </Card>
 
-      {documents.data && docs.length > 0 && (
+      {docs.length > 0 && (
         <Card padding="sm" data-part="documents-v4" className="flex flex-col">
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
             <h3 className="type-subheading text-fg">Документы</h3>
@@ -145,8 +161,8 @@ export function UniversityPanelV4({
             ))}
           </ul>
           <p className="px-3 pb-2 type-caption text-fg-subtle">
-            Документы читаются из источников вуза. Отдельного места для них больше нет: добавить файл или
-            ссылку можно через «Добавить источник».
+            Документы приходят из источников вуза — отдельного места у них нет. Добавить файл или ссылку можно
+            через «Добавить источник».
           </p>
         </Card>
       )}
@@ -182,6 +198,35 @@ export function UniversityPanelV4({
       </Card>
     </section>
   );
+}
+
+export type ScheduleRole = "primary" | "secondary";
+
+interface ScheduleRoleView {
+  /** Роль источника в склейке расписания вуза; `null` — единственный источник или выбор ещё не сделан. */
+  of: (source: StudySource) => ScheduleRole | null;
+}
+
+/**
+ * Роль источника в расписании (FR-054, styleguide §9): подписывается, только когда у вуза несколько
+ * живых источников с занятиями и владелец уже выбрал основной. Выбор не выдумывается: без сохранённого
+ * порядка порядок по умолчанию — правило сервера, а не интерфейса.
+ */
+function useScheduleRole(space: SpaceInfo, sources: readonly StudySource[]): ScheduleRoleView {
+  const schedule = sources.filter((source) => dataKindsOf(source.kinds).includes("schedule"));
+  const live = schedule.filter((source) => !describeSourceStatus(source.status).disabled);
+  const priority = useQuery({
+    ...priorityQuery(space.id, "schedule"),
+    enabled: live.length > 1,
+  });
+  const order = priority.data?.sourceIds ?? [];
+  const primary = live.find((source) => source.id === order[0]) ?? null;
+  return {
+    of: (source) => {
+      if (!primary || !live.some((row) => row.id === source.id)) return null;
+      return source.id === primary.id ? "primary" : "secondary";
+    },
+  };
 }
 
 function describeNeedsAction(source: StudySource): boolean {

@@ -1,6 +1,181 @@
 {
   "components": {
     "schemas": {
+      "ActionOut": {
+        "properties": {
+          "actionClass": {
+            "title": "Actionclass",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "decidedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decidedat"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "executedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executedat"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "intent": {
+            "title": "Intent",
+            "type": "string"
+          },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobid"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "proposal": {
+            "additionalProperties": true,
+            "title": "Proposal",
+            "type": "object"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "rollback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback"
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runid"
+          },
+          "scopeId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopeid"
+          },
+          "scopeKind": {
+            "title": "Scopekind",
+            "type": "string"
+          },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
+          }
+        },
+        "required": [
+          "id",
+          "decision",
+          "mode",
+          "actionClass",
+          "scopeKind",
+          "scopeId",
+          "intent",
+          "proposal",
+          "request",
+          "result",
+          "rollback",
+          "idempotencyKey",
+          "runId",
+          "jobId",
+          "sourceId",
+          "createdAt",
+          "decidedAt",
+          "executedAt"
+        ],
+        "title": "ActionOut",
+        "type": "object"
+      },
       "ActiveTask": {
         "properties": {
           "connectionId": {
@@ -79,6 +254,243 @@
           "state"
         ],
         "title": "ActiveTaskOut",
+        "type": "object"
+      },
+      "AgentRunAccepted": {
+        "description": "The queued run: the job to follow with the existing job SSE and the trace to read here.",
+        "properties": {
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          },
+          "status": {
+            "const": "queued",
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "runId"
+        ],
+        "title": "AgentRunAccepted",
+        "type": "object"
+      },
+      "AgentRunCreate": {
+        "description": "A natural-language task; the thread/space/connection only give it a place and provenance.",
+        "properties": {
+          "connectionId": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          },
+          "spaceId": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spaceid"
+          },
+          "task": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Task",
+            "type": "string"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "AgentRunCreate",
+        "type": "object"
+      },
+      "AgentRunEventOut": {
+        "description": "One trace step: model call, tool call/result, limit, pause, error or finish (D-014).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "durationMs": {
+            "title": "Durationms",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "kind",
+          "step",
+          "durationMs",
+          "at",
+          "payload"
+        ],
+        "title": "AgentRunEventOut",
+        "type": "object"
+      },
+      "AgentRunEventsOut": {
+        "description": "A page of the trace; `has_more` tells the caller to repeat with `after_seq=last seq`.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunEventOut"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "hasMore": {
+            "title": "Hasmore",
+            "type": "boolean"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "events",
+          "hasMore"
+        ],
+        "title": "AgentRunEventsOut",
+        "type": "object"
+      },
+      "AgentRunOut": {
+        "description": "The run's durable row (`agent_runs`), not a live in-memory state.",
+        "properties": {
+          "costUsd": {
+            "title": "Costusd",
+            "type": "number"
+          },
+          "eventCount": {
+            "title": "Eventcount",
+            "type": "integer"
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finishedat"
+          },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobid"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "title": "Steps",
+            "type": "integer"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          },
+          "totalTokens": {
+            "title": "Totaltokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runId",
+          "jobId",
+          "task",
+          "provider",
+          "model",
+          "status",
+          "startedAt",
+          "finishedAt",
+          "steps",
+          "totalTokens",
+          "costUsd",
+          "eventCount"
+        ],
+        "title": "AgentRunOut",
         "type": "object"
       },
       "AnswerIn": {
@@ -937,6 +1349,24 @@
         "title": "DeadlineOut",
         "type": "object"
       },
+      "DecisionIn": {
+        "description": "Resolve an `ask` action: `approve` unblocks execution by the proposing run, `deny` closes it.",
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "deny"
+            ],
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "DecisionIn",
+        "type": "object"
+      },
       "DialogueReceipt": {
         "properties": {
           "at": {
@@ -989,6 +1419,57 @@
           "at"
         ],
         "title": "DialogueReceipt",
+        "type": "object"
+      },
+      "DiscoveredEndpointOut": {
+        "description": "A JSON API endpoint a browser plan observed (kept in the source state for the next sync).",
+        "properties": {
+          "contentType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contenttype"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "observed": {
+            "default": true,
+            "title": "Observed",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "method",
+          "url"
+        ],
+        "title": "DiscoveredEndpointOut",
         "type": "object"
       },
       "DocumentFromUrl": {
@@ -1133,6 +1614,89 @@
           "jobId"
         ],
         "title": "DocumentStarted",
+        "type": "object"
+      },
+      "DomainCountsOut": {
+        "description": "What a sync wrote into the product domain for one reading kind.",
+        "properties": {
+          "inserted": {
+            "title": "Inserted",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inserted",
+          "updated",
+          "unchanged",
+          "skipped"
+        ],
+        "title": "DomainCountsOut",
+        "type": "object"
+      },
+      "EffectivePolicyOut": {
+        "properties": {
+          "actionClass": {
+            "title": "Actionclass",
+            "type": "string"
+          },
+          "escalated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalated"
+          },
+          "limits": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Limits",
+            "type": "object"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "scopeId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopeid"
+          },
+          "scopeKind": {
+            "title": "Scopekind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actionClass",
+          "mode",
+          "scopeKind",
+          "scopeId",
+          "limits"
+        ],
+        "title": "EffectivePolicyOut",
         "type": "object"
       },
       "EventAttribute": {
@@ -2113,6 +2677,148 @@
         "title": "PlaybookVersionOut",
         "type": "object"
       },
+      "PolicyIn": {
+        "description": "Upsert one policy row: (scope_kind, scope_id, action_class) is the identity.",
+        "properties": {
+          "actionClass": {
+            "enum": [
+              "read",
+              "write_soft",
+              "write_destructive",
+              "money",
+              "auth"
+            ],
+            "title": "Actionclass",
+            "type": "string"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limits"
+          },
+          "mode": {
+            "enum": [
+              "auto",
+              "ask",
+              "never"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "scopeId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopeid"
+          },
+          "scopeKind": {
+            "enum": [
+              "global",
+              "site",
+              "space",
+              "source"
+            ],
+            "title": "Scopekind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scopeKind",
+          "actionClass",
+          "mode"
+        ],
+        "title": "PolicyIn",
+        "type": "object"
+      },
+      "PolicyOut": {
+        "properties": {
+          "actionClass": {
+            "title": "Actionclass",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "title": "Limits",
+            "type": "object"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "scopeId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopeid"
+          },
+          "scopeKind": {
+            "title": "Scopekind",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "title": "Updatedat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scopeKind",
+          "scopeId",
+          "actionClass",
+          "mode",
+          "limits",
+          "note",
+          "updatedAt"
+        ],
+        "title": "PolicyOut",
+        "type": "object"
+      },
       "PoolUsageOut": {
         "description": "Owner's view of the shared key: who spends what.",
         "properties": {
@@ -2650,6 +3356,20 @@
             ],
             "title": "Cursor"
           },
+          "discoveredEndpoints": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveredEndpointOut"
+            },
+            "title": "Discoveredendpoints",
+            "type": "array"
+          },
+          "domain": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DomainCountsOut"
+            },
+            "title": "Domain",
+            "type": "object"
+          },
           "errors": {
             "items": {
               "$ref": "#/components/schemas/RunErrorOut"
@@ -2747,7 +3467,9 @@
           "artifactIds",
           "cursor",
           "notes",
-          "persisted"
+          "persisted",
+          "domain",
+          "discoveredEndpoints"
         ],
         "title": "RunReportOut",
         "type": "object"
@@ -4057,6 +4779,394 @@
         ]
       }
     },
+    "/api/v1/action-policies": {
+      "get": {
+        "description": "All explicit policy rows of the current user.",
+        "operationId": "list_action_policies_api_v1_action_policies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PolicyOut"
+                  },
+                  "title": "Response List Action Policies Api V1 Action Policies Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Action Policies",
+        "tags": [
+          "actions"
+        ]
+      },
+      "put": {
+        "description": "Create or update one row. `global` has no `scope_id`; `site` accepts a host or URL.",
+        "operationId": "upsert_action_policy_api_v1_action_policies_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Action Policy",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/v1/action-policies/effective": {
+      "get": {
+        "description": "The resolved mode of every class for one scope (what would happen to a new action).",
+        "operationId": "effective_action_policies_api_v1_action_policies_effective_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "url",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Url"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 26,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 26,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Space Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EffectivePolicyOut"
+                  },
+                  "title": "Response Effective Action Policies Api V1 Action Policies Effective Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Effective Action Policies",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/v1/action-policies/{policy_id}": {
+      "delete": {
+        "description": "Delete one row: the class falls back to the documented default for that scope.",
+        "operationId": "delete_action_policy_api_v1_action_policies__policy_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "title": "Policy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Action Policy",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/v1/actions": {
+      "get": {
+        "description": "The action journal, newest first (redacted: no secret values were ever stored).",
+        "operationId": "list_actions_api_v1_actions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 26,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "decision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Decision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ActionOut"
+                  },
+                  "title": "Response List Actions Api V1 Actions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Actions",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/v1/actions/{action_id}": {
+      "get": {
+        "description": "One journal row (proposal, decision, executed request summary, result).",
+        "operationId": "get_action_api_v1_actions__action_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Action",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/v1/actions/{action_id}/decision": {
+      "post": {
+        "description": "Approve or deny an `ask` action. The decision is journaled; execution belongs to the run.\n\nThe journal intentionally contains no request body/header values, so the API cannot send an\nHTTP action itself: the run that proposed it executes the approved row, and a retry with the\nsame idempotency key picks up the decision. `409` when the row is not waiting for a decision.",
+        "operationId": "decide_action_api_v1_actions__action_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Action",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/v1/actions/{proposal_id}/approve": {
       "post": {
         "operationId": "approve_action_api_v1_actions__proposal_id__approve_post",
@@ -4139,6 +5249,157 @@
         "summary": "Reject Action",
         "tags": [
           "agent"
+        ]
+      }
+    },
+    "/api/v1/agent/runs": {
+      "post": {
+        "description": "Enqueue one `AGENT` run; the response carries the ids needed to read its trace.",
+        "operationId": "create_run_api_v1_agent_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run",
+        "tags": [
+          "agent-v4"
+        ]
+      }
+    },
+    "/api/v1/agent/runs/{run_id}": {
+      "get": {
+        "description": "The run row of this owner; another user's run is not found, never leaked.",
+        "operationId": "get_run_api_v1_agent_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "agent-v4"
+        ]
+      }
+    },
+    "/api/v1/agent/runs/{run_id}/events": {
+      "get": {
+        "description": "Trace steps after `afterSeq`, oldest first; a replayed sequence is never written twice.",
+        "operationId": "get_run_events_api_v1_agent_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "afterSeq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Afterseq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunEventsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Events",
+        "tags": [
+          "agent-v4"
         ]
       }
     },

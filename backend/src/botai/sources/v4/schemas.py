@@ -205,6 +205,26 @@ class NormalizedRecordOut(ApiModel):
     open_url: str | None
 
 
+class DomainCountsOut(ApiModel):
+    """What a sync wrote into the product domain for one reading kind."""
+
+    inserted: int
+    updated: int
+    unchanged: int
+    skipped: int
+
+
+class DiscoveredEndpointOut(ApiModel):
+    """A JSON API endpoint a browser plan observed (kept in the source state for the next sync)."""
+
+    name: str
+    method: str
+    url: str
+    status: int | None = None
+    content_type: str | None = None
+    observed: bool = True
+
+
 class RunReportOut(ApiModel):
     source_id: str
     run: str
@@ -222,3 +242,5 @@ class RunReportOut(ApiModel):
     cursor: dict[str, Any] | None
     notes: list[str]
     persisted: bool
+    domain: dict[str, DomainCountsOut]
+    discovered_endpoints: list[DiscoveredEndpointOut]

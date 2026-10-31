@@ -317,7 +317,7 @@ test.describe("ответ агента", () => {
       "_blank",
     );
     await sources.getByRole("link", { name: /Открыть подключение в «Учёбе»/ }).click();
-    await expect(page).toHaveURL(/\/study\/connections$/);
+    await expect(page).toHaveURL(/\/study$/);
   });
 
   test("шкала контекста: плоская полоса в шапке, шит с сегментами и источниками", async ({ page }) => {

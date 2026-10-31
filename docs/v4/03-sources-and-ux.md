@@ -1,6 +1,9 @@
 # 03. Источники и «Учёба»: единая модель, подключение, склейка
 
-Статус: **спецификация пивота v4**, 2026-10-31. Основание — [README](README.md), [решения владельца](06-decisions.md) (D-004,
+Статус: **спецификация пивота v4, реализована в коде 2026-10-31** (см. [14](14-sources-backend.md),
+[16](16-sources-runner-tools.md), [17](17-study-ui.md); остатки — read-path v4-данных в
+продуктовых экранах и удаление «Моих материалов» из модели — в
+[handoff](07-handoff-claude.md)). Основание — [README](README.md), [решения владельца](06-decisions.md) (D-004,
 D-006, D-008, D-011, D-013, D-016, D-018) и [план](05-implementation-plan.md) §2. Здесь целевая модель источников и интерфейс
 «Учёбы»; это не утверждение о реализации: как сейчас — [01-as-is.md](01-as-is.md), runtime/песочница/браузер —
 [02-architecture.md](02-architecture.md). Потребители: `backend/src/botai/{sources,spaces,domain, agent,api}`, `apps/web/src`,

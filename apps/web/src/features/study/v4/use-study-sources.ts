@@ -1,14 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { type SourceV4, sourcesV4Query } from "@/api/sources-v4";
+import { isSourcesApiUnavailable, type SourceOut, sourceErrorOf, sourcesQuery } from "@/api/sources";
 import type { Connection } from "@/api/types";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
-import { useStudyUiMode } from "./flag";
 
 /**
- * Источник на экране «Учёбы»: общая форма для нового API `/api/v1/sources` (v4) и старых
- * `GET /spaces/{id}/connections`, пока v4-эндпоинт недоступен (движок v3, OpenAPI без v4,
- * локальный стенд). Компоненты экрана не знают, откуда пришли поля.
+ * Источник на экране «Учёбы»: общая форма для нового API `/api/v1/sources` (v4) и прежней модели
+ * подключений `GET /spaces/{id}/connections`. Компоненты экрана не знают, откуда пришли поля.
+ *
+ * Прежняя модель — только честный fallback, когда v4-API на сервере выключен (404/501). Настоящая
+ * ошибка (сеть, 5xx) не прячется за старыми данными: экран показывает её и продолжает фоновое
+ * обновление, а не выдаёт устаревшую картину за правду.
  */
 export interface StudySource {
   id: string;
@@ -18,10 +20,12 @@ export interface StudySource {
   lastSyncAt: string | null;
   /** Человеческое описание ошибки, если источник сломан; технические коды не показываются. */
   errorDetail: string | null;
+  /** Код ошибки сервера — только для выбора человеческого действия в карточке. */
+  errorCode: string | null;
   /** Страница интерфейса источника для «Открыть». */
   entryUrl: string | null;
   origin: string | null;
-  /** Тред последней задачи источника (в v3 известен, в v4 — появится вместе с API задач). */
+  /** Тред последней задачи источника (в прежней модели известен; в v4 появится вместе с API задач). */
   threadId: string | null;
   playbookId: string | null;
   trust: string | null;
@@ -35,6 +39,7 @@ export interface StudySourcesResult {
   mode: "v4" | "connections";
   /** Ждём первый ответ v4-API: показываем скелетон, а не «источников нет». */
   loading: boolean;
+  /** Настоящая ошибка загрузки (сеть/сервер), не отсутствие v4-API. */
   error: unknown;
 }
 
@@ -60,7 +65,7 @@ function kindsOfConnection(connection: Connection): string[] {
   return V3_KINDS[connection.kind] ?? [connection.kind];
 }
 
-/** Старые подключения в форме источника: fallback, пока `/api/v1/sources` не отвечает (FR-068, миграция). */
+/** Старые подключения в форме источника: fallback, пока `/api/v1/sources` на сервере выключен. */
 export function connectionToStudySource(connection: Connection): StudySource {
   return {
     id: connection.id,
@@ -69,6 +74,7 @@ export function connectionToStudySource(connection: Connection): StudySource {
     status: V3_STATUS[connection.status] ?? connection.status,
     lastSyncAt: connection.lastSyncAt,
     errorDetail: connection.errorDetail ?? null,
+    errorCode: connection.errorCode ?? null,
     entryUrl: connection.entryUrl,
     origin: connection.origin,
     threadId: connection.threadId,
@@ -79,18 +85,17 @@ export function connectionToStudySource(connection: Connection): StudySource {
   };
 }
 
-function sourceFromV4(source: SourceV4): StudySource {
-  const error =
-    typeof source.lastError?.detail === "string" && source.lastError.detail.trim()
-      ? source.lastError.detail
-      : null;
+/** Ответ v4 в форме экрана: ошибка нормализуется, поля остаются как у сервера. */
+export function sourceFromApi(source: SourceOut): StudySource {
+  const error = sourceErrorOf(source);
   return {
     id: source.id,
     title: source.title,
     kinds: source.kinds,
     status: source.status,
     lastSyncAt: source.lastSyncAt,
-    errorDetail: error,
+    errorDetail: error.detail,
+    errorCode: error.code,
     entryUrl: source.entryUrl,
     origin: null,
     threadId: null,
@@ -102,16 +107,15 @@ function sourceFromV4(source: SourceV4): StudySource {
 }
 
 /**
- * Источники одного вуза: v4-API с откатом на старые подключения.
+ * Источники одного вуза: v4-API с откатом на прежние подключения только при отсутствии v4-API.
  *
- * Откат — не ошибка экрана: на движке v3 `/api/v1/sources` отвечает 404 (`require_sources_v4`), а старая
- * модель подключений уже загружена `useSpaceDirectory`. Пока нет ни ответа, ни ошибки, экран показывает
- * скелетон, чтобы не выдавать «источников нет» за факт.
+ * Откат — не ошибка экрана: на движке v3 `/api/v1/sources` отвечает 404 (`require_sources_v4`), а
+ * прежняя модель подключений уже загружена `useSpaceDirectory`. Пока нет ни ответа, ни ошибки, экран
+ * показывает скелетон, чтобы не выдавать «источников нет» за факт.
  */
 export function useStudySources(space: SpaceInfo): StudySourcesResult {
-  const v4 = useStudyUiMode() === "v4";
-  const enabled = v4 && Boolean(space.universityId);
-  const query = useQuery({ ...sourcesV4Query(space.id), enabled });
+  const enabled = Boolean(space.universityId);
+  const query = useQuery({ ...sourcesQuery(space.id), enabled });
 
   const fallback = useMemo(() => space.connections.map(connectionToStudySource), [space.connections]);
 
@@ -119,10 +123,14 @@ export function useStudySources(space: SpaceInfo): StudySourcesResult {
     return { sources: fallback, mode: "connections", loading: false, error: null };
   }
   if (query.data) {
-    return { sources: query.data.map(sourceFromV4), mode: "v4", loading: false, error: null };
+    return { sources: query.data.map(sourceFromApi), mode: "v4", loading: false, error: null };
   }
   if (query.isError) {
-    return { sources: fallback, mode: "connections", loading: false, error: query.error };
+    if (isSourcesApiUnavailable(query.error)) {
+      // v4-API выключен на сервере: прежние подключения — честный эквивалент, а не «пусто».
+      return { sources: fallback, mode: "connections", loading: false, error: null };
+    }
+    return { sources: [], mode: "v4", loading: false, error: query.error };
   }
   return { sources: [], mode: "v4", loading: query.isPending, error: null };
 }

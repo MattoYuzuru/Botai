@@ -4,7 +4,9 @@ The router is registered always (stable OpenAPI), but every endpoint is disabled
 `BOTAI_AGENT_ENGINE=v4`: on the v3 engine the dependency answers 404, so production is safe and
 enabling v4 is one env change. The runner is built through an overridable dependency
 (`get_runner_builder`), so tests inject a mock transport and an artifact store without touching the
-network; the default builder uses the real HTTP client.
+network; the default builder is the production wiring (`sources.v4.wiring`): the real HTTP client,
+the Vault session readers, the content-addressed artifact store, the sandboxed executor and the
+browser factory. A `sync` also writes the product domain with `source_id` provenance.
 
 Nothing here returns a secret: `auth_ref` is only a Vault handle name, `identity_key` is a digest
 or a normalized address, and run reports never contain request headers or cookies.
@@ -54,6 +56,7 @@ from botai.sources.v4.schemas import (
     SourceStateOut,
     SyncIn,
 )
+from botai.sources.v4.wiring import build_default_runner_builder
 
 router = APIRouter(prefix="/api/v1", tags=["sources-v4"])
 
@@ -69,14 +72,13 @@ def require_sources_v4(settings: SettingsDep) -> None:
         )
 
 
-def default_runner_builder(session: AsyncSession, user_id: str) -> SourceRunner:
-    """Production runner: the real HTTP client, no artifact bytes sink configured yet."""
-    return SourceRunner(session, user_id=user_id)
+def get_runner_builder(settings: SettingsDep) -> RunnerBuilder:
+    """The runner of one request: Overridable in tests with a mock transport/artifact store.
 
-
-def get_runner_builder() -> RunnerBuilder:
-    """Overridable in tests: returns the function that builds a runner for a session and user."""
-    return default_runner_builder
+    Production wiring (Vault sessions, the content-addressed artifact store, the sandboxed
+    executor and the browser factory) lives in `botai.sources.v4.wiring`.
+    """
+    return build_default_runner_builder(settings)
 
 
 V4 = Depends(require_sources_v4)

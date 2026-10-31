@@ -159,10 +159,18 @@ def _prov(row: Any, conn: _Conn) -> Provenance:
     )
 
 
+def _conn_of(row: Any, conns: dict[str, _Conn]) -> tuple[str, _Conn]:
+    """The v3 connection of a domain row; every caller selects rows by connection_id.in_(conns)."""
+    connection_id = row.connection_id
+    if connection_id is None or connection_id not in conns:
+        raise BotaiError(ErrorCode.INTERNAL, "Доменная запись без действующего подключения")
+    return connection_id, conns[connection_id]
+
+
 async def _course_titles(
-    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str, str | None]]
+    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str | None, str | None]]
 ) -> dict[tuple[str, str], str]:
-    wanted = {(c, e) for c, e in pairs if e}
+    wanted = {(c, e) for c, e in pairs if c is not None and e}
     if not wanted:
         return {}
     rows = await session.execute(
@@ -172,14 +180,14 @@ async def _course_titles(
             Course.external_id.in_({e for _, e in wanted}),
         )
     )
-    return {(c, e): t for c, e, t in rows.all() if (c, e) in wanted}
+    return {(c, e): t for c, e, t in rows.all() if c is not None and (c, e) in wanted}
 
 
 async def _assignment_descriptions(
-    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str, str | None]]
+    session: AsyncSession, user_id: str, pairs: Iterable[tuple[str | None, str | None]]
 ) -> dict[tuple[str, str], str]:
     """Task text of a deadline comes from its assignment, when the source gave one."""
-    wanted = {(c, e) for c, e in pairs if e}
+    wanted = {(c, e) for c, e in pairs if c is not None and e}
     if not wanted:
         return {}
     rows = await session.execute(
@@ -190,7 +198,7 @@ async def _assignment_descriptions(
             Assignment.description.is_not(None),
         )
     )
-    return {(c, e): d for c, e, d in rows.all() if (c, e) in wanted and d}
+    return {(c, e): d for c, e, d in rows.all() if c is not None and (c, e) in wanted and d}
 
 
 # --- sections -----------------------------------------------------------------------------------
@@ -275,33 +283,34 @@ async def _event_outs(
     titles = await _course_titles(
         session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
     )
-    return [
-        ScheduleEventOut(
-            id=r.id,
-            title=r.title,
-            kind=_choice(r.kind, _EVENT_KINDS, "other"),
-            starts_at=r.starts_at,
-            ends_at=r.ends_at,
-            format=_choice(r.format, _EVENT_FORMATS, "unknown"),
-            location=r.location_text,
-            teacher=r.teacher_text,
-            course_title=titles.get((r.connection_id, r.course_external_id or "")),
-            url=r.url,
-            kind_text=r.kind_text,
-            address=r.address,
-            group=r.group_text,
-            lesson_number=r.lesson_number,
-            links=[EventLink(**link) for link in r.links],
-            attributes=[EventAttribute(**attribute) for attribute in r.attributes],
-            changed=r.changed,
-            conflicts_with=[],
-            provenance=_prov(r, conns[r.connection_id]),
-            sources=[
-                EventSource(connection_id=r.connection_id, title=conns[r.connection_id].title)
-            ],
+    out: list[ScheduleEventOut] = []
+    for r in rows:
+        connection_id, connection = _conn_of(r, conns)
+        out.append(
+            ScheduleEventOut(
+                id=r.id,
+                title=r.title,
+                kind=_choice(r.kind, _EVENT_KINDS, "other"),
+                starts_at=r.starts_at,
+                ends_at=r.ends_at,
+                format=_choice(r.format, _EVENT_FORMATS, "unknown"),
+                location=r.location_text,
+                teacher=r.teacher_text,
+                course_title=titles.get((connection_id, r.course_external_id or "")),
+                url=r.url,
+                kind_text=r.kind_text,
+                address=r.address,
+                group=r.group_text,
+                lesson_number=r.lesson_number,
+                links=[EventLink(**link) for link in r.links],
+                attributes=[EventAttribute(**attribute) for attribute in r.attributes],
+                changed=r.changed,
+                conflicts_with=[],
+                provenance=_prov(r, connection),
+                sources=[EventSource(connection_id=connection_id, title=connection.title)],
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 async def _events(
@@ -446,20 +455,23 @@ async def _deadlines(
     texts = await _assignment_descriptions(
         session, user_id, ((r.connection_id, r.assignment_external_id) for r in rows)
     )
-    return [
-        DeadlineOut(
-            id=r.id,
-            title=r.title,
-            due_at=r.due_at,
-            effective_due_at=r.effective_due_at,
-            state=_choice(r.state, _DEADLINE_STATES, "unknown"),
-            course_title=titles.get((r.connection_id, r.course_external_id or "")),
-            description=texts.get((r.connection_id, r.assignment_external_id or "")),
-            url=r.url,
-            provenance=_prov(r, conns[r.connection_id]),
+    out: list[DeadlineOut] = []
+    for r in rows:
+        connection_id, connection = _conn_of(r, conns)
+        out.append(
+            DeadlineOut(
+                id=r.id,
+                title=r.title,
+                due_at=r.due_at,
+                effective_due_at=r.effective_due_at,
+                state=_choice(r.state, _DEADLINE_STATES, "unknown"),
+                course_title=titles.get((connection_id, r.course_external_id or "")),
+                description=texts.get((connection_id, r.assignment_external_id or "")),
+                url=r.url,
+                provenance=_prov(r, connection),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 # --- the rest of the domain ---------------------------------------------------------------------
@@ -488,17 +500,20 @@ async def list_courses(
         .order_by(Course.title, Course.id)
         .limit(MAX_ROWS)
     )
-    return [
-        CourseOut(
-            id=r.id,
-            title=r.title,
-            code=r.code,
-            term=r.term,
-            url=r.url,
-            provenance=_prov(r, conns[r.connection_id]),
+    out: list[CourseOut] = []
+    for r in rows:
+        _, connection = _conn_of(r, conns)
+        out.append(
+            CourseOut(
+                id=r.id,
+                title=r.title,
+                code=r.code,
+                term=r.term,
+                url=r.url,
+                provenance=_prov(r, connection),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 async def list_grades(
@@ -525,19 +540,22 @@ async def list_grades(
     titles = await _course_titles(
         session, user_id, ((r.connection_id, r.course_external_id) for r in rows)
     )
-    return [
-        GradeOut(
-            id=r.id,
-            title=r.title,
-            value=r.value,
-            scale=r.scale,
-            weight=r.weight,
-            course_title=titles.get((r.connection_id, r.course_external_id or "")),
-            graded_at=r.graded_at,
-            provenance=_prov(r, conns[r.connection_id]),
+    out: list[GradeOut] = []
+    for r in rows:
+        connection_id, connection = _conn_of(r, conns)
+        out.append(
+            GradeOut(
+                id=r.id,
+                title=r.title,
+                value=r.value,
+                scale=r.scale,
+                weight=r.weight,
+                course_title=titles.get((connection_id, r.course_external_id or "")),
+                graded_at=r.graded_at,
+                provenance=_prov(r, connection),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 async def list_people(
@@ -558,16 +576,19 @@ async def list_people(
         .order_by(Person.name, Person.id)
         .limit(MAX_ROWS)
     )
-    return [
-        PersonOut(
-            id=r.id,
-            name=r.name,
-            role=r.role,
-            email=r.email,
-            provenance=_prov(r, conns[r.connection_id]),
+    out: list[PersonOut] = []
+    for r in rows:
+        _, connection = _conn_of(r, conns)
+        out.append(
+            PersonOut(
+                id=r.id,
+                name=r.name,
+                role=r.role,
+                email=r.email,
+                provenance=_prov(r, connection),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 async def list_news(
@@ -589,17 +610,20 @@ async def list_news(
         .order_by(NewsItem.published_at.desc(), NewsItem.id)
         .limit(MAX_ROWS)
     )
-    return [
-        NewsOut(
-            id=r.id,
-            title=r.title,
-            body=r.body,
-            published_at=r.published_at,
-            url=r.url,
-            provenance=_prov(r, conns[r.connection_id]),
+    out: list[NewsOut] = []
+    for r in rows:
+        _, connection = _conn_of(r, conns)
+        out.append(
+            NewsOut(
+                id=r.id,
+                title=r.title,
+                body=r.body,
+                published_at=r.published_at,
+                url=r.url,
+                provenance=_prov(r, connection),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 # --- home screen --------------------------------------------------------------------------------

@@ -19,7 +19,8 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector: RAG migration creates the `vector` extension (docs/v4/18-rag.md §3).
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: botai
           POSTGRES_PASSWORD: botai
@@ -43,10 +44,17 @@ jobs:
       - run: uv sync --frozen
       - name: Playwright Chromium
         run: uv run --frozen playwright install --with-deps chromium
+      - name: Sandbox image for container-executor tests
+        working-directory: .
+        run: docker build -f ops/docker/sandbox.Dockerfile -t botai-sandbox:ci .
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen pyright
       - run: uv run --frozen pytest -q
+        env:
+          # Docker-gated ContainerExecutor tests run against the image built above instead of
+          # silently skipping (docs/v4/13-executor.md); the executor never pulls mid-task.
+          BOTAI_SANDBOX_IMAGE: botai-sandbox:ci
 
   web:
     runs-on: ubuntu-latest

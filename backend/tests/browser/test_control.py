@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from botai.browser.control import (
     BrowserControl,
@@ -136,6 +137,25 @@ async def test_waits_for_a_delayed_element_and_times_out(
     with pytest.raises(BotaiError) as exc:
         await control.wait("selector", "#never", timeout_s=0.2)
     assert exc.value.code == ErrorCode.NOT_FOUND
+
+
+async def test_page_timeouts_are_not_reported_as_a_broken_source(
+    control: BrowserControl,
+) -> None:
+    """A slow page/action is `browser_timeout` (504), not `source_unavailable` (site is down).
+
+    Live L3 showed the model reading clicks/waits after SSO as a source problem; the two cases
+    must stay distinguishable for it to retry the browser action instead of abandoning the source.
+    """
+    error = control._error(
+        "Нажать", PlaywrightTimeout("Timeout 200ms exceeded"), url="https://lk.hse.ru/"
+    )
+    assert error.code == ErrorCode.BROWSER_TIMEOUT
+    assert error.status == 504
+    element = control._error(
+        "Ждать", PlaywrightTimeout("Timeout 200ms exceeded"), target="button#login"
+    )
+    assert element.code == ErrorCode.NOT_FOUND
 
 
 async def test_screenshot_png_jpeg_and_element(

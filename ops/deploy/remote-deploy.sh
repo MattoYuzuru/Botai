@@ -18,6 +18,16 @@ if [ -n "$EXPECTED_REVISION" ]; then
   }
 fi
 cd /srv/botai
+# v4 runtime host dirs are created once by bootstrap-server.sh with sudo, owned by UID 10001, and
+# bind-mounted into the worker at the same path. CI runs as botai-deploy and cannot chown them, so
+# a missing dir is a setup error, not something to "fix" from a deploy.
+DEPLOY_ROOT="$(pwd)"
+for d in agent-workspaces source-artifacts; do
+  [ -d "$DEPLOY_ROOT/$d" ] || {
+    echo "missing $DEPLOY_ROOT/$d: run ops/deploy/bootstrap-server.sh once with sudo" >&2
+    exit 78
+  }
+done
 # Serialize CI and operator rollouts before reading/writing shared configuration.
 exec 9>.deploy.lock
 flock -w 300 9 || { echo "another BotAI deployment holds the lock" >&2; exit 75; }
@@ -115,6 +125,16 @@ if [ -n "$EXPECTED_REVISION" ]; then
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}') || rollback "image identity"
   [ "$actual_revision" = "$EXPECTED_REVISION" ] || rollback "image revision mismatch"
 fi
+# The v4 sandbox image is built per commit too. Compose has no service for it (the worker starts
+# sibling containers through the host daemon), so pull it explicitly and verify the same revision
+# label before any container can run agent code (docs/v4/13-executor.md §5).
+SANDBOX_IMAGE="ghcr.io/mattoyuzuru/botai-sandbox:${TAG}"
+docker pull "$SANDBOX_IMAGE" || rollback "sandbox image pull"
+if [ -n "$EXPECTED_REVISION" ]; then
+  sandbox_revision=$(docker image inspect "$SANDBOX_IMAGE" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}') || rollback "sandbox image identity"
+  [ "$sandbox_revision" = "$EXPECTED_REVISION" ] || rollback "sandbox image revision mismatch"
+fi
 # A database-only encrypted recovery point before DDL. The encryption key is kept
 # separately from backups and is unrelated to the Vault KEK. Never output either.
 if [ -n "$(dc ps -q postgres)" ]; then
@@ -127,15 +147,32 @@ if [ -n "$(dc ps -q postgres)" ]; then
     openssl enc -aes-256-cbc -salt -pbkdf2 -pass "file:${backup_key}" \
       -out "backups/${backup_name}.dump.enc" || rollback "database backup"
 fi
+# Postgres may itself change image in this deploy (postgres:17-alpine -> pgvector/pgvector:pg17 for
+# the `vector` extension): recreate it BEFORE migrations, otherwise a migration that needs the new
+# image's extensions would run against the old server. `up -d postgres` is a no-op when unchanged.
+wait_postgres() {
+  for _ in $(seq 1 45); do
+    if dc exec -T postgres pg_isready -U botai >/dev/null 2>&1; then return 0; fi
+    sleep 2
+  done
+  return 1
+}
+dc up -d postgres || rollback "postgres update"
+wait_postgres || rollback "postgres health check"
 dc --profile tools run --rm migrate || rollback "migration"
+# A crashed/timed-out run can leave a labeled sandbox container behind; they are safe to remove
+# before the new worker starts (the executor also removes its own container on every call).
+docker ps -aq --filter label=botai.agent.sandbox=1 | xargs -r docker rm -f >/dev/null 2>&1 || true
 runtime_changed=true
 dc up -d --remove-orphans || rollback "container update"
 healthy || rollback "health check"
 echo "deployed ${TAG}; diagnostics=${next_diagnostics}"
 
-# Keep the three newest BotAI image tags; never prune other projects' images.
-docker image ls ghcr.io/mattoyuzuru/botai-app --format '{{.Tag}} {{.CreatedAt}}' |
-  grep -v '^latest ' | sort -k2 -r | awk 'NR>3 {print $1}' |
-  while read -r old; do
-    [ "$old" = "$TAG" ] || docker image rm "ghcr.io/mattoyuzuru/botai-app:${old}" >/dev/null 2>&1 || true
-  done
+# Keep the three newest app and sandbox image tags; never prune other projects' images.
+for image in ghcr.io/mattoyuzuru/botai-app ghcr.io/mattoyuzuru/botai-sandbox; do
+  docker image ls "$image" --format '{{.Tag}} {{.CreatedAt}}' |
+    grep -v '^latest ' | sort -k2 -r | awk 'NR>3 {print $1}' |
+    while read -r old; do
+      [ "$old" = "$TAG" ] || docker image rm "${image}:${old}" >/dev/null 2>&1 || true
+    done
+done

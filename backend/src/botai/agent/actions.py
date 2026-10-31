@@ -356,8 +356,19 @@ async def handle_action(
     payload: dict[str, Any],
     *,
     executor: ActionExecutor | None = None,
+    engine: Any = None,
 ) -> dict[str, Any] | None:
-    """The ACTION job: execute exactly what was approved, once."""
+    """The ACTION job: execute exactly what was approved, once.
+
+    With `BOTAI_AGENT_ENGINE=v4` the approved proposal goes through the v4 action policy engine
+    and its journal (`botai/actions/legacy.py`); the default v3 path below is untouched.
+    """
+    if services.settings.agent_engine == "v4":
+        from botai.actions.legacy import handle_approved_action
+
+        return await handle_approved_action(
+            ctx, services, payload, engine=engine, executor=executor
+        )
     proposal_id = str(payload["proposal_id"])
     now = services.clock.now()
     async with services.db() as session:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from botai.agent.v4.executor import ContainerExecutor
 from botai.agent.v4.factory import (
     AgentWiringError,
     build_agent_wiring,
@@ -52,27 +53,32 @@ def test_unset_soft_limits_mean_no_limit() -> None:
     assert limits.max_usd is None
 
 
-def test_local_executor_is_refused_in_prod() -> None:
+def test_prod_selects_the_container_executor_and_refuses_a_host_process() -> None:
     workspace = workspace_for(None, "01M68Z000000000000000000A0")
     try:
+        executor = build_executor(fixture_settings(env="prod"), workspace)
+        assert isinstance(executor, ContainerExecutor)
         with pytest.raises(AgentWiringError, match="ENV=prod"):
-            build_executor(fixture_settings(env="prod"), workspace)
+            build_executor(fixture_settings(env="prod", agent_executor="local"), workspace)
     finally:
         workspace.cleanup()
 
 
-async def test_wiring_itself_refuses_prod_before_starting_a_browser() -> None:
+async def test_prod_wiring_uses_the_container_executor() -> None:
     services = fake_services(settings=fixture_settings(env="prod"))
-    with pytest.raises(AgentWiringError, match="LocalExecutor запрещён"):
-        await build_agent_wiring(
-            services,
-            user_id="u1",
-            run_id="01M68Z000000000000000000A0",
-            provider=MockProvider(),
-            trace_store=memory_trace_store(),
-            with_browser=True,
-            workspace_root=Path("/tmp") / "botai-agent-v4-prod-guard-fixture",
-        )
+    wiring = await build_agent_wiring(
+        services,
+        user_id="u1",
+        run_id="01M68Z000000000000000000A0",
+        provider=MockProvider(),
+        trace_store=memory_trace_store(),
+        with_browser=False,
+        workspace_root=Path("/tmp") / "botai-agent-v4-prod-container-fixture",
+    )
+    try:
+        assert isinstance(wiring.executor, ContainerExecutor)
+    finally:
+        await wiring.aclose()
 
 
 async def test_the_agent_toolset_contains_browser_code_and_secrets() -> None:

@@ -2,8 +2,11 @@
 
 Проект: **BotAI** — учебный хаб студента (PWA) для владельца и его друга.
 Агент внутри приложения подключает вузы, читает и склеивает источники, отвечает
-на вопросы и выполняет учебные действия. Сейчас идёт **пивот v4: свободный
-harness**. Источник правды — [docs/v4/](docs/v4/README.md); старые ADR удалены.
+на вопросы и выполняет учебные действия. **Пивот v4 (свободный harness) реализован
+в коде**; в production двигатель включается флагом `BOTAI_AGENT_ENGINE=v4` после
+приёмки. Источник правды — [docs/v4/](docs/v4/README.md); старые ADR удалены.
+Текущий статус и остатки — [README v4](docs/v4/README.md#статус-реализации-2026-10-31-третья-итерация),
+[handoff](docs/v4/07-handoff-claude.md).
 
 ## Начало работы
 
@@ -50,11 +53,15 @@ harness**. Источник правды — [docs/v4/](docs/v4/README.md); ст
 ## Команды
 
 ```bash
-make db          # Postgres для разработки (127.0.0.1:55432)
+make db          # Postgres для разработки (127.0.0.1:55432, pgvector/pgvector:pg17)
 make check       # полный локальный гейт: ruff, pyright, pytest, Biome, tsc, vitest, gen
 make gen         # пересобрать контракты/OpenAPI/TS-типы
-make bench SCENARIO=B1 ARGS="..."            # агентский бенчмарк L2
-python -m bench.live.run --scenario login    # живой бенчмарк L3 (из корня)
+make migrate     # alembic upgrade head на dev-БД
+make bench SCENARIO=B1 ARGS="..."            # агентский бенчмарк L2 (v3-путь)
+python -m bench.live.run --scenario login    # живой бенчмарк L3, примитивы harness (из корня)
+backend/.venv/bin/python -m bench.v4.run_agent --scenario l2-fakeuni  # v4-агент, $0
+backend/.venv/bin/python -m bench.v4.run_agent --scenario live-hse    # v4-агент, живой ВШЭ
+docker build -f ops/docker/sandbox.Dockerfile -t botai-sandbox:test .  # песочница code_exec
 make dev-api / dev-worker / dev-web
 ```
 

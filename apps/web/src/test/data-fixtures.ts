@@ -1,6 +1,4 @@
 import type { Connection, Provenance, ScheduleEvent, Space } from "@/api/types";
-import { type MockConnection, type MockDb, ulid } from "@/mocks/db";
-
 /** Происхождение записи для юнит-тестов: адрес API в `sourceUrl`, страница интерфейса — в `openUrl`. */
 export function provenanceFixture(patch: Partial<Provenance> = {}): Provenance {
   return {
@@ -82,11 +80,4 @@ export function connectionFixture(patch: Partial<Connection> = {}): Connection {
 export function hrefOf(link: HTMLElement): { pathname: string } & Record<string, string> {
   const url = new URL(link.getAttribute("href") ?? "", "http://localhost");
   return { ...Object.fromEntries(url.searchParams), pathname: url.pathname };
-}
-
-/** Добавляет в базу мока источник вуза (с новыми видами `doc`, `site`, `calendar`, которых нет в сгенерированной схеме). */
-export function addConnection(db: MockDb, spaceId: string, patch: Partial<Connection>): Connection {
-  const connection = connectionFixture({ id: ulid(), spaceId, ...patch });
-  db.connections.push(connection as MockConnection);
-  return connection;
 }

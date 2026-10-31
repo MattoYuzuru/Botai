@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isStudyKind, SECTION_REGISTRY, visibleSections } from "./registry";
+import { isStudyKind, RETIRED_STUDY_KINDS, SECTION_REGISTRY, visibleSections } from "./registry";
 
 describe("SECTION_REGISTRY", () => {
-  it("порядок фиксирован: Предметы, Оценки, Преподаватели, Аудитории, Новости, Документы и вложения, Источники", () => {
+  it("порядок фиксирован: Предметы, Оценки, Преподаватели, Аудитории, Новости", () => {
     expect(SECTION_REGISTRY.map((def) => def.title)).toEqual([
       "Предметы",
       "Оценки",
       "Преподаватели",
       "Аудитории",
       "Новости",
-      "Документы и вложения",
-      "Источники",
     ]);
   });
 
@@ -20,10 +18,16 @@ describe("SECTION_REGISTRY", () => {
     expect(isStudyKind("grades")).toBe(true);
     expect(isStudyKind("tabs")).toBe(false);
   });
+
+  it("«Документы и вложения» и «Источники» — не разделы, а прежние места (D-013)", () => {
+    expect(isStudyKind("documents")).toBe(false);
+    expect(isStudyKind("connections")).toBe(false);
+    expect([...RETIRED_STUDY_KINDS]).toEqual(["connections", "documents"]);
+  });
 });
 
 describe("visibleSections", () => {
-  it("показывает только виды с данными, в порядке реестра; «Источники» — не строка списка", () => {
+  it("показывает только виды с данными, в порядке реестра; чужие виды пропускаются", () => {
     const result = visibleSections([
       { kind: "news", count: 2 },
       { kind: "courses", count: 6 },
@@ -35,7 +39,6 @@ describe("visibleSections", () => {
     expect(result.map((row) => [row.def.kind, row.count])).toEqual([
       ["courses", 6],
       ["news", 2],
-      ["documents", 3],
     ]);
   });
 

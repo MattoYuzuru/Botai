@@ -28,18 +28,17 @@ export function parseInternalLink(url: string | null | undefined): InternalLink 
 }
 
 /**
- * Куда ведёт ссылка в приложении. Тред — `/chat?thread=<id>`. Документы и подключения лежат в «Учёбе»: экран
- * раздела хранит открытую карточку у себя и пока не читает идентификатор из адреса, поэтому ведём в раздел.
- * Вложение открывается во вьюере, а адрес — его содержимое (средняя кнопка мыши откроет файл).
+ * Куда ведёт ссылка в приложении. Тред — `/chat?thread=<id>`. Документы и подключения живут на «Учёбе»:
+ * отдельного места у них больше нет (D-013), поэтому ссылка ведёт на экран вузов и их источников. Вложение
+ * открывается во вьюере, а адрес — его содержимое (средняя кнопка мыши откроет файл).
  */
 export function internalHref(link: InternalLink): string {
   switch (link.kind) {
     case "thread":
       return `/chat?thread=${encodeURIComponent(link.id)}`;
     case "document":
-      return "/study/documents";
     case "connection":
-      return "/study/connections";
+      return "/study";
     case "attachment":
       return attachmentContentUrl(link.id);
   }
@@ -50,7 +49,7 @@ export function internalLabel(link: InternalLink): string {
     case "thread":
       return "Открыть чат";
     case "document":
-      return "Открыть документ в «Учёбе»";
+      return "Открыть документы в «Учёбе»";
     case "connection":
       return "Открыть подключение в «Учёбе»";
     case "attachment":

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from botai.contracts.specs import Kind
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import (
     ARTIFACT_KINDS,
@@ -27,15 +28,19 @@ __all__ = [
     "ALL_KINDS",
     "ARTIFACT_KINDS",
     "DATA_KINDS",
+    "KIND_TO_READING",
     "LEGACY_KIND_ALIASES",
     "NATURE_KINDS",
     "PLAYBOOK_LANGUAGES",
+    "READING_KINDS",
     "SOURCE_STATUSES",
     "SOURCE_TRUST_LEVELS",
     "data_kinds",
     "kinds_from_legacy",
     "nature_kinds",
     "normalize_kinds",
+    "reading_kind",
+    "v4_kind",
     "validate_artifact_kind",
     "validate_language",
     "validate_status",
@@ -45,6 +50,33 @@ __all__ = [
 NATURE_KINDS: tuple[str, ...] = SOURCE_NATURE_KINDS
 DATA_KINDS: tuple[str, ...] = SOURCE_DATA_KINDS
 ALL_KINDS: tuple[str, ...] = NATURE_KINDS + DATA_KINDS
+
+# The reading vocabulary of recipes and the domain write: a v4 data kind -> the v3 kind whose
+# domain table and coercion it shares. A kind missing here has no domain table yet (documents,
+# messages): its records stay in the run report until a domain home exists.
+READING_KINDS: dict[str, Kind] = {
+    "schedule": "scheduleEvents",
+    "deadlines": "deadlines",
+    "assignments": "assignments",
+    "courses": "courses",
+    "grades": "grades",
+    "people": "people",
+    "locations": "locations",
+    "news": "news",
+}
+KIND_TO_READING: dict[Kind, str] = {kind: name for name, kind in READING_KINDS.items()}
+
+
+def reading_kind(kind: str) -> Kind | None:
+    """The v3/domain kind of a v4 data kind name, or None when it has no domain table."""
+    value = kind.strip()
+    return READING_KINDS.get(value)
+
+
+def v4_kind(kind: Kind) -> str:
+    """The v4 data kind name of a v3/domain kind (the inverse of `reading_kind`)."""
+    return KIND_TO_READING[kind]
+
 
 # v3 kinds that do not exist in v4, and the recipe vocabulary of reading capabilities.
 LEGACY_KIND_ALIASES: dict[str, str] = {

@@ -39,6 +39,31 @@ x-app: &app
     BOTAI_RESEARCH_MAX_STEPS: "${BOTAI_RESEARCH_MAX_STEPS:-100}"
     BOTAI_RESEARCH_MAX_REQUESTS: "${BOTAI_RESEARCH_MAX_REQUESTS:-2000}"
     BOTAI_RESEARCH_CHECKPOINT_TTL_HOURS: "${BOTAI_RESEARCH_CHECKPOINT_TTL_HOURS:-24}"
+    # --- v4 free-harness engine (docs/v4/README.md, 05-implementation-plan.md) ----------------
+    # v3 stays the default until the owner accepts v4; switch by adding BOTAI_AGENT_ENGINE=v4 to
+    # /srv/botai/compose.vars and running a normal deploy (docs/plan/deployment.md).
+    BOTAI_AGENT_ENGINE: "${BOTAI_AGENT_ENGINE:-v3}"
+    # In production agent code runs only in the Docker sandbox: LocalExecutor is a loud config
+    # error there (docs/v4/13-executor.md §2, §5). The sandbox image is built by CI per commit.
+    BOTAI_AGENT_EXECUTOR: "container"
+    BOTAI_AGENT_WORKSPACE_ROOT: /srv/botai/agent-workspaces
+    BOTAI_SOURCE_ARTIFACTS_DIR: /srv/botai/source-artifacts
+    BOTAI_SANDBOX_IMAGE: "ghcr.io/mattoyuzuru/botai-sandbox:${IMAGE_TAG:?IMAGE_TAG is required}"
+    BOTAI_AGENT_HARD_STOP_USD: "${BOTAI_AGENT_HARD_STOP_USD:-2.0}"
+    BOTAI_AGENT_AUTO_CONTINUE: "${BOTAI_AGENT_AUTO_CONTINUE:-false}"
+    # Soft per-task limits of the v4 engine (D-009): visible counters, not walls; the owner can
+    # raise them in compose.vars. Production gets finite defaults so one task cannot burn forever.
+    BOTAI_AGENT_LIMITS_STEPS: "${BOTAI_AGENT_LIMITS_STEPS:-100}"
+    BOTAI_AGENT_LIMITS_SECONDS: "${BOTAI_AGENT_LIMITS_SECONDS:-1800}"
+    BOTAI_AGENT_LIMITS_TOKENS: "${BOTAI_AGENT_LIMITS_TOKENS:-3000000}"
+    BOTAI_AGENT_LIMITS_USD: "${BOTAI_AGENT_LIMITS_USD:-0.30}"
+    # RAG (docs/v4/18-rag.md): on in production, local offline embeddings by default (no key);
+    # the owner switches to an API provider with BOTAI_RAG_* + BOTAI_EMBEDDING_API_KEY in
+    # compose.vars/secrets. The artifact root is the same persistent host dir as sources.
+    BOTAI_RAG_ENABLED: "${BOTAI_RAG_ENABLED:-true}"
+    BOTAI_RAG_PROVIDER: "${BOTAI_RAG_PROVIDER:-local}"
+    BOTAI_RAG_DIMENSION: "${BOTAI_RAG_DIMENSION:-384}"
+    BOTAI_RAG_ARTIFACT_ROOT: /srv/botai/source-artifacts
   volumes: [diagdata:/var/log/botai/diagnostics]
   restart: unless-stopped
   networks: [botai]
@@ -48,7 +73,12 @@ x-app: &app
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # pgvector on purpose (docs/v4/18-rag.md §3, D-011): the RAG migration creates the `vector`
+    # extension. Same PG 17 major as the previous postgres:17-alpine, so the pgdata volume is reused
+    # without initdb; the base image changes musl->glibc, so after the first deploy on this image
+    # check `datcollversion`/warnings and refresh the collation version + reindex if PG reports it
+    # (docs/plan/deployment.md, «pgvector: образ Postgres и collation»).
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: botai
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
@@ -78,10 +108,25 @@ services:
       <<: *app-env
       BOTAI_DIAGNOSTICS_SERVICE: api
     # The framework spools an upload above a megabyte (attachments, dictation) to /tmp: into memory
-    # (counted in mem_limit), never onto the disk layer of the container.
+    # (counted in mem_limit), never onto the disk layer of the container. The API also runs inline
+    # v4 source syncs (REST «Перечитать»), and a browser-format playbook starts Chromium there, so
+    # /tmp and memory must fit one short headless browser — not only uploads. (Architecture debt:
+    # heavy browser syncs should move to the worker/job queue in the next iteration; documented in
+    # docs/v4/16-sources-runner-tools.md.)
     tmpfs:
-      - /tmp:size=128m,mode=1777
+      - /tmp:size=512m,mode=1777
+    shm_size: 1gb
     ports: ["127.0.0.1:18090:8000"]
+    # The API also runs v4 source syncs (parser code + optional browser) for the REST path, so it
+    # gets the same sandbox capability as the worker: docker CLI + the host socket, and the two
+    # persistent host dirs bind-mounted at the SAME absolute paths. The sandbox container itself
+    # never receives the socket or the app secrets (ContainerExecutor passes only explicit env).
+    volumes:
+      - diagdata:/var/log/botai/diagnostics
+      - /srv/botai/agent-workspaces:/srv/botai/agent-workspaces
+      - /srv/botai/source-artifacts:/srv/botai/source-artifacts
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add: ["${DOCKER_GID:?DOCKER_GID is required: run ops/deploy/bootstrap-server.sh}"]
     depends_on:
       postgres: { condition: service_healthy }
     healthcheck:
@@ -102,6 +147,15 @@ services:
       BOTAI_BROWSER_TMPDIR: /tmp/chromium  # browser profiles live in tmpfs, never on disk
     tmpfs:
       - /tmp:size=512m,mode=1777
+    # v4 agent code sandbox: sibling Docker containers on the host daemon (docs/v4/13-executor.md).
+    # The workspace/artifact host dirs are mounted at identical paths because the sandbox container
+    # bind-mounts the very same absolute workspace path off the host.
+    volumes:
+      - diagdata:/var/log/botai/diagnostics
+      - /srv/botai/agent-workspaces:/srv/botai/agent-workspaces
+      - /srv/botai/source-artifacts:/srv/botai/source-artifacts
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add: ["${DOCKER_GID:?DOCKER_GID is required: run ops/deploy/bootstrap-server.sh}"]
     depends_on:
       postgres: { condition: service_healthy }
       proxy: { condition: service_started }

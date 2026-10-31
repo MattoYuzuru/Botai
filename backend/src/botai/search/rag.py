@@ -18,11 +18,24 @@ Idempotency: the document hash is the content address. Re-ingesting the same tex
 readable with its own freshness; replacing old snapshots is a retention decision, not a silent
 delete here.
 
+Vectors are written twice by design: `embedding` (JSONB, canonical and portable) always, and
+`embedding_vec` (pgvector, derived) when the migrated column exists with the provider's width. A
+reindex of already embedded rows fills the derived column from JSONB (`vectors_filled:<n>`), so
+enabling pgvector never requires re-embedding the corpus (search/pgvector.py).
+
+Automatic indexing: `reindex_source_artifacts` (and `build_indexer` for a future hook) is the
+callable a sources runtime could use after a run, but it is deliberately **not wired** into the
+runner this round — that package is owned by another lane and the phase closes without the inline
+hook. The supported path for artifacts that already exist is the ops command
+`python -m botai.ops.reindex_rag` (bounded, idempotent); automatic indexing after a run remains an
+honest gap.
+
 Query
 -----
 `RagQueryService.search` embeds the question, runs `botai.search.hybrid.hybrid_search` (FTS +
 vector, fusion, freshness, provenance) and returns citations. A failed embedding provider degrades
 to FTS-only and says so (`mode="fts_only"`, `degraded=...`); it never hides text that FTS found.
+`vector_backend` says which physical vector leg ran (`pgvector`/`jsonb`/`none`).
 
 Feature flag
 ------------
@@ -59,7 +72,8 @@ from botai.search.embeddings import (
     content_hash,
 )
 from botai.search.hybrid import HybridFilters, HybridHit, HybridSearchResult, hybrid_search
-from botai.sources.v4 import get_source, list_artifacts
+from botai.search.pgvector import backfill_vectors, state_for
+from botai.sources.v4 import get_source, list_artifacts, list_sources
 
 DEFAULT_CHUNK_CHARS = 1200
 DEFAULT_CHUNK_OVERLAP = 150
@@ -634,6 +648,7 @@ class RagIndexer:
         if not chunks:
             return IngestReport(skipped=1, reasons=("no_chunks",))
         model = self._provider.name
+        vector_state = await state_for(session)
         already = set(
             await session.scalars(
                 select(ChunkEmbedding.chunk_id).where(
@@ -645,33 +660,67 @@ class RagIndexer:
         )
         pending = [chunk for chunk in chunks if chunk.id not in already]
         if not pending:
+            reasons = ["already_indexed"]
+            reasons.extend(await self._fill_vectors(session, user_id, model, chunks))
             return IngestReport(
                 chunks=len(chunks),
                 deduplicated=len(chunks),
-                reasons=("already_indexed",),
+                reasons=tuple(reasons),
             )
         vectors = await self._provider.embed([chunk.text for chunk in pending])
         for chunk, vector in zip(pending, vectors, strict=True):
-            session.add(
-                ChunkEmbedding(
-                    user_id=user_id,
-                    chunk_id=chunk.id,
-                    document_id=chunk.document_id,
-                    source_id=source_id,
-                    artifact_id=artifact_id,
-                    model=model,
-                    dimension=len(vector),
-                    content_hash=content_hash(chunk.text),
-                    embedding=vector,
-                    url=url,
-                    title=title,
-                    kind=provenance_kind,
-                    captured_at=fetched_at,
-                    trust=trust,
-                )
+            row = ChunkEmbedding(
+                user_id=user_id,
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                model=model,
+                dimension=len(vector),
+                content_hash=content_hash(chunk.text),
+                embedding=vector,
+                url=url,
+                title=title,
+                kind=provenance_kind,
+                captured_at=fetched_at,
+                trust=trust,
             )
+            if vector_state.available and vector_state.dimension == len(vector):
+                row.embedding_vec = vector
+            session.add(row)
         await session.flush()
-        return IngestReport(chunks=len(chunks), embedded=len(pending), deduplicated=len(already))
+        reasons = await self._fill_vectors(
+            session, user_id, model, [chunk for chunk in chunks if chunk.id in already]
+        )
+        return IngestReport(
+            chunks=len(chunks),
+            embedded=len(pending),
+            deduplicated=len(already),
+            reasons=tuple(reasons),
+        )
+
+    async def _fill_vectors(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        model: str,
+        chunks: Sequence[Chunk],
+    ) -> list[str]:
+        """Derive `embedding_vec` for rows embedded before the pgvector column existed.
+
+        Cheap (JSONB is already in the database), bounded by the unit's chunk count, and skipped
+        silently while pgvector is unavailable — the JSONB path is the answer in that case.
+        """
+        if not chunks:
+            return []
+        report = await backfill_vectors(
+            session,
+            user_id=user_id,
+            model=model,
+            chunk_ids=[chunk.id for chunk in chunks],
+            max_rows=len(chunks),
+        )
+        return [f"vectors_filled:{report.filled}"] if report.filled else []
 
 
 def _merge_reports(reports: Sequence[IngestReport]) -> IngestReport:
@@ -682,6 +731,73 @@ def _merge_reports(reports: Sequence[IngestReport]) -> IngestReport:
         deduplicated=sum(report.deduplicated for report in reports),
         skipped=sum(report.skipped for report in reports),
         reasons=tuple(reason for report in reports for reason in report.reasons),
+    )
+
+
+# --- automatic indexing of source artifacts (the hook point for the sources runtime) -------------
+
+
+def build_indexer(
+    sessions: SessionFactory,
+    settings: RagSettings | None = None,
+) -> RagIndexer | None:
+    """Factory for a future post-run hook; `None` while `BOTAI_RAG_ENABLED` is off.
+
+    NOT wired into the sources runtime in this round (that package is owned by another lane). A
+    future hook builds it once per runtime, then per finished run calls
+    `await indexer.ingest_source(user_id=..., source_id=...)`; work is idempotent, so a retry only
+    fills what is missing. Until such a hook exists, `botai.ops.reindex_rag` is the supported path.
+    """
+    resolved = settings or rag_settings()
+    if not resolved.enabled:
+        return None
+    return RagIndexer(sessions, resolved.build_provider(), resolved)
+
+
+async def reindex_source_artifacts(
+    sessions: SessionFactory,
+    *,
+    user_id: str,
+    source_id: str | None = None,
+    limit: int = MAX_ARTIFACTS_PER_CALL,
+    max_sources: int = 50,
+    artifact_root: Path | None = None,
+    settings: RagSettings | None = None,
+    provider: EmbeddingProvider | None = None,
+) -> IngestReport:
+    """Index the artifacts of one source — or of every source of the user — into the RAG store.
+
+    The callable behind the ops backfill (and a future automatic hook). It reads lane C's artifacts
+    (`list_artifacts`), resolves text from `metadata["text"]` or from `storage_ref` under
+    `artifact_root` (the `FileArtifactStore` root; default `BOTAI_RAG_ARTIFACT_ROOT`), and writes
+    documents/chunks/embeddings with provenance. Dedupe: the document `content_hash` (the same text
+    is one document) plus the `(chunk_id, model)` embedding key; a binary artifact is skipped with
+    `artifact:<kind>` in `reasons`, never half-indexed. One call is bounded by `limit` artifacts per
+    source and `max_sources` sources, so a job step cannot run unbounded work.
+    """
+    resolved = settings or rag_settings()
+    embedder = provider or resolved.build_provider()
+    resolver = DefaultArtifactTextResolver(root=artifact_root) if artifact_root else None
+    indexer = RagIndexer(sessions, embedder, resolved, resolver=resolver)
+    usage_before = embedder.usage()
+    if source_id is not None:
+        report = await indexer.ingest_source(user_id=user_id, source_id=source_id, limit=limit)
+    else:
+        async with sessions() as session:
+            selected = [source.id for source in await list_sources(session, user_id=user_id)]
+        reports = [
+            await indexer.ingest_source(user_id=user_id, source_id=current, limit=limit)
+            for current in selected[: max(1, max_sources)]
+        ]
+        report = _merge_reports(reports)
+    return IngestReport(
+        documents=report.documents,
+        chunks=report.chunks,
+        embedded=report.embedded,
+        deduplicated=report.deduplicated,
+        skipped=report.skipped,
+        usage=embedder.usage().minus(usage_before),
+        reasons=report.reasons,
     )
 
 
@@ -714,6 +830,8 @@ class RagAnswer:
     mode: str
     degraded: str | None
     usage: EmbeddingUsage
+    # "pgvector" | "jsonb" | "none": which physical vector leg ran; kept out of the tool payload.
+    vector_backend: str = "none"
 
 
 class RagQueryService:
@@ -763,6 +881,7 @@ class RagQueryService:
             mode=outcome.mode,
             degraded=outcome.degraded,
             usage=outcome.usage,
+            vector_backend=outcome.vector_backend,
         )
 
 

@@ -4,8 +4,8 @@ This is the phase-1 developer/local sandbox. It is **not** a security boundary a
 determined attacker: the code runs as the worker user with the network available (D-003 lets the
 agent reach any site), and only the box's POSIX limits, the cleaned environment and the workspace
 path guard stand between it and the rest of the machine. The real isolation is the container
-executor planned in `botai.agent.v4.executor.container`; this one keeps the same `Executor` API
-so the runtime does not care which is wired.
+executor in `botai.agent.v4.executor.container`; this one keeps the same `Executor` API so the
+runtime does not care which is wired.
 
 What it does guarantee in local mode:
 

@@ -43,6 +43,13 @@ export function spaceShortTitle(space: Space, universities: readonly University[
   );
 }
 
+/**
+ * Только пространства-вузы: «Мои материалы» больше нет как единицы интерфейса (D-013,
+ * 03-sources-and-ux.md §1.6). Сервер до миграции может их знать — интерфейс их не показывает.
+ */
+export const universitySpaces = (spaces: readonly Space[] | undefined): Space[] | undefined =>
+  spaces?.filter((space) => space.universityId !== null);
+
 const combineConnections = (results: readonly { data: Connection[] | undefined; isPending: boolean }[]) => ({
   lists: results.map((result) => result.data),
   pending: results.some((result) => result.isPending),
@@ -51,12 +58,16 @@ const combineConnections = (results: readonly { data: Connection[] | undefined; 
 /**
  * Вузы пользователя вместе с подключениями и сводным состоянием источников. Подключения обновляются
  * в фоне: статус «обновляется» сменяется на «работает» без действий человека.
+ *
+ * Пространства без вуза («Мои материалы») в интерфейс не попадают: в v4 вуз — единственная единица
+ * экрана, а файл и документ — источник вуза (D-013, 03-sources-and-ux.md §1.6). Прежняя модель ещё
+ * может их знать до миграции — фильтр снимается вместе с ней.
  */
 export function useSpaceDirectory(): SpaceDirectory {
   const spacesResult = useQuery(spacesQuery);
   const universities = useQuery(universitiesQuery(""));
   const online = useOnline();
-  const spaces = spacesResult.data;
+  const spaces = useMemo(() => universitySpaces(spacesResult.data), [spacesResult.data]);
   const connections = useQueries({
     queries: (spaces ?? []).map((space) => ({
       ...connectionsQuery(space.id),
@@ -84,7 +95,7 @@ export function useSpaceDirectory(): SpaceDirectory {
       byId: new Map(infos.map((info) => [info.id, info])),
       loaded: spacesResult.data !== undefined,
       connectionsLoaded: spacesResult.data !== undefined && !connections.pending,
-      none: spacesResult.data !== undefined && spacesResult.data.length === 0,
+      none: spacesResult.data !== undefined && infos.length === 0,
       homeZone: infos[0]?.timeZone ?? DEFAULT_TIME_ZONE,
     };
   }, [spaces, spacesResult.data, universities.data, connections, online]);

@@ -12,8 +12,12 @@ Ranking, in order of influence:
 3. freshness of the material (exponential decay by capture/fetch time);
 4. a small boost for a `high` trust source.
 
-`VectorStore`/`FtsIndex` are plain functions over one `AsyncSession`; the future pgvector
-acceleration is a different vector store with the same interface (docs/v4/18-rag.md).
+`VectorStore`/`FtsIndex` are plain functions over one `AsyncSession`. The vector leg has two
+physical implementations: the JSONB bounded scan (portable default) and one SQL `ORDER BY
+embedding_vec <=> query LIMIT k` when the pgvector column exists and its width matches the provider
+(`botai.search.pgvector`, docs/v4/18-rag.md §3). Both return the same `ChunkCandidate` rows; the
+result says which one ran (`vector_backend`) and a width mismatch degrades to JSONB, never to a
+silent empty leg.
 """
 
 from __future__ import annotations
@@ -34,6 +38,14 @@ from botai.search.embeddings import (
     EmbeddingUsage,
     cosine_similarity,
     normalize,
+)
+from botai.search.pgvector import (
+    PgVectorState,
+    backend_for,
+    cosine_from_distance,
+    distance,
+    note_dimension_mismatch,
+    state_for,
 )
 
 RRF_K = 60.0
@@ -107,6 +119,9 @@ class HybridSearchResult:
     hits: tuple[HybridHit, ...]
     mode: str  # "hybrid" | "fts_only"
     degraded: str | None = None
+    # Which physical vector leg ran: "pgvector" (SQL <=> LIMIT k), "jsonb" (bounded scan), "none".
+    # Reported so a width mismatch or a missing column is visible instead of silently slower.
+    vector_backend: str = "jsonb"
     usage: EmbeddingUsage = field(default_factory=EmbeddingUsage)
 
 
@@ -256,12 +271,97 @@ async def vector_candidates(
     limit: int,
     scan_limit: int,
     filters: HybridFilters,
+    state: PgVectorState | None = None,
 ) -> list[ChunkCandidate]:
-    """The vector leg over the portable JSONB store: bounded scan + cosine in Python.
+    """The vector leg: `pgvector` SQL when the column and the width match, else the JSONB scan.
 
-    `scan_limit` bounds the work on a pet-project corpus (thousands of chunks). The pgvector
-    migration in docs/v4/18-rag.md replaces this function's body with one SQL `<=>` query without
-    changing the interface.
+    `state` lets a caller that already detected pgvector availability reuse the answer; without it
+    the process-wide detection runs once. A width mismatch is logged once (dimensions only) and
+    falls back to the JSONB path, which computes the same cosine in Python.
+    """
+    resolved = state or await state_for(session)
+    if resolved.available and resolved.dimension is not None:
+        if resolved.dimension == len(query_vector):
+            return await _pgvector_candidates(
+                session,
+                user_id=user_id,
+                query_vector=query_vector,
+                model=model,
+                limit=limit,
+                filters=filters,
+                dimension=resolved.dimension,
+            )
+        note_dimension_mismatch(
+            provider_dimension=len(query_vector), column_dimension=resolved.dimension
+        )
+    return await _jsonb_candidates(
+        session,
+        user_id=user_id,
+        query_vector=query_vector,
+        model=model,
+        limit=limit,
+        scan_limit=scan_limit,
+        filters=filters,
+    )
+
+
+async def _pgvector_candidates(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    query_vector: list[float],
+    model: str,
+    limit: int,
+    filters: HybridFilters,
+    dimension: int,
+) -> list[ChunkCandidate]:
+    """One SQL statement: cosine distance ordered by the HNSW-indexed `embedding_vec` column."""
+    score = distance(ChunkEmbedding.embedding_vec, query_vector, dimension=dimension)
+    statement = (
+        select(Chunk, Document, ChunkEmbedding, score.label("distance"))
+        .join(Document, Document.id == Chunk.document_id)
+        .join(
+            ChunkEmbedding,
+            and_(ChunkEmbedding.chunk_id == Chunk.id, ChunkEmbedding.model == model),
+        )
+        .where(
+            Chunk.user_id == user_id,
+            Document.user_id == user_id,
+            LIVE_DOCUMENT,
+            ChunkEmbedding.user_id == user_id,
+            ChunkEmbedding.embedding_vec.is_not(None),
+        )
+        .order_by(score)
+        .limit(limit)
+    )
+    for condition in _filters_sql(filters):
+        statement = statement.where(condition)
+    rows = (await session.execute(statement)).all()
+    return [
+        _candidate(
+            chunk,
+            document,
+            provenance,
+            vector_score=cosine_from_distance(distance_value),
+        )
+        for chunk, document, provenance, distance_value in rows
+    ]
+
+
+async def _jsonb_candidates(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    query_vector: list[float],
+    model: str,
+    limit: int,
+    scan_limit: int,
+    filters: HybridFilters,
+) -> list[ChunkCandidate]:
+    """The portable fallback: a bounded scan of the JSONB vectors plus cosine in Python.
+
+    `scan_limit` bounds the work on a pet-project corpus (thousands of chunks). This path is also
+    what runs while the pgvector column does not exist or has another width.
     """
     statement = (
         select(Chunk, Document, ChunkEmbedding)
@@ -412,6 +512,7 @@ async def hybrid_search(
     degraded: str | None = None
     usage = EmbeddingUsage()
     vector: list[ChunkCandidate] = []
+    vector_backend = "none"
     before = provider.usage()
     try:
         vectors = await provider.embed([query])
@@ -419,15 +520,19 @@ async def hybrid_search(
         degraded = f"vector_unavailable: {exc}"
     else:
         if vectors:
+            query_vector = normalize(vectors[0])
+            state = await state_for(session)
             vector = await vector_candidates(
                 session,
                 user_id=user_id,
-                query_vector=normalize(vectors[0]),
+                query_vector=query_vector,
                 model=model,
                 limit=max(limit * 3, 30),
                 scan_limit=vector_scan_limit,
                 filters=narrowed,
+                state=state,
             )
+            vector_backend = backend_for(state, len(query_vector))
         usage = provider.usage().minus(before)
     hits = merge_ranks(
         fts,
@@ -443,5 +548,6 @@ async def hybrid_search(
         hits=tuple(hits),
         mode="hybrid" if not degraded else "fts_only",
         degraded=degraded,
+        vector_backend=vector_backend,
         usage=usage,
     )

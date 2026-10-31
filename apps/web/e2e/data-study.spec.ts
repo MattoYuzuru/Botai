@@ -10,14 +10,13 @@ test.describe("«Учёба»: разделы", () => {
     await open(page, "/study", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     const sections = hse.getByRole("list", { name: /^Разделы/ }).getByRole("link");
-    await expect(sections).toHaveCount(6);
+    await expect(sections).toHaveCount(5);
     expect(await sections.locator("span.type-subheading").allTextContents()).toEqual([
       "Предметы",
       "Оценки",
       "Преподаватели",
       "Аудитории",
       "Новости",
-      "Документы и вложения",
     ]);
     const cu = page.getByRole("region", { name: /^Центральный университет/ });
     await expect(cu.getByRole("list", { name: /^Разделы/ }).getByRole("link")).toHaveCount(4);
@@ -25,50 +24,14 @@ test.describe("«Учёба»: разделы", () => {
     await expect(page.getByRole("button", { name: "Выйти из BotAI" })).toBeVisible();
   });
 
-  test("вуз — единица со многими источниками: название, сокращение, источники со статусом и сайтом", async ({
-    page,
-  }) => {
-    await open(page, "/study", "connected");
-    const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
-    await expect(hse.getByText("ВШЭ", { exact: true })).toBeVisible();
-    const sources = hse.getByRole("list", { name: "Источники: ВШЭ" });
-    await expect(sources.getByRole("listitem")).toHaveCount(2);
-    await expect(sources.getByRole("listitem").first()).toContainText("Личный кабинет");
-    await expect(sources.getByRole("listitem").first()).toContainText("Работает");
-    await expect(sources.getByRole("listitem").nth(1)).toContainText("Расписание (календарь)");
-    const site = sources.getByRole("link", { name: "Открыть сайт: Личный кабинет" });
-    await expect(site).toHaveAttribute("href", "https://lk.fakeuni.test/");
-    await expect(site).toHaveAttribute("target", "_blank");
-    // Хост не подменяет название источника.
-    await expect(sources).not.toContainText("fakeuni.test");
-  });
-
-  test("«Добавить источник» и «Подключить ещё вуз» ведут в чат с готовой просьбой; /connect нет", async ({
-    page,
-  }) => {
+  test("«Добавить источник» ведёт в чат с готовой просьбой; отдельных мастеров нет", async ({ page }) => {
     await open(page, "/study", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     await expect(page.locator('a[href^="/connect"]')).toHaveCount(0);
+    await expect(page.locator('a[href^="/study/connections"]')).toHaveCount(0);
     await hse.getByRole("link", { name: "Добавить источник" }).click();
     await expect(page).toHaveURL(/\/chat\?draft=/);
     expect(new URL(page.url()).searchParams.get("draft")).toContain("Высшая школа экономики");
-    await open(page, "/study", "connected");
-    await page.getByRole("link", { name: "Подключить ещё вуз" }).click();
-    await expect(page).toHaveURL(/\/chat\?draft=/);
-    expect(new URL(page.url()).searchParams.get("draft")).toBeTruthy();
-  });
-
-  test("«Календарь (iCal)» — вариант «Добавить источник»: чат с готовой просьбой подключить календарь вуза", async ({
-    page,
-  }) => {
-    await open(page, "/study", "connected");
-    const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
-    await hse.getByRole("link", { name: "Календарь (iCal)" }).click();
-    await expect(page).toHaveURL(/\/chat\?draft=/);
-    const draft = new URL(page.url()).searchParams.get("draft") ?? "";
-    expect(draft).toContain("Высшая школа экономики");
-    expect(draft).toMatch(/календар/i);
-    expect(draft).not.toMatch(/https?:|webcal:|\.ics/);
   });
 
   test("раздел открывается из панели, «Назад» возвращает на «Учёбу»", async ({ page }) => {
@@ -112,7 +75,7 @@ test.describe("«Учёба»: разделы", () => {
     }
   });
 
-  test("карточки записей: предмет, преподаватель, новость, документ, аудитория", async ({ page }) => {
+  test("карточки записей: предмет, преподаватель, новость, аудитория", async ({ page }) => {
     await open(page, "/study/courses", "connected");
     await page.getByRole("button", { name: /Data Science/ }).click();
     await expect(page.getByRole("dialog", { name: "Data Science" }).getByText(/Получено/)).toBeVisible();
@@ -129,30 +92,20 @@ test.describe("«Учёба»: разделы", () => {
     await expect(page.getByRole("dialog", { name: "ауд. 305" })).toBeVisible();
   });
 
-  test("подключения: статус каждого источника человеческим языком", async ({ page }) => {
-    await open(page, "/study/connections", "reauth");
-    const lms = page.locator("li[data-connection-status=needs_reauth]");
-    await expect(lms).toContainText("Нужно снова войти");
-    await expect(page.locator("li[data-connection-status=active]").first()).toContainText("Работает");
-    await expect(page.getByText(/needs_reauth|source_auth_required/)).toHaveCount(0);
-  });
-
   test("нет данных: «Предметов пока нет», состояние empty", async ({ page }) => {
     await open(page, "/study/courses?data=quiet", "connected");
     await expect(page.getByText("Предметов пока нет")).toBeVisible();
     await expect(state(page, "study-courses")).toHaveAttribute("data-state", "empty");
   });
 
-  test("нужен вход: на «Учёбе» полоса «Войти снова» и статус у источника", async ({ page }) => {
+  test("нужен вход: у источника статус словами, действие ведёт в чат", async ({ page }) => {
     await open(page, "/study", "reauth");
-    await expect(page.getByRole("link", { name: "Войти снова" })).toBeVisible();
-    await expect(
-      page
-        .getByRole("region", { name: /^Центральный университет/ })
-        .getByRole("list", { name: "Источники: ЦУ" })
-        .getByText("Нужно снова войти", { exact: true }),
-    ).toBeVisible();
+    const cu = page.getByRole("region", { name: /^Центральный университет/ });
+    const sources = cu.getByRole("list", { name: "Источники: ЦУ" });
+    await expect(sources.getByText("Нужен вход", { exact: true })).toBeVisible();
+    await expect(cu.getByRole("link", { name: "Войти снова: LMS" })).toBeVisible();
     await expect(state(page, "study")).toHaveAttribute("data-state", "reauth");
+    await expect(page.getByText(/needs_reauth|source_auth_required/)).toHaveCount(0);
   });
 
   test("нет сети: раздел показывает последний снимок", async ({ page, context }) => {
@@ -165,7 +118,7 @@ test.describe("«Учёба»: разделы", () => {
   });
 
   test("зоны нажатия, кегль и отсутствие горизонтальной прокрутки на 320/390/430", async ({ page }) => {
-    for (const path of ["/study", "/study/courses", "/study/grades", "/study/people", "/study/connections"]) {
+    for (const path of ["/study", "/study/courses", "/study/grades", "/study/people"]) {
       await open(page, path, "connected");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       await expect(page.locator("[aria-busy=true]")).toHaveCount(0);
@@ -175,7 +128,7 @@ test.describe("«Учёба»: разделы", () => {
     if ((page.viewportSize()?.width ?? 0) >= 1024) return;
     for (const width of [320, 390, 430]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const path of ["/study", "/study/grades", "/study/connections"]) {
+      for (const path of ["/study", "/study/grades"]) {
         await open(page, path, "connected");
         await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
         await expect(page.locator("[aria-busy=true]")).toHaveCount(0);

@@ -29,6 +29,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/mattoyuzuru/botai-app
+  SANDBOX_IMAGE: ghcr.io/mattoyuzuru/botai-sandbox
 
 jobs:
   candidate:
@@ -93,6 +94,22 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
             ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/MattoYuzuru/Botai
+            org.opencontainers.image.revision=${{ needs.candidate.outputs.sha }}
+
+      # The v4 agent code sandbox is a separate image (docs/v4/13-executor.md §5): the worker pulls
+      # it by the same commit tag and starts sibling containers from it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/sandbox.Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.SANDBOX_IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.SANDBOX_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |

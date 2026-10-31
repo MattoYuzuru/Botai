@@ -17,7 +17,6 @@ from pydantic import ValidationError
 
 from botai.agent.v4.executor import (
     INTERNAL_DIR,
-    ContainerExecutor,
     ExecLimits,
     ExecRequest,
     Executor,
@@ -435,13 +434,6 @@ async def test_a_self_created_workspace_is_cleaned_up_and_closed() -> None:
 
     assert not root.exists()
     with pytest.raises(ExecutorUnavailable, match="closed"):
-        await executor.run(python("print(1)"))
-
-
-async def test_container_executor_is_an_explicit_stub(workspace: Workspace) -> None:
-    executor = ContainerExecutor(workspace=workspace)
-    assert isinstance(executor, Executor)
-    with pytest.raises(ExecutorUnavailable, match="not implemented"):
         await executor.run(python("print(1)"))
 
 

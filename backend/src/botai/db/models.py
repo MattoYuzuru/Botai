@@ -33,6 +33,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.engine import Connection as SqlConnection
 from sqlalchemy.orm import Mapped, Mapper, mapped_column
+from sqlalchemy.types import UserDefinedType
 
 from botai.db.base import Base, pk_ulid, ts_now
 
@@ -256,8 +257,18 @@ class _Domain:
     user_id: Mapped[str] = mapped_column(
         String(26), ForeignKey(FK_USER, ondelete="CASCADE"), index=True, nullable=False
     )
-    connection_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True, nullable=False
+    # Provenance of the v3 reading path: a domain row belongs to a connection. A v4 source has no
+    # connection, so its rows leave this NULL and fill `source_id` instead. Both columns are
+    # nullable on the way from v3 to v4 (docs/v4/03-sources-and-ux §6.1): old rows are untouched,
+    # and no row loses the provenance it was written with.
+    connection_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey(FK_CONN, ondelete="CASCADE"), index=True
+    )
+    # Provenance of the v4 reading path: a row read by one `sources` record. Deleting the source
+    # keeps the data (SET NULL). `connection_id IS NULL AND source_id IS NULL` must not happen;
+    # a row with both set is a bridge row of the v3→v4 data migration.
+    source_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="SET NULL"), index=True
     )
     external_id: Mapped[str] = mapped_column(String(200), nullable=False)
     source_url: Mapped[str] = mapped_column(Text, nullable=False)  # where it was read (may be API)
@@ -269,8 +280,21 @@ class _Domain:
     )  # last sync that saw it
 
 
-def _uq(table: str) -> tuple[UniqueConstraint]:
-    return (UniqueConstraint("connection_id", "external_id", name=f"uq_{table}_conn_ext"),)
+def _uq(table: str) -> tuple[UniqueConstraint, Index]:
+    """Natural keys of the two provenance paths: one row per (v3 link | v4 source) × external id.
+
+    The v3 constraint stays as it was; v4 rows are unique per source by a partial index (a plain
+    UNIQUE over a nullable column would not enforce NULL rows)."""
+    return (
+        UniqueConstraint("connection_id", "external_id", name=f"uq_{table}_conn_ext"),
+        Index(
+            f"uq_{table}_source_ext",
+            "source_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
+    )
 
 
 class Course(_Domain, Base):
@@ -995,16 +1019,66 @@ class SourcePriority(Base):
 
 # --- RAG (phase 2.5) ----------------------------------------------------------------------------
 
+# Width of `embedding_vec` in a fresh schema. The migration takes it from `BOTAI_RAG_DIMENSION`
+# (default 384, the local provider); this constant only lets the mapped column render DDL.
+DEFAULT_VECTOR_DIMENSION = 384
+
+
+class VectorType(UserDefinedType[list[float]]):
+    """`pgvector`'s `vector(n)` as a SQLAlchemy type without the `pgvector` Python package.
+
+    The repo forbids a new dependency for one column, so the type is declared by hand:
+
+    * DDL renders `vector(<dimension>)` (the migration owns the real width);
+    * a value is bound as pgvector's text form `[0.1,0.2,…]` — `asyncpg` sends an unknown-type
+      parameter as text and PostgreSQL parses it through the `vector` input function;
+    * a read comes back as that same text form and is parsed to `list[float]`.
+
+    pgvector is optional: on a database without the extension the column simply does not exist, and
+    the JSONB `embedding` stays the source of truth (search/pgvector.py detects the column once per
+    process). Not generic on purpose — SQLAlchemy's `UserDefinedType` takes no type parameter.
+    """
+
+    cache_ok = True
+
+    def __init__(self, dimension: int = DEFAULT_VECTOR_DIMENSION) -> None:
+        self.dimension = dimension
+
+    def get_col_spec(self, **_: object) -> str:
+        return f"vector({self.dimension})"
+
+    def bind_processor(self, dialect: object) -> Any:
+        def process(value: list[float] | None) -> str | None:
+            if value is None:
+                return None
+            return "[" + ",".join(repr(float(item)) for item in value) + "]"
+
+        return process
+
+    def result_processor(self, dialect: object, coltype: object) -> Any:
+        def process(value: str | bytes | list[float] | None) -> list[float] | None:
+            if value is None or isinstance(value, list):
+                return value
+            text = value.decode() if isinstance(value, bytes) else value
+            body = text.strip()
+            if not (body.startswith("[") and body.endswith("]")):
+                raise ValueError("unexpected pgvector value shape")
+            inner = body[1:-1].strip()
+            return [float(part) for part in inner.split(",")] if inner else []
+
+        return process
+
 
 class ChunkEmbedding(Base):
     """The vector of one chunk for one embedding model, plus the provenance of the indexed text.
 
-    Portable storage is `embedding` JSONB: it works on plain `postgres:17` (dev, CI, production) and
-    needs no extension. `pgvector` is the planned acceleration for this same table, not a
-    prerequisite: when the images carry the `vector` extension, a separate migration adds
-    `embedding_vec vector(384)` and an HNSW index while the JSONB value stays the source of truth
-    (docs/v4/18-rag.md). Vectors of different models coexist: the unique key is `(chunk_id, model)`,
-    so re-embedding with another provider does not destroy the previous one.
+    Portable storage is `embedding` JSONB: it is the source of truth and works on any Postgres. The
+    pgvector column `embedding_vec` is a derived acceleration for the same value: a migration adds
+    it with a fixed width and an HNSW cosine index, the indexer fills both representations, and
+    search reads `embedding_vec` only when the extension, the column and the provider dimension all
+    match (docs/v4/18-rag.md §3, search/pgvector.py). When they do not match, the JSONB path still
+    answers. Vectors of different models coexist: the unique key is `(chunk_id, model)`, so
+    re-embedding with another provider does not destroy the previous one.
     """
 
     __tablename__ = "chunk_embeddings"
@@ -1013,6 +1087,14 @@ class ChunkEmbedding(Base):
         Index("ix_chunk_embeddings_user_id_model", "user_id", "model"),
         Index("ix_chunk_embeddings_source_id", "source_id"),
         Index("ix_chunk_embeddings_content_hash", "content_hash"),
+        # Declared here so `alembic revision --autogenerate` does not propose dropping the index the
+        # pgvector migration creates; the reflected `vector` type itself is not comparable.
+        Index(
+            "ix_chunk_embeddings_embedding_vec_hnsw",
+            "embedding_vec",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding_vec": "vector_cosine_ops"},
+        ),
     )
     id: Mapped[str] = pk_ulid()
     user_id: Mapped[str] = _user_fk()
@@ -1034,6 +1116,9 @@ class ChunkEmbedding(Base):
     # sha256 of the embedded text: deduplication and the cache key, never a secret.
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+    # Derived, nullable, pgvector-only: NULL means "not written or different width"; the JSONB value
+    # above is always present and remains the fallback.
+    embedding_vec: Mapped[list[float] | None] = mapped_column(VectorType(), nullable=True)
     url: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(String(300))
     kind: Mapped[str | None] = mapped_column(String(20))  # artifact kind or document kind
@@ -1100,3 +1185,149 @@ class AgentRunEvent(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+# --- actions: the owner's autonomy policy and the append-only action journal (D-006, D-025, D-026) -
+#
+# Additive next to the v3 `action_proposals`/`audit_log` tables: the v3 path keeps working behind
+# `agent_engine=v3`, while the v4 action tools and the API use these two tables. A policy row is
+# the owner's explicit choice for one class of action in one scope; the journal row is one concrete
+# proposal and everything that happened to it. `actions_log` is append-only: rows are updated
+# through their lifecycle but never deleted (except with the user, by cascade).
+
+ACTION_CLASSES = ("read", "write_soft", "write_destructive", "money", "auth")
+"""What a write action does (docs/v4/02-architecture.md §7). Not whether it is allowed."""
+
+ACTION_MODES = ("auto", "ask", "never")
+"""`auto` — do it; `ask` — ask the owner once with details; `never` — refuse (D-006)."""
+
+POLICY_SCOPE_KINDS = ("global", "site", "space", "source")
+"""Policy scope from broadest to narrowest; the narrowest matching row wins (§7)."""
+
+ACTION_DECISIONS = (
+    "auto",  # policy auto: allowed without asking, not executed yet
+    "asked",  # policy ask: waiting for the owner's decision
+    "approved",  # the owner (or the API) approved; not executed yet
+    "never",  # policy never: refused, no request was made
+    "executing",  # claimed by one executor: a second attempt must not send again
+    "executed",  # the request went out; there was a response
+    "failed",  # the request was refused or the site rejected it
+    "denied",  # the owner (or the API) denied
+    "expired",  # the question expired without a decision
+)
+"""Lifecycle of one `actions_log` row. `auto`/`asked`/`never` mirror the resolved mode."""
+
+
+class ActionPolicy(Base):
+    """Owner autonomy policy: one row per (scope, action class) for one user (D-025).
+
+    `scope_kind` is `global` (no `scope_id`), `site` (host, e.g. `lms.example.edu`), `space` or
+    `source` (a ULID). The narrowest matching row wins; classes without a row use the documented
+    defaults of `botai.actions.policy`. `limits` is small JSON (e.g. `{"max_per_day": 5}`): the
+    engine escalates `auto` to `ask` when the counter is reached instead of silently refusing.
+    """
+
+    __tablename__ = "action_policies"
+    __table_args__ = (
+        CheckConstraint(f"scope_kind IN ({_in_list(POLICY_SCOPE_KINDS)})", name="scope_kind_valid"),
+        CheckConstraint(f"action_class IN ({_in_list(ACTION_CLASSES)})", name="action_class_valid"),
+        CheckConstraint(f"mode IN ({_in_list(ACTION_MODES)})", name="mode_valid"),
+        # One row per class and scope. A NULL `scope_id` (global) is not compared by a plain
+        # UNIQUE in Postgres, so global and scoped rows get separate partial indexes.
+        Index(
+            "uq_action_policies_global",
+            "user_id",
+            "action_class",
+            unique=True,
+            postgresql_where=text("scope_kind = 'global'"),
+        ),
+        Index(
+            "uq_action_policies_scoped",
+            "user_id",
+            "scope_kind",
+            "scope_id",
+            "action_class",
+            unique=True,
+            postgresql_where=text("scope_kind <> 'global'"),
+        ),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    scope_kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    scope_id: Mapped[str | None] = mapped_column(String(300))
+    action_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    mode: Mapped[str] = mapped_column(String(6), nullable=False)
+    limits: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    note: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = ts_now()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )
+
+
+class ActionLog(Base):
+    """One proposed action and its journal (D-026): what was shown, decided, sent and returned.
+
+    `proposal` is the redacted request the owner sees ("the agent shows exactly what it sends"):
+    secret-looking values are masked, but the method, URL and field names are exact. `request` is
+    the executed request without its body — method, URL, kind, byte count and `body_sha256` only;
+    primary secret values never reach this table. `idempotency_key` is unique per user: a retried
+    proposal with the same key returns the stored row instead of sending twice.
+    """
+
+    __tablename__ = "actions_log"
+    __table_args__ = (
+        CheckConstraint(f"action_class IN ({_in_list(ACTION_CLASSES)})", name="action_class_valid"),
+        CheckConstraint(f"mode IN ({_in_list(ACTION_MODES)})", name="mode_valid"),
+        CheckConstraint(f"decision IN ({_in_list(ACTION_DECISIONS)})", name="decision_valid"),
+        CheckConstraint(f"scope_kind IN ({_in_list(POLICY_SCOPE_KINDS)})", name="scope_kind_valid"),
+        Index(
+            "uq_actions_log_user_idempotency",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_actions_log_user_created", "user_id", "created_at"),
+        Index("ix_actions_log_source", "source_id"),
+        Index("ix_actions_log_run", "run_id"),
+        Index("ix_actions_log_decision", "decision"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = _user_fk()
+    run_id: Mapped[str | None] = mapped_column(String(26))
+    job_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    source_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    scope_kind: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="global", server_default="global"
+    )
+    scope_id: Mapped[str | None] = mapped_column(String(300))
+    action_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    mode: Mapped[str] = mapped_column(String(6), nullable=False)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False, default="asked")
+    intent: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    proposal: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    request: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120))
+    rollback: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = ts_now()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )

@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "benchVersion": "0.1.0",
+  "scenario": "l2-fakeuni",
+  "title": "fakeuni: connect-подобный сценарий инструментами v4, mock-модель (L2, $0)",
+  "runId": "01M696GEGH8CM6XBCAA6SFAX9V",
+  "startedAt": "2026-10-31T17:41:06+03:00",
+  "finishedAt": "2026-10-31T17:41:07+03:00",
+  "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+  "host": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.15"
+  },
+  "product": {
+    "engine": "v4",
+    "wiring": "botai.agent.v4.factory.build_agent_wiring",
+    "traceStore": "memory (no DB in the bench process)",
+    "benchVersion": "0.1.0",
+    "env": "test",
+    "agentFlag": "v4",
+    "provider": "mock",
+    "model": "mock",
+    "executor": "LocalExecutor",
+    "browser": "playwright chromium headless",
+    "limits": {
+      "max_steps": 12,
+      "max_seconds": 180.0,
+      "max_usd": 0.01,
+      "hard_stop_usd": 0.01,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    },
+    "runDurationSec": 0.357
+  },
+  "durationSec": 1.038,
+  "status": "error",
+  "outcome": "barrier",
+  "barrier": {
+    "status": "error",
+    "errorCode": "AgentWiringError",
+    "errorDetail": "Источники v4 включены, но у сервисов нет фабрики сессий БД: source_* инструменты нельзя собрать (нужен services.db)."
+  },
+  "metrics": {
+    "steps": 0,
+    "toolCalls": 0,
+    "totalTokens": 0,
+    "costUsd": 0.0,
+    "limits": {
+      "max_steps": 12,
+      "max_seconds": 180.0,
+      "max_usd": 0.01,
+      "hard_stop_usd": 0.01,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    }
+  },
+  "tools": [],
+  "endpoints": [],
+  "workspace": [],
+  "answer": {},
+  "secretFlow": {},
+  "checks": {
+    "secretSweep": {
+      "filesScanned": 0,
+      "filesRedacted": 0,
+      "redactedFiles": []
+    },
+    "artifactPolicy": "raw вне репозитория; первичных секретов в сценарии нет"
+  },
+  "proven": [],
+  "notProven": [
+    "wiring не собрался: bench-скрипт не передал services.db, который требует обновлённая фабрика v4 для source_*/rag_* (это ограничение bench, не продукта; исправлено в скрипте)",
+    "ни один шаг сценария не выполнялся — доказательств нет"
+  ],
+  "evidence": {
+    "repoSummary": "docs/v4/_evidence/2026-10-31-v4-agent/l2-fakeuni-01M696GEGH8CM6XBCAA6SFAX9V.json",
+    "rawRoot": "~/.local/state/botai-v4-bench/<date>/<run>/raw/v4-agent/",
+    "rawFiles": [
+      "trace.json",
+      "messages.json",
+      "result.json"
+    ]
+  },
+  "comparisonWithMakeBench": {
+    "makeBench": "python -m botai.agent.bench (`make bench`): v3-путь (handle_chat/learn), DeepSeek, throw-away Postgres + synthetic university; money caps $3 за запуск и $12 всего (bench/results/ledger.json); нужен BOTAI_LIVE_LLM=1",
+    "thisL2": "v4 runtime + MockProvider + настоящий Chromium на fakeuni; $0, без БД",
+    "verdict": "сравнение не «яблоко к яблоку»: make bench меряет качество модели на v3; v4-бенчмарка L2 (план 4.3) пока нет — этот сценарий доказывает только tool-loop v4"
+  },
+  "analysis": {
+    "cause": "bench wiring precondition (services.db missing), fixed in bench/v4/support.py"
+  },
+  "codeState": {
+    "headSha": "c7710a3f918d27904cac47aa11ede97100cff753",
+    "worktreeDirty": true,
+    "note": "HEAD c7710a3 + незакоммиченные изменения других lane в общем worktree на момент прогона (v4 factory: source_*/rag_* tools; runtime task-injection fix вошёл перед product-path прогоном; dispatch/container executor — WIP). SHA HEAD поэтому описывает код не полностью; см. phase-0.5-audit.md."
+  }
+}

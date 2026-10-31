@@ -5,12 +5,25 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
+
+
+def default_source_artifacts_dir() -> str:
+    """Default root of the sources-v4 artifact store: a state directory outside the repository.
+
+    Production must point `BOTAI_SOURCE_ARTIFACTS_DIR` at a persistent volume; this default keeps
+    a local run (and a dev worker) working without any env while never writing artifacts into the
+    checkout. Mirrors the browser-profile default (`browser/profiles.py`).
+    """
+    state_home = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = Path(state_home) if state_home else Path.home() / ".local" / "state"
+    return str(base / "botai-v4-sources" / "artifacts")
 
 
 class Settings(BaseSettings):
@@ -115,6 +128,34 @@ class Settings(BaseSettings):
     )
     # Ask the student before continuing past a soft limit; True = continue automatically.
     agent_auto_continue: bool = Field(default=False, validation_alias="BOTAI_AGENT_AUTO_CONTINUE")
+    # Sources v4: where the content-addressed artifact store keeps page/JSON/dump bytes. A state
+    # directory by default; production points it at a persistent volume (docs/v4/14 §7).
+    source_artifacts_dir: str = Field(
+        default_factory=default_source_artifacts_dir,
+        validation_alias="BOTAI_SOURCE_ARTIFACTS_DIR",
+    )
+    # Root for per-run agent workspaces (code_exec/fs_* files, source parser artifacts). Empty =
+    # a temp directory; production mounts a persistent host path here so a run survives a restart
+    # and the container executor can bind-mount the very same absolute path (docs/v4/13-executor.md).
+    agent_workspace_root: str = Field(default="", validation_alias="BOTAI_AGENT_WORKSPACE_ROOT")
+    # Where agent code runs: the bounded host process (dev/test only), the Docker sandbox
+    # (required in production), or auto (= local outside prod, container in prod). The prod guard
+    # in agent/v4/factory.py refuses "local" there; there is never a silent fallback.
+    agent_executor: Literal["auto", "local", "container"] = Field(
+        default="auto", validation_alias="BOTAI_AGENT_EXECUTOR"
+    )
+    # Image built from ops/docker/sandbox.Dockerfile: Python 3.13, Node.js 22, bash, non-root
+    # uid 10001, no secrets. The worker only starts it; the image is built/pushed by CI.
+    botai_sandbox_image: str = Field(
+        default="ghcr.io/mattoyuzuru/botai-sandbox:latest",
+        min_length=1,
+        validation_alias="BOTAI_SANDBOX_IMAGE",
+    )
+    # Optional Docker endpoint for the CLI (unix socket path via unix://…, tcp://…, ssh://…);
+    # unset = the Docker CLI's own context/default socket of the worker host.
+    botai_sandbox_docker_host: str | None = Field(
+        default=None, validation_alias="BOTAI_SANDBOX_DOCKER_HOST"
+    )
 
     # Outbound traffic to universities goes through this CONNECT proxy (EgressProxy).
     egress_proxy_url: str | None = None

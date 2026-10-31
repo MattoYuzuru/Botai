@@ -114,6 +114,7 @@ export const iconRegistry = {
   reauth: IconKey,
   offline: IconWifiOff,
   stale: IconHistory,
+  history: IconHistory,
   repairing: IconTool,
   ok: IconCircleCheck,
   waiting: IconHourglassHigh,

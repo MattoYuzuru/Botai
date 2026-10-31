@@ -1,5 +1,5 @@
 import type { IconName } from "@botai/design";
-import type { SourceKindV4, SourceNatureKindV4, SourceStatusV4 } from "@/api/sources-v4";
+import type { SourceKindV4, SourceNatureKindV4, SourceStatusV4 } from "@/api/sources";
 
 /**
  * Словарь источника для интерфейса (03-sources-and-ux.md §5.2, §6.2): статус — цвет + текст + иконка,
@@ -193,6 +193,11 @@ const NATURE_KINDS: Record<SourceNatureKindV4, true> = {
 /** Виды данных источника — без природы: их показывают чипами «что читает». */
 export function dataKindsOf(kinds: readonly string[]): string[] {
   return kinds.filter((kind) => !Object.hasOwn(NATURE_KINDS, kind));
+}
+
+/** Природа источника — без видов данных: их показывают чипами «что это». */
+export function natureKindsOf(kinds: readonly string[]): string[] {
+  return kinds.filter((kind) => Object.hasOwn(NATURE_KINDS, kind));
 }
 
 /** Название источника словами для пустых подписей и чата: виды данных, иначе природа. */

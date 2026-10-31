@@ -63,6 +63,24 @@ async def test_rag_search_success_and_summary() -> None:
     assert result.data["results"][0]["sourceId"] == "source-1"
     assert result.data["mode"] == "hybrid"
     assert "гибрид" in result.summary
+    # The physical vector backend is internal telemetry: the tool payload contract is unchanged.
+    assert "vectorBackend" not in result.data
+    assert set(result.data) == {"query", "mode", "degraded", "count", "results", "usage"}
+    assert set(result.data["usage"]) == {"calls", "texts", "cacheHits", "costUsd"}
+    assert set(result.data["results"][0]) == {
+        "title",
+        "url",
+        "snippet",
+        "score",
+        "kind",
+        "sourceId",
+        "artifactId",
+        "documentId",
+        "capturedAt",
+        "ageDays",
+        "stale",
+        "reasons",
+    }
 
 
 async def test_rag_search_empty_and_degraded() -> None:

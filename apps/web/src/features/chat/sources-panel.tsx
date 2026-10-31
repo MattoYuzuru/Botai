@@ -1,14 +1,16 @@
-import { Badge, Button, EmptyState, Icon, Sheet, SkeletonText } from "@botai/design";
+import { Badge, Button, EmptyState, formatAgo, Icon, Sheet, SkeletonText } from "@botai/design";
 import { Link } from "@tanstack/react-router";
-import { connectionKindTitle, describeConnection, originLabel } from "@/features/data/connection-status";
-import { useSpaceDirectory } from "@/features/data/use-space-directory";
-import { useStudyUiMode } from "@/features/study/v4/flag";
+import { type SpaceInfo, useSpaceDirectory } from "@/features/data/use-space-directory";
+import { sourceChatLinks } from "@/features/study/v4/chat-links-v4";
+import { describeSourceKind, describeSourceStatus, kindsLabel, sourceIcon } from "@/features/study/v4/status";
+import { type StudySource, useStudySources } from "@/features/study/v4/use-study-sources";
 import { addSourceDraft } from "./drafts";
 
 /**
- * Панель «Источники» (§3.9): вузы пользователя и их источники со статусами — только чтение, данные из тех же
- * запросов, что и экраны «Учёба» и «Сегодня». Источник с чатом ведёт в его тред. «Добавить источник» открывает
- * новый тред с готовым запросом: подключение — это разговор с агентом, а не отдельная форма.
+ * Панель «Источники» (§3.9): вузы пользователя и их источники со статусами — только чтение, те же данные
+ * v4, что на «Учёбе» и «Сегодня» (`/api/v1/sources`, с fallback на прежние подключения, если v4-API
+ * на сервере выключен). Источник с тредом задачи ведёт в него; «Добавить источник» открывает новый тред
+ * с готовым запросом: подключение — это разговор с агентом, а не отдельная форма.
  */
 export function SourcesPanel({
   open,
@@ -20,12 +22,6 @@ export function SourcesPanel({
   nowMs: number;
 }) {
   const directory = useSpaceDirectory();
-  // v4: «Мои материалы» больше не пространство — в панели источников только вузы, как и на «Учёбе» v4
-  // (docs/v4/03-sources-and-ux.md §1.6, §5.5). В старом режиме панель не меняется.
-  const spaces =
-    useStudyUiMode() === "v4"
-      ? directory.spaces.filter((space) => space.universityId !== null)
-      : directory.spaces;
   return (
     <Sheet
       open={open}
@@ -43,7 +39,7 @@ export function SourcesPanel({
     >
       {!directory.loaded ? (
         <SkeletonText lines={5} label="Загрузка источников" />
-      ) : spaces.length === 0 ? (
+      ) : directory.spaces.length === 0 ? (
         <EmptyState
           icon="university"
           size="sm"
@@ -52,81 +48,122 @@ export function SourcesPanel({
         />
       ) : (
         <div className="flex flex-col gap-6" data-sources-list="">
-          {spaces.map((space) => (
-            <section
-              key={space.id}
-              className="flex flex-col gap-2"
-              aria-labelledby={`source-space-${space.id}`}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                <h3
-                  id={`source-space-${space.id}`}
-                  className="min-w-0 flex-1 basis-40 break-words type-subheading text-fg"
-                >
-                  {space.title}
-                </h3>
-                <Button variant="ghost" size="sm" leadingIcon="plus" data-touch-expanded="" asChild>
-                  <Link
-                    to="/chat"
-                    search={{ draft: addSourceDraft(space) }}
-                    onClick={() => onOpenChange(false)}
-                    aria-label={`Добавить источник для ${space.shortTitle}`}
-                  >
-                    Добавить источник
-                  </Link>
-                </Button>
-              </div>
-              {space.connections.length === 0 ? (
-                <p className="type-ui text-fg-muted">В этом вузе пока нет источников.</p>
-              ) : (
-                <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
-                  {space.connections.map((connection) => {
-                    const view = describeConnection(connection, nowMs, {
-                      shortTitle: space.shortTitle,
-                      timeZone: space.timeZone,
-                    });
-                    const threadId = connection.threadId;
-                    const body = (
-                      <>
-                        <Icon name={view.icon} size={20} className="mt-1 shrink-0 text-fg-muted" />
-                        <span className="flex min-w-0 flex-1 flex-col gap-1">
-                          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="min-w-0 break-words type-ui text-fg">{connection.title}</span>
-                            <Badge tone={view.tone}>{view.label}</Badge>
-                          </span>
-                          <span className="type-caption text-fg-muted">
-                            {connectionKindTitle(connection.kind)} · {originLabel(connection)}
-                          </span>
-                          <span className="type-caption text-fg-subtle">{view.detail}</span>
-                        </span>
-                        {threadId && (
-                          <Icon name="chevron-right" size={16} className="mt-1 shrink-0 text-fg-subtle" />
-                        )}
-                      </>
-                    );
-                    return (
-                      <li key={connection.id} data-connection-id={connection.id}>
-                        {threadId ? (
-                          <Link
-                            to="/chat"
-                            search={{ thread: threadId }}
-                            onClick={() => onOpenChange(false)}
-                            className="flex min-h-14 items-start gap-3 px-3 py-3 transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed"
-                          >
-                            {body}
-                          </Link>
-                        ) : (
-                          <div className="flex min-h-14 items-start gap-3 px-3 py-3">{body}</div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
+          {directory.spaces.map((space) => (
+            <SpaceSources key={space.id} space={space} nowMs={nowMs} onNavigate={() => onOpenChange(false)} />
           ))}
         </div>
       )}
     </Sheet>
+  );
+}
+
+/** Вуз и его источники: данные — тем же запросом v4, что и на «Учёбе». */
+function SpaceSources({
+  space,
+  nowMs,
+  onNavigate,
+}: {
+  space: SpaceInfo;
+  nowMs: number;
+  onNavigate: () => void;
+}) {
+  const { sources, loading, error } = useStudySources(space);
+  return (
+    <section className="flex flex-col gap-2" aria-labelledby={`source-space-${space.id}`}>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h3
+          id={`source-space-${space.id}`}
+          className="min-w-0 flex-1 basis-40 break-words type-subheading text-fg"
+        >
+          {space.title}
+        </h3>
+        <Button variant="ghost" size="sm" leadingIcon="plus" data-touch-expanded="" asChild>
+          <Link
+            to="/chat"
+            search={{ draft: addSourceDraft(space) }}
+            onClick={onNavigate}
+            aria-label={`Добавить источник для ${space.shortTitle}`}
+          >
+            Добавить источник
+          </Link>
+        </Button>
+      </div>
+      {loading ? (
+        <SkeletonText lines={3} label={`Загрузка источников: ${space.shortTitle}`} />
+      ) : error ? (
+        <p className="type-ui text-warning-fg">Источники загружаются: обновление идёт в фоне.</p>
+      ) : sources.length === 0 ? (
+        <p className="type-ui text-fg-muted">В этом вузе пока нет источников.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
+          {sources.map((source) => (
+            <SourceLine key={source.id} source={source} space={space} nowMs={nowMs} onNavigate={onNavigate} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function SourceLine({
+  source,
+  space,
+  nowMs,
+  onNavigate,
+}: {
+  source: StudySource;
+  space: SpaceInfo;
+  nowMs: number;
+  onNavigate: () => void;
+}) {
+  const status = describeSourceStatus(source.status);
+  const nature = describeSourceKind(source.kinds[0] ?? "other").label;
+  const kinds = kindsLabel(source.kinds);
+  const chat = sourceChatLinks(source, space.title);
+  const target = source.threadId
+    ? ({ to: "/chat", search: { thread: source.threadId } } as const)
+    : status.needsUser || source.status === "error"
+      ? (chat.repair ?? null)
+      : null;
+  const lastSync = source.lastSyncAt ? Date.parse(source.lastSyncAt) : Number.NaN;
+  const body = (
+    <>
+      <Icon name={sourceIcon(source.kinds)} size={20} className="mt-1 shrink-0 text-fg-muted" />
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="min-w-0 break-words type-ui text-fg">{source.title}</span>
+          <Badge tone={status.tone} icon={status.icon}>
+            {status.label}
+          </Badge>
+        </span>
+        <span className="type-caption text-fg-muted">
+          {nature}
+          {kinds && kinds !== nature ? ` · ${kinds}` : ""}
+        </span>
+        <span className="type-caption text-fg-subtle">
+          {Number.isFinite(lastSync)
+            ? `Обновлено ${formatAgo(lastSync, nowMs, space.timeZone)}`
+            : "Ещё не обновлялся"}
+        </span>
+        {source.errorDetail && <span className="type-caption text-warning-fg">{source.errorDetail}</span>}
+      </span>
+      {target && <Icon name="chevron-right" size={16} className="mt-1 shrink-0 text-fg-subtle" />}
+    </>
+  );
+  return (
+    <li data-source-id={source.id} data-source-status={source.status}>
+      {target ? (
+        <Link
+          to={target.to}
+          search={target.search}
+          onClick={onNavigate}
+          className="flex min-h-14 items-start gap-3 px-3 py-3 transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed"
+        >
+          {body}
+        </Link>
+      ) : (
+        <div className="flex min-h-14 items-start gap-3 px-3 py-3">{body}</div>
+      )}
+    </li>
   );
 }
