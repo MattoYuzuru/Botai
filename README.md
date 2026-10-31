@@ -10,7 +10,7 @@
 Production (https://botai.mnema.app) работает на `BOTAI_AGENT_ENGINE=v4`: свободный harness с
 контейнерной песочницей кода, источниками v4 (запись в домен + чтение экранами), v4-чатом,
 RAG с pgvector, UI «Учёба» без флага, трассами запусков и политикой действий. Срез
-`8492384`; smoke после включения: `AGENT`-задача прошла (2 шага, `code_exec` в песочнице,
+`8492384` (финальный деплой `43bfee6` — тот же код и документы); smoke после включения: `AGENT`-задача прошла (2 шага, `code_exec` в песочнице,
 `agent_runs` + события, файл `smoke.txt`="42"), остатков sandbox-контейнеров нет, health ok.
 Статус, честные gaps и план — [docs/v4/README.md](docs/v4/README.md),
 [handoff](docs/v4/07-handoff-claude.md).

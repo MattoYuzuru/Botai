@@ -323,13 +323,13 @@ sandbox-контейнер сокета не получает и секрето�
 → `BOTAI_AGENT_ENGINE=v4` в `compose.vars` → повторная проверка (см. раздел «v4-агент в
 production»). Откат флага — одна строка + перезапуск api/worker.
 
-## Выпуск `8492384` и включение v4 (2026-11-01, ночь)
+## Выпуск `8492384` (финальный деплой `43bfee6`) и включение v4 (2026-11-01, ночь)
 
 Второй срез v4 (чтение v4-данных, v4-чат, трассы/политики, запуски источников) и включение
 движка. CI на SHA — зелёный (20 м 6 с; web-e2e с CI-only ретраями), deploy — успех (1 м 19 с),
 отката не было.
 
-1. Проверка после деплоя: образы `botai-app` и `botai-sandbox` тега `8492384350cf`, revision
+1. Проверка после деплоя: образы `botai-app` и `botai-sandbox` тега `8492384350cf` (финальный документационный коммит `43bfee6` — тот же код, тег `43bfee6c46da`), revision
    label = полный SHA; Postgres `pgvector/pgvector:pg17`, `alembic_version=a9c4e2f7b1d6`,
    extension `vector 0.8.7`; api healthy; worker/proxy без ошибок; Caddy-лог жив.
 2. Включение движка: `BOTAI_AGENT_ENGINE=v4` добавлен в `/srv/botai/compose.vars`, затем
