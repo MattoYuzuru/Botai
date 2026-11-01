@@ -362,6 +362,28 @@ asyncpg вне greenlet. Затронуты были все три моста (`
 `SYNC` для реального v3-подключения завершился `done`; счётчик `failed/internal_error` не растёт;
 v4-движок (AGENT/чат) работает.
 
+## Выпуск `4acea66` — третий срез (2026-11-01, ночь)
+
+CI — зелёный (20 м 26 c), deploy — успех; отката не было. Содержимое: фазы 3.3/3.4 (фоновая
+автономия источников, расход/лимиты в UI), RAG-автоиндексация после sync, additive async
+`sync-jobs` (202) и `DELETE /sources/{id}`, UI удаления источника и «Следующего обновления»,
+повторы L3 n=3.
+
+1. Проверка: образы тега `4acea6682718`, revision = полный SHA; `alembic_version=b4e8c1a7d920`,
+   `vector 0.8.7`; api healthy; worker/proxy без ошибок; Caddy-лог жив.
+2. Настройки в api: `agent_engine=v4`, `agent_executor=container`, `rag_autoindex=true`,
+   `source_sync_interval_s=21600`.
+3. Миграция применилась (`sources.next_sync_at` + индекс). **Честно:** в production сейчас
+   **0 v4-источников** (владелец ещё не создавал их после включения v4), поэтому фоновое
+   планирование sync и RAG-автоиндексация проверены L1-тестами на fakeuni, а не живыми данными;
+   после первого реального источника смотреть worker-лог `rag autoindex source …` и
+   `next_sync_at` в карточке/`SourceOut`.
+4. `GET /api/v1/sources` → 401, `POST /api/v1/sources/{id}/sync-jobs` → 401 (v4-роутер активен).
+5. AGENT-smoke: `done/answer`, 2 шага, 1 tool call (`code_exec`), 14 734 токена, **$0.000213**,
+   `agent_runs` + 6 событий; остатков sandbox-контейнеров нет.
+6. Откат — как раньше: `BOTAI_AGENT_ENGINE=v3` в `compose.vars` + перезапуск api/worker; миграция
+   `b4e8c1a7d920` откатывается `alembic downgrade` (данные источников не удаляются).
+
 ## Что уже есть на сервере (снято read-only 2026-10-27)
 
 | Параметр | Значение |
