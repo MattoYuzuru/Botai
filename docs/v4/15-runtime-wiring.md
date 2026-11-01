@@ -86,9 +86,19 @@ CONNECT); `SYNC` — детерминированный replay runner'а без 
 `REPAIR` — сначала детерминированно, при дрейфе — v4-агент, затем sync. Старые соединения без
 v4-source и «календарь по ссылке» остаются на v3-мосте (явно помечено). `CHAT` при
 `agent_engine=v4` тоже идёт через v4-runtime (`agent/v4/chat.py`): сообщение + история/вложения +
-контекст пространства → полный harness, ответ с карточками источников, asking-блоки через
-`JobContext.ask`, тот же job-result и SSE; при `v3` обработчик байт-в-байт прежний. Паритетные
-ограничения и стоимость — в §8.
+контекст пространства → полный harness, ответ с карточками источников, тот же job-result и SSE;
+при `v3` обработчик байт-в-байт прежний. Паритетные ограничения и стоимость — в §8.
+
+**Вопрос хода в чате.** `ask_user` свободным текстом — это реплика разговора, а не форма:
+`run_v4_job(..., text_question_channel="dialogue")` задаёт вопрос через `ask_dialogue`, тот
+паркует ход в `waiting_user` и виден в `ThreadRuntime.pending` (канал `dialogue`). Студент
+отвечает в поле ввода; `POST /chat/threads/{id}/messages` с `targetJobId` (или без него — сервер
+сам найдёт ждущий ход) кладёт ответ в диалог задания, цитирует вопрос и возвращает run к работе.
+Вопрос сохраняется в треде (`jobs.dialogue.project_block` проецирует спрашивающие блоки и хода
+агента), поэтому у ответа есть цитата и порядок, а вопрос переживает перезагрузку. `choice`,
+`secret` и `approval` остаются блоками-карточками над полем: поле в это время занято, ответ идёт
+через `POST /jobs/{id}/answers`. Пока ход идёт или ждёт человека, в поле есть кнопка «Остановить
+агента» (`POST /jobs/{id}/cancel`, штатный исход `cancelled`, поле освобождается).
 
 ## 3. Флаг и запрет local-исполнителя в prod
 
@@ -179,6 +189,7 @@ uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run 
 | HTTP API запусков/трасс, владение, 404 на v3, пагинация событий | `tests/api/test_agent_runs.py` |
 | CONNECT/SYNC/REPAIR через v4 на fakeuni через настоящие Worker/Postgres | `tests/jobs/test_agent_dispatch_v4.py` |
 | таблица handler'ов: v3 не меняется, v4 заменяет ровно CONNECT/SYNC/REPAIR | `tests/jobs/test_v4_dispatch_table.py` |
+| вопрос хода в чате: диалог/карточка, `ThreadRuntime.pending`, ответ и остановка | `tests/jobs/test_agent_chat_v4.py` |
 | маскирование выводов инструментов и чекпоинта | `tests/agent/v4/test_runtime_masking.py` |
 | миграция upgrade/downgrade/upgrade | `tests/db/test_agent_traces_migration.py` |
 

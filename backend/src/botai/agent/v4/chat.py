@@ -58,7 +58,7 @@ from botai.agent.ui_map import UI_GUIDE
 from botai.agent.v4.job_runtime import JobRun, run_v4_job
 from botai.agent.v4.providers.base import Provider
 from botai.agent.v4.runtime import RunResult
-from botai.contracts.agent_ui import AgentUiBlock, TextBlock, ThinkingBlock
+from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock, TextBlock, ThinkingBlock
 from botai.contracts.agent_ui import Source as SourceCard
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.handlers import HandlerTable
@@ -192,6 +192,10 @@ async def handle_chat_v4(
                 "thread_id": thread_id,
                 "message_id": message_id,
             },
+            # A plain-text question of the turn is a dialogue turn of the chat: the student answers
+            # it in the composer, the question keeps its place in the history, and the run continues.
+            # A choice, a consent or a secret stays a card above the composer.
+            text_question_channel="dialogue",
         )
     except BotaiError:
         raise
@@ -379,16 +383,29 @@ async def _source_cards(services: Services, user_id: str, result: RunResult) -> 
 
 
 async def _existing_reply(services: Services, ctx: JobContext, thread_id: str) -> str | None:
-    """A retried job does not answer twice: the stored text reply of this job wins."""
+    """A retried job does not answer twice: the stored text reply of this job wins.
+
+    The turn's own questions are stored in the thread too (they are conversation turns: kept, quoted
+    and ordered), so a text block that is one of this job's asking blocks is not the reply.
+    """
     async with services.db() as session:
+        asking = select(JobEvent.data["id"].astext).where(
+            JobEvent.job_id == ctx.job_id,
+            JobEvent.type == "block",
+            JobEvent.data["type"].astext.in_(sorted(ASKING_TYPES)),
+        )
         return await session.scalar(
-            select(ChatMessage.id).where(
+            select(ChatMessage.id)
+            .where(
                 ChatMessage.thread_id == thread_id,
                 ChatMessage.user_id == ctx.user_id,
                 ChatMessage.job_id == ctx.job_id,
                 ChatMessage.role == "agent",
                 ChatMessage.blocks[0]["type"].astext == "text",
+                ChatMessage.blocks[0]["id"].astext.not_in(asking),
             )
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .limit(1)
         )
 
 

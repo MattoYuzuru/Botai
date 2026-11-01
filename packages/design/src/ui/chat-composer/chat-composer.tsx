@@ -52,6 +52,16 @@ export interface ChatComposerProps {
    * Нет функции или браузер не умеет записывать звук — кнопки микрофона нет.
    */
   onTranscribe?: Transcribe;
+  /**
+   * Остановить ход агента. Пока поле занято (`disabled`), кнопка стоит на месте микрофона/«Отправить»;
+   * когда поле свободно (ход ждёт ответа в диалоге) — рядом с «Отправить». Длинную работу или вопрос,
+   * на который не хочется отвечать, можно прервать, а не ждать.
+   */
+  onStop?: () => void;
+  /** Остановка уже запрошена: кнопка показывает ожидание и не нажимается второй раз. */
+  stopping?: boolean;
+  /** Подпись кнопки остановки для скринридера. */
+  stopLabel?: string;
   /** Смена значения (другой чат) бросает идущую запись: чужой голос не попадёт в поле другого чата. */
   resetKey?: string;
   className?: string;
@@ -91,6 +101,9 @@ export function ChatComposer({
   maxAttachments = DEFAULT_MAX_ATTACHMENTS,
   notice,
   onTranscribe,
+  onStop,
+  stopping = false,
+  stopLabel = "Остановить агента",
   resetKey,
   className,
 }: ChatComposerProps) {
@@ -366,27 +379,58 @@ export function ChatComposer({
             onPaste={onPaste}
             className="min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 type-body text-fg outline-none placeholder:text-fg-subtle disabled:cursor-not-allowed"
           />
-          {dictation.supported && (
+          {disabled && onStop ? (
             <IconButton
-              icon="mic"
-              label="Надиктовать текст"
-              variant={micOnly ? "secondary" : "ghost"}
-              shape="round"
-              disabled={disabled}
-              onClick={() => void startRecording()}
-              className="shrink-0"
-            />
-          )}
-          {!micOnly && (
-            <IconButton
-              type="submit"
-              icon="send"
-              label="Отправить"
+              type="button"
+              icon="stop"
+              label={stopLabel}
               variant="primary"
               shape="round"
-              disabled={!canSend}
+              loading={stopping}
+              disabled={stopping}
+              onClick={onStop}
               className="shrink-0"
+              data-composer-stop=""
             />
+          ) : (
+            <>
+              {onStop && (
+                <IconButton
+                  type="button"
+                  icon="stop"
+                  label={stopLabel}
+                  variant="ghost"
+                  shape="round"
+                  loading={stopping}
+                  disabled={stopping}
+                  onClick={onStop}
+                  className="shrink-0"
+                  data-composer-stop=""
+                />
+              )}
+              {dictation.supported && !onStop && (
+                <IconButton
+                  icon="mic"
+                  label="Надиктовать текст"
+                  variant={micOnly ? "secondary" : "ghost"}
+                  shape="round"
+                  disabled={disabled}
+                  onClick={() => void startRecording()}
+                  className="shrink-0"
+                />
+              )}
+              {!micOnly && (
+                <IconButton
+                  type="submit"
+                  icon="send"
+                  label="Отправить"
+                  variant="primary"
+                  shape="round"
+                  disabled={!canSend}
+                  className="shrink-0"
+                />
+              )}
+            </>
           )}
         </div>
       </div>

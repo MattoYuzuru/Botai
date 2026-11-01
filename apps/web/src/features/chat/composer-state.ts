@@ -42,6 +42,18 @@ export function composerState(input: ComposerStateInput): ComposerState {
   if (protectedRequest && kindOf(protectedRequest.jobId) === "chat") {
     return { disabled: true, placeholder: "Ответьте на вопрос выше", waitingForHuman: true, replying: false };
   }
+  // Вопрос в диалоге (хода агента или фоновой задачи) ждёт ответа в поле: задание припарковано в
+  // waiting_user, а не работает, поэтому ответ возвращает его к работе, а не ждёт в очереди.
+  const dialogue = runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
+  if (dialogue) {
+    return {
+      disabled: false,
+      placeholder: "Ответьте агенту или уточните задачу",
+      waitingForHuman: true,
+      replying: false,
+      targetJobId: dialogue.jobId,
+    };
+  }
   const replying = awaiting || jobs.some((job) => job.kind === "chat" && !isTerminal(job.snapshot.state));
   if (replying) {
     return { disabled: true, placeholder: "Агент отвечает…", waitingForHuman: false, replying: true };
@@ -58,16 +70,6 @@ export function composerState(input: ComposerStateInput): ComposerState {
           : "Ответьте в поле выше или напишите агенту",
       waitingForHuman: true,
       replying: false,
-    };
-  }
-  const dialogue = runtime.pending.find((item) => item.channel === "dialogue" && !item.secret);
-  if (dialogue) {
-    return {
-      disabled: false,
-      placeholder: "Ответьте агенту или уточните задачу",
-      waitingForHuman: true,
-      replying: false,
-      targetJobId: dialogue.jobId,
     };
   }
   const tasks = jobs.some((job) => job.kind !== "chat" && !isTerminal(job.snapshot.state));

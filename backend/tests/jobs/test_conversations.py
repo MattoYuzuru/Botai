@@ -564,12 +564,17 @@ async def test_second_message_waits_for_the_running_agent_turn_but_not_a_dialogu
     assert sorted(texts) == sorted(["Привет", "Текущая неделя", "Спасибо, а что дальше?"])
 
 
-async def test_target_job_must_be_a_live_task_of_this_thread(env: Env) -> None:
+async def test_target_job_must_be_a_live_target_of_this_thread(env: Env) -> None:
     client, user, thread, job_id = await start(env)
     turn = (await post(client, thread, "Привет")).json()["jobId"]
     other_thread = (await client.post("/api/v1/chat/threads", json={})).json()["id"]
     _, foreign_task = await source_task(env, user, other_thread)
-    for target in (turn, foreign_task, new_id()):
+    # A running agent turn is a real job of this thread, but not a target until it asks a plain
+    # question: a message would race the turn, so it is stale rather than missing.
+    busy = await post(client, thread, "Уточнение", targetJobId=turn)
+    assert (busy.status_code, busy.json()["code"]) == (409, "stale_target")
+    # Someone else's thread and an unknown id are missing, not stale.
+    for target in (foreign_task, new_id()):
         response = await post(client, thread, "Уточнение", targetJobId=target)
         assert response.status_code == 404, target
     await finish(env, job_id)

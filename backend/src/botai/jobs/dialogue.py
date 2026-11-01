@@ -265,25 +265,35 @@ async def message_time(
     return max(now, last + timedelta(microseconds=1)) if last is not None else now
 
 
+# Blocks that ask the student and can be kept in the thread as one plain question line. A chat turn
+# stores its own answer and thinking at the end of the turn; its questions are conversation turns and
+# are kept like a task's, so an answer has a quote and an order and the question survives a reload.
+_PUBLIC_ASKING = frozenset({"login", "input", "choice", "confirm", "approval", "wait"})
+
+
 async def project_block(
     session: AsyncSession, job: Job, data: dict[str, Any], now: datetime
 ) -> None:
-    """One stable message per public block of a task, committed with its SSE event; never
-    credentials or tickets. The thread's `last_message_at` follows the insert."""
-    if job.thread_id is None or job.kind == "chat":
+    """One stable message per public block of a task or a question of a chat turn; committed with its
+    SSE event; never credentials or tickets. The thread's `last_message_at` follows the insert."""
+    if job.thread_id is None:
+        return
+    kind = data.get("type")
+    if job.kind == "chat" and kind not in _PUBLIC_ASKING:
         return
     thread = await session.scalar(
         select(ChatThread).where(ChatThread.id == job.thread_id, ChatThread.user_id == job.user_id)
     )
     if thread is None:
         return
-    kind = data.get("type")
     safe = dict(data)
     # A confirmation with a body keeps its form: what is confirmed reads with the question. It holds
     # no credential, and as a block of its own it stays out of the text a model reads as history.
     keeps_form = kind == "confirm" and bool(str(data.get("details") or "").strip())
-    if kind in {"login", "input", "choice", "confirm", "approval", "wait"} and not keeps_form:
-        label = data.get("question") or data.get("message") or "Ручной вход в браузере"
+    if kind in _PUBLIC_ASKING and not keeps_form:
+        proposal = data.get("proposal")
+        intent = proposal.get("intent") if isinstance(proposal, dict) else None
+        label = data.get("question") or data.get("message") or intent or "Ручной вход в браузере"
         safe = {"type": "text", "id": data["id"], "at": data["at"], "markdown": str(label)[:500]}
     existing = await session.scalar(
         select(ChatMessage).where(

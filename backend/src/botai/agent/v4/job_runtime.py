@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -40,6 +40,7 @@ from botai.agent.v4.protocol import (
 from botai.agent.v4.providers.base import Provider
 from botai.agent.v4.runtime import Mask, RunResult, RunTask
 from botai.contracts.agent_ui import ChoiceBlock, ChoiceOption, InputBlock, TextBlock
+from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobContext
@@ -47,6 +48,10 @@ from botai.core.llm import LlmMessage, Purpose, Tier
 from botai.core.services import Services
 
 MAX_ANSWER_CHARS = 8000
+
+# How a plain-text `ask_user` question reaches the student: a native input block above the composer
+# (a task's form) or the dialogue of the thread (the chat turn's question, answered in the composer).
+TextQuestionChannel = Literal["block", "dialogue"]
 
 
 def _identity_mask(text: str) -> str:
@@ -150,6 +155,7 @@ async def run_v4_job(
     source_cookies: Mapping[str, str] | None = None,
     phase_prefix: str | None = None,
     metadata: dict[str, Any] | None = None,
+    text_question_channel: TextQuestionChannel = "block",
 ) -> JobRun:
     """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`."""
     active_run_id = run_id or new_id()
@@ -198,7 +204,7 @@ async def run_v4_job(
             tools,
             trace_store=wiring.trace_store,
             limits=run_limits_from_settings(services.settings),
-            ask=job_ask_channel(ctx, services),
+            ask=job_ask_channel(ctx, services, text_channel=text_question_channel),
         )
         workspace = wiring.workspace.root
     finally:
@@ -209,8 +215,18 @@ async def run_v4_job(
     return JobRun(run_id=result.run_id, result=result, workspace=workspace, mask=mask)
 
 
-def job_ask_channel(ctx: JobContext, services: Services) -> AskUser:
-    """Map the runtime's AskQuestion onto the job's UI blocks (secret answers stay out of text)."""
+def job_ask_channel(
+    ctx: JobContext,
+    services: Services,
+    *,
+    text_channel: TextQuestionChannel = "block",
+) -> AskUser:
+    """Map the runtime's AskQuestion onto the job's UI blocks (secret answers stay out of text).
+
+    `text_channel="dialogue"` makes a plain-text question a dialogue turn of the thread: the question
+    is answered in the composer, is quoted in the history and wakes the parked run. A chat turn uses
+    this; tasks keep the native input block above the composer.
+    """
 
     async def ask(question: AskQuestion) -> AskAnswer:
         block_id = new_id()
@@ -246,17 +262,18 @@ def job_ask_channel(ctx: JobContext, services: Services) -> AskUser:
                     )
                 )
                 return AskAnswer(choice=_chosen_index(answer.values, question.options))
-            answer = await ctx.ask(
-                InputBlock(
-                    id=block_id,
-                    at=at,
-                    question=question.question[:500],
-                    input_kind="text",
-                    placeholder=question.placeholder,
-                    required=False,
-                    max_length=2000,
-                )
+            block = InputBlock(
+                id=block_id,
+                at=at,
+                question=question.question[:500],
+                input_kind="text",
+                placeholder=question.placeholder,
+                required=False,
+                max_length=2000,
             )
+            if text_channel == "dialogue" and isinstance(ctx, DialogueContext):
+                return AskAnswer(text=await ctx.ask_dialogue(block))
+            answer = await ctx.ask(block)
             return AskAnswer(text=_answer_text(answer.values))
         except JobCancelled:
             return AskAnswer(cancelled=True)
@@ -339,6 +356,7 @@ def _chosen_index(values: object, options: tuple[str, ...]) -> int | None:
 __all__ = [
     "JobRun",
     "PhaseReporter",
+    "TextQuestionChannel",
     "emit_answer",
     "error_of",
     "job_ask_channel",

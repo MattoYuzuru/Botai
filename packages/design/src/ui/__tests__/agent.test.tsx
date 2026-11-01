@@ -227,6 +227,41 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("textbox")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Отправить" })).toBeDisabled();
   });
+
+  it("пока ход агента держит поле, вместо отправки — «Остановить агента»", async () => {
+    const onStop = vi.fn();
+    render(<ChatComposer value="" onValueChange={() => {}} onSend={() => {}} disabled onStop={onStop} />);
+    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Отправить" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Остановить агента" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("ход можно остановить и когда поле свободно: агент ждёт ответа в диалоге", async () => {
+    const onStop = vi.fn();
+    const onSend = vi.fn();
+    render(<ChatComposer value="ВШЭ" onValueChange={() => {}} onSend={onSend} onStop={onStop} />);
+    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Остановить агента" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("остановка уже запрошена: кнопка занята и не нажимается второй раз", () => {
+    render(
+      <ChatComposer
+        value=""
+        onValueChange={() => {}}
+        onSend={() => {}}
+        disabled
+        onStop={() => {}}
+        stopping
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Остановить агента" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
 });
 
 describe("ThinkingStream", () => {
@@ -284,6 +319,13 @@ describe("ThinkingStream", () => {
     ];
     render(<ThinkingStream steps={waiting} nowMs={NOW + 600_000} collapsed />);
     expect(screen.getByText(/Ждёт ответа · 11 с/)).toBeInTheDocument();
+  });
+
+  it("шаг один и времени ещё нет: без «· 0 с», просто «Ждёт ответа»", () => {
+    const waiting = [{ id: "1", label: "Думаю", state: "waiting" as const, at: NOW - 1_000 }];
+    render(<ThinkingStream steps={waiting} nowMs={NOW + 600_000} />);
+    expect(screen.getByRole("button", { name: "Ждёт ответа" })).toBeInTheDocument();
+    expect(screen.queryByText(/· 0\sс/)).toBeNull();
   });
 
   it("переключение вызывает onToggle", async () => {

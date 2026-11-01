@@ -76,7 +76,12 @@ export function ThinkingStream({
   // Пока ждём человека, агент не думает: отсчёт стоит на последнем шаге, а не тикает минутами.
   const last = steps.reduce((latest, step) => Math.max(latest, step.at), first);
   const elapsed = (finishedAt ?? (running ? nowMs : last)) - first;
-  const title = `${running ? "Думает" : waiting ? "Ждёт ответа" : "Думал"} · ${formatDuration(elapsed)}`;
+  // Ожидание человека: отсчёт стоит на последнем шаге, и у турна из одного шага он равен нулю.
+  // «Ждёт ответа · 0 с» — не прошедшее время, а шум: показываем ожидание без секунд.
+  const title =
+    waiting && elapsed === 0
+      ? "Ждёт ответа"
+      : `${running ? "Думает" : waiting ? "Ждёт ответа" : "Думал"} · ${formatDuration(elapsed)}`;
 
   const viewport = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);

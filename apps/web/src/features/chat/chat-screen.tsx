@@ -21,6 +21,7 @@ import { useComposerKeyboard } from "@/app/keyboard";
 import { documentsQuery, todayQuery } from "@/features/data/queries";
 import { useReconnect } from "@/features/data/use-reconnect";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
+import { jobManager } from "@/features/jobs/job-manager";
 import { isTerminal as isJobTerminal } from "@/features/jobs/job-state";
 import { toDeadlineView } from "@/features/tasks/deadlines";
 import { clientId } from "@/lib/client-id";
@@ -52,6 +53,8 @@ const NEW_THREAD = "new";
 const POLL_WHILE_AWAITING_MS = 4_000;
 const POLL_RUNTIME_MS = 5_000;
 const DEFAULT_TITLE = "Новый чат";
+/** Если сервер не закрыл задание после «Остановить», кнопка снова становится доступной. */
+const STOP_TIMEOUT_MS = 8_000;
 
 /**
  * Чат (`/chat`) на весь экран (§3.9): один тред — один таймлайн. Подключение, вход, вопросы агента и ответы идут в
@@ -185,6 +188,10 @@ export function ChatScreen() {
     awaiting,
   });
   const busy = composer.replying || running;
+  // Ход агента, который сейчас идёт или ждёт человека: его можно остановить — и когда поле занято
+  // вопросом-карточкой, и когда оно свободно для ответа в диалоге.
+  const stopTarget = jobs.find((job) => job.kind === "chat" && !isJobTerminal(job.snapshot.state))?.id;
+  const [stopping, setStopping] = useState(false);
   const nowMs = useNow(busy ? 1_000 : 30_000);
   const timeZone = directory.homeZone;
 
@@ -385,6 +392,22 @@ export function ChatScreen() {
     void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
   }, [activeId, queryClient]);
 
+  // «Остановить агента»: штатный исход хода, не ошибка. Сервер помечает задание cancelled, поток
+  // приносит это состояние, в ленте появляется «Остановлено», а поле снова свободно.
+  const stopAgent = useCallback(() => {
+    if (!stopTarget) return;
+    setStopping(true);
+    void jobManager.cancel(stopTarget).finally(refreshThread);
+  }, [stopTarget, refreshThread]);
+  useEffect(() => {
+    if (!stopTarget) setStopping(false);
+  }, [stopTarget]);
+  useEffect(() => {
+    if (!stopping) return;
+    const timer = window.setTimeout(() => setStopping(false), STOP_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [stopping]);
+
   // Тред открыт: наблюдатель списка чатов не присылает уведомление о нём.
   useEffect(() => {
     useOpenThread.getState().set(activeId);
@@ -467,6 +490,8 @@ export function ChatScreen() {
               onValueChange={setDraft}
               onSend={(text) => send(text, true)}
               disabled={composer.disabled}
+              onStop={stopTarget ? stopAgent : undefined}
+              stopping={stopping}
               placeholder={composer.placeholder}
               attachments={attachments.items}
               onAddFiles={(files, source) => attachments.add(files, source, activeId)}

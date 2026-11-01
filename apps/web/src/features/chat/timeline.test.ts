@@ -527,6 +527,23 @@ describe("состояние треда из runtime", () => {
       waitingForHuman: true,
       targetJobId: "c1",
     });
+    // Вопрос в диалоге отвечается и тогда, когда рядом идёт ход агента: задание припарковано.
+    expect(composerState({ ...base, runtime: dialogue, jobs: [task, job("chat-2", "chat")] })).toMatchObject({
+      disabled: false,
+      replying: false,
+      targetJobId: "c1",
+    });
+    // Текстовый вопрос самого хода агента — тоже диалог: поле свободно, ответ продолжит ход.
+    const turnQuestion = runtime({
+      pending: [{ jobId: "chat-1", blockId: "b", channel: "dialogue", secret: false }],
+    });
+    expect(composerState({ ...base, runtime: turnQuestion, jobs: [chat] })).toMatchObject({
+      disabled: false,
+      waitingForHuman: true,
+      replying: false,
+      placeholder: "Ответьте агенту или уточните задачу",
+      targetJobId: "chat-1",
+    });
     expect(composerState({ ...base, runtime: runtime() })).toMatchObject({
       disabled: false,
       replying: false,
@@ -557,6 +574,13 @@ describe("состояние треда из runtime", () => {
     expect(pendingEditors(rt, [job("c1", "connect", { state: "waiting_user" })])).toEqual([]);
     // Завершённое задание вопросов не держит.
     expect(pendingEditors(rt, [job("c1", "connect", { state: "done", blocks: [question] })])).toEqual([]);
+    // Вопрос хода агента (карточка блока) появляется у поля так же: без этого на него нельзя ответить.
+    const turn = job("chat-1", "chat", { state: "waiting_user", blocks: [question] });
+    const turnRuntime = runtime({
+      activeJob: jobOut("chat-1", "chat", "waiting_user"),
+      pending: [{ jobId: "chat-1", blockId: ULID(70), channel: "native", secret: true }],
+    });
+    expect(pendingEditors(turnRuntime, [turn]).map((item) => item.key)).toEqual([`block:chat-1:${ULID(70)}`]);
   });
 
   it("задание остаётся в ленте, пока его блоков нет в истории", () => {

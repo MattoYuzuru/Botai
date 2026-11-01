@@ -325,6 +325,20 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     expect(document.querySelector("[data-pending-questions]")).toBeNull();
   });
 
+  it("агент ждёт ответа: «Остановить агента» прерывает ход, поле снова свободно", async () => {
+    const { user } = await openNewChat();
+    await ask(user, "Мне нужна справка");
+    // Ход припаркован на вопросе: поле занято, а вместо отправки — остановка.
+    await waitFor(() => expect(composer()).toBeDisabled(), wait);
+    const stop = await screen.findByRole("button", { name: "Остановить агента" }, wait);
+    await user.click(stop);
+    // Остановка — штатный исход, а не ошибка: вопрос снят, в ленте «Остановлено», поле свободно.
+    expect(await screen.findByText(/Остановлено/, undefined, wait)).toBeInTheDocument();
+    await waitFor(() => expect(composer()).toBeEnabled(), wait);
+    expect(screen.queryByRole("button", { name: "Остановить агента" })).toBeNull();
+    expect(document.querySelector("[data-pending-questions]")).toBeNull();
+  });
+
   it("отказ от записи: «Не делать» — ничего не отправлено", async () => {
     const { user } = await openNewChat();
     await ask(user, "Хочу записаться на консультацию");

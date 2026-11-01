@@ -166,18 +166,23 @@ async def runtime(
     tasks = await thread_jobs(session, user_id, thread.id)
     in_flight = [job for job in tasks if job.state in IN_FLIGHT]
     active = primary_task(in_flight)
-    if active is None:
-        active = await session.scalar(
-            select(Job)
-            .where(
-                Job.user_id == user_id,
-                Job.thread_id == thread.id,
-                Job.kind == JobKind.CHAT.value,
-                Job.state.in_(sorted(IN_FLIGHT)),
-            )
-            .order_by(Job.created_at.desc(), Job.id.desc())
-            .limit(1)
+    # The agent turn is not a task card of the thread, but it is a job of the thread and it can ask
+    # the student a question too (`ask_user`). It is looked up even while a task is in flight: a
+    # displayed question without an answer path is a dead end (the composer is held by the turn).
+    agent_turn = await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == user_id,
+            Job.thread_id == thread.id,
+            Job.kind == JobKind.CHAT.value,
+            Job.state.in_(sorted(IN_FLIGHT)),
         )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+        .execution_options(populate_existing=True)
+    )
+    if active is None:
+        active = agent_turn
     receipts: list[DialogueReceipt] = []
     receipt_keys: set[tuple[str, str]] = set()
     for item in tasks:
@@ -201,7 +206,9 @@ async def runtime(
                     )
                 )
     pending: list[PendingRef] = []
-    for job in reversed(in_flight):
+    # The turn that is asking right now goes first: its question is the one the composer shows.
+    asking = ([agent_turn] if agent_turn is not None else []) + list(reversed(in_flight))
+    for job in asking:
         answered = {r.block_id for r in receipts if r.job_id == job.id and r.block_id}
         ref = await _pending_of(session, job, answered)
         if ref is not None:
@@ -374,7 +381,18 @@ async def post_message(
     target: Job | None = None
     if body.target_job_id is not None:
         target = await _locked(session, user_id, body.target_job_id)
-        if target is None or target.thread_id != thread.id or target.kind not in TASK_KINDS:
+        if target is None or target.thread_id != thread.id:
+            raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
+        if target.kind == JobKind.CHAT.value:
+            # A reply to the agent turn is an answer to its open plain-text question: the turn
+            # continues with it. A turn that is working, finished or asking something else is not
+            # a target for a chat message (it is stale, not missing).
+            if not _waiting_dialogue(target):
+                raise BotaiError(
+                    ErrorCode.STALE_TARGET,
+                    "Этот шаг уже завершён. Откройте текущее состояние разговора",
+                )
+        elif target.kind not in TASK_KINDS:
             raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
         if target.state not in IN_FLIGHT:
             raise BotaiError(
@@ -386,12 +404,14 @@ async def post_message(
                 ErrorCode.STALE_TARGET, "Этот шаг уже заменён. Откройте текущее состояние разговора"
             )
     else:
-        # Files are for the agent: a task's plain question takes only words.
+        # Files are for the agent: a plain question of a task or of the agent turn takes only words.
         waiting = next(
             (
                 job
                 for job in sorted(jobs, key=lambda j: (j.created_at, j.id), reverse=True)
-                if job.kind in TASK_KINDS and _waiting_dialogue(job) and not body.attachment_ids
+                if job.kind in (*TASK_KINDS, JobKind.CHAT.value)
+                and _waiting_dialogue(job)
+                and not body.attachment_ids
             ),
             None,
         )
@@ -402,9 +422,9 @@ async def post_message(
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
     text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
-    # A reply to a task is quoted by the server from the question the task is asking; a quote of the
-    # client (quick replies of the agent) is kept only for a message to the agent, and only with a block
-    # that is in this thread.
+    # A reply is quoted by the server from the question it answers (of a task or of the agent turn);
+    # a quote of the client (quick replies of the agent) is kept only for a message to the agent,
+    # and only with a block that is in this thread.
     if target is not None:
         quote = await dialogue.question_quote(session, target) if text.strip() else None
     else:
