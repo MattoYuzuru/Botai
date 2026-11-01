@@ -417,8 +417,8 @@ async def build_agent_wiring(
             )
         )
     # The broker masker is applied by the runtime to every tool result (code_exec stdout, fs_*,
-    # http, trace_read included): a parser that prints a profile e-mail must not reach the model,
-    # the conversation checkpoint or the trace (D-008/D-014).
+    # http, trace_read included): issued primary secrets must not reach the model,
+    # the conversation checkpoint or the trace (D-008/D-014). Ordinary identities remain usable.
     runtime = AgentRuntime(clock=services.clock.now, mask=broker.mask)
     return AgentWiring(
         runtime=runtime,
