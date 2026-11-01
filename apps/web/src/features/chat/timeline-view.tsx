@@ -1,4 +1,5 @@
 import { Button, ChatMessage, QuickReplies, ThinkingStream, type ViewerAttachment } from "@botai/design";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { runIdFromResult } from "@/api/agent-runs";
@@ -124,6 +125,21 @@ export function TimelineView({
     return ids;
   }, [runtime, jobs]);
 
+  // Последние 20 заданий истории загружаются автоматически; более старые — при раскрытии шагов.
+  const recentHistory = useMemo(
+    () =>
+      new Set(
+        timeline.turns
+          .flatMap((turn) =>
+            turn.kind === "thinking" && !turn.running && turn.jobId && !taskRunIds.has(turn.jobId)
+              ? [turn.jobId]
+              : [],
+          )
+          .slice(-20),
+      ),
+    [timeline.turns, taskRunIds],
+  );
+
   const base = useMemo(
     () => ({
       nowMs,
@@ -162,6 +178,7 @@ export function TimelineView({
           <li key={turn.key} data-turn={turn.kind} data-conversation-turn={turn.key}>
             <TurnView
               turn={turn}
+              resolveHistory={turn.kind === "thinking" && recentHistory.has(turn.jobId ?? "")}
               base={base}
               job={turn.kind === "block" || turn.kind === "thinking" ? byId.get(turn.jobId ?? "") : undefined}
               receipt={
@@ -214,6 +231,7 @@ type BaseContext = Pick<
 
 function TurnView({
   turn,
+  resolveHistory,
   base,
   job,
   failedJob,
@@ -225,6 +243,7 @@ function TurnView({
   restarting,
 }: {
   turn: Turn;
+  resolveHistory: boolean;
   base: BaseContext;
   job: ThreadJob | undefined;
   failedJob: ThreadJob | undefined;
@@ -258,6 +277,7 @@ function TurnView({
         <ThinkingTurn
           turn={turn}
           nowMs={nowMs}
+          resolveHistory={resolveHistory}
           runId={turn.jobId ? base.taskRunId?.(turn.jobId) : undefined}
         />
       );
@@ -364,25 +384,48 @@ function ThinkingTurn({
   turn,
   nowMs,
   runId,
+  resolveHistory,
 }: {
   turn: Extract<Turn, { kind: "thinking" }>;
+  resolveHistory: boolean;
   nowMs: number;
   runId?: string;
 }) {
   const [collapsed, setCollapsed] = useState(true);
+  const historicalJob = useQuery({
+    queryKey: ["chat", "history-job", turn.jobId],
+    queryFn: ({ signal }) =>
+      call(
+        api.GET("/api/v1/jobs/{job_id}", {
+          params: { path: { job_id: turn.jobId ?? "" } },
+          signal,
+        }),
+      ),
+    enabled: Boolean(turn.jobId) && !turn.running && !runId && (resolveHistory || !collapsed),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+    retryOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+  const traceId = runId ?? runIdFromResult(historicalJob.data?.result);
+  const startedAt =
+    turn.startedAt ?? (historicalJob.data?.startedAt ? Date.parse(historicalJob.data.startedAt) : undefined);
+  const finishedAt = historicalJob.data?.finishedAt
+    ? Date.parse(historicalJob.data.finishedAt)
+    : turn.finishedAt;
   return (
     <div className="flex flex-col gap-1">
       <ThinkingStream
         steps={turn.steps}
-        startedAt={turn.startedAt}
+        startedAt={startedAt}
         nowMs={nowMs}
-        finishedAt={turn.finishedAt}
+        finishedAt={finishedAt}
         collapsed={collapsed}
         onToggle={setCollapsed}
       />
-      {runId && (
+      {traceId && (
         <Button variant="ghost" size="sm" className="self-start" asChild>
-          <Link to="/agent/runs/$runId" params={{ runId }} aria-label="Трасса хода агента">
+          <Link to="/agent/runs/$runId" params={{ runId: traceId }} aria-label="Трасса хода агента">
             Трасса
           </Link>
         </Button>

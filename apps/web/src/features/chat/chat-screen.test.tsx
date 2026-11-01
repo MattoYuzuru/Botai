@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { ThreadOut } from "@/api/v3";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
+import { chatKeys } from "./queries";
 import { outbox } from "./runtime";
 
 const harness = chatHarness();
@@ -20,22 +21,74 @@ async function seededThreadId(): Promise<string> {
 }
 
 describe("чат на весь экран: шапка, история, источники ответа", () => {
-  it("завершённый v4 CHAT показывает время работы, детали шагов и ссылку на трассу", async () => {
+  it("история запрашивает только 20 недавних заданий, старое — при раскрытии", async () => {
     const threadId = await seededThreadId();
+    const lookedUp: string[] = [];
     harness.server.use(
       http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
-        HttpResponse.json({
-          activeJob: {
-            id: "J-trace",
-            kind: "chat",
-            state: "done",
-            stage: "Готово",
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json(
+          Array.from({ length: 21 }, (_, index) => ({
+            id: `M-history-${index}`,
+            role: "agent",
             createdAt: AT,
-            startedAt: "2026-10-27T11:00:00Z",
-            finishedAt: "2026-10-27T11:00:20Z",
-            connectionId: null,
-            result: { status: "answer", run_id: "R-chat" },
-          },
+            jobId: `J-history-${index}`,
+            blocks: [{ type: "thinking", id: ULID(100 + index), at: AT, stage: `Шаг ${index}`, state: "ok" }],
+          })),
+        ),
+      ),
+      http.get("*/api/v1/jobs/:jobId", ({ params }) => {
+        const id = String(params.jobId);
+        lookedUp.push(id);
+        return HttpResponse.json({
+          id,
+          kind: "chat",
+          state: "done",
+          stage: "Готово",
+          createdAt: AT,
+          startedAt: AT,
+          finishedAt: AT,
+          connectionId: null,
+          result: { status: "answer", run_id: `R-${id}` },
+        });
+      }),
+    );
+    renderApp(`/chat?thread=${threadId}`);
+    await waitFor(() => expect(lookedUp).toHaveLength(20), wait);
+    expect(lookedUp).not.toContain("J-history-0");
+    await userEvent.setup().click(screen.getAllByRole("button", { name: /^Думал/ })[0] as HTMLElement);
+    await waitFor(() => expect(lookedUp).toContain("J-history-0"), wait);
+    await waitFor(
+      () => expect(screen.getAllByRole("link", { name: "Трасса хода агента" })).toHaveLength(21),
+      wait,
+    );
+  });
+
+  it("завершённый v4 CHAT сохраняет время и трассу после финальной загрузки и перезагрузки", async () => {
+    const threadId = await seededThreadId();
+    let active = true;
+    let lookups = 0;
+    const completed = {
+      id: "J-trace",
+      kind: "chat",
+      state: "done",
+      stage: "Готово",
+      createdAt: AT,
+      startedAt: "2026-10-27T11:00:00Z",
+      finishedAt: "2026-10-27T11:00:20Z",
+      connectionId: null,
+      result: { status: "answer", run_id: "R-chat" },
+    };
+    harness.server.use(
+      http.get("*/api/v1/jobs/J-trace", () => {
+        lookups += 1;
+        return HttpResponse.json(completed);
+      }),
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({
+          activeJob: active ? completed : null,
           tasks: [],
           pending: [],
           receipts: [],
@@ -63,7 +116,7 @@ describe("чат на весь экран: шапка, история, исто�
         ]),
       ),
     );
-    renderApp(`/chat?thread=${threadId}`);
+    const app = renderApp(`/chat?thread=${threadId}`);
     const toggle = await screen.findByRole("button", { name: /^Думал · 20\sс$/ }, wait);
     expect(screen.getByRole("link", { name: "Трасса хода агента" })).toHaveAttribute(
       "href",
@@ -71,6 +124,21 @@ describe("чат на весь экран: шапка, история, исто�
     );
     await userEvent.setup().click(toggle);
     expect(screen.getByText("Найдено три занятия")).toBeInTheDocument();
+    active = false;
+    await app.queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
+    await waitFor(() => expect(lookups).toBe(1), wait);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    app.unmount();
+    renderApp(`/chat?thread=${threadId}`);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    expect(await screen.findByRole("button", { name: /^Думал · 20\sс$/ }, wait)).toBeInTheDocument();
+    expect(lookups).toBe(2);
   });
 
   it("название треда — заголовок, «Чат» — подпись; справа «Источники», «Чаты», «Новый чат»", async () => {
