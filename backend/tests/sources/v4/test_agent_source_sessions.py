@@ -40,7 +40,10 @@ class SessionBrowser:
         return copy.deepcopy(self.state)
 
     async def import_storage_state(self, state: Any) -> None:
-        self.state = copy.deepcopy(state)
+        raise AssertionError("Session restore must not navigate before installing localStorage")
+
+    async def new_context(self, *, storage_state: Any) -> None:
+        self.state = copy.deepcopy(storage_state)
 
     async def close(self) -> None:
         self.closed = True

@@ -23,6 +23,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from playwright.async_api import StorageState
 from pydantic import SecretStr
 
 from botai.browser.control import BrowserControl
@@ -33,6 +34,11 @@ from botai.core.vault import SecretKind, Vault
 from botai.db.models import Source
 
 SESSION_KIND_NAMES = frozenset({SecretKind.SESSION.value, "profile"})
+
+
+def browser_storage_state(state: Mapping[str, Any]) -> StorageState:
+    """Native Playwright state, keeping nested origin data (including IndexedDB), no HTTP metadata."""
+    return StorageState(cookies=state.get("cookies", []), origins=state.get("origins", []))
 
 
 async def capture_browser_session(control: BrowserControl) -> dict[str, Any]:

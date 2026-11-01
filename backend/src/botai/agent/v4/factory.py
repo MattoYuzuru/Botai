@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from playwright.async_api import StorageState
 
 from botai.agent.v4.executor import (
     ContainerExecutor,
@@ -53,7 +54,12 @@ from botai.core.vault import SecretKind, Vault
 from botai.settings import Settings
 from botai.sources.v4.artifacts import FileArtifactStore
 from botai.sources.v4.browser import playwright_factory
-from botai.sources.v4.secrets import AgentSessionStore, VaultSessionReader, capture_browser_session
+from botai.sources.v4.secrets import (
+    AgentSessionStore,
+    VaultSessionReader,
+    browser_storage_state,
+    capture_browser_session,
+)
 
 DEFAULT_WORKSPACE_ROOT = Path(tempfile.gettempdir()) / "botai-agent-v4"
 DEFAULT_ARTIFACT_ROOT = DEFAULT_WORKSPACE_ROOT / "source-artifacts"
@@ -126,6 +132,7 @@ async def launch_browser_control(
     *,
     workspace: Workspace,
     mask: Callable[[str], str] | None = None,
+    storage_state: StorageState | None = None,
 ) -> BrowserControl:
     """A full-control browser for the run; reuses the worker gateway's driver when available.
 
@@ -136,6 +143,7 @@ async def launch_browser_control(
     gateway = services.browser if isinstance(services.browser, PlaywrightGateway) else None
     return await BrowserControl.launch(
         gateway=gateway,
+        storage_state=storage_state,
         config=ControlConfig(
             headless=True,
             upload_root=workspace.root,
@@ -379,16 +387,22 @@ async def build_agent_wiring(
     store: TraceStore = trace_store or DbTraceStore(services.db, user_id=user_id, job_id=job_id)
     broker = SecretBroker(services.vault, user_id=user_id, scope_id=job_id or run_id)
     active_control = control
+    session_store: AgentSessionStore | None = None
+    restored_state: StorageState | None = None
+    if active_control is not None or with_browser:
+        session_store = AgentSessionStore(services.vault, user_id=user_id)
+        saved_state = await session_store.load()
+        if saved_state:
+            restored_state = browser_storage_state(saved_state)
     if active_control is None and with_browser:
         active_control = await launch_browser_control(
-            services, workspace=workspace, mask=broker.mask
+            services,
+            workspace=workspace,
+            mask=broker.mask,
+            storage_state=restored_state,
         )
-    session_store: AgentSessionStore | None = None
-    if active_control is not None:
-        session_store = AgentSessionStore(services.vault, user_id=user_id)
-        restored_state = await session_store.load()
-        if restored_state:
-            await active_control.import_storage_state(restored_state)
+    elif active_control is not None and restored_state is not None:
+        await active_control.new_context(storage_state=restored_state)
     tools: list[ToolHandler] = [*build_basic_tools(), *build_code_tools(executor)]
     if active_control is not None:
         tools.extend(

@@ -45,7 +45,11 @@ from botai.sources.v4.runner import (
     SourceRunner,
 )
 from botai.sources.v4.schemas import SourcePatch
-from botai.sources.v4.secrets import VaultSessionReader, capture_browser_session
+from botai.sources.v4.secrets import (
+    VaultSessionReader,
+    browser_storage_state,
+    capture_browser_session,
+)
 
 ExecutorFactory = Callable[[], Executor]
 MAX_REPORT_CHARS = 60_000
@@ -259,7 +263,9 @@ class SourceToolkit:
                         return ToolResult.failure(
                             "source_auth_required", "У источника нет сохранённой браузерной сессии"
                         )
-                    await self._browser_control.import_storage_state(state)
+                    await self._browser_control.new_context(
+                        storage_state=browser_storage_state(state)
+                    )
         except BotaiError as exc:
             return ToolResult.failure(exc.code.value, exc.detail)
         return ToolResult.success(
