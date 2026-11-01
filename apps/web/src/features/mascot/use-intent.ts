@@ -37,14 +37,15 @@ export function useMascotIntent(): (intent: MascotIntent) => void {
           return;
         }
         case "connect":
-          void navigate({ to: "/chat", search: { draft: CONNECT_DRAFT } });
+          void navigate({ to: "/chat", search: { draft: CONNECT_DRAFT }, resetScroll: false });
           return;
         case "open-progress":
-          if (activeJob?.threadId) void navigate({ to: "/chat", search: { thread: activeJob.threadId } });
-          else void navigate({ to: "/chat" });
+          if (activeJob?.threadId)
+            void navigate({ to: "/chat", search: { thread: activeJob.threadId }, resetScroll: false });
+          else void navigate({ to: "/chat", resetScroll: false });
           return;
         case "open-chat":
-          void navigate({ to: "/chat" });
+          void navigate({ to: "/chat", resetScroll: false });
           return;
         case "open-schedule":
           void navigate({ to: "/schedule" });

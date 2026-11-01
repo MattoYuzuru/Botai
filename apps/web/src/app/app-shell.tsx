@@ -49,7 +49,8 @@ export function AppShell() {
           </div>
         }
         renderLink={(item, props) => (
-          <Link to={item.href as TabPath} {...props}>
+          // Чат — полноэкранный экран и сам держит ленту у последнего сообщения: вкладка «Чат» не сбрасывает скролл.
+          <Link to={item.href as TabPath} {...props} resetScroll={item.id !== "chat"}>
             {props.children}
           </Link>
         )}

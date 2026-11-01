@@ -42,7 +42,7 @@ export function TaskBlockView({ block, ctx }: { block: TaskBlock; ctx: BlockCont
             </Button>
           ) : !here ? (
             <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
-              <Link to="/chat" search={{ thread: block.threadId }}>
+              <Link to="/chat" search={{ thread: block.threadId }} resetScroll={false}>
                 Открыть чат
               </Link>
             </Button>

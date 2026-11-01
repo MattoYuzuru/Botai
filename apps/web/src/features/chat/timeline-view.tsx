@@ -289,6 +289,7 @@ function TurnView({
         jobId: turn.jobId ?? "",
         answers,
         readOnly: true,
+        typewriter: turn.live,
         onAnswer: noop,
         onApprove: noop,
         onReject: noop,

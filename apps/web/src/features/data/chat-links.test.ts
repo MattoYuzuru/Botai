@@ -4,17 +4,35 @@ import {
   addCalendarDraft,
   addCalendarLink,
   addSourceDraft,
+  addSourceLink,
   CONNECT_UNIVERSITY_DRAFT,
   chatDraftLink,
   chatThreadLink,
   connectionChatLink,
   connectUniversityLink,
+  replaceCalendarLink,
 } from "./chat-links";
 
 describe("переходы в чат (agent-hub-v3 §3.9)", () => {
   it("тред — /chat?thread=<id>, новый чат с черновиком — /chat?draft=<текст>", () => {
-    expect(chatThreadLink("01JT")).toEqual({ to: "/chat", search: { thread: "01JT" } });
-    expect(chatDraftLink("Привет")).toEqual({ to: "/chat", search: { draft: "Привет" } });
+    expect(chatThreadLink("01JT")).toEqual({ to: "/chat", search: { thread: "01JT" }, resetScroll: false });
+    expect(chatDraftLink("Привет")).toEqual({ to: "/chat", search: { draft: "Привет" }, resetScroll: false });
+  });
+
+  it("каждая ссылка в чат объявляет resetScroll: false: чат сам держит ленту у последнего сообщения", () => {
+    const links = [
+      chatThreadLink("01JT"),
+      chatDraftLink("Привет"),
+      connectUniversityLink(),
+      addSourceLink("НИУ ВШЭ"),
+      addCalendarLink("НИУ ВШЭ"),
+      replaceCalendarLink("Календарь", "НИУ ВШЭ"),
+      connectionChatLink(connectionFixture({ status: "error" }), "НИУ ВШЭ"),
+    ];
+    for (const link of links) {
+      expect(link.to).toBe("/chat");
+      expect(link.resetScroll).toBe(false);
+    }
   });
 
   it("«Подключить ещё вуз» оставляет фразу открытой; «Добавить источник» называет вуз", () => {
@@ -29,7 +47,7 @@ describe("переходы в чат (agent-hub-v3 §3.9)", () => {
     expect(draft).toContain("«НИУ ВШЭ»");
     expect(draft).toMatch(/календар/i);
     expect(draft).not.toMatch(/https?:|webcal:|\.ics/);
-    expect(addCalendarLink("НИУ ВШЭ")).toEqual({ to: "/chat", search: { draft } });
+    expect(addCalendarLink("НИУ ВШЭ")).toEqual({ to: "/chat", search: { draft }, resetScroll: false });
   });
 
   it("календарь с умершей ссылкой просит новую ссылку, а не вход", () => {

@@ -1,4 +1,5 @@
 import { ChatMessage, HandoffCard, PlanCard, WaitCard } from "@botai/design";
+import { TypingMessage } from "@/features/chat/typing-message";
 import type { ParsedBlock } from "@/features/jobs/blocks";
 import { RemoteScreen } from "@/features/remote-screen/remote-screen";
 import { viewerFromBlock } from "./attachments";
@@ -37,19 +38,21 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
   switch (block.type) {
     case "thinking":
       return null;
-    case "text":
-      return (
-        <ChatMessage
-          role="agent"
-          markdown={block.markdown}
-          at={Date.parse(block.at)}
-          nowMs={ctx.nowMs}
-          timeZone={ctx.timeZone}
-          confidence={ctx.confidence?.(block.markdown)}
-          citationGroups={block.sources ? ctx.groupSources?.(block.sources) : undefined}
-          resolveLink={ctx.resolveLink}
-        />
-      );
+    case "text": {
+      const message = {
+        markdown: block.markdown,
+        at: Date.parse(block.at),
+        nowMs: ctx.nowMs,
+        timeZone: ctx.timeZone,
+        confidence: ctx.confidence?.(block.markdown),
+        citationGroups: block.sources ? ctx.groupSources?.(block.sources) : undefined,
+        resolveLink: ctx.resolveLink,
+      };
+      // Лента чата передаёт `typewriter` (живой блок печатается), остальные поверхности — нет и рисуют сразу.
+      // Уверенность и источники считаются от полного текста блока: при печати они не скачут.
+      if (ctx.typewriter === undefined) return <ChatMessage role="agent" {...message} />;
+      return <TypingMessage animate={ctx.typewriter} {...message} />;
+    }
     case "plan":
       return <PlanCard title={block.title} steps={block.steps} />;
     case "attachment":

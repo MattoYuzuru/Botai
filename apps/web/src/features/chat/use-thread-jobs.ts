@@ -122,6 +122,11 @@ export function useThreadJobs(
       if (isTaskKind(job.kind)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.spaces });
         void queryClient.invalidateQueries({ queryKey: queryKeys.today });
+      } else if (job.kind === "chat") {
+        // Ход агента мог создать вуз (инструмент `space_create`): шапка, переключатель вуза и «Учёба»
+        // подхватывают его без перезагрузки. Только список вузов (exact): связанные подключения и разделы
+        // чат не менял, и один запрос на завершение хода вместо перезапросов на каждый шаг.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.spaces, exact: true });
       }
     }
   }, [threadId, doneKey, queryClient]);

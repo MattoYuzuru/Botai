@@ -39,6 +39,7 @@ from botai.agent.v4.tools.code import build_code_tools
 from botai.agent.v4.tools.rag import build_rag_tools
 from botai.agent.v4.tools.secrets import SecretBroker, build_secret_tools
 from botai.agent.v4.tools.sources import SourceToolkit, build_source_tools
+from botai.agent.v4.tools.spaces import SpaceToolkit, build_space_tools
 from botai.agent.v4.trace_store import DbTraceStore
 from botai.agent.v4.traces import MemoryTraceStore, TraceStore
 from botai.browser.control import BrowserControl, ControlConfig
@@ -262,6 +263,24 @@ def build_source_toolkit(
     )
 
 
+def build_space_toolkit(services: Services) -> SpaceToolkit:
+    """The `space_*` tools over the real DB session factory.
+
+    The owner's edge case: an account with no universities needs the chat agent to create one
+    ("Вузов пока нет" -> «Подключить вуз» -> chat), and the UI deliberately has no create form.
+    Without this toolkit the agent would have to tell the student about a button that does not
+    exist — the exact production incident of 2026-11-01. Refuse to run when the DB is absent for
+    the same reason as the source tools: a silently reduced toolset would make the agent lie.
+    """
+    db = getattr(services, "db", None)
+    if db is None:
+        raise AgentWiringError(
+            "Вузы v4 включены, но у сервисов нет фабрики сессий БД: space_* инструменты нельзя "
+            "собрать (нужен services.db)."
+        )
+    return SpaceToolkit(sm=db)
+
+
 def build_rag_toolset(services: Services) -> list[ToolHandler]:
     """The `rag_*` tools over the real DB session factory; a broken RAG config fails loudly.
 
@@ -364,6 +383,7 @@ async def build_agent_wiring(
             cookies=source_cookies,
         )
         tools.extend(build_source_tools(source_toolkit))
+        tools.extend(build_space_tools(build_space_toolkit(services)))
         tools.extend(build_rag_toolset(services))
         tools.extend(
             build_action_tools(

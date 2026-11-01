@@ -176,6 +176,7 @@ export function ThreadsPanel({
                       <Link
                         to="/chat"
                         search={{ thread: thread.id }}
+                        resetScroll={false}
                         aria-current={active ? "true" : undefined}
                         onClick={() => onOpenChange(false)}
                         className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed aria-[current=true]:bg-accent-subtle"

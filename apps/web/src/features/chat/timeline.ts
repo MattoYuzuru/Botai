@@ -46,7 +46,18 @@ export type Turn =
       at: number;
       status: UserStatus;
     }
-  | { kind: "block"; key: string; jobId: string | null; block: ParsedBlock; at: number }
+  | {
+      kind: "block";
+      key: string;
+      jobId: string | null;
+      block: ParsedBlock;
+      at: number;
+      /**
+       * Блок пришёл из снимка задания (живой поток), а не только из сохранённой истории: текст ответа печатается.
+       * Признак не поднимается, если тот же блок уже лежит в истории: сохранённое не печатается заново.
+       */
+      live: boolean;
+    }
   | {
       kind: "thinking";
       key: string;
@@ -202,6 +213,8 @@ function placeThinking(
 export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput): Timeline {
   const turns: Turn[] = [];
   const rows = new Map<string, number>();
+  /** Живость первого появления блока: история обрабатывается раньше потока, поэтому сохранённый блок остаётся историческим. */
+  const liveByKey = new Map<string, boolean>();
   const thoughts = new Map<string, { blocks: Map<string, ParsedBlock>; after: string | null }>();
   const lastDurableAt = new Map<string, number>();
   const jobById = new Map(jobs.map((job) => [job.id, job]));
@@ -222,11 +235,13 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
     const at = block.at ? num(block.at) : 0;
     if (existing !== undefined) {
       // Живой блок свежее сохранённого (план обновился, из карточки входа ушёл тикет); место остаётся прежним.
-      if (live) turns[existing] = { kind: "block", key, jobId, block, at };
+      // Живость — какая была у первого появления: уже сохранённый блок не начинает печататься заново.
+      if (live) turns[existing] = { kind: "block", key, jobId, block, at, live: liveByKey.get(key) ?? live };
       return;
     }
+    liveByKey.set(key, live);
     rows.set(key, turns.length);
-    turns.push({ kind: "block", key, jobId, block, at });
+    turns.push({ kind: "block", key, jobId, block, at, live });
   };
 
   for (const message of messages) {

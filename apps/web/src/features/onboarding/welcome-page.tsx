@@ -58,7 +58,7 @@ export function WelcomePage() {
 
       <div className="sticky bottom-0 mt-auto flex flex-col gap-2 bg-bg pt-3 pb-safe-4 xs:flex-row">
         <Button variant="primary" asChild className="xs:min-w-48">
-          <Link to="/chat" search={{ draft: CONNECT_DRAFT }}>
+          <Link to="/chat" search={{ draft: CONNECT_DRAFT }} resetScroll={false}>
             Подключить вуз
           </Link>
         </Button>

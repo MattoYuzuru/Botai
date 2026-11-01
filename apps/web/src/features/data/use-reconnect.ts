@@ -57,7 +57,8 @@ export function useReconnect() {
       await queryClient.invalidateQueries({
         queryKey: target.spaceId ? queryKeys.connections(target.spaceId) : queryKeys.spaces,
       });
-      await navigate({ to: "/chat", search: { thread: thread.id } });
+      // Переход в чат: лента сама встаёт к последнему сообщению, роутер не должен сбрасывать скролл в ноль.
+      await navigate({ to: "/chat", search: { thread: thread.id }, resetScroll: false });
     },
     onError: (error) =>
       toast("Не удалось начать вход", { tone: "warning", description: humanMessage(error) }),
