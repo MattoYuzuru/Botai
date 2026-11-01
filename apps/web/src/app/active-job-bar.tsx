@@ -110,5 +110,6 @@ function doneLabel(kind: string | undefined, title: string, spaceTitle: string |
   if (kind === "ingest") return `${title}: готово`;
   if (kind === "sync") return `${title}: данные обновлены`;
   if (kind === "repair") return `${title}: починка завершена`;
-  return `${spaceTitle ?? "Вуз"}: источник подключён`;
+  if (kind === "connect") return `${spaceTitle ?? "Вуз"}: источник подключён`;
+  return `${title}: готово`;
 }

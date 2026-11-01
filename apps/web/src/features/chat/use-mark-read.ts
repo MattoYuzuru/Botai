@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ThreadOut } from "@/api/v3";
+import { compareInstants } from "@/lib/instants";
 import { chatApi } from "./api";
 import { chatKeys } from "./queries";
 
@@ -21,20 +22,49 @@ export function useMarkRead(
 ) {
   const queryClient = useQueryClient();
   const [seen, setSeen] = useState(visible);
+  const pending = useRef(new Set<string>());
+  const acknowledged = useRef(new Map<string, string | null>());
+  const [revision, setRevision] = useState(0);
   useEffect(() => {
     const onChange = () => setSeen(visible());
     document.addEventListener("visibilitychange", onChange);
     return () => document.removeEventListener("visibilitychange", onChange);
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retry a newer watermark when the in-flight read completes
   useEffect(() => {
     if (!threadId || !unread || !atBottom || !ready || !seen) return;
-    queryClient.setQueryData<ThreadOut[]>(chatKeys.threads, (rows) =>
-      rows?.map((thread) => (thread.id === threadId ? { ...thread, unread: false } : thread)),
+    const clearSeen = () => {
+      queryClient.setQueryData<ThreadOut[]>(chatKeys.threads, (rows) =>
+        rows?.map((thread) =>
+          thread.id === threadId && (!upTo || compareInstants(thread.lastMessageAt, upTo) <= 0)
+            ? { ...thread, unread: false }
+            : thread,
+        ),
+      );
+    };
+    // A list fetched before POST /read may arrive afterwards. Do not send the same read again.
+    if (acknowledged.current.has(threadId) && acknowledged.current.get(threadId) === upTo) {
+      clearSeen();
+      return;
+    }
+    if (pending.current.has(threadId)) return;
+    pending.current.add(threadId);
+    clearSeen();
+    void chatApi.markRead(threadId, upTo).then(
+      async () => {
+        acknowledged.current.set(threadId, upTo);
+        // Only the list: messages/runtime must keep loading while this acknowledgement is saved.
+        await queryClient.cancelQueries({ queryKey: chatKeys.threads, exact: true });
+        clearSeen();
+        pending.current.delete(threadId);
+        setRevision((value) => value + 1);
+      },
+      () => {
+        pending.current.delete(threadId);
+        // A subsequent list response restores unread and allows a retry after a failed request.
+        void queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+      },
     );
-    void chatApi.markRead(threadId, upTo).catch(() => {
-      // Не отметилось: список обновится сам и точка вернётся, пока человек не дочитает ещё раз.
-      void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
-    });
-  }, [threadId, unread, atBottom, ready, seen, upTo, queryClient]);
+  }, [threadId, unread, atBottom, ready, seen, upTo, queryClient, revision]);
 }

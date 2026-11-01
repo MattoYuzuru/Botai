@@ -34,6 +34,7 @@ export interface JobSnapshot {
   /** Текущая стадия словами сервера («Читаю список курсов»). */
   stage: string | null;
   startedAt: number | null;
+  finishedAt?: number;
   /** Блоки в порядке появления. */
   blocks: ParsedBlock[];
   answers: Record<string, AnswerState>;
@@ -73,8 +74,25 @@ const RESULT_ERROR_CODES = new Set([
 /** Старые задания могли завершиться done с бизнес-ошибкой внутри result. */
 export function jobProblem(job: JobSnapshot): JobProblem | null {
   if (job.problem) return job.problem;
-  if (job.state !== "done" || job.result?.status !== "error") return null;
-  const detail = job.result.detail;
+  if (job.state !== "done") return null;
+  const stopped = job.result?.status;
+  const limit =
+    ["token_limit", "time_limit", "step_limit", "cost_limit", "hard_stop"].includes(String(stopped)) ||
+    job.result?.stopped === "budget";
+  if (limit)
+    return {
+      code: "agent_limit",
+      detail: "Агент остановился по лимиту. Уже найденные данные сохранены; можно продолжить в чате.",
+      extra: {},
+    };
+  if (stopped === "cancelled" || stopped === "paused")
+    return {
+      code: "agent_stopped",
+      detail: "Работа агента остановлена. Уже найденные данные сохранены.",
+      extra: {},
+    };
+  if (stopped !== "error") return null;
+  const detail = job.result?.detail;
   const code = typeof detail === "string" && RESULT_ERROR_CODES.has(detail) ? detail : "unknown";
   return { code, detail: "", extra: {} };
 }
@@ -123,6 +141,15 @@ const parseTime = (value: unknown): number | null => {
   return Number.isFinite(ms) ? ms : null;
 };
 
+/** Updating a step closes its state, but never moves the moment it first appeared. */
+function preserveThinkingStart(previous: ParsedBlock, next: ParsedBlock): ParsedBlock {
+  return previous.type === "thinking" &&
+    next.type === "thinking" &&
+    Date.parse(previous.at) < Date.parse(next.at)
+    ? { ...next, at: previous.at }
+    : next;
+}
+
 /** Применяет одно событие потока. Неразбираемое событие игнорируется, `Last-Event-ID` всё равно запоминается. */
 export function applyEvent(job: JobSnapshot, event: RawEvent): JobSnapshot {
   const next: JobSnapshot = event.id ? { ...job, lastEventId: event.id } : job;
@@ -137,6 +164,7 @@ export function applyEvent(job: JobSnapshot, event: RawEvent): JobSnapshot {
         state,
         stage: typeof data.stage === "string" ? data.stage : next.stage,
         startedAt: parseTime(data.startedAt) ?? next.startedAt,
+        finishedAt: parseTime(data.finishedAt) ?? next.finishedAt,
       };
     }
     case "block": {
@@ -144,7 +172,9 @@ export function applyEvent(job: JobSnapshot, event: RawEvent): JobSnapshot {
       if (!block) return next;
       const index = next.blocks.findIndex((item) => item.id === block.id);
       const blocks =
-        index >= 0 ? next.blocks.map((item, i) => (i === index ? block : item)) : [...next.blocks, block];
+        index >= 0
+          ? next.blocks.map((item, i) => (i === index ? preserveThinkingStart(item, block) : item))
+          : [...next.blocks, block];
       return { ...next, blocks };
     }
     case "block_update": {
@@ -280,7 +310,7 @@ export function thinkingSteps(job: JobSnapshot): StepSummary[] {
   }
   // Задание завершилось, а шаг «бежит»: считаем его завершённым, иначе рельс будет врать.
   if (isTerminal(job.state)) {
-    const closing = job.state === "done" ? "done" : job.state === "failed" ? "failed" : "skipped";
+    const closing = job.state === "cancelled" ? "skipped" : jobFailed(job) ? "failed" : "done";
     return steps.map((step) =>
       step.state === "running" || step.state === "waiting" ? { ...step, state: closing } : step,
     );

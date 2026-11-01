@@ -1,4 +1,5 @@
 import { Button, ChatMessage, QuickReplies, ThinkingStream, type ViewerAttachment } from "@botai/design";
+import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { runIdFromResult } from "@/api/agent-runs";
 import { api, call } from "@/api/client";
@@ -253,7 +254,13 @@ function TurnView({
         />
       );
     case "thinking":
-      return <ThinkingTurn turn={turn} nowMs={nowMs} />;
+      return (
+        <ThinkingTurn
+          turn={turn}
+          nowMs={nowMs}
+          runId={turn.jobId ? base.taskRunId?.(turn.jobId) : undefined}
+        />
+      );
     case "failure":
       return (
         <div className="flex flex-col items-start gap-3" data-failure="">
@@ -353,16 +360,34 @@ function HistoryBlock({
   );
 }
 
-function ThinkingTurn({ turn, nowMs }: { turn: Extract<Turn, { kind: "thinking" }>; nowMs: number }) {
+function ThinkingTurn({
+  turn,
+  nowMs,
+  runId,
+}: {
+  turn: Extract<Turn, { kind: "thinking" }>;
+  nowMs: number;
+  runId?: string;
+}) {
   const [collapsed, setCollapsed] = useState(true);
   return (
-    <ThinkingStream
-      steps={turn.steps}
-      nowMs={nowMs}
-      finishedAt={turn.finishedAt}
-      collapsed={collapsed}
-      onToggle={setCollapsed}
-    />
+    <div className="flex flex-col gap-1">
+      <ThinkingStream
+        steps={turn.steps}
+        startedAt={turn.startedAt}
+        nowMs={nowMs}
+        finishedAt={turn.finishedAt}
+        collapsed={collapsed}
+        onToggle={setCollapsed}
+      />
+      {runId && (
+        <Button variant="ghost" size="sm" className="self-start" asChild>
+          <Link to="/agent/runs/$runId" params={{ runId }} aria-label="Трасса хода агента">
+            Трасса
+          </Link>
+        </Button>
+      )}
+    </div>
   );
 }
 

@@ -24,6 +24,8 @@ export interface ThinkingStreamProps {
   nowMs: number;
   /** Работа закончилась: отсчёт останавливается на этом моменте, заголовок — «Думал». */
   finishedAt?: number;
+  /** Начало задания, если первый видимый шаг пришёл позже. */
+  startedAt?: number;
   /** Высота развёрнутого списка ограничена и прокручивается; автопрокрутка к последнему шагу останавливается, если человек прокрутил вверх. */
   maxHeightClass?: string;
   className?: string;
@@ -67,10 +69,11 @@ export function ThinkingStream({
   onToggle,
   nowMs,
   finishedAt,
+  startedAt,
   maxHeightClass = "max-h-72",
   className,
 }: ThinkingStreamProps) {
-  const first = steps[0]?.at ?? nowMs;
+  const first = Math.min(startedAt ?? nowMs, steps[0]?.at ?? nowMs);
   const running = finishedAt === undefined && steps.some((step) => step.state === "running");
   const waiting = !running && finishedAt === undefined && steps.some((step) => step.state === "waiting");
   // Пока ждём человека, агент не думает: отсчёт стоит на последнем шаге, а не тикает минутами.
@@ -98,6 +101,9 @@ export function ThinkingStream({
         <button
           type="button"
           aria-expanded={!collapsed}
+          aria-label={
+            collapsed && (running || waiting) && steps.at(-1) ? `${title} ${steps.at(-1)?.label}` : title
+          }
           onClick={() => onToggle?.(!collapsed)}
           disabled={!onToggle}
           className="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left disabled:cursor-default"
@@ -105,8 +111,11 @@ export function ThinkingStream({
           {running && (
             <span aria-hidden="true" className="size-2 animate-pulse-soft rounded-full bg-accent-fg" />
           )}
-          <span className="flex-1" data-numeric="">
-            {title}
+          <span className="min-w-0 flex-1">
+            <span data-numeric="">{title}</span>
+            {collapsed && (running || waiting) && steps.at(-1) && (
+              <span className="mt-1 block truncate type-caption text-fg-subtle">{steps.at(-1)?.label}</span>
+            )}
           </span>
           {onToggle && <Icon name={collapsed ? "chevron-down" : "chevron-up"} size={20} />}
         </button>

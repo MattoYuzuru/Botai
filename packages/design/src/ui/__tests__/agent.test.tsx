@@ -265,6 +265,19 @@ describe("ChatComposer", () => {
 });
 
 describe("ThinkingStream", () => {
+  it("показывает текущую стадию в свёрнутом виде и считает время от старта задания", () => {
+    render(
+      <ThinkingStream
+        steps={[{ id: "1", label: "Читаю расписание", state: "running", at: NOW }]}
+        startedAt={NOW - 20_000}
+        nowMs={NOW}
+        collapsed
+        onToggle={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^Думает · 20\sс Читаю расписание$/ })).toBeInTheDocument();
+  });
+
   const steps = [
     { id: "1", label: "Ищу личный кабинет", state: "done" as const, at: NOW - 12_000 },
     { id: "2", label: "Читаю список курсов", state: "running" as const, at: NOW - 6_000 },
@@ -280,7 +293,7 @@ describe("ThinkingStream", () => {
 
   it("свёрнут до «Думает · 12 с»", () => {
     render(<ThinkingStream steps={steps} collapsed onToggle={() => {}} nowMs={NOW} />);
-    expect(screen.getByRole("button", { name: /^Думает · 12\sс$/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Думает · 12\sс Нужен ваш ответ$/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );

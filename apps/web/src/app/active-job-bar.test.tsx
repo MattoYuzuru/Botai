@@ -4,6 +4,8 @@ import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ThreadOut } from "@/api/v3";
 import { useActiveJob } from "@/features/jobs/active-job";
+import { jobManager } from "@/features/jobs/job-manager";
+import { initialJob } from "@/features/jobs/job-state";
 import { chatHarness, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
 
@@ -26,6 +28,22 @@ const thread = (id: string, activeJobId?: string): ThreadOut => ({
 });
 
 describe("плашка работы на других экранах", () => {
+  it("остановка v4 CHAT по лимиту не объявляет вуз подключённым", async () => {
+    jobManager.seed({
+      ...initialJob("J-limit"),
+      state: "done",
+      result: { status: "token_limit", run_id: "R-limit" },
+    });
+    useActiveJob.getState().set({ jobId: "J-limit", title: "Ответ на вопрос", threadId: "T1" });
+    renderApp("/");
+    expect(await screen.findByText("Ответ на вопрос: не завершено", undefined, wait)).toBeInTheDocument();
+    expect(screen.queryByText(/источник подключён/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Трасса хода: Ответ на вопрос" })).toHaveAttribute(
+      "href",
+      "/agent/runs/R-limit",
+    );
+  });
+
   it("тред известен из записи: «Открыть» ведёт в него", async () => {
     useActiveJob.getState().set({ jobId: "J1", title: "Подключаю ВШЭ", threadId: "T1" });
     renderApp("/");

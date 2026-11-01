@@ -143,6 +143,124 @@ describe("список чатов", () => {
 });
 
 describe("прочтение и уведомления", () => {
+  it("новый ответ в фоне уведомляет один раз, открытие чата убирает тост", async () => {
+    let rows = [thread({ id: "T1", title: "Открытый" }), thread({ id: "T2", title: "Фоновый" })];
+    harness.server.use(
+      http.get("*/api/v1/chat/threads", () => HttpResponse.json(rows)),
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+    );
+    const { queryClient, router } = renderApp("/chat?thread=T1");
+    await screen.findByRole("heading", { name: "Открытый" }, wait);
+    rows = [
+      rows[0] as ThreadOut,
+      thread({ id: "T2", title: "Фоновый", unread: true, lastMessageAt: "2026-10-27T11:00:00.000002Z" }),
+    ];
+    await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+    expect(await screen.findByText("Ботай ответил: Фоновый", undefined, wait)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Открыть" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: "T2" }), wait);
+    await waitFor(() => expect(screen.queryByText("Ботай ответил: Фоновый")).toBeNull(), wait);
+  });
+
+  it("прочтение сохраняет микросекунды последнего сообщения и не повторяется после устаревшего списка", async () => {
+    const first = "2026-10-27T11:00:00.344609Z";
+    const latest = "2026-10-27T11:00:00.344611Z";
+    const reads: unknown[] = [];
+    let finishRead = () => {};
+    const readGate = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    harness.server.use(
+      http.get("*/api/v1/chat/threads", () =>
+        HttpResponse.json([
+          thread({ id: "T1", title: "Прочитанный чат", lastMessageAt: latest, unread: true }),
+        ]),
+      ),
+      http.get("*/api/v1/chat/threads/T1/runtime", () =>
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+      http.get("*/api/v1/chat/threads/T1/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M1",
+            role: "agent",
+            createdAt: first,
+            jobId: null,
+            blocks: [{ type: "text", id: "01JAAAAAAAAAAAAAAAAAAAAA01", at: first, markdown: "Первый ответ" }],
+          },
+          {
+            id: "M2",
+            role: "agent",
+            createdAt: latest,
+            jobId: null,
+            blocks: [
+              { type: "text", id: "01JAAAAAAAAAAAAAAAAAAAAA02", at: latest, markdown: "Последний ответ" },
+            ],
+          },
+        ]),
+      ),
+      http.post("*/api/v1/chat/threads/T1/read", async ({ request }) => {
+        reads.push(await request.json());
+        await readGate;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const { queryClient } = renderApp("/chat?thread=T1");
+    await screen.findByText("Последний ответ", undefined, wait);
+    await waitFor(() => expect(reads).toEqual([{ upTo: latest }]), wait);
+    // A stale poll during the read must not create a second request.
+    await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+    expect(reads).toHaveLength(1);
+    finishRead();
+    await waitFor(
+      () => expect(queryClient.getQueryData<ThreadOut[]>(chatKeys.threads)?.[0]?.unread).toBe(false),
+      wait,
+    );
+    await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+    await waitFor(
+      () => expect(queryClient.getQueryData<ThreadOut[]>(chatKeys.threads)?.[0]?.unread).toBe(false),
+      wait,
+    );
+    expect(reads).toEqual([{ upTo: latest }]);
+  });
+
+  it("более новое сообщение в той же миллисекунде не отмечается до показа", async () => {
+    let reads = 0;
+    harness.server.use(
+      http.get("*/api/v1/chat/threads", () =>
+        HttpResponse.json([
+          thread({ id: "T1", title: "Чат", lastMessageAt: "2026-10-27T11:00:00.344611Z", unread: true }),
+        ]),
+      ),
+      http.get("*/api/v1/chat/threads/T1/runtime", () =>
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+      http.get("*/api/v1/chat/threads/T1/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M1",
+            role: "agent",
+            createdAt: "2026-10-27T11:00:00.344609Z",
+            jobId: null,
+            blocks: [
+              { type: "text", id: "01JAAAAAAAAAAAAAAAAAAAAA01", at: AT, markdown: "Предыдущий ответ" },
+            ],
+          },
+        ]),
+      ),
+      http.post("*/api/v1/chat/threads/T1/read", () => {
+        reads += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderApp("/chat?thread=T1");
+    await screen.findByText("Предыдущий ответ", undefined, wait);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(reads).toBe(0);
+  });
+
   it("открытый тред отмечается прочитанным (POST /read), кружок гаснет сразу", async () => {
     const reads: string[] = [];
     let unread = true;

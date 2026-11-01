@@ -35,6 +35,32 @@ const input = (n: number, extra: object = {}) => ({
 });
 
 describe("журнал события → состояние", () => {
+  it("закрытие шага сохраняет исходное время вместо обнуления длительности", () => {
+    const start = applyEvent(initialJob("J"), ev("block", thinking(1, "Ищу кабинет")));
+    const closed = applyEvent(
+      start,
+      ev("block", { ...thinking(1, "Ищу кабинет", "ok"), at: "2026-10-27T10:01:00Z" }),
+    );
+    expect(closed.blocks[0]).toMatchObject({ at: AT, state: "ok" });
+  });
+
+  it.each(["token_limit", "time_limit", "step_limit", "cost_limit", "hard_stop", "paused", "cancelled"])(
+    "завершённое задание %s не считается успешным",
+    (status) => {
+      const done = applyEvent(initialJob("J"), ev("done", { result: { status } }));
+      expect(jobFailed(done)).toBe(true);
+      expect(jobProblem(done)?.detail).toContain("сохранены");
+    },
+  );
+
+  it("исторический stopped=budget не считается успехом", () => {
+    expect(
+      jobFailed(
+        applyEvent(initialJob("J"), ev("done", { result: { status: "stopped", stopped: "budget" } })),
+      ),
+    ).toBe(true);
+  });
+
   it("status: состояние, стадия и время старта; Last-Event-ID запоминается", () => {
     const job = applyEvent(
       initialJob("J"),

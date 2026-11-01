@@ -20,6 +20,59 @@ async function seededThreadId(): Promise<string> {
 }
 
 describe("чат на весь экран: шапка, история, источники ответа", () => {
+  it("завершённый v4 CHAT показывает время работы, детали шагов и ссылку на трассу", async () => {
+    const threadId = await seededThreadId();
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({
+          activeJob: {
+            id: "J-trace",
+            kind: "chat",
+            state: "done",
+            stage: "Готово",
+            createdAt: AT,
+            startedAt: "2026-10-27T11:00:00Z",
+            finishedAt: "2026-10-27T11:00:20Z",
+            connectionId: null,
+            result: { status: "answer", run_id: "R-chat" },
+          },
+          tasks: [],
+          pending: [],
+          receipts: [],
+        }),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-trace",
+            role: "agent",
+            createdAt: "2026-10-27T11:00:20Z",
+            jobId: "J-trace",
+            blocks: [
+              {
+                type: "thinking",
+                id: ULID(90),
+                at: "2026-10-27T11:00:20Z",
+                stage: "Читаю расписание",
+                state: "ok",
+                detail: "Найдено три занятия",
+              },
+              { type: "text", id: ULID(91), at: "2026-10-27T11:00:20Z", markdown: "Расписание готово" },
+            ],
+          },
+        ]),
+      ),
+    );
+    renderApp(`/chat?thread=${threadId}`);
+    const toggle = await screen.findByRole("button", { name: /^Думал · 20\sс$/ }, wait);
+    expect(screen.getByRole("link", { name: "Трасса хода агента" })).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    await userEvent.setup().click(toggle);
+    expect(screen.getByText("Найдено три занятия")).toBeInTheDocument();
+  });
+
   it("название треда — заголовок, «Чат» — подпись; справа «Источники», «Чаты», «Новый чат»", async () => {
     renderApp("/chat");
     const title = await screen.findByRole("heading", { level: 1, name: "Что сегодня по расписанию?" }, wait);

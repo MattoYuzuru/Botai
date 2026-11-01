@@ -69,6 +69,20 @@ const build = (input: Partial<Parameters<typeof buildTimeline>[0]>) =>
   buildTimeline({ messages: [], pending: [], jobs: [], nowMs: NOW, ...input });
 
 describe("один таймлайн треда", () => {
+  it("длительность чата берётся от начала задания до завершения даже при одном позднем шаге", () => {
+    const { turns } = build({
+      jobs: [
+        job("J1", "chat", {
+          state: "done",
+          startedAt: NOW - 60_000,
+          finishedAt: NOW,
+          blocks: [{ type: "thinking", id: ULID(90), at: iso(NOW), stage: "Готово", state: "ok" }],
+        }),
+      ],
+    });
+    expect(turns[0]).toMatchObject({ kind: "thinking", startedAt: NOW - 60_000, finishedAt: NOW });
+  });
+
   const history: Message[] = [
     message({
       id: ULID(1),
