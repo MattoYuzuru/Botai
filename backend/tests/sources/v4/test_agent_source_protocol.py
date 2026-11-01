@@ -133,3 +133,76 @@ async def test_parser_empty_data_requires_an_explicit_reason(
     if not ok:
         assert report.errors[0].code == "recipe_drift"
         assert "empty_reason" in report.errors[0].detail
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("with_records", [False, True])
+async def test_code_parser_expired_session_becomes_needs_reauth(
+    tx_sessionmaker: Sm,
+    account: Account,
+    with_records: bool,
+) -> None:
+    from sqlalchemy import func, select
+
+    from botai.db.models import ScheduleEvent
+    from botai.sources.v4 import playbooks
+    from botai.sources.v4.schemas import SourcePatch
+
+    async with tx_sessionmaker() as session:
+        source = await service.create_source(
+            session,
+            user_id=account.user_id,
+            space_id=account.space_id,
+            title="Кабинет",
+            entry_url="https://fakeuni.test/app",
+            kinds=["schedule"],
+        )
+        playbook = await playbooks.create_playbook(session, user_id=account.user_id, title="Сессия")
+        version = await playbooks.add_playbook_version(
+            session,
+            user_id=account.user_id,
+            playbook_id=playbook.id,
+            code="print('parser')",
+        )
+        await playbooks.record_canary(
+            session,
+            user_id=account.user_id,
+            playbook_id=playbook.id,
+            version=version.version,
+            canary={"ok": True},
+        )
+        await playbooks.activate_playbook_version(
+            session, user_id=account.user_id, playbook_id=playbook.id, version=version.version
+        )
+        await service.update_source(
+            session,
+            user_id=account.user_id,
+            source_id=source.id,
+            patch=SourcePatch(playbook_id=playbook.id),
+        )
+        report = await SourceRunner(
+            session,
+            user_id=account.user_id,
+            executor_factory=lambda: OutputExecutor(
+                {
+                    "auth_required": True,
+                    "records": source_schema()["example"]["output"]["records"]
+                    if with_records
+                    else [],
+                }
+            ),
+        ).sync(source.id)
+        assert not report.ok
+        assert report.errors[0].code == "source_auth_required"
+        assert report.source_status == "needs_reauth"
+        assert report.records == []
+        assert report.counts == {}
+        assert report.domain == {}
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ScheduleEvent)
+                .where(ScheduleEvent.source_id == source.id)
+            )
+            == 0
+        )

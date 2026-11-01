@@ -28,6 +28,7 @@ def source_schema() -> dict[str, Any]:
             "records: [{kind, external_id, fields}]. fields использует camelCase, не колонки БД.",
             "schedule: startsAt + endsAt (или durationMinutes); даты — ISO datetime с timezone.",
             "Пустой кодовый результат требует empty_reason с проверенной причиной отсутствия данных.",
+            "Если сессия истекла или API вернул 401/403, код возвращает {auth_required: true}; source_sync отметит needs_reauth и не запишет records.",
             "Для declarative reads min_items задаёт ожидаемый минимум, 0 явно допускает пустой список.",
             "source_probe ничего не импортирует; после активации вызови source_sync и проверь counts.",
         ],

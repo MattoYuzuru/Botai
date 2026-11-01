@@ -195,6 +195,7 @@ class CodeOutput(BaseModel):
     cursor: dict[str, Any] | None = None
     notes: str | None = Field(default=None, max_length=2000)
     empty_reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    auth_required: bool = False
 
 
 # --- report --------------------------------------------------------------------------------------
@@ -1475,6 +1476,14 @@ class SourceRunner:
             output = CodeOutput.model_validate(payload)
         except ValidationError as exc:
             parsed.errors.append(RunError(code="recipe_drift", detail=_validation_detail(exc)))
+            return parsed
+        if output.auth_required:
+            parsed.errors.append(
+                RunError(
+                    code="source_auth_required",
+                    detail="Парсеру требуется обновить сессию источника",
+                )
+            )
             return parsed
         if not output.records and not output.documents:
             if output.empty_reason and output.empty_reason.strip():
