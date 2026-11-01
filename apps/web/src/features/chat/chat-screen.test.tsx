@@ -23,7 +23,7 @@ async function seededThreadId(): Promise<string> {
 }
 
 describe("чат на весь экран: шапка, история, источники ответа", () => {
-  it("ранний GET задания до runtime не скрывает трассу после завершения", async () => {
+  it("GET истории ждёт runtime и восстанавливает трассу после завершения", async () => {
     const threadId = await seededThreadId();
     let finishRuntime = () => {};
     const runtimeGate = new Promise<void>((resolve) => {
@@ -72,18 +72,73 @@ describe("чат на весь экран: шапка, история, исто�
       }),
     );
     const { queryClient } = renderApp(`/chat?thread=${threadId}`);
-    await waitFor(() => expect(lookups).toBe(1), wait);
+    await screen.findByRole("button", { name: /^Думал/ }, wait);
+    expect(lookups).toBe(0);
     expect(screen.queryByRole("link", { name: "Трасса хода агента" })).toBeNull();
     finishRuntime();
     await screen.findByRole("button", { name: /^Думает/ }, wait);
-    expect(lookups).toBe(1);
+    expect(lookups).toBe(0);
     done = true;
     await queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
     expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
       "href",
       "/agent/runs/R-early",
     );
+    expect(lookups).toBe(1);
+  });
+
+  it("первый runtime уже final: незавершённый GET истории повторяется до результата", async () => {
+    const threadId = await seededThreadId();
+    let finishRuntime = () => {};
+    const gate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    let lookups = 0;
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", async () => {
+        await gate;
+        return HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] });
+      }),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-final",
+            role: "agent",
+            jobId: "J-final",
+            createdAt: AT,
+            blocks: [{ type: "thinking", id: ULID(151), at: AT, stage: "Работаю", state: "ok" }],
+          },
+        ]),
+      ),
+      http.get("*/api/v1/jobs/J-final", () => {
+        lookups += 1;
+        return HttpResponse.json({
+          id: "J-final",
+          kind: "chat",
+          createdAt: AT,
+          startedAt: AT,
+          connectionId: null,
+          state: lookups === 1 ? "running" : "done",
+          result: lookups === 1 ? null : { status: "answer", run_id: "R-final" },
+        });
+      }),
+    );
+    const { queryClient } = renderApp(`/chat?thread=${threadId}`);
+    await screen.findByRole("button", { name: /^Думал/ }, wait);
+    expect(lookups).toBe(0);
+    finishRuntime();
+    await waitFor(() => expect(lookups).toBe(1), wait);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-final",
+    );
     expect(lookups).toBe(2);
+    expect(
+      queryClient
+        .getQueryCache()
+        .find({ queryKey: ["chat", "history-job", "J-final"] })
+        ?.isStale(),
+    ).toBe(false);
   });
 
   it("история запрашивает только 20 недавних заданий, старое — при раскрытии", async () => {

@@ -179,6 +179,7 @@ export function TimelineView({
             <TurnView
               turn={turn}
               resolveHistory={turn.kind === "thinking" && recentHistory.has(turn.jobId ?? "")}
+              historyReady={runtime !== undefined}
               base={base}
               job={turn.kind === "block" || turn.kind === "thinking" ? byId.get(turn.jobId ?? "") : undefined}
               receipt={
@@ -232,6 +233,7 @@ type BaseContext = Pick<
 function TurnView({
   turn,
   resolveHistory,
+  historyReady,
   base,
   job,
   failedJob,
@@ -244,6 +246,7 @@ function TurnView({
 }: {
   turn: Turn;
   resolveHistory: boolean;
+  historyReady: boolean;
   base: BaseContext;
   job: ThreadJob | undefined;
   failedJob: ThreadJob | undefined;
@@ -278,6 +281,7 @@ function TurnView({
           turn={turn}
           nowMs={nowMs}
           resolveHistory={resolveHistory}
+          historyReady={historyReady}
           runId={turn.jobId ? base.taskRunId?.(turn.jobId) : undefined}
         />
       );
@@ -385,9 +389,11 @@ function ThinkingTurn({
   nowMs,
   runId,
   resolveHistory,
+  historyReady,
 }: {
   turn: Extract<Turn, { kind: "thinking" }>;
   resolveHistory: boolean;
+  historyReady: boolean;
   nowMs: number;
   runId?: string;
 }) {
@@ -401,10 +407,12 @@ function ThinkingTurn({
           signal,
         }),
       ),
-    enabled: Boolean(turn.jobId) && !turn.running && !runId && (resolveHistory || !collapsed),
+    enabled: historyReady && Boolean(turn.jobId) && !turn.running && !runId && (resolveHistory || !collapsed),
     // История может загрузиться раньше runtime: только завершённый результат неизменяем.
     staleTime: (query) =>
       query.state.data && isTerminal(query.state.data.state) ? Number.POSITIVE_INFINITY : 0,
+    // Только реально наблюдавшееся незавершённое задание ждёт сохранения результата.
+    refetchInterval: (query) => (query.state.data && !isTerminal(query.state.data.state) ? 5_000 : false),
     retry: false,
     retryOnMount: false,
     refetchOnWindowFocus: false,
