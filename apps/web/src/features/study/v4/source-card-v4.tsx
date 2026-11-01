@@ -21,8 +21,10 @@ import { useState } from "react";
 import { humanMessage } from "@/api/errors";
 import {
   type ArtifactOut,
+  deleteSource,
   disableSource,
   enableSource,
+  isSourceBusyError,
   type PlaybookOut,
   type PlaybookVersionOut,
   priorityQuery,
@@ -30,8 +32,10 @@ import {
   repairSource,
   setPrimarySource,
   sourceArtifactsQuery,
+  sourceErrorOf,
   sourceKeys,
   sourcePlaybookQuery,
+  sourcesQuery,
   sourceVersionsQuery,
   syncSource,
 } from "@/api/sources";
@@ -91,8 +95,25 @@ function SourceCardDetails({
   onClose: () => void;
 }) {
   // Действие меняет источник: карточка показывает ответ сервера, а не устаревшую копию из списка.
-  const [shown, setShown] = useState<StudySource>(source);
+  const [state, setShown] = useState<StudySource>(source);
   const queryClient = useQueryClient();
+  const isV4 = state.mode === "v4";
+  // Список источников уже загружен панелью: после действия он обновляется, и карточка берёт оттуда
+  // свежие статус, время синхронизации и расписание (а не запомненную копию на момент открытия).
+  const sourceList = useQuery({ ...sourcesQuery(space.id), enabled: isV4 });
+  const fresh = sourceList.data?.find((row) => row.id === state.id);
+  const shown: StudySource = fresh
+    ? {
+        ...state,
+        status: fresh.status,
+        lastSyncAt: fresh.lastSyncAt,
+        nextSyncAt: fresh.nextSyncAt ?? null,
+        errorCode: sourceErrorOf(fresh).code,
+        errorDetail: sourceErrorOf(fresh).detail,
+        threadId: fresh.threadId ?? null,
+        playbookId: fresh.playbookId,
+      }
+    : state;
   const status = describeSourceStatus(shown.status);
   const chat = sourceChatLinks(shown, space.title);
   const open = safeHttpUrl(shown.entryUrl) ?? safeHttpUrl(shown.origin);
@@ -103,9 +124,12 @@ function SourceCardDetails({
     : "Ещё не обновлялся";
   const natures = natureKindsOf(shown.kinds);
   const dataKinds = dataKindsOf(shown.kinds);
-  const isV4 = shown.mode === "v4";
   const schedule = dataKinds.includes("schedule");
-  const live = !status.disabled && shown.status !== "archived";
+  const liveStatus = !status.disabled && shown.status !== "archived";
+  const nextSync = shown.nextSyncAt ? Date.parse(shown.nextSyncAt) : Number.NaN;
+  const nextSyncText = Number.isFinite(nextSync)
+    ? `${formatDay(nextSync, nowMs, space.timeZone)}, ${formatTime(nextSync, space.timeZone)}`
+    : "Расписание не задано";
 
   const playbook = useQuery({ ...sourcePlaybookQuery(shown.id), enabled: isV4 });
   const versions = useQuery({
@@ -178,7 +202,22 @@ function SourceCardDetails({
     },
     onError: (error) => failed("Не удалось выбрать основной источник", error),
   });
+  const remove = useMutation({
+    mutationFn: () => deleteSource(shown.id),
+    onSuccess: () => {
+      invalidate();
+      toast("Источник удалён", {
+        tone: "success",
+        description: "Данные источника больше не показываются в разделах.",
+      });
+      onClose();
+    },
+    onError: (error) => {
+      failed(isSourceBusyError(error) ? "Источник сейчас обновляется" : "Не удалось удалить источник", error);
+    },
+  });
   const [confirmDisable, setConfirmDisable] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   function applyReport(report: RunReportOut, pastTense: string) {
     const records = Object.values(report.counts).reduce((sum, value) => sum + value, 0);
@@ -237,6 +276,11 @@ function SourceCardDetails({
         <DetailRow icon="time" label="Последняя синхронизация">
           {lastSyncText}
         </DetailRow>
+        {isV4 && (
+          <DetailRow icon="sync" label="Следующее обновление">
+            {nextSyncText}
+          </DetailRow>
+        )}
         {shown.status === "disabled" && (
           <DetailRow icon="paused" label="Состояние">
             Выключен владельцем: задач нет, данные скрыты. Включение вернёт источник в работу.
@@ -331,7 +375,7 @@ function SourceCardDetails({
             Сделать основным для расписания
           </Button>
         )}
-        {live && (
+        {liveStatus && (
           <Button
             variant="secondary"
             fullWidth
@@ -352,6 +396,15 @@ function SourceCardDetails({
             Включить
           </Button>
         )}
+        <Button
+          variant="ghost"
+          tone="danger"
+          fullWidth
+          onClick={() => setConfirmDelete(true)}
+          loading={remove.isPending}
+        >
+          Удалить источник
+        </Button>
         {chat.openThread && (
           <Button variant="ghost" leadingIcon="chat" asChild fullWidth>
             <Link {...chat.openThread} onClick={onClose}>
@@ -389,6 +442,17 @@ function SourceCardDetails({
         )}
       </div>
 
+      <Dialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Удалить «${shown.title}»?`}
+        description="Данные источника исчезнут из «Учёбы» и разделов: расписание, сроки, задания, оценки и документы, прочитанные из него. Если нужен перерыв, используйте «Выключить источник» — это обратимо."
+        confirmLabel="Удалить источник"
+        tone="danger"
+        onConfirm={async () => {
+          await remove.mutateAsync().catch(() => undefined);
+        }}
+      />
       <Dialog
         open={confirmDisable}
         onOpenChange={setConfirmDisable}

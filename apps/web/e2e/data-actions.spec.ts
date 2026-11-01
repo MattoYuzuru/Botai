@@ -43,11 +43,24 @@ test.describe("действия агента", () => {
     await expect(journal(page).getByRole("listitem")).toHaveCount(5);
     await expect(journal(page).getByText("Записаться на пересдачу по алгоритмам")).toBeVisible();
     await expect(journal(page).getByText("Ждёт решения")).toBeVisible();
+    // Область подписана названием источника, если сервер его дал.
+    await expect(journal(page).getByText("Личный кабинет").first()).toBeVisible();
     await expect(journal(page).getByText("Выполнено", { exact: true })).toBeVisible();
 
-    await page.getByRole("combobox", { name: "Решение" }).click();
+    await page.getByRole("combobox", { name: "Решение", exact: true }).click();
     await page.getByRole("option", { name: "Ждут решения" }).click();
     await expect(journal(page).getByRole("listitem")).toHaveCount(1);
+  });
+
+  test("фильтр по источнику: из журнала и сброс ко всем источникам", async ({ page }) => {
+    await open(page, "/actions", "connected");
+    await expect(journal(page).getByRole("listitem")).toHaveCount(5);
+    await page.getByRole("combobox", { name: "Источник", exact: true }).click();
+    await page.getByRole("option", { name: "Личный кабинет", exact: true }).click();
+    await expect(journal(page).getByRole("listitem")).toHaveCount(4);
+    await page.getByRole("combobox", { name: "Источник", exact: true }).click();
+    await page.getByRole("option", { name: "Все источники" }).click();
+    await expect(journal(page).getByRole("listitem")).toHaveCount(5);
   });
 
   test("«Разрешить» записывает решение и обновляет запись", async ({ page }) => {

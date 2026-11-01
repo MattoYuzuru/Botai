@@ -85,6 +85,16 @@ function readSourcesVariant(): "none" | "fail" | null {
   }
 }
 
+/** `?delete=busy|fail` — предсказуемые состояния удаления для e2e (409 и настоящий сбой). */
+function readDeleteVariant(): "busy" | "fail" | null {
+  try {
+    const value = new URLSearchParams(window.location.search).get("delete");
+    return value === "busy" || value === "fail" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions = {}) {
   const { latency = 0, persist = false } = options;
   const wait = async () => {
@@ -153,6 +163,7 @@ export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions
       source.status = "active";
       source.lastError = null;
       source.lastSyncAt = nowIso();
+      source.nextSyncAt = new Date(db.now() + 3 * 3_600_000).toISOString();
       touch(source);
       return HttpResponse.json(report);
     }),
@@ -168,6 +179,7 @@ export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions
       source.status = "active";
       source.lastError = null;
       source.lastSyncAt = nowIso();
+      source.nextSyncAt = new Date(db.now() + 3 * 3_600_000).toISOString();
       touch(source);
       return HttpResponse.json(report);
     }),
@@ -180,6 +192,7 @@ export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions
       if (source.status !== "disabled") {
         source.disabledFrom = source.status;
         source.status = "disabled";
+        source.nextSyncAt = null;
         touch(source);
       }
       return HttpResponse.json(source);
@@ -193,9 +206,36 @@ export function createSourcesHandlers(db: MockDb, options: SourcesHandlerOptions
       if (source.status === "disabled") {
         source.status = source.disabledFrom ?? "active";
         source.disabledFrom = null;
+        source.nextSyncAt = new Date(db.now() + 3 * 3_600_000).toISOString();
         touch(source);
       }
       return HttpResponse.json(source);
+    }),
+
+    http.delete("*/api/v1/sources/:sourceId", async ({ params }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const source = found(String(params.sourceId));
+      if (!source) return problem(404, "not_found", "Источник не найден");
+      const variant = readDeleteVariant();
+      if (variant === "fail") return problem(500, "internal_error", "Не удалось удалить источник");
+      const busy = db.sourceRuns.some(
+        (run) => run.sourceId === source.id && (run.status === "running" || run.status === "queued"),
+      );
+      if (variant === "busy" || busy || source.status === "syncing") {
+        return problem(
+          409,
+          "conflict",
+          "У источника идёт синхронизация. Дождитесь её окончания и попробуйте снова.",
+        );
+      }
+      // Удаление источника удаляет его данные: строки, артефакты и историю запусков.
+      db.sources = db.sources.filter((row) => row.id !== source.id);
+      db.artifacts = db.artifacts.filter((row) => row.sourceId !== source.id);
+      db.sourceRuns = db.sourceRuns.filter((row) => row.sourceId !== source.id);
+      delete db.sourcePriorities[`${source.spaceId}:schedule`];
+      save();
+      return new HttpResponse(null, { status: 204 });
     }),
 
     http.get("*/api/v1/sources/:sourceId/playbook", async ({ params }) => {

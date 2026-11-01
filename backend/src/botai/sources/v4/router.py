@@ -36,7 +36,16 @@ from botai.db.models import (
     SourceState,
 )
 from botai.db.session import DbSession
-from botai.sources.v4 import artifacts, playbooks, priorities, runs, service, state
+from botai.sources.v4 import (
+    artifacts,
+    deletion,
+    playbooks,
+    priorities,
+    runs,
+    service,
+    state,
+    sync_jobs,
+)
 from botai.sources.v4.runner import RunReport, SourceRunner
 from botai.sources.v4.schemas import (
     ArtifactOut,
@@ -56,7 +65,9 @@ from botai.sources.v4.schemas import (
     SourceRunOut,
     SourceStateOut,
     SyncIn,
+    SyncQueuedOut,
 )
+from botai.sources.v4.sync_jobs import linked_connection as _linked_connection
 from botai.sources.v4.wiring import build_default_runner_builder
 
 router = APIRouter(prefix="/api/v1", tags=["sources-v4"])
@@ -84,12 +95,6 @@ def get_runner_builder(settings: SettingsDep) -> RunnerBuilder:
 
 V4 = Depends(require_sources_v4)
 RunnerDep = Annotated[RunnerBuilder, Depends(get_runner_builder)]
-
-
-def _linked_connection(source: Source) -> str | None:
-    """The v3 connection a v4 source was created from (the dispatch links them in its config)."""
-    linked = source.config.get("connection_id")
-    return linked if isinstance(linked, str) and linked else None
 
 
 async def _thread_ids(
@@ -129,6 +134,7 @@ def _source_out(source: Source, *, thread_id: str | None = None) -> SourceOut:
         priority=source.priority,
         trust=source.trust,
         last_sync_at=source.last_sync_at,
+        next_sync_at=source.next_sync_at,
         last_error=source.last_error,
         disabled_from=source.disabled_from,
         created_at=source.created_at,
@@ -274,6 +280,38 @@ async def enable_source(source_id: str, user: AuthUser, session: DbSession) -> S
     await session.commit()
     threads = await _thread_ids(session, user.id, [source])
     return _source_out(source, thread_id=threads.get(source.id))
+
+
+@router.post(
+    "/sources/{source_id}/sync-jobs",
+    response_model=SyncQueuedOut,
+    status_code=202,
+    dependencies=[V4],
+)
+async def enqueue_source_sync(
+    source_id: str, user: AuthUser, session: DbSession, services: ServicesDep
+) -> SyncQueuedOut:
+    """Queue the source sync instead of running it in the API; the report comes from the job/SSE.
+
+    Additive next to the inline `POST /sources/{id}/sync` (unchanged 200 `RunReportOut`). A source
+    linked to a v3 connection is synced through it; a source without a connection is synced by
+    `source_id` in the v4 dispatch. 409 when the source is switched off or has no playbook;
+    a task already in flight is returned instead of a second one.
+    """
+    source = await service.get_source(session, user_id=user.id, source_id=source_id)
+    job_id, status = await sync_jobs.enqueue_sync(services, user_id=user.id, source=source)
+    return SyncQueuedOut(job_id=job_id, source_id=source.id, status=status)
+
+
+@router.delete("/sources/{source_id}", status_code=204, dependencies=[V4])
+async def delete_source(source_id: str, user: AuthUser, session: DbSession) -> None:
+    """Delete the source with its data and artifacts; jobs/traces and learned playbooks stay.
+
+    409 while a task of the source is still queued/running/waiting: a running sync must not lose
+    the record it writes into. A foreign or missing id is 404, as everywhere.
+    """
+    await deletion.delete_source(session, user_id=user.id, source_id=source_id)
+    await session.commit()
 
 
 # --- runs ---------------------------------------------------------------------------------------

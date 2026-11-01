@@ -18,6 +18,8 @@ export interface StudySource {
   kinds: string[];
   status: string;
   lastSyncAt: string | null;
+  /** Когда сервер сам обновит источник по расписанию; `null` — расписание не задано. */
+  nextSyncAt: string | null;
   /** Человеческое описание ошибки, если источник сломан; технические коды не показываются. */
   errorDetail: string | null;
   /** Код ошибки сервера — только для выбора человеческого действия в карточке. */
@@ -73,6 +75,7 @@ export function connectionToStudySource(connection: Connection): StudySource {
     kinds: kindsOfConnection(connection),
     status: V3_STATUS[connection.status] ?? connection.status,
     lastSyncAt: connection.lastSyncAt,
+    nextSyncAt: null,
     errorDetail: connection.errorDetail ?? null,
     errorCode: connection.errorCode ?? null,
     entryUrl: connection.entryUrl,
@@ -94,6 +97,7 @@ export function sourceFromApi(source: SourceOut): StudySource {
     kinds: source.kinds,
     status: source.status,
     lastSyncAt: source.lastSyncAt,
+    nextSyncAt: source.nextSyncAt ?? null,
     errorDetail: error.detail,
     errorCode: error.code,
     entryUrl: source.entryUrl,

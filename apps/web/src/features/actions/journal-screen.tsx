@@ -1,22 +1,13 @@
-import {
-  Badge,
-  Banner,
-  Button,
-  EmptyState,
-  formatAgo,
-  ListRow,
-  Select,
-  SkeletonText,
-  useNow,
-} from "@botai/design";
+import { Badge, Banner, EmptyState, formatAgo, ListRow, Select, SkeletonText, useNow } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { type ActionJournalEntry, actionsJournalQuery, type JournalFilters } from "@/api/actions";
 import { humanMessage } from "@/api/errors";
+import { sourcesQuery } from "@/api/sources";
 import { Screen } from "@/app/screen";
 import { ActionSheet } from "./action-sheet";
-import { ACTION_CLASSES, describeActionClass, describeDecision, describeScopeKind } from "./policy";
+import { ACTION_CLASSES, actionScopeText, describeActionClass, describeDecision } from "./policy";
 
 const DECISION_FILTERS = [
   { value: "asked", label: "Ждут решения" },
@@ -47,6 +38,7 @@ export function ActionsJournalScreen({ source }: { source?: string }) {
     limit: 100,
   };
   const journal = useQuery(actionsJournalQuery(filters));
+  const sources = useQuery(sourcesQuery());
   const back = () => {
     if (router.history.canGoBack()) router.history.back();
     else void navigate({ to: "/study" });
@@ -96,17 +88,19 @@ export function ActionsJournalScreen({ source }: { source?: string }) {
             sheetTitle="Класс действия"
             className="min-w-40"
           />
-          {source && (
-            <Button
-              variant="ghost"
-              size="sm"
-              leadingIcon="close"
-              data-touch-expanded=""
-              onClick={() => void navigate({ to: "/actions", search: {} })}
-            >
-              Только источник: {source.slice(-6)}
-            </Button>
-          )}
+          <Select
+            options={[
+              { value: "", label: "Все источники" },
+              ...(sources.data ?? []).map((item) => ({ value: item.id, label: item.title })),
+            ]}
+            value={source ?? ""}
+            onValueChange={(value) =>
+              void navigate({ to: "/actions", search: value ? { source: value } : {} })
+            }
+            aria-label="Источник"
+            sheetTitle="Источник"
+            className="min-w-40"
+          />
           {pendingCount > 0 && <Badge tone="warning">Ждут решения: {pendingCount}</Badge>}
         </div>
 
@@ -148,7 +142,7 @@ export function ActionsJournalScreen({ source }: { source?: string }) {
                             {decisionView.label}
                           </Badge>
                           <span>{classView.label}</span>
-                          <span>{describeScopeKind(action.scopeKind)}</span>
+                          <span>{actionScopeText(action)}</span>
                           <time dateTime={action.createdAt}>
                             {Number.isFinite(created) ? formatAgo(created, nowMs) : ""}
                           </time>

@@ -966,7 +966,14 @@ export interface paths {
         get: operations["get_source_api_v1_sources__source_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Source
+         * @description Delete the source with its data and artifacts; jobs/traces and learned playbooks stay.
+         *
+         *     409 while a task of the source is still queued/running/waiting: a running sync must not lose
+         *     the record it writes into. A foreign or missing id is 404, as everywhere.
+         */
+        delete: operations["delete_source_api_v1_sources__source_id__delete"];
         options?: never;
         head?: never;
         /** Update Source */
@@ -1200,6 +1207,31 @@ export interface paths {
          * @description Run the active (or the named) version; the runner records freshness and state itself.
          */
         post: operations["sync_source_api_v1_sources__source_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/sync-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueue Source Sync
+         * @description Queue the source sync instead of running it in the API; the report comes from the job/SSE.
+         *
+         *     Additive next to the inline `POST /sources/{id}/sync` (unchanged 200 `RunReportOut`). A source
+         *     linked to a v3 connection is synced through it; a source without a connection is synced by
+         *     `source_id` in the v4 dispatch. 409 when the source is switched off or has no playbook;
+         *     a task already in flight is returned instead of a second one.
+         */
+        post: operations["enqueue_source_sync_api_v1_sources__source_id__sync_jobs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1556,6 +1588,8 @@ export interface components {
             scopeKind: string;
             /** Sourceid */
             sourceId: string | null;
+            /** Sourcetitle */
+            sourceTitle: string | null;
         };
         /** ActiveTask */
         ActiveTask: {
@@ -2870,6 +2904,8 @@ export interface components {
             } | null;
             /** Lastsyncat */
             lastSyncAt: string | null;
+            /** Nextsyncat */
+            nextSyncAt?: string | null;
             /** Playbookid */
             playbookId: string | null;
             /** Priority */
@@ -3033,6 +3069,22 @@ export interface components {
         SyncIn: {
             /** Version */
             version?: number | null;
+        };
+        /**
+         * SyncQueuedOut
+         * @description `POST /sources/{id}/sync-jobs`: the sync is queued, the report comes from the job/SSE.
+         *
+         *     Additive next to the inline `POST /sources/{id}/sync` (200 `RunReportOut`), which stays for the
+         *     current UI. `status` is the job state (`queued` or `running` when the enqueue deduplicated into
+         *     an already started task).
+         */
+        SyncQueuedOut: {
+            /** Jobid */
+            jobId: string;
+            /** Sourceid */
+            sourceId: string;
+            /** Status */
+            status: string;
         };
         /** ThreadCreate */
         ThreadCreate: {
@@ -4961,6 +5013,35 @@ export interface operations {
             };
         };
     };
+    delete_source_api_v1_sources__source_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_source_api_v1_sources__source_id__patch: {
         parameters: {
             query?: never;
@@ -5450,6 +5531,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_source_sync_api_v1_sources__source_id__sync_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncQueuedOut"];
                 };
             };
             /** @description Validation Error */

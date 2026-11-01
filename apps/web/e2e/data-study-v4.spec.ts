@@ -62,6 +62,8 @@ test.describe("«Учёба»: источники вуза", () => {
     const sheet = page.getByRole("dialog", { name: "Личный кабинет" });
     await expectSheetReady(page, "Личный кабинет");
     await expect(sheet.getByText("Последняя синхронизация")).toBeVisible();
+    // Расписание автообновления — из SourceOut.nextSyncAt.
+    await expect(sheet.getByText("Следующее обновление")).toBeVisible();
     await expect(sheet.getByText("Декларативное описание")).toBeVisible();
     await expect(sheet.getByText("Ревизия 2")).toBeVisible();
     await expect(sheet.getByText("Прочитанное")).toBeVisible();
@@ -97,7 +99,7 @@ test.describe("«Учёба»: источники вуза", () => {
       .click();
     const sheet = page.getByRole("dialog", { name: "Личный кабинет" });
     await sheet.getByRole("button", { name: "Перечитать" }).click();
-    await expect(page.getByText("Источник перечитан")).toBeVisible();
+    await expect(page.getByText("Источник перечитан", { exact: true })).toBeVisible();
     await expect(page.getByText(/\d+\s*%/)).toHaveCount(0);
     await expect(sheet.getByText("Работает")).toBeVisible();
   });
@@ -114,6 +116,42 @@ test.describe("«Учёба»: источники вуза", () => {
     await expect(sheet.getByText("Работает")).toBeVisible();
   });
 
+  test("«Удалить источник»: опасное подтверждение, удаление и обновление списка", async ({ page }) => {
+    await open(page, "/study", "connected");
+    const sources = sourcesOf(page, /^Высшая школа экономики/);
+    await expect(sources.getByRole("listitem")).toHaveCount(2);
+    await sources.getByRole("button", { name: /^Личный кабинет:/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Личный кабинет" });
+    const remove = sheet.getByRole("button", { name: "Удалить источник" });
+    await remove.scrollIntoViewIfNeeded();
+    await remove.click();
+    const dialog = page.getByRole("alertdialog", { name: "Удалить «Личный кабинет»?" });
+    await expect(dialog.getByText(/Данные источника исчезнут/)).toBeVisible();
+    await expect(dialog.getByText(/«Выключить источник» — это обратимо/)).toBeVisible();
+    await dialog.getByRole("button", { name: "Удалить источник" }).click();
+    await expect(page.getByText("Источник удалён", { exact: true })).toBeVisible();
+    await expect(sheet).toHaveCount(0);
+    await expect(sources.getByRole("listitem")).toHaveCount(1);
+    await expect(sources.getByText("Расписание (календарь)")).toBeVisible();
+  });
+
+  test("удаление при незавершённой задаче: 409 человеческим текстом, источник остаётся", async ({ page }) => {
+    await open(page, "/study?delete=busy", "connected");
+    const sources = sourcesOf(page, /^Высшая школа экономики/);
+    await sources.getByRole("button", { name: /^Личный кабинет:/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Личный кабинет" });
+    const remove = sheet.getByRole("button", { name: "Удалить источник" });
+    await remove.scrollIntoViewIfNeeded();
+    await remove.click();
+    const dialog = page.getByRole("alertdialog", { name: "Удалить «Личный кабинет»?" });
+    await dialog.getByRole("button", { name: "Удалить источник" }).click();
+    await expect(page.getByText("Источник сейчас обновляется")).toBeVisible();
+    await expect(page.getByText(/У источника идёт синхронизация/)).toBeVisible();
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sources.getByRole("listitem")).toHaveCount(2);
+  });
+
   test("«Выключить источник» просит подтверждения; выключенный включается обратно", async ({ page }) => {
     await open(page, "/study", "connected");
     await sourcesOf(page, /^Высшая школа экономики/)
@@ -124,10 +162,10 @@ test.describe("«Учёба»: источники вуза", () => {
     const dialog = page.getByRole("alertdialog", { name: "Выключить «Личный кабинет»?" });
     await expect(dialog.getByText(/Ничего не удаляется/)).toBeVisible();
     await dialog.getByRole("button", { name: "Выключить источник" }).click();
-    await expect(page.getByText("Источник выключен")).toBeVisible();
+    await expect(page.getByText("Источник выключен", { exact: true })).toBeVisible();
     await expect(sheet.getByText("Выключен", { exact: true })).toBeVisible();
     await sheet.getByRole("button", { name: "Включить" }).click();
-    await expect(page.getByText("Источник включён")).toBeVisible();
+    await expect(page.getByText("Источник включён", { exact: true })).toBeVisible();
   });
 
   test("«Сделать основным для расписания» переносит роль на выбранный источник", async ({ page }) => {

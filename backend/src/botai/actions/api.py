@@ -19,10 +19,12 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 
-from botai.actions.engine import ActionEngine
+from botai.actions.engine import ActionEngine, JournalEntry
+from botai.actions.journal import related_source_id, resolve_source_titles, source_title_of
 from botai.api.deps import ServicesDep
 from botai.auth.deps import AuthUser
 from botai.core.api import ApiModel
+from botai.db.session import DbSession
 
 router = APIRouter(prefix="/api/v1", tags=["actions"])
 
@@ -82,6 +84,7 @@ class ActionOut(ApiModel):
     run_id: str | None
     job_id: str | None
     source_id: str | None
+    source_title: str | None
     created_at: datetime
     decided_at: datetime | None
     executed_at: datetime | None
@@ -91,6 +94,21 @@ class DecisionIn(ApiModel):
     """Resolve an `ask` action: `approve` unblocks execution by the proposing run, `deny` closes it."""
 
     decision: Literal["approve", "deny"]
+
+
+async def _action_views(
+    session: DbSession, user_id: str, entries: list[JournalEntry]
+) -> list[ActionOut]:
+    """Journal rows plus the readable source title, resolved for the whole page in one batch."""
+    titles = await resolve_source_titles(
+        session,
+        user_id=user_id,
+        source_ids=[related_source_id(entry) for entry in entries],
+    )
+    return [
+        ActionOut(**entry.public(), source_title=source_title_of(entry, titles))
+        for entry in entries
+    ]
 
 
 @router.get("/action-policies", response_model=list[PolicyOut])
@@ -140,6 +158,7 @@ async def effective_action_policies(
 async def list_actions(
     user: AuthUser,
     engine: EngineDep,
+    session: DbSession,
     source_id: str | None = Query(default=None, max_length=26),
     action_class: str | None = Query(default=None, max_length=20),
     decision: str | None = Query(default=None, max_length=20),
@@ -153,19 +172,21 @@ async def list_actions(
         decision=decision,
         limit=limit,
     )
-    return [ActionOut(**entry.public()) for entry in entries]
+    return await _action_views(session, user.id, entries)
 
 
 @router.get("/actions/{action_id}", response_model=ActionOut)
-async def get_action(action_id: int, user: AuthUser, engine: EngineDep) -> ActionOut:
+async def get_action(
+    action_id: int, user: AuthUser, engine: EngineDep, session: DbSession
+) -> ActionOut:
     """One journal row (proposal, decision, executed request summary, result)."""
     entry = await engine.get(user_id=user.id, action_id=action_id)
-    return ActionOut(**entry.public())
+    return (await _action_views(session, user.id, [entry]))[0]
 
 
 @router.post("/actions/{action_id}/decision", response_model=ActionOut)
 async def decide_action(
-    action_id: int, body: DecisionIn, user: AuthUser, engine: EngineDep
+    action_id: int, body: DecisionIn, user: AuthUser, engine: EngineDep, session: DbSession
 ) -> ActionOut:
     """Approve or deny an `ask` action. The decision is journaled; execution belongs to the run.
 
@@ -176,7 +197,7 @@ async def decide_action(
     entry = await engine.decide(
         user_id=user.id, action_id=action_id, approve=body.decision == "approve"
     )
-    return ActionOut(**entry.public())
+    return (await _action_views(session, user.id, [entry]))[0]
 
 
 __all__ = ["router"]

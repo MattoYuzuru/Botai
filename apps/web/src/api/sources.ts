@@ -196,6 +196,19 @@ export function disableSource(sourceId: string): Promise<SourceOut> {
   return call(api.POST("/api/v1/sources/{source_id}/disable", { params: path(sourceId) }));
 }
 
+/**
+ * Удалить источник: данные источника исчезают, отключение же остаётся обратимым. Сервер отвечает
+ * 409, если у источника идёт незавершённая задача, — это показывается человеческим текстом.
+ */
+export function deleteSource(sourceId: string): Promise<void> {
+  return call(api.DELETE("/api/v1/sources/{source_id}", { params: path(sourceId) }));
+}
+
+/** Удаление не удалось из-за незавершённой задачи источника (409): это не сетевая ошибка. */
+export function isSourceBusyError(error: unknown): boolean {
+  return isApiError(error) && error.status === 409;
+}
+
 /** Включить выключенный источник обратно. */
 export function enableSource(sourceId: string): Promise<SourceOut> {
   return call(api.POST("/api/v1/sources/{source_id}/enable", { params: path(sourceId) }));

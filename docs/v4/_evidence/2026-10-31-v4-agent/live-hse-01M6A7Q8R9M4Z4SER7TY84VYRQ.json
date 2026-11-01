@@ -1,0 +1,733 @@
+{
+  "schemaVersion": 1,
+  "benchVersion": "0.1.0",
+  "scenario": "live-hse",
+  "title": "ВШЭ: живой вход по кредам из Keychain и расписание агентом v4 (L3)",
+  "runId": "01M6A7Q8R9M4Z4SER7TY84VYRQ",
+  "startedAt": "2026-11-01T03:21:33+03:00",
+  "finishedAt": "2026-11-01T03:23:48+03:00",
+  "headSha": "a0c0ade1f46309c521b4670dc80ef1c823b2d471",
+  "host": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.15"
+  },
+  "product": {
+    "engine": "v4",
+    "wiring": "botai.agent.v4.factory.build_agent_wiring",
+    "traceStore": "memory (no DB in the bench process)",
+    "benchVersion": "0.1.0",
+    "env": "dev",
+    "agentFlag": "v4",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "executor": "LocalExecutor (ENV=dev; prod guard not triggered)",
+    "db": "guarded offline session factory: source_*/rag_* not exercised in this scenario",
+    "browser": "playwright chromium headless",
+    "limits": {
+      "max_steps": 60,
+      "max_seconds": 540.0,
+      "max_usd": 0.5,
+      "hard_stop_usd": 0.5,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    },
+    "budgetUsd": 0.5,
+    "task": "Открой личный кабинет ВШЭ (https://lk.hse.ru/), войди в него. Найди расписание занятий или страницу/API-эндпоинт, которым оно грузится. Сохрани найденные данные расписания в файл в workspace задачи (JSON или таблицу). Ответь кратко: что нашёл, в каком файле лежит и какой источник (URL или файл). Если войти не удалось — точно скажи, на каком шаге и почему.",
+    "runDurationSec": 135.067,
+    "injectedTaskMessage": false
+  },
+  "durationSec": 135.337,
+  "status": "answer",
+  "outcome": "success",
+  "barrier": null,
+  "metrics": {
+    "steps": 36,
+    "toolCalls": 38,
+    "totalTokens": 915655,
+    "costUsd": 0.014318,
+    "modelCalls": 36,
+    "traceEvents": 114,
+    "runStartedAt": "2026-11-01T00:21:33.692494+00:00",
+    "runFinishedAt": "2026-11-01T00:23:48.136739+00:00",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "limits": {
+      "max_steps": 60,
+      "max_seconds": 540.0,
+      "max_usd": 0.5,
+      "hard_stop_usd": 0.5,
+      "auto_continue": false,
+      "max_calls_per_step": 16,
+      "max_parallel_tools": 8,
+      "tool_result_chars": 20000
+    }
+  },
+  "tools": [
+    {
+      "tool": "browser_open",
+      "ok": true,
+      "error": null,
+      "durationMs": 2624,
+      "arguments": {
+        "url": "https://lk.hse.ru/",
+        "wait_until": "domcontentloaded"
+      },
+      "summary": "Открыта https://lk.hse.ru/"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 16,
+      "arguments": {
+        "mode": "text",
+        "max_chars": "5000"
+      },
+      "summary": "Прочитано text: 76 символов"
+    },
+    {
+      "tool": "browser_click",
+      "ok": false,
+      "error": "source_unavailable",
+      "durationMs": 26,
+      "arguments": {
+        "target": "{\"text\": \"Войти\"}"
+      },
+      "summary": "Нажать: страница не ответила"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 4,
+      "arguments": {
+        "mode": "links",
+        "max_chars": "5000"
+      },
+      "summary": "Прочитано links: 2276 символов"
+    },
+    {
+      "tool": "browser_navigate",
+      "ok": true,
+      "error": null,
+      "durationMs": 315,
+      "arguments": {
+        "url": "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth",
+        "wait_until": "domcontentloaded"
+      },
+      "summary": "Открыта https://saml.hse.ru/realms/hse/protocol/openid-connect/auth"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 19,
+      "arguments": {
+        "max_chars": "5000",
+        "mode": "text"
+      },
+      "summary": "Прочитано text: 172 символов"
+    },
+    {
+      "tool": "ask_user",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "question": "Какой логин (имя пользователя или e-mail) использовать для входа в ЛК ВШЭ (saml.hse.ru / lk.hse.ru)?",
+        "input_kind": "text",
+        "placeholder": "например, <redacted-email>"
+      },
+      "summary": "Ответ владельца получен."
+    },
+    {
+      "tool": "secret_request",
+      "ok": true,
+      "error": null,
+      "durationMs": 29,
+      "arguments": {
+        "question": "Введите пароль от личного кабинета ВШЭ (saml.hse.ru). Значение попадёт только в поле ввода, я его не увижу.",
+        "hint": "пароль ЕЛК/SmartPoint"
+      },
+      "summary": "Секрет получен; модели доступен только handle"
+    },
+    {
+      "tool": "secret_request",
+      "ok": true,
+      "error": null,
+      "durationMs": 26,
+      "arguments": {
+        "hint": "логин ЕЛК (e-mail или имя пользователя)",
+        "question": "Введите логин (имя пользователя или e-mail) от ЛК ВШЭ через защищённый ввод — значение я не увижу, подставлю в поле формы."
+      },
+      "summary": "Секрет получен; модели доступен только handle"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 4,
+      "arguments": {
+        "mode": "dom",
+        "max_chars": "6000"
+      },
+      "summary": "Прочитано dom: 6000 символов"
+    },
+    {
+      "tool": "secret_use",
+      "ok": true,
+      "error": null,
+      "durationMs": 23,
+      "arguments": {
+        "handle": "sec_01M6A7QRNHVQ33F1V2H3A1C593",
+        "kind": "browser_field",
+        "target": "{\"selector\": \"#username\"}"
+      },
+      "summary": "Секрет подставлен в поле (значение скрыто)"
+    },
+    {
+      "tool": "secret_use",
+      "ok": true,
+      "error": null,
+      "durationMs": 38,
+      "arguments": {
+        "handle": "sec_01M6A7QQ26JJYFA42KNVY8AB2D",
+        "kind": "browser_field",
+        "target": "{\"selector\": \"input[name=\\\"password\\\"]\"}"
+      },
+      "summary": "Секрет подставлен в поле (значение скрыто)"
+    },
+    {
+      "tool": "browser_click",
+      "ok": true,
+      "error": null,
+      "durationMs": 295,
+      "arguments": {
+        "target": "{\"selector\": \"input[name=\\\"login\\\"]\"}"
+      },
+      "summary": "Нажато; url https://lk.hse.ru/api/keycloak-auth/"
+    },
+    {
+      "tool": "browser_wait",
+      "ok": true,
+      "error": null,
+      "durationMs": 3003,
+      "arguments": {
+        "kind": "timeout",
+        "value": "3"
+      },
+      "summary": "Ожидание выполнено"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 15,
+      "arguments": {
+        "max_chars": "6000",
+        "mode": "text"
+      },
+      "summary": "Прочитано text: 4368 символов"
+    },
+    {
+      "tool": "browser_network",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "action": "har_start",
+        "name": "lk-schedule"
+      },
+      "summary": "HAR: запись начата"
+    },
+    {
+      "tool": "browser_click",
+      "ok": true,
+      "error": null,
+      "durationMs": 34,
+      "arguments": {
+        "target": "{\"text\": \"Посмотреть все расписание\"}"
+      },
+      "summary": "Нажато; url https://lk.hse.ru/"
+    },
+    {
+      "tool": "browser_wait",
+      "ok": true,
+      "error": null,
+      "durationMs": 2004,
+      "arguments": {
+        "kind": "timeout",
+        "value": "2"
+      },
+      "summary": "Ожидание выполнено"
+    },
+    {
+      "tool": "browser_network",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "action": "log",
+        "max_entries": "80",
+        "url_filter": "schedul"
+      },
+      "summary": "Сеть: 8 записей (из 8)"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 2,
+      "arguments": {
+        "expressionChars": 186
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 141,
+      "arguments": {
+        "expressionChars": 365
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 7218,
+      "arguments": {
+        "expressionChars": 815
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 231,
+      "arguments": {
+        "expressionChars": 397
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 12051,
+      "arguments": {
+        "expressionChars": 1792,
+        "timeout_s": "180"
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_download",
+      "ok": false,
+      "error": "not_found",
+      "durationMs": 15006,
+      "arguments": {
+        "target": "{\"selector\": \"#sched-dl\"}",
+        "filename": "lk_hse_schedule_raw.json"
+      },
+      "summary": "Скачать файл: не дождались элемента (selector #sched-dl)"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 3,
+      "arguments": {
+        "expressionChars": 184
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_eval",
+      "ok": true,
+      "error": null,
+      "durationMs": 1,
+      "arguments": {
+        "expressionChars": 332
+      },
+      "summary": "JS выполнен"
+    },
+    {
+      "tool": "browser_download",
+      "ok": true,
+      "error": null,
+      "durationMs": 49,
+      "arguments": {
+        "filename": "lk_hse_schedule_raw.json",
+        "target": "{\"selector\": \"#sched-dl\"}"
+      },
+      "summary": "Скачано: downloads/lk_hse_schedule_raw.json (1767152 байт)"
+    },
+    {
+      "tool": "browser_network",
+      "ok": true,
+      "error": null,
+      "durationMs": 2,
+      "arguments": {
+        "action": "har_stop",
+        "name": "lk-schedule"
+      },
+      "summary": "HAR сохранён: browser/lk-schedule-1793492594627.har.json (128 записей)"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 47,
+      "arguments": {
+        "language": "python",
+        "codeChars": 561
+      },
+      "summary": "Выполнено (python): exit 0, 45 мс, файлов: 0"
+    },
+    {
+      "tool": "browser_read",
+      "ok": true,
+      "error": null,
+      "durationMs": 2,
+      "arguments": {
+        "max_chars": "2500",
+        "mode": "text"
+      },
+      "summary": "Прочитано text: 550 символов"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 74,
+      "arguments": {
+        "language": "python",
+        "codeChars": 2948
+      },
+      "summary": "Выполнено (python): exit 1, 72 мс, файлов: 3"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 50,
+      "arguments": {
+        "codeChars": 1290,
+        "language": "python"
+      },
+      "summary": "Выполнено (python): exit 0, 48 мс, файлов: 1"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 41,
+      "arguments": {
+        "codeChars": 1272,
+        "language": "python"
+      },
+      "summary": "Выполнено (python): exit 0, 39 мс, файлов: 0"
+    },
+    {
+      "tool": "code_exec",
+      "ok": true,
+      "error": null,
+      "durationMs": 80,
+      "arguments": {
+        "codeChars": 3401,
+        "language": "python"
+      },
+      "summary": "Выполнено (python): exit 0, 76 мс, файлов: 0"
+    },
+    {
+      "tool": "fs_write",
+      "ok": true,
+      "error": null,
+      "durationMs": 0,
+      "arguments": {
+        "path": "README_schedule.md",
+        "contentChars": 2657
+      },
+      "summary": "README_schedule.md: 3637 байт (overwrite)"
+    },
+    {
+      "tool": "browser_session",
+      "ok": true,
+      "error": null,
+      "durationMs": 73,
+      "arguments": {
+        "action": "export",
+        "name": "lk-hse",
+        "include_state": "True"
+      },
+      "summary": "Сессия сохранена: sessions/lk-hse.json"
+    },
+    {
+      "tool": "fs_list",
+      "ok": true,
+      "error": null,
+      "durationMs": 1,
+      "arguments": {
+        "max_entries": "30"
+      },
+      "summary": ".: 9 записей"
+    }
+  ],
+  "endpoints": [
+    "http://www.hse.ru/our/news/1201776235.html",
+    "http://www.hse.ru/our/news/1203334644.html",
+    "http://www.hse.ru/our/news/1205289257.html",
+    "http://www.hse.ru/our/news/1206834447.html",
+    "http://www.hse.ru/our/news/1207111421.html",
+    "http://www.hse.ru/our/news/1207400700.html",
+    "http://www.hse.ru/our/news/1209873600.html",
+    "http://www.hse.ru/our/news/1211566304.html",
+    "http://www.hse.ru/our/news/1213245553.html",
+    "https://economics.hse.ru/demat/news/1207726070.html",
+    "https://it.hse.ru/news/1211617870.html",
+    "https://lk.hse.ru/",
+    "https://lk.hse.ru/<id>",
+    "https://lk.hse.ru/`",
+    "https://lk.hse.ru/api/get-myschedule",
+    "https://lk.hse.ru/api/get-myschedule`",
+    "https://lk.hse.ru/api/keycloak-auth/",
+    "https://lk.hse.ru/faq",
+    "https://lk.hse.ru/registration",
+    "https://lk.hse.ru/schedule",
+    "https://saml.hse.ru/realms/hse/protocol/openid-connect/auth"
+  ],
+  "workspace": [
+    {
+      "path": "README_schedule.md",
+      "bytes": 3637,
+      "sha256": "09e1aba5534226b54b3d10c2348f9c57eda9e528a12c8c1aa1d8664a341ef82c",
+      "containsEmail": false,
+      "format": "text",
+      "lines": 38,
+      "scheduleLike": false
+    },
+    {
+      "path": "browser/lk-schedule-1793492594627.har.json",
+      "bytes": 263895,
+      "sha256": "77940cafad5e0551b80958230969cd143c45388d40c44903a7ecf9244ec6f273",
+      "containsEmail": false,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "log"
+      ],
+      "scheduleLike": false
+    },
+    {
+      "path": "downloads/lk_hse_schedule_raw.json",
+      "bytes": 1767152,
+      "sha256": "d96d47c1e77e5e1583dea11fffaf035d75f1a27a50ad25b69315ca67e5fad479",
+      "containsEmail": true,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "calls",
+        "days",
+        "fetched_at",
+        "range",
+        "source",
+        "user"
+      ],
+      "records": 171,
+      "scheduleLike": false
+    },
+    {
+      "path": "lk_hse_schedule_all_groups.csv",
+      "bytes": 866792,
+      "sha256": "ff18295a549a7454dcbda60ed5d76ccba2b7412e4414fa9fdd97039bab8ab736",
+      "containsEmail": false,
+      "format": "text",
+      "lines": 2780,
+      "scheduleLike": false
+    },
+    {
+      "path": "lk_hse_schedule_bdrip241.csv",
+      "bytes": 529083,
+      "sha256": "f9d12d93f31b888e4d750b6b958c7e7b9e8e630753abcad937aa60bcf2d194c8",
+      "containsEmail": false,
+      "format": "text",
+      "lines": 1700,
+      "scheduleLike": false
+    },
+    {
+      "path": "lk_hse_schedule_bdrip241.json",
+      "bytes": 847700,
+      "sha256": "e20dbece406a539b017a65b67982c33c2805a77989dc1305a72877001b8d6108",
+      "containsEmail": false,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "lessons",
+        "meta"
+      ],
+      "records": 1699,
+      "scheduleLike": true
+    },
+    {
+      "path": "lk_hse_schedule_full.json",
+      "bytes": 1386306,
+      "sha256": "45e8c08c3d8e3d8a033cc1be66e0e60b7d7a1f19dc98abd68005df4890195acc",
+      "containsEmail": false,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "lessons",
+        "meta"
+      ],
+      "records": 2779,
+      "scheduleLike": true
+    },
+    {
+      "path": "sessions/lk-hse.json",
+      "bytes": 15354,
+      "sha256": "0934924d1c7d39dd1ddbc6627009ef62cf656c7b621d4fab63054eed1bb681f6",
+      "containsEmail": false,
+      "format": "json",
+      "jsonType": "dict",
+      "keys": [
+        "cookies",
+        "origins"
+      ],
+      "records": 31,
+      "scheduleLike": false
+    }
+  ],
+  "answer": {
+    "chars": 2223,
+    "sha256": "ce63f3276b311c4338d719ecd76bb9d1c475c7a15cfa71b00ae65ca1ddf91350",
+    "mentionsSource": true,
+    "mentionsBarrier": false
+  },
+  "secretFlow": {
+    "secretAnswers": 2,
+    "cancelled": 0,
+    "deliveries": [
+      {
+        "kind": "mail",
+        "count": 1
+      },
+      {
+        "kind": "password",
+        "count": 1
+      }
+    ],
+    "questions": [
+      {
+        "inputKind": "text",
+        "question": "Какой логин (имя пользователя или e-mail) использовать для входа в ЛК ВШЭ (saml.hse.ru / lk.hse.ru)?",
+        "placeholder": "например, <redacted-email>",
+        "options": []
+      },
+      {
+        "inputKind": "secret",
+        "question": "Введите пароль от личного кабинета ВШЭ (saml.hse.ru). Значение попадёт только в поле ввода, я его не увижу.",
+        "placeholder": "пароль ЕЛК/SmartPoint",
+        "options": []
+      },
+      {
+        "inputKind": "secret",
+        "question": "Введите логин (имя пользователя или e-mail) от ЛК ВШЭ через защищённый ввод — значение я не увижу, подставлю в поле формы.",
+        "placeholder": "логин ЕЛК (e-mail или имя пользователя)",
+        "options": []
+      }
+    ],
+    "registeredValues": 2,
+    "policy": "креды только из Keychain (botai.live.hse.*); модели — handle; значения не печатаются и не пишутся в репозиторий"
+  },
+  "checks": {
+    "messagesLeak": false,
+    "traceLeak": false,
+    "secretSweep": {
+      "filesScanned": 13,
+      "filesRedacted": 1,
+      "redactedFiles": [
+        "raw/agent-workspace/01M6A7Q8R9M4Z4SER7TY84VYRQ/downloads/lk_hse_schedule_raw.json"
+      ]
+    },
+    "artifactPolicy": "raw (трасса, сообщения, workspace) — вне репозитория, 0700/0600; значения первичных секретов вычищены и в raw"
+  },
+  "proven": [
+    "агент v4 прошёл задачу своими инструментами v4 (без рецепта в коде) и дал ответ",
+    "живой вход ВШЭ выполнен с кредами из Keychain (модель видела только handle)",
+    "данные расписания найдены и сохранены файлом в workspace задачи",
+    "инструменты v4 исполнены: 36/38 вызовов ok (последовательность ниже)",
+    "первичные секреты: только handle/Vault; в трассе и сообщениях значений нет",
+    "повтор L3: тот же endpoint и 2779 записей, что в сертифицированном прогоне e8b8602"
+  ],
+  "notProven": [
+    "устойчивость и качество агента: один прогон одного SHA, без повторов и медиан",
+    "ветки MFA/капчи проверены, только если они реально встретились в этом прогоне",
+    "ЦУ и другие вузы в этот прогон не входили (scope lane E: только ВШЭ)",
+    "финальный sweep переписал 1 файл(ов) в raw — проверить, почему значение секрета оказалось в артефакте",
+    "raw sweep вычистил 1 файл(ов): профильный `user`-идентификатор в скачанном агентом raw JSON (raw вне репозитория); это не trace/messages-утечка, но показывает, что файлы, написанные code_exec/браузером, маскируются только sweep'ом",
+    "n=3 мало для выводов о качестве: один владелец, два SHA, одна машина"
+  ],
+  "evidence": {
+    "repoSummary": "docs/v4/_evidence/2026-10-31-v4-agent/live-hse-01M6A7Q8R9M4Z4SER7TY84VYRQ.json",
+    "rawRoot": "~/.local/state/botai-v4-bench/<date>/<run>/raw/v4-agent/",
+    "rawFiles": [
+      "run-meta.json",
+      "ask-log.json",
+      "trace.json",
+      "messages.json",
+      "result.json"
+    ]
+  },
+  "liveSignals": [
+    {
+      "check": "login_confirmed",
+      "ok": true,
+      "fact": "вход подтверждён: submit формы SSO → redirect на lk.hse.ru/api/keycloak-auth/"
+    },
+    {
+      "check": "network_observed",
+      "ok": true,
+      "fact": "сетевой лог наблюдался (Сеть: 8 записей (из 8))"
+    }
+  ],
+  "stats": {
+    "inRepeats": true,
+    "set": "l3-v4-repeats",
+    "n": 3,
+    "note": "набор для медианы/разброса плана 4.3; исторические прогоны c7710a3 в него не входят"
+  },
+  "codeState": {
+    "headSha": "a0c0ade1f46309c521b4670dc80ef1c823b2d471",
+    "worktreeCleanAtStart": true,
+    "note": "на старте серии (03:21 MSK) `git status --porcelain` был пуст: базовый коммит a0c0ade; к моменту публикации evidence другие lane начали незакоммиченные правки (chat/read-path), поэтому дерево сейчас грязное — на прогонах это не сказывалось на старте серии"
+  },
+  "behavior": {
+    "endpoint": "GET https://lk.hse.ru/api/get-myschedule",
+    "matchedEndpoint": true,
+    "maxJsonRecords": 2779,
+    "sameRecordsAsCertified": true,
+    "answerMentionsSource": true,
+    "loginConfirmed": true
+  },
+  "securityNotes": {
+    "messagesLeak": false,
+    "traceLeak": false,
+    "rawSweepFilesRedacted": 1,
+    "note": "trace/messages чисты (write-time gate); raw sweep вычистил 1 файл(ов) в raw вне репозитория — профильный идентификатор в скачанном агентом JSON; в репозиторий значения не попали"
+  },
+  "analysis": {
+    "productPath": true,
+    "purpose": "повтор для честной статистики (план 4.3), не сертификация",
+    "stepBudget": 60,
+    "stepsUsed": 36,
+    "stageReached": "login → secret_request/secret_use → keycloak-auth → schedule → API get-myschedule → download/парсер → JSON+CSV+README+session → финальный ответ",
+    "acceptanceVerdict": "успех, security gate чист (trace/messages)"
+  }
+}

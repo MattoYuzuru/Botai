@@ -17,6 +17,7 @@ import {
 } from "./db";
 import { JobSim } from "./job-sim";
 import { createSourcesHandlers } from "./sources-handlers";
+import { createUsageHandlers } from "./usage-handlers";
 
 type S = components["schemas"];
 
@@ -133,6 +134,7 @@ export function createHandlers(
     ...createDataHandlers(db, { latency, persist, jobPace }),
     ...createAgentRunHandlers(db, { latency }),
     ...createActionHandlers(db, { latency }),
+    ...createUsageHandlers(db, { latency }),
     ...createSourcesHandlers(db, { latency, persist }),
     ...createChatHandlers(db, { latency, persist, jobPace }),
     http.post("*/api/v1/auth/login", async ({ request }) => {

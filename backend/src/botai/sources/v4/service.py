@@ -278,6 +278,10 @@ def _set_status(source: Source, status: str) -> None:
     elif source.status == "disabled":
         source.disabled_from = None
     source.status = status
+    if status in ("disabled", "archived"):
+        # A switched-off source is not part of background autonomy: an already planned sync goes
+        # away, enabling it again schedules nothing by itself (the next sync is a manual/first one).
+        source.next_sync_at = None
 
 
 async def disable_source(session: AsyncSession, *, user_id: str, source_id: str) -> Source:

@@ -129,6 +129,9 @@ describe("журнал действий", () => {
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(5));
     expect(within(list).getByText("Записаться на пересдачу по алгоритмам")).toBeInTheDocument();
     expect(within(list).getByText("Ждёт решения")).toBeInTheDocument();
+    // Область подписана названием источника, если сервер его дал.
+    expect(within(list).getAllByText("Личный кабинет").length).toBeGreaterThan(0);
+    expect(within(list).getByText("все источники")).toBeInTheDocument();
     expect(within(list).getByText("Выполнено")).toBeInTheDocument();
     expect(within(list).getByText("Запрещено владельцем")).toBeInTheDocument();
     expect(within(list).getByText("Не выполнено")).toBeInTheDocument();
@@ -189,13 +192,31 @@ describe("журнал действий", () => {
     expect(await within(sheet).findByText("Запрещено владельцем")).toBeInTheDocument();
   });
 
+  it("фильтр по источнику из журнала: список сужается до действий этого источника", async () => {
+    const user = userEvent.setup();
+    renderApp("/actions");
+    const list = await journal();
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(5));
+    await user.click(screen.getByLabelText("Источник"));
+    const sheet = await screen.findByRole("dialog", { name: "Источник" });
+    await user.click(within(sheet).getByRole("option", { name: "Личный кабинет" }));
+    await waitFor(async () => {
+      const filtered = await journal();
+      expect(within(filtered).getAllByRole("listitem")).toHaveLength(4);
+      expect(within(filtered).queryByText("Купить полный доступ к курсу")).toBeNull();
+    });
+  });
+
   it("журнал по источнику: фильтр из адреса и сброс к общему журналу", async () => {
     const user = userEvent.setup();
     renderApp("/actions?source=src-hse-portal");
     const list = await journal();
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(4));
     expect(within(list).queryByText("Купить полный доступ к курсу")).toBeNull();
-    await user.click(screen.getByRole("button", { name: /Только источник/ }));
+    expect(screen.getByLabelText("Источник")).toHaveTextContent("Личный кабинет");
+    await user.click(screen.getByLabelText("Источник"));
+    const sheet = await screen.findByRole("dialog", { name: "Источник" });
+    await user.click(within(sheet).getByRole("option", { name: "Все источники" }));
     await waitFor(async () => {
       const all = await journal();
       expect(within(all).getAllByRole("listitem")).toHaveLength(5);

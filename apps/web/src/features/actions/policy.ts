@@ -124,6 +124,19 @@ export function describeScopeKind(raw: string): string {
   return SCOPE_LABEL[raw as PolicyScope] ?? "область";
 }
 
+/**
+ * Подпись области действия для журнала: название источника, если сервер его дал
+ * (`ActionOut.sourceTitle`), иначе вид области. Название не подменяется внутренним id.
+ */
+export function actionScopeText(
+  action: Pick<ActionJournalEntry, "scopeKind" | "scopeId" | "sourceTitle">,
+): string {
+  const title = action.sourceTitle?.trim();
+  if (title) return title;
+  const kind = describeScopeKind(action.scopeKind);
+  return action.scopeKind !== "global" && action.scopeId ? `${kind} ${action.scopeId}` : kind;
+}
+
 export interface DecisionView {
   label: string;
   tone: "success" | "info" | "warning" | "danger" | "neutral";

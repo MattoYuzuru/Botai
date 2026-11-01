@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from botai.actions.engine import ActionEngine
 from botai.actions.models import ActionRequest
+from botai.core.ids import new_id
 
 ORIGIN = "https://fakeuni.test"
 WRITE_URL = f"{ORIGIN}/deep-write"
@@ -24,6 +28,39 @@ def write_request(**overrides: Any) -> ActionRequest:
     }
     payload.update(overrides)
     return ActionRequest.model_validate(payload)
+
+
+async def add_v4_source(
+    sm: async_sessionmaker[AsyncSession],
+    *,
+    user_id: str,
+    space_id: str,
+    title: str,
+    status: str = "active",
+) -> str:
+    """A v4 source row for the journal-title tests (the real `sources` table, one space).
+
+    Inserted with plain SQL over the stable columns: the tests do not depend on every column the
+    source model grows over time (migrations of other lanes may be in flight in a shared tree).
+    """
+    source_id = new_id()
+    async with sm() as session:
+        await session.execute(
+            text(
+                "INSERT INTO sources (id, user_id, space_id, title, identity_key, status) "
+                "VALUES (:id, :user_id, :space_id, :title, :identity_key, :status)"
+            ),
+            {
+                "id": source_id,
+                "user_id": user_id,
+                "space_id": space_id,
+                "title": title,
+                "identity_key": f"test:{source_id}",
+                "status": status,
+            },
+        )
+        await session.commit()
+    return source_id
 
 
 async def allow(

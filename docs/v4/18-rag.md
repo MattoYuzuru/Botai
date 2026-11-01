@@ -253,3 +253,15 @@ uv run --frozen pytest tests/core/test_architecture.py -q   # 2 passed (HTTP-gua
   вынесены в константы, при живых прогонах их надо подбирать по метрикам.
 * **Очередь/задания**: индексация не ставится фоновой job'ой; сборка чанков идёт в процессе
   вызывающего (инструмент/ops), большие корпуса стоит вынести в job при необходимости.
+
+## 12. Автоиндексация после sync (2026-11-01)
+
+После успешного sync источника v4 runtime сам индексирует свежие артефакты:
+`agent/v4/dispatch.py::_maybe_autoindex` → `search.rag.autoindex_source_artifacts` (обе ветки
+sync: с connection и payload-only). Хук мягкий: RAG выключен/ошибка/таймаут → job остаётся
+`done`, в лог worker уходит warning без текстов документов (только текст `EmbeddingError` или
+класс исключения). Границы: ≤50 артефактов и ≤60 c на проход, идемпотентно по
+`content_hash` и `(chunk, model)`. Включение: `BOTAI_RAG_ENABLED=true` (гейт RAG) и
+`BOTAI_RAG_AUTOINDEX=true` (default; выключение одной env). CONNECT без playbook и REPAIR
+напрямую не хукаются — их догоняет следующий sync или `python -m botai.ops.reindex_rag`;
+живой API-провайдер эмбеддингов по-прежнему требует ключа и не проверен на production.

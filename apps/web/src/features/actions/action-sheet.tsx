@@ -19,12 +19,12 @@ import { humanMessage } from "@/api/errors";
 import { DetailList, DetailRow } from "@/features/data/detail-row";
 import {
   actionResultText,
+  actionScopeText,
   browserSteps,
   describeActionClass,
   describeActionMode,
   describeDecision,
   describeRequest,
-  describeScopeKind,
   proposalFields,
   rollbackHint,
 } from "./policy";
@@ -88,9 +88,7 @@ export function ActionSheet({
         onOpenChange={(open) => !open && onClose()}
         title={current?.intent ?? "Действие"}
         description={
-          current
-            ? `${actionClass?.label ?? "Действие"} · ${describeScopeKind(current.scopeKind)}`
-            : undefined
+          current ? `${actionClass?.label ?? "Действие"} · ${actionScopeText(current)}` : undefined
         }
         size="half"
         footer={
@@ -141,12 +139,8 @@ export function ActionSheet({
                 {actionClass?.label ?? current.actionClass} · {mode?.label ?? current.mode}
               </DetailRow>
               <DetailRow icon="space" label="Область">
-                {describeScopeKind(current.scopeKind)}
-                {current.scopeKind !== "global" && current.scopeId
-                  ? ` · ${current.scopeId}`
-                  : spaceTitle
-                    ? ` · ${spaceTitle}`
-                    : ""}
+                {actionScopeText(current)}
+                {!current.sourceTitle && spaceTitle ? ` · ${spaceTitle}` : ""}
               </DetailRow>
               <DetailRow icon="time" label="Предложено">
                 {`${formatDay(Date.parse(current.createdAt), nowMs)}, ${formatTime(

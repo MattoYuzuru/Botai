@@ -23,6 +23,7 @@ import json
 import os
 import platform
 import re
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -569,6 +570,98 @@ def _write_readme(directory: Path) -> None:
             f"- Источник: {cert.get('source')}",
             f"- Что доказано: {'; '.join(row.get('proven') or [])}",
             f"- Что не доказано: {'; '.join(row.get('notProven') or [])}",
+            "",
+        ]
+    repeat_rows = [row for row in rows if (row.get("stats") or {}).get("inRepeats")]
+    if len(repeat_rows) >= 2:
+        repeat_rows.sort(key=lambda row: str(row.get("startedAt") or ""))
+        lines += [
+            f"## Повторы L3 на v4 (план 4.3, n={len(repeat_rows)})",
+            "",
+            "| Прогон | SHA | Статус | Время, с | Шаги | Tools | Токены | $ | Security gate |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+
+        def _gate(checks: dict[str, Any]) -> str:
+            if checks.get("messagesLeak") or checks.get("traceLeak"):
+                return "НЕ чист"
+            return "чист"
+
+        for row in repeat_rows:
+            row_metrics = row.get("metrics") or {}
+            lines.append(
+                f"| `{row.get('runId')}` | `{str(row.get('headSha'))[:7]}` | "
+                f"{row.get('outcome')} | {row.get('durationSec')} | "
+                f"{row_metrics.get('steps')} | {row_metrics.get('toolCalls')} | "
+                f"{row_metrics.get('totalTokens')} | {row_metrics.get('costUsd')} | "
+                f"{_gate(row.get('checks') or {})} |"
+            )
+
+        def _numbers(key: str) -> list[float]:
+            return [float((row.get("metrics") or {}).get(key) or 0.0) for row in repeat_rows]
+
+        def _median(values: list[float]) -> float | None:
+            return round(statistics.median(values), 3) if values else None
+
+        durations = [float(row.get("durationSec") or 0.0) for row in repeat_rows]
+        steps = _numbers("steps")
+        tools_used = _numbers("toolCalls")
+        tokens = _numbers("totalTokens")
+        costs = _numbers("costUsd")
+        successes = sum(1 for row in repeat_rows if row.get("outcome") == "success")
+        set_spend = round(sum(costs), 6)
+        lines += [
+            "",
+            f"- Успех: **{successes}/{len(repeat_rows)}**; барьер(ы): "
+            + (
+                ", ".join(
+                    f"`{row.get('runId')}` — {row.get('status')}"
+                    for row in repeat_rows
+                    if row.get("outcome") != "success"
+                )
+                or "нет"
+            ),
+            f"- Время, с: медиана {_median(durations)} (разброс {min(durations):g}–{max(durations):g}); "
+            f"шаги: медиана {_median(steps)} (разброс {min(steps):g}–{max(steps):g}); "
+            f"tools: медиана {_median(tools_used)} (разброс {min(tools_used):g}–{max(tools_used):g})",
+            f"- Токены: медиана {_median(tokens)} (разброс {min(tokens):g}–{max(tokens):g}); "
+            f"стоимость: медиана ${_median(costs)} (разброс ${min(costs):g}–${max(costs):g}); "
+            f"суммарно по набору **${set_spend}**",
+            "",
+            *(
+                [
+                    "- Сверка поведения: endpoint совпал "
+                    f"{sum(1 for row in repeat_rows if (row.get('behavior') or {}).get('matchedEndpoint'))}/"
+                    f"{len(repeat_rows)}; записей 2779 — "
+                    f"{sum(1 for row in repeat_rows if (row.get('behavior') or {}).get('sameRecordsAsCertified'))}/"
+                    f"{len(repeat_rows)}; login_confirmed — "
+                    f"{sum(1 for row in repeat_rows if (row.get('behavior') or {}).get('loginConfirmed'))}/"
+                    f"{len(repeat_rows)}; ответ с источником — "
+                    f"{sum(1 for row in repeat_rows if (row.get('behavior') or {}).get('answerMentionsSource'))}/"
+                    f"{len(repeat_rows)}.",
+                ]
+                if any(row.get("behavior") for row in repeat_rows)
+                else []
+            ),
+            *(
+                [
+                    "- Raw sweep: вычищено "
+                    f"{sum(int((row.get('securityNotes') or {}).get('rawSweepFilesRedacted') or 0) for row in repeat_rows)}"
+                    " файл(ов) вне репозитория (профильные идентификаторы в скачанных агентом "
+                    "JSON); trace/messages чисты, в репозиторий значения не попали.",
+                ]
+                if any(
+                    (row.get("securityNotes") or {}).get("rawSweepFilesRedacted")
+                    for row in repeat_rows
+                )
+                else []
+            ),
+            "",
+            "**Честная оговорка:** n=3 — это не статистика качества агента: один владелец, "
+            "два SHA, одна машина. Медиана и разброс приведены как есть; доверительных "
+            "интервалов на такой выборке нет, для выводов плана 4.3 нужно больше повторов "
+            "(и вторая сессия/вуз). Живые прогоны вне этого набора (исторические, c7710a3/"
+            "фиксы) в статистику не входят.",
             "",
         ]
     lines += [

@@ -40,8 +40,8 @@ x-app: &app
     BOTAI_RESEARCH_MAX_REQUESTS: "${BOTAI_RESEARCH_MAX_REQUESTS:-2000}"
     BOTAI_RESEARCH_CHECKPOINT_TTL_HOURS: "${BOTAI_RESEARCH_CHECKPOINT_TTL_HOURS:-24}"
     # --- v4 free-harness engine (docs/v4/README.md, 05-implementation-plan.md) ----------------
-    # v3 stays the default until the owner accepts v4; switch by adding BOTAI_AGENT_ENGINE=v4 to
-    # /srv/botai/compose.vars and running a normal deploy (docs/plan/deployment.md).
+    # Production runs v4 since 2026-11-01 (BOTAI_AGENT_ENGINE=v4 in /srv/botai/compose.vars);
+    # the v3 default here only covers a fresh install before the owner flips the flag.
     BOTAI_AGENT_ENGINE: "${BOTAI_AGENT_ENGINE:-v3}"
     # In production agent code runs only in the Docker sandbox: LocalExecutor is a loud config
     # error there (docs/v4/13-executor.md §2, §5). The sandbox image is built by CI per commit.
@@ -64,6 +64,11 @@ x-app: &app
     BOTAI_RAG_PROVIDER: "${BOTAI_RAG_PROVIDER:-local}"
     BOTAI_RAG_DIMENSION: "${BOTAI_RAG_DIMENSION:-384}"
     BOTAI_RAG_ARTIFACT_ROOT: /srv/botai/source-artifacts
+    # Auto-index new artifacts after a successful source sync (phase 2.5/D-011); soft-fails.
+    BOTAI_RAG_AUTOINDEX: "${BOTAI_RAG_AUTOINDEX:-true}"
+    # Background source syncs (phase 3.3): successful syncs are planned this far ahead; failures
+    # back off exponentially (15m ... 6h). Minimum 300s. Sources without a playbook stay manual.
+    BOTAI_SOURCE_SYNC_INTERVAL_S: "${BOTAI_SOURCE_SYNC_INTERVAL_S:-21600}"
   volumes: [diagdata:/var/log/botai/diagnostics]
   restart: unless-stopped
   networks: [botai]

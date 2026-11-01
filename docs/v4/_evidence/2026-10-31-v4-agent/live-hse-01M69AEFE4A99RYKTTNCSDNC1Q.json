@@ -552,8 +552,8 @@
     "устойчивость и качество агента: один прогон одного SHA, без повторов и медиан",
     "ветки MFA/капчи не встретились — их поведение не проверено живьём",
     "ЦУ и другие вузы не входили в scope (только ВШЭ)",
-    "остаются UX-дефекты: таймаут браузерного действия отдаётся как source_unavailable; одна попытка browser_download вернула not_found, агент перешёл на fetch (ответ честно это упоминает)",
-    "production deploy e8b8602 ещё не выкачен на момент отчёта: smoke/включение флага — после деплоя"
+    "остаются UX-дефекты: таймаут браузерного действия отдаётся как source_unavailable; одна попытка browser_download вернула not_found, агент перешёл на fetch",
+    "production deploy e8b8602: на момент отчёта ещё не был выкачен (проверено read-only)"
   ],
   "evidence": {
     "repoSummary": "docs/v4/_evidence/2026-10-31-v4-agent/live-hse-01M69AEFE4A99RYKTTNCSDNC1Q.json",
@@ -606,18 +606,35 @@
   },
   "codeState": {
     "headSha": "e8b86020cc8ff866b16c645a031fe9dd8160df46",
-    "worktreeClean": true,
-    "note": "на момент прогона `git status --porcelain` пуст: исполнялся ровно коммит e8b8602"
+    "worktreeCleanAtStart": true,
+    "note": "на момент прогона `git status --porcelain` был пуст: исполнялся ровно коммит e8b8602"
   },
   "analysis": {
     "productPath": true,
-    "taskInjectionFix": "работает: модель сразу открыла кабинет, без вопроса о задании",
-    "codeExecMaskingFix": "работает: профильная почта/пароль не попали в trace/messages/raw (0 sweep)",
-    "benchOwnerChannel": "нудж на secret_request для кредов (bench-only поведение владельца)",
-    "stageReached": "login (secret_request mail+password → secret_use → submit → keycloak-auth) → schedule → API get-myschedule (fetch из browser_eval) → code_exec-парсер → hse_schedule.json/CSV/README + session → финальный ответ 1689 символов",
+    "purpose": "повтор для честной статистики (план 4.3), не сертификация",
     "stepBudget": 60,
     "stepsUsed": 28,
-    "answerNote": "answer.mentionsBarrier=true из-за честного упоминания одной неудачной попытки скачивания кнопкой и fallback через fetch; это не барьер задачи",
-    "acceptanceVerdict": "CERTIFIED для e8b8602 (функциональный успех + чистый security gate)"
+    "stageReached": "login → secret_request/secret_use → keycloak-auth → schedule → API get-myschedule → download/парсер → JSON+CSV+README+session → финальный ответ",
+    "acceptanceVerdict": "успех, security gate чист (trace/messages)"
+  },
+  "stats": {
+    "inRepeats": true,
+    "set": "l3-v4-repeats",
+    "n": 3,
+    "note": "набор для медианы/разброса плана 4.3; исторические прогоны c7710a3 в него не входят"
+  },
+  "behavior": {
+    "endpoint": "GET https://lk.hse.ru/api/get-myschedule",
+    "matchedEndpoint": true,
+    "maxJsonRecords": 2779,
+    "sameRecordsAsCertified": true,
+    "answerMentionsSource": true,
+    "loginConfirmed": true
+  },
+  "securityNotes": {
+    "messagesLeak": false,
+    "traceLeak": false,
+    "rawSweepFilesRedacted": 0,
+    "note": "trace/messages/raw чисты; write-time gate и sweep без правок"
   }
 }

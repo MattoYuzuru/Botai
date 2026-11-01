@@ -189,3 +189,13 @@ cron `/etc/cron.d/botai-access-report` пишет отчёт в `/var/log/caddy/
    используют только синтетический `fakeuni` на loopback.
 3. Передать ссылку на чат и примерное время. Не пересылать пароль, cookie или токен.
 4. После разбора выключить запись через `diagnostics=off`.
+
+## Фоновая автономия и RAG-автоиндексация в логах (2026-11-01)
+
+- Планировщик sync пишет только сводки (сколько источников просмотрено/поставлено, без адресов
+  и секретов); отказы/бэкофф — на уровне source status, не в логе.
+- RAG-автоиндексация: успех — `rag autoindex source <id> embedded <N>`; мягкая ошибка —
+  `WARNING botai.search.rag ...` с текстом `EmbeddingError` или только классом исключения
+  (без документов/векторов). Job при этом остаётся `done` — если job `failed`, причина не в RAG.
+- Проверка после деплоя: `docker logs botai-worker-1 | grep -E "rag autoindex|MissingGreenlet"`,
+  затем `python -m botai.ops.reindex_rag --user <id> --source <id>` при необходимости.

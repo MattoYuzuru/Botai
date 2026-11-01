@@ -1,5 +1,6 @@
-import { DEFAULT_TIME_ZONE, formatDuration, formatTime, type IconName, NBSP, pluralRu } from "@botai/design";
+import { DEFAULT_TIME_ZONE, formatDuration, formatTime, type IconName } from "@botai/design";
 import type { AgentRun, AgentRunEvent } from "@/api/agent-runs";
+import { formatTokens, formatUsd } from "@/lib/money";
 
 /**
  * Словарь трассы агента: состояния хода, виды шагов и разбор payload'ов
@@ -171,22 +172,10 @@ export function limitLabel(raw: unknown): string {
   return LIMIT_LABEL[text] ?? "неизвестный лимит";
 }
 
-/** «12 345 токенов» — число с разрядами и неразрывным пробелом, как в styleguide §9. */
-export function formatTokens(tokens: number): string {
-  const grouped = new Intl.NumberFormat("ru-RU").format(tokens);
-  return `${grouped}${NBSP}${pluralRu(tokens, ["токен", "токена", "токенов"])}`;
-}
+export { formatTokens };
 
-/** Стоимость как её посчитал сервер: в долларах; малые суммы — с четырьмя знаками. */
-export function formatCostUsd(usd: number, locale = "ru-RU"): string {
-  const fractionDigits = usd > 0 && usd < 0.01 ? 4 : 2;
-  return new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  }).format(usd);
-}
+/** Стоимость как её посчитал сервер (прежнее имя помощника). */
+export const formatCostUsd = formatUsd;
 
 /** «1 мин 5 с» из настоящей длительности; без часов, если их нет. */
 export function formatRunDuration(ms: number): string {

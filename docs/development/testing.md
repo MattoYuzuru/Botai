@@ -116,13 +116,40 @@ make migrate
   перехват запросов, cookie/storage, HAR, загрузки;
 - источники: создание/обновление/починка playbook, N источников на одном хосте,
   несколько календарей, несколько видов у источника, склейка и приоритеты, **чтение v4-данных
-  экранами** (v3+v4 склейка, disabled скрыт, приоритет источника), **история запусков источника**;
+  экранами** (v3+v4 склейка, disabled скрыт, приоритет источника), **история запусков источника**,
+  **фоновая автономия** (планирование next_sync_at, scheduler+dedupe, интервал/бэкофф),
+  **async sync-jobs 202 и DELETE источника** (каскады/409/ownership);
 - агент: инструменты, цикл, трассы, восстановление задачи, мягкие лимиты, **v4-чат**
   (история/вложения/asking-блоки/job-result как у v3), **trace viewer запусков**, маскирование;
 - действия: POST/формы по политике `auto`/`ask`/`never`, журнал, идемпотентность, **UI политик
   и журнала, approve/deny для ask**;
-- RAG: индексация артефактов, ответ со ссылкой, свежесть;
+- RAG: индексация артефактов, ответ со ссылкой, свежесть, **автоиндексация после успешного
+  sync** (мягкие ошибки, повтор не дублирует, обе ветки sync);
+- расход/настройки: `/usage` и `/usage/pool` (только владелец), лимит 0 = «не задан», 403/empty/
+  error честные, без процентов и прогнозов;
 - сквозной e2e: API + очередь + worker + Chromium + Vault + агент.
+
+
+## Новые наборы 2026-11-01 (третий срез)
+
+- `tests/jobs/test_source_scheduler.py` — планировщик фоновых sync (due/не-due, draft/probing/
+  waiting_user/disabled/archived, батч, dedupe по connection и `payload->>'source_id'`,
+  подавление v3-планировщика для носителей v4-источников, e2e: due источник без connection →
+  job → реальный Worker → `done` + пересчёт `next_sync_at`).
+- `tests/sources/v4/test_schedule.py` — интервал/бэкофф (15 мин→...→6 ч, сброс при успехе,
+  needs_reauth, probe/canary не планируют, disable отменяет).
+- `tests/db/test_source_next_sync_migration.py` — `b4e8c1a7d920`: колонка/индекс/backfill/round-trip.
+- `tests/jobs/test_rag_autoindex_dispatch.py` — автоиндексация после sync: чанки/эмбеддинги с
+  провенансом, повтор не дублирует, обе ветки sync, выключенные флаги → job done, сломанный
+  индексер → job done + warning без текста исключения.
+- `tests/sources/v4/test_sync_jobs.py`, `tests/sources/v4/test_delete_source.py`,
+  `tests/jobs/test_sync_jobs_worker.py` — 202/dedupe/ownership/v3-404, DELETE каскады/409/
+  сохранность чужих данных/повторное подключение, реальный Worker для source_id без connection.
+- Web: `data-usage.spec.ts` (расход/лимиты, 12/12), delete-source и nextSync в `data-study-v4`,
+  sourceTitle/фильтр в `data-actions`; полный прогон Vitest **777**, Playwright **349 passed /
+  7 skipped**.
+- Локальный гейт: backend ruff/format/pyright + pytest; web typecheck/Biome/Vitest; `make gen`
+  после контрактных изменений (`SourceOut.nextSyncAt`, `ActionOut.sourceTitle`, sync-jobs/delete).
 
 ## Сквозной тест (L1, `backend/tests/e2e/`)
 

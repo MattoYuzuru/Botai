@@ -151,6 +151,17 @@
               }
             ],
             "title": "Sourceid"
+          },
+          "sourceTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcetitle"
           }
         },
         "required": [
@@ -169,6 +180,7 @@
           "runId",
           "jobId",
           "sourceId",
+          "sourceTitle",
           "createdAt",
           "decidedAt",
           "executedAt"
@@ -3946,6 +3958,18 @@
             ],
             "title": "Lastsyncat"
           },
+          "nextSyncAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextsyncat"
+          },
           "playbookId": {
             "anyOf": [
               {
@@ -4489,6 +4513,30 @@
           }
         },
         "title": "SyncIn",
+        "type": "object"
+      },
+      "SyncQueuedOut": {
+        "description": "`POST /sources/{id}/sync-jobs`: the sync is queued, the report comes from the job/SSE.\n\nAdditive next to the inline `POST /sources/{id}/sync` (200 `RunReportOut`), which stays for the\ncurrent UI. `status` is the job state (`queued` or `running` when the enqueue deduplicated into\nan already started task).",
+        "properties": {
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          },
+          "sourceId": {
+            "title": "Sourceid",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "sourceId",
+          "status"
+        ],
+        "title": "SyncQueuedOut",
         "type": "object"
       },
       "ThreadCreate": {
@@ -7448,6 +7496,40 @@
       }
     },
     "/api/v1/sources/{source_id}": {
+      "delete": {
+        "description": "Delete the source with its data and artifacts; jobs/traces and learned playbooks stay.\n\n409 while a task of the source is still queued/running/waiting: a running sync must not lose\nthe record it writes into. A foreign or missing id is 404, as everywhere.",
+        "operationId": "delete_source_api_v1_sources__source_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Source",
+        "tags": [
+          "sources-v4"
+        ]
+      },
       "get": {
         "operationId": "get_source_api_v1_sources__source_id__get",
         "parameters": [
@@ -8267,6 +8349,49 @@
           }
         },
         "summary": "Sync Source",
+        "tags": [
+          "sources-v4"
+        ]
+      }
+    },
+    "/api/v1/sources/{source_id}/sync-jobs": {
+      "post": {
+        "description": "Queue the source sync instead of running it in the API; the report comes from the job/SSE.\n\nAdditive next to the inline `POST /sources/{id}/sync` (unchanged 200 `RunReportOut`). A source\nlinked to a v3 connection is synced through it; a source without a connection is synced by\n`source_id` in the v4 dispatch. 409 when the source is switched off or has no playbook;\na task already in flight is returned instead of a second one.",
+        "operationId": "enqueue_source_sync_api_v1_sources__source_id__sync_jobs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncQueuedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enqueue Source Sync",
         "tags": [
           "sources-v4"
         ]

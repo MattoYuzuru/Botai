@@ -250,6 +250,7 @@ function seedSourceWorld(db: MockDb, scenario: Scenario, iso: (minutesAgo: numbe
       priority: 0,
       trust: "high",
       lastSyncAt: iso(5),
+      nextSyncAt: iso(-45),
       lastError: null,
       disabledFrom: null,
       threadId: "01JMKCDB00000000000000THR",
@@ -270,6 +271,7 @@ function seedSourceWorld(db: MockDb, scenario: Scenario, iso: (minutesAgo: numbe
       priority: 1,
       trust: "normal",
       lastSyncAt: iso(12),
+      nextSyncAt: iso(-120),
       lastError: null,
       disabledFrom: null,
       createdAt: iso(60 * 24 * 30),
@@ -289,6 +291,7 @@ function seedSourceWorld(db: MockDb, scenario: Scenario, iso: (minutesAgo: numbe
       priority: 0,
       trust: "normal",
       lastSyncAt: lmsSyncedAt,
+      nextSyncAt: iso(-90),
       lastError:
         scenario === "reauth"
           ? {
@@ -530,6 +533,7 @@ function seedActionWorld(db: MockDb, iso: (minutesAgo: number) => string): void 
     runId: "run-answer",
     jobId: "01JMKCDB00000000000000JOB",
     sourceId: "src-hse-portal",
+    sourceTitle: "Личный кабинет",
     createdAt,
     decidedAt: null,
     executedAt: null,
@@ -571,6 +575,7 @@ function seedActionWorld(db: MockDb, iso: (minutesAgo: number) => string): void 
       scopeKind: "global",
       scopeId: null,
       sourceId: null,
+      sourceTitle: null,
       runId: null,
       jobId: null,
     }),

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ActionJournalEntry, ActionPolicy, EffectivePolicy } from "@/api/actions";
 import {
   actionResultText,
+  actionScopeText,
   browserSteps,
   DEFAULT_MODES,
   describeActionClass,
@@ -54,6 +55,7 @@ const action = (patch: Partial<ActionJournalEntry>): ActionJournalEntry => ({
   runId: null,
   jobId: null,
   sourceId: "src-1",
+  sourceTitle: "Личный кабинет",
   createdAt: "2026-10-31T12:00:00.000Z",
   decidedAt: null,
   executedAt: null,
@@ -152,6 +154,16 @@ describe("своя настройка или унаследованная", () =
     expect(describeEscalation("max_per_day")).toBe("достигнут предел действий в день");
     expect(describeEscalation("something")).toBe("ограничение владельца");
     expect(describeEscalation(null)).toBeNull();
+  });
+});
+
+describe("подпись области действия", () => {
+  it("название источника важнее вида области; без названия — вид области", () => {
+    expect(actionScopeText(action({ sourceTitle: "Личный кабинет" }))).toBe("Личный кабинет");
+    expect(actionScopeText(action({ sourceTitle: "  " }))).toBe("источник src-1");
+    expect(actionScopeText(action({ scopeKind: "global", scopeId: null, sourceTitle: null }))).toBe(
+      "все источники",
+    );
   });
 });
 

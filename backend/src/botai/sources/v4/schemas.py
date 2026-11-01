@@ -66,6 +66,8 @@ class SourceOut(ApiModel):
     priority: int
     trust: str
     last_sync_at: datetime | None
+    # When the worker scheduler plans the next automatic sync; null = no background planning yet.
+    next_sync_at: datetime | None = None
     last_error: dict[str, Any] | None
     disabled_from: str | None
     created_at: datetime
@@ -93,6 +95,19 @@ class SourceRunOut(ApiModel):
     error_detail: str | None
     thread_id: str | None
     run_id: str | None  # the agent trace (`agent_runs.run_id`), when the job had one
+
+
+class SyncQueuedOut(ApiModel):
+    """`POST /sources/{id}/sync-jobs`: the sync is queued, the report comes from the job/SSE.
+
+    Additive next to the inline `POST /sources/{id}/sync` (200 `RunReportOut`), which stays for the
+    current UI. `status` is the job state (`queued` or `running` when the enqueue deduplicated into
+    an already started task).
+    """
+
+    job_id: str
+    source_id: str
+    status: str
 
 
 class ProbeIn(ApiModel):

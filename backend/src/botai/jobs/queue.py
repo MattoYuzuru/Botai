@@ -107,6 +107,32 @@ async def enqueue_in_session(
         )
         if existing_source is not None:
             return existing_source
+    source_id = (payload or {}).get("source_id")
+    if dedupe and connection_id is None and isinstance(source_id, str) and source_id:
+        # A source without a v3 connection has no queue key of its own: key the dedupe on the
+        # payload's source id, under the same kind. One advisory lock per source makes two
+        # workers/schedulers unable to enqueue the same replay twice.
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"{kind.value}:source:{source_id}", 0)
+                )
+            )
+        )
+        existing_source_job = await session.scalar(
+            select(Job)
+            .where(
+                Job.user_id == user_id,
+                Job.kind == kind.value,
+                Job.payload["source_id"].as_string() == source_id,
+                Job.state.in_(sorted(IN_FLIGHT)),
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(1)
+            .with_for_update()
+        )
+        if existing_source_job is not None:
+            return existing_source_job
     if dedupe and connection_id:
         await session.execute(
             select(

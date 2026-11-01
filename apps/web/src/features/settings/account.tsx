@@ -7,6 +7,7 @@ import { meQuery } from "@/api/queries";
 import { PoliciesSection } from "@/features/actions/policies-section";
 import { clearSnapshots } from "@/features/pwa/snapshots";
 import { AppearanceSettings } from "./appearance";
+import { UsageSection } from "./usage";
 
 /** «Профиль и настройки» — внизу экрана «Учёба» (styleguide §7.1). */
 export function AccountSettings() {
@@ -48,6 +49,7 @@ export function AccountSettings() {
           </Button>
         </div>
       </Card>
+      <UsageSection />
       <PoliciesSection scopeKind="global" />
     </section>
   );

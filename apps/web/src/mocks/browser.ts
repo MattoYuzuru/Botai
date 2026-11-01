@@ -56,10 +56,20 @@ function readPace(): number {
   return Number.isFinite(value) && value >= 0 ? value : 1;
 }
 
+/** `?owner=1` — предпросмотр глазами владельца (расход общего ключа): у мока один владелец. */
+function readOwnerPreview(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).get("owner") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export async function startMocks(): Promise<void> {
   const scenario = readScenario();
   const db = restoreDb() ?? createDb(scenario ?? "fresh");
   db.jobVariant = readJobVariant();
+  if (readOwnerPreview()) for (const user of db.users) user.isOwner = true;
   const worker = setupWorker(
     ...createHandlers(db, { latency: readLatency(), persist: true, jobPace: readPace() }),
   );

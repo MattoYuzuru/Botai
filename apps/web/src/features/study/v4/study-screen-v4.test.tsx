@@ -129,6 +129,9 @@ describe("карточка источника", () => {
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
 
     expect(within(card).getByText("Последняя синхронизация")).toBeInTheDocument();
+    // Расписание автообновления — из SourceOut.nextSyncAt, а не выдуманное.
+    expect(within(card).getByText("Следующее обновление")).toBeInTheDocument();
+    expect(within(card).getByText(/18:25/)).toBeInTheDocument();
     // Playbook: формат, ревизия и проверка; история ревизий.
     expect(within(card).getByText("Декларативное описание")).toBeInTheDocument();
     expect(within(card).getByText("Ревизия 2")).toBeInTheDocument();
@@ -181,6 +184,8 @@ describe("карточка источника", () => {
       ),
     );
     expect(await screen.findByText("Источник перечитан")).toBeInTheDocument();
+    // После sync сервер назначил следующее обновление, и карточка показывает свежее время.
+    await waitFor(() => expect(within(card).getByText(/20:40/)).toBeInTheDocument());
   });
 
   it("сломанный источник: «Починить» вызывает починку и возвращает статус", async () => {
@@ -243,6 +248,53 @@ describe("карточка источника", () => {
     expect(await screen.findByText("Сейчас не получилось — попробуем в фоне.")).toBeInTheDocument();
     expect(within(card).getByText("Работает")).toBeInTheDocument();
     expect(current.db.sources.find((source) => source.id === "src-hse-portal")?.status).toBe("active");
+  });
+
+  it("«Удалить источник»: опасное подтверждение, удаление и обновление списка", async () => {
+    const user = userEvent.setup();
+    renderApp("/study");
+    const hse = await panel(/^Высшая школа экономики/);
+    const sources = await within(hse).findByRole("list", { name: "Источники: ВШЭ" });
+    expect(within(sources).getAllByRole("listitem")).toHaveLength(2);
+    await user.click(within(sources).getByRole("button", { name: /^Личный кабинет:/ }));
+    const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
+
+    await user.click(within(card).getByRole("button", { name: "Удалить источник" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Удалить «Личный кабинет»?" });
+    expect(within(dialog).getByText(/Данные источника исчезнут/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/«Выключить источник» — это обратимо/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Удалить источник" }));
+
+    await waitFor(() =>
+      expect(current.db.sources.some((source) => source.id === "src-hse-portal")).toBe(false),
+    );
+    expect(await screen.findByText("Источник удалён")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Личный кабинет" })).toBeNull());
+    await waitFor(() => expect(within(sources).getAllByRole("listitem")).toHaveLength(1));
+  });
+
+  it("удаление при незавершённой задаче: 409 человеческим текстом, источник остаётся", async () => {
+    current.server.use(
+      http.delete("*/api/v1/sources/:sourceId", () =>
+        problem(
+          409,
+          "conflict",
+          "У источника идёт синхронизация. Дождитесь её окончания и попробуйте снова.",
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderApp("/study");
+    const hse = await panel(/^Высшая школа экономики/);
+    await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
+    const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
+    await user.click(within(card).getByRole("button", { name: "Удалить источник" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Удалить «Личный кабинет»?" });
+    await user.click(within(dialog).getByRole("button", { name: "Удалить источник" }));
+    expect(await screen.findByText("Источник сейчас обновляется")).toBeInTheDocument();
+    expect(await screen.findByText(/У источника идёт синхронизация/)).toBeInTheDocument();
+    expect(current.db.sources.some((source) => source.id === "src-hse-portal")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Личный кабинет" })).toBeInTheDocument();
   });
 
   it("«Сделать основным для расписания» меняет порядок источников вида", async () => {

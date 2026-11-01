@@ -277,3 +277,23 @@ v3-подключения. Теперь оба пути читаются вме�
 2. **SSE-повторы** для долгих sync (см. §6.7).
 3. **Формат spec:** `PlaybookSpecV1` раннера и `contracts/playbook.schema.json` сведены;
    менять версию формата — только через контракт.
+
+## 9. Фоновая автономия и управление источником (2026-11-01)
+
+- **Планирование:** `sources.next_sync_at` (миграция `b4e8c1a7d920`, backfill 6–12 ч с
+  детерминированным jitter только для синкабельных источников). Worker-scheduler раз в 60 c
+  ставит `SYNC` для due-источников: батч `scheduler_batch`, in-flight prefilter одним запросом,
+  dedupe очереди; connection-источники — прежним путём, остальные — payload `{source_id}`
+  (dispatch `_sync_source_by_id`). Соединения, являющиеся носителем v4-источника, v3-планировщик
+  пропускает — один план на модель.
+- **Интервал/бэкофф:** успешный sync → `now + BOTAI_SOURCE_SYNC_INTERVAL_S` (default 6 ч, min
+  5 мин) и сброс счётчика ошибок; ошибка/needs_reauth → 15 мин ×2^(n−1) до 6 ч, счётчик в
+  `last_error.sync_failures`; probe/canary/repair не планируют; disabled/archived отменяет план
+  и никогда не выбирается.
+- **Async sync API (additive):** `POST /api/v1/sources/{id}/sync-jobs` → 202
+  `{jobId, sourceId, status}` (dedupe in-flight → тот же jobId; 409 disabled/без playbook);
+  inline `POST /sources/{id}/sync` (200 `RunReportOut`) не изменён.
+- **Удаление:** `DELETE /api/v1/sources/{id}` → 204, 409 при незавершённой задаче источника;
+  удаляются source, артефакты/state, доменные строки (8 таблиц) и id из `source_priorities`;
+  jobs/трассы/playbook'и сохраняются (D-018). RAG-корпус при delete — известный долг
+  (bounded-чистка отдельно; `chunk_embeddings.source_id` → SET NULL).

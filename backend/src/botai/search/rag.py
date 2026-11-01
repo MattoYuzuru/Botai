@@ -23,12 +23,13 @@ Vectors are written twice by design: `embedding` (JSONB, canonical and portable)
 reindex of already embedded rows fills the derived column from JSONB (`vectors_filled:<n>`), so
 enabling pgvector never requires re-embedding the corpus (search/pgvector.py).
 
-Automatic indexing: `reindex_source_artifacts` (and `build_indexer` for a future hook) is the
-callable a sources runtime could use after a run, but it is deliberately **not wired** into the
-runner this round — that package is owned by another lane and the phase closes without the inline
-hook. The supported path for artifacts that already exist is the ops command
-`python -m botai.ops.reindex_rag` (bounded, idempotent); automatic indexing after a run remains an
-honest gap.
+Automatic indexing: `autoindex_source_artifacts` is called by the v4 dispatch after a successful
+source run (CONNECT/SYNC) but only when `BOTAI_RAG_ENABLED` is on and `BOTAI_RAG_AUTOINDEX` is not
+off; it indexes at most `AUTOINDEX_LIMIT` artifacts of one source within `AUTOINDEX_TIMEOUT_S`, and
+the dispatch hook turns any failure into a warning, never into a failed job. Idempotency makes the
+call safe on every sync: the same text is one document (`content_hash`) and one embedding per
+`(chunk_id, model)`. For artifacts that already exist, `python -m botai.ops.reindex_rag` runs the
+same code as an operator command.
 
 Query
 -----
@@ -40,14 +41,17 @@ to FTS-only and says so (`mode="fts_only"`, `degraded=...`); it never hides text
 Feature flag
 ------------
 `BOTAI_RAG_ENABLED` (default off) gates wiring — the tool factory returns nothing when it is off.
-The library classes below work regardless of the flag, so tests and future jobs can construct them
+`BOTAI_RAG_AUTOINDEX` (default on, `botai.settings.Settings.rag_autoindex`) only gates the post-run
+hook. The library classes below work regardless of the flags, so tests and jobs can construct them
 directly. Settings live here instead of `botai.settings.Settings` because phase 2.5 is being built
 next to other in-flight v4 work; moving them into `Settings` later is a one-file change.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 from collections.abc import Sequence
@@ -81,11 +85,17 @@ DEFAULT_SCAN_LIMIT = 500
 MAX_ARTIFACT_BYTES = 2_000_000
 MAX_CHUNKS_PER_UNIT = 200
 MAX_ARTIFACTS_PER_CALL = 100
+# The automatic post-run hook is deliberately smaller and shorter than an explicit backfill: a sync
+# job must not wait for a whole archive to be embedded.
+AUTOINDEX_LIMIT = 50
+AUTOINDEX_TIMEOUT_S = 60.0
 SNIPPET_CHARS = 600
 TEXT_ARTIFACT_KINDS = frozenset({"page", "json", "file", "log", "doc", "other"})
 _HTML_TAG = re.compile(r"<[^>]+>")
 _SCRIPT = re.compile(r"(?is)<(script|style)\b.*?</\1>")
 _WHITESPACE = re.compile(r"[ \t]+")
+
+log = logging.getLogger(__name__)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -734,24 +744,7 @@ def _merge_reports(reports: Sequence[IngestReport]) -> IngestReport:
     )
 
 
-# --- automatic indexing of source artifacts (the hook point for the sources runtime) -------------
-
-
-def build_indexer(
-    sessions: SessionFactory,
-    settings: RagSettings | None = None,
-) -> RagIndexer | None:
-    """Factory for a future post-run hook; `None` while `BOTAI_RAG_ENABLED` is off.
-
-    NOT wired into the sources runtime in this round (that package is owned by another lane). A
-    future hook builds it once per runtime, then per finished run calls
-    `await indexer.ingest_source(user_id=..., source_id=...)`; work is idempotent, so a retry only
-    fills what is missing. Until such a hook exists, `botai.ops.reindex_rag` is the supported path.
-    """
-    resolved = settings or rag_settings()
-    if not resolved.enabled:
-        return None
-    return RagIndexer(sessions, resolved.build_provider(), resolved)
+# --- automatic indexing of source artifacts (called by the v4 dispatch after a run) -------------
 
 
 async def reindex_source_artifacts(
@@ -799,6 +792,62 @@ async def reindex_source_artifacts(
         usage=embedder.usage().minus(usage_before),
         reasons=report.reasons,
     )
+
+
+async def autoindex_source_artifacts(
+    sessions: SessionFactory,
+    *,
+    user_id: str,
+    source_id: str,
+    artifact_root: Path | None = None,
+    settings: RagSettings | None = None,
+    enabled: bool = True,
+    limit: int = AUTOINDEX_LIMIT,
+    timeout_s: float = AUTOINDEX_TIMEOUT_S,
+) -> IngestReport | None:
+    """Index the fresh artifacts of one source after a successful run; `None` when it is off.
+
+    Soft hook for the v4 dispatch (D-011, plan 2.5): called after a successful CONNECT/SYNC. It
+    **never raises** — an unreadable store, a down embedding provider or a timeout become a warning
+    (secret-free: a curated `EmbeddingError` text or just the exception class) and the source job
+    continues. Two switches: `enabled` (`BOTAI_RAG_AUTOINDEX`) and `RagSettings.enabled`
+    (`BOTAI_RAG_ENABLED`). One call reads at most `limit` artifacts, `timeout_s` caps the whole
+    pass, and repeat calls add no rows (document `content_hash` and `(chunk_id, model)` dedupe).
+    """
+    if not enabled:
+        return None
+    resolved = settings or rag_settings()
+    if not resolved.enabled:
+        return None
+    try:
+        async with asyncio.timeout(timeout_s):
+            report = await reindex_source_artifacts(
+                sessions,
+                user_id=user_id,
+                source_id=source_id,
+                limit=limit,
+                artifact_root=artifact_root,
+                settings=resolved,
+            )
+    except Exception as exc:  # a RAG failure is a warning, never a failed source job
+        detail = (
+            f"{type(exc).__name__}: {exc}"[:300]
+            if isinstance(exc, EmbeddingError)
+            else type(exc).__name__
+        )
+        log.warning("rag autoindex skipped for source %s: %s", source_id, detail)
+        return None
+    log.info(
+        "rag autoindex source %s: documents %s, chunks %s, embedded %s, "
+        "deduplicated %s, skipped %s",
+        source_id,
+        report.documents,
+        report.chunks,
+        report.embedded,
+        report.deduplicated,
+        report.skipped,
+    )
+    return report
 
 
 # --- query ---------------------------------------------------------------------------------------

@@ -52,6 +52,7 @@ from botai.sources.normalize import coerce
 from botai.sources.v4 import artifacts, domain, identity, playbooks, service, state
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
+from botai.sources.v4 import schedule as sync_schedule
 
 RunKind = Literal["probe", "sync", "repair", "canary"]
 ProgressHook = Callable[[Mapping[str, Any]], Awaitable[None]]
@@ -333,6 +334,7 @@ class SourceRunner:
         browser_factory: BrowserFactory | None = None,
         env: Literal["dev", "test", "prod"] | None = None,
         workspace_root: Path | None = None,
+        sync_interval_s: float | None = None,
         report_record_limit: int = MAX_REPORT_RECORDS,
     ) -> None:
         self._session = session
@@ -348,6 +350,8 @@ class SourceRunner:
         self._browser_factory = browser_factory
         self._env = env
         self._workspace_root = workspace_root
+        # Planning of the next background sync: the settings value, or an explicit override.
+        self._sync_interval_s = sync_interval_s
         self._report_record_limit = max(1, report_record_limit)
         self._progress: ProgressHook | None = None
         self._session_state_cache: dict[str, Mapping[str, Any] | None] = {}
@@ -1516,6 +1520,10 @@ class SourceRunner:
 
     # --- persistence and reporting -------------------------------------------------------------
 
+    def _sync_interval(self) -> float:
+        """The configured interval between planned syncs (seconds), read lazily from settings."""
+        return sync_schedule.sync_interval_s(override=self._sync_interval_s)
+
     async def _persist(
         self,
         report: RunReport,
@@ -1529,18 +1537,25 @@ class SourceRunner:
         pages: Sequence[str] = (),
     ) -> RunReport:
         now = self._clock.now()
-        if update_status and source.status not in ("disabled", "archived"):
+        if update_status and source.status not in sync_schedule.UNPLANNED_STATUSES:
+            interval = self._sync_interval()
             if report.ok:
-                await service.mark_synced(
+                # A success clears the failure counter together with `last_error`: the backoff can
+                # never stay stuck after a retry that worked.
+                updated = await service.mark_synced(
                     self._session,
                     user_id=self._user_id,
                     source_id=source.id,
                     synced_at=now,
                     status="active",
                 )
+                updated.next_sync_at = sync_schedule.next_sync_at(
+                    now, ok=True, failures=0, interval_s=interval
+                )
             else:
+                failures = sync_schedule.failures_of(source.last_error) + 1
                 auth = any(error.code == "source_auth_required" for error in report.errors)
-                await service.mark_error(
+                updated = await service.mark_error(
                     self._session,
                     user_id=self._user_id,
                     source_id=source.id,
@@ -1549,7 +1564,11 @@ class SourceRunner:
                         "code": report.errors[0].code if report.errors else "source_error",
                         "detail": report.errors[0].detail if report.errors else "",
                         "at": now.isoformat(),
+                        "sync_failures": failures,
                     },
+                )
+                updated.next_sync_at = sync_schedule.next_sync_at(
+                    now, ok=False, failures=failures, interval_s=interval
                 )
         domain_counts: dict[str, dict[str, int]] = {}
         if write_domain and report.ok and records:

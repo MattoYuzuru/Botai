@@ -922,6 +922,9 @@ class Source(Base):
         String(10), nullable=False, default="normal", server_default="normal"
     )
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Planned background sync (phase 3.3). NULL = no planning yet: the source is synced only by a
+    # person/agent; the first successful sync sets the next one from `BOTAI_SOURCE_SYNC_INTERVAL_S`.
+    next_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     disabled_from: Mapped[str | None] = mapped_column(String(20))  # status to restore on enable
     created_at: Mapped[datetime] = ts_now()

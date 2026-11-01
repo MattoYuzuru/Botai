@@ -134,6 +134,16 @@ class Settings(BaseSettings):
         default_factory=default_source_artifacts_dir,
         validation_alias="BOTAI_SOURCE_ARTIFACTS_DIR",
     )
+    # Planned sync of a v4 source after a successful run (phase 3.3): the worker scheduler enqueues
+    # a SYNC when `source.next_sync_at` is due. The minimum is 5 minutes: a shorter automatic loop
+    # would hammer a university site, and a person can always sync manually.
+    source_sync_interval_s: int = Field(
+        default=21600, ge=300, validation_alias="BOTAI_SOURCE_SYNC_INTERVAL_S"
+    )
+    # RAG (phase 2.5, D-011): index a source's fresh artifacts right after a successful sync/connect
+    # run. The RAG path itself stays gated by BOTAI_RAG_ENABLED; this switch only turns the post-run
+    # hook off (e.g. to keep an API embedding provider from spending on every scheduled sync).
+    rag_autoindex: bool = Field(default=True, validation_alias="BOTAI_RAG_AUTOINDEX")
     # Root for per-run agent workspaces (code_exec/fs_* files, source parser artifacts). Empty =
     # a temp directory; production mounts a persistent host path here so a run survives a restart
     # and the container executor can bind-mount the very same absolute path (docs/v4/13-executor.md).

@@ -34,11 +34,12 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobClaimLost, JobDeferred, JobInputChanged, JobKind
 from botai.core.services import Services
 from botai.core.vault import SecretKind
-from botai.db.models import Connection, Job, JobAnswer, User
+from botai.db.models import Connection, Job, JobAnswer, Source, User
 from botai.jobs import dialogue
 from botai.jobs.cleanup import lock_job_and_connection, restore_source_after_stop
 from botai.jobs.context import ASK_TTL, PgJobContext
 from botai.jobs.events import (
+    IN_FLIGHT,
     append_event,
     error_event,
     purge_finished,
@@ -46,6 +47,7 @@ from botai.jobs.events import (
 )
 from botai.jobs.notify import CHANNEL_CANCEL, CHANNEL_JOBS, Notifier, dsn_for_asyncpg
 from botai.jobs.queue import SOURCE_KINDS
+from botai.sources.v4.schedule import PLANNED_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -920,11 +922,30 @@ class Worker:
 async def schedule_syncs(
     services: Services, *, limit: int = 100, now: datetime | None = None
 ) -> int:
-    """One scheduler tick: a `sync` job for every live connection whose `next_sync_at` has come.
+    """One scheduler tick: `sync` jobs for due v3 connections and due v4 sources.
 
-    Deduplicated by the queue, so every worker may run it and a connection whose job is still
-    queued or running gets no second one. Who sets `next_sync_at` is the sync handler (W3)."""
+    Two planners share the tick, one per state model:
+
+    * a v3 `connections` row is planned by its own `next_sync_at` (the v3 sync handler sets it);
+    * a v4 `sources` row is planned by `source.next_sync_at` (phase 3.3). A connection that is the
+      carrier of a v4 source (`Source.config["connection_id"]`) is NOT planned by the connection
+      planner — one plan per source, so `BOTAI_SOURCE_SYNC_INTERVAL_S` is actually honoured;
+      the SYNC job itself still goes through the existing connection path.
+
+    Both are deduplicated: an already queued/running task for the same connection/source is not
+    enqueued twice. Returns the number of tasks newly queued.
+    """
     now = now or services.clock.now()
+    scheduled = await _schedule_connection_syncs(services, limit=limit, now=now)
+    scheduled += await schedule_source_syncs(services, limit=limit, now=now)
+    return scheduled
+
+
+async def _schedule_connection_syncs(services: Services, *, limit: int, now: datetime) -> int:
+    """The v3 connection planner: unchanged rules, minus connections that carry a v4 source."""
+    carried_by_source = exists(
+        select(Source.id).where(Source.config["connection_id"].as_string() == Connection.id)
+    )
     async with services.db() as session:
         due = (
             await session.execute(
@@ -935,6 +956,7 @@ async def schedule_syncs(
                     Connection.next_sync_at.is_not(None),
                     Connection.next_sync_at <= now,
                     User.disabled.is_(False),
+                    ~carried_by_source,
                 )
                 .order_by(Connection.next_sync_at)
                 .limit(limit)
@@ -945,6 +967,80 @@ async def schedule_syncs(
             JobKind.SYNC, user_id=user_id, connection_id=connection_id, dedupe=True
         )
     return len(due)
+
+
+async def schedule_source_syncs(
+    services: Services, *, limit: int = 100, now: datetime | None = None
+) -> int:
+    """One tick of the v4 source planner (phase 3.3): SYNC for every due, planned source.
+
+    Selection is one query (batch, ordered by due time). Sources with a `config.connection_id` go
+    through the existing connection SYNC path; sources without one get a SYNC job with a
+    `{source_id}` payload (the dispatch handler replays the playbook by source id). Both are
+    deduplicated: the queue returns an already queued/running task instead of enqueuing a second
+    one, and a source whose connection/source already has an in-flight task is skipped in this tick
+    (one query for the whole batch, no N+1).
+    """
+    now = now or services.clock.now()
+    async with services.db() as session:
+        due = (
+            await session.execute(
+                select(Source.id, Source.user_id, Source.config)
+                .join(User, User.id == Source.user_id)
+                .where(
+                    Source.next_sync_at.is_not(None),
+                    Source.next_sync_at <= now,
+                    Source.status.in_(PLANNED_STATUSES),
+                    User.disabled.is_(False),
+                )
+                .order_by(Source.next_sync_at, Source.id)
+                .limit(limit)
+            )
+        ).all()
+        if not due:
+            return 0
+        connection_of: dict[str, str] = {}
+        for source_id, _user_id, config in due:
+            connection_id = config.get("connection_id")
+            if isinstance(connection_id, str) and connection_id:
+                connection_of[source_id] = connection_id
+        # Existing in-flight tasks: one query for the whole batch, not one per source.
+        busy_connections: set[str] = set()
+        busy_sources: set[str] = set()
+        inflight = (
+            await session.execute(
+                select(Job.connection_id, Job.payload["source_id"].as_string()).where(
+                    Job.kind.in_(SOURCE_KINDS),
+                    Job.state.in_(sorted(IN_FLIGHT)),
+                    or_(
+                        Job.connection_id.in_(sorted(set(connection_of.values()))),
+                        Job.payload["source_id"].as_string().in_([row[0] for row in due]),
+                    ),
+                )
+            )
+        ).all()
+        for connection_id, source_id in inflight:
+            if connection_id:
+                busy_connections.add(connection_id)
+            if source_id:
+                busy_sources.add(source_id)
+
+    scheduled = 0
+    for source_id, user_id, _config in due:
+        if source_id in busy_sources:
+            continue
+        connection_id = connection_of.get(source_id)
+        if connection_id is not None and connection_id in busy_connections:
+            continue
+        await services.queue.enqueue(
+            JobKind.SYNC,
+            user_id=user_id,
+            connection_id=connection_id,
+            payload={"source_id": source_id},
+            dedupe=True,
+        )
+        scheduled += 1
+    return scheduled
 
 
 async def run_forever(

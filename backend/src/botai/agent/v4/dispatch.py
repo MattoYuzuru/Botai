@@ -39,7 +39,7 @@ from pydantic import AnyUrl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent.v4.factory import build_source_toolkit
+from botai.agent.v4.factory import artifact_root_from_settings, build_source_toolkit
 from botai.agent.v4.handlers import SYSTEM_PROMPT
 from botai.agent.v4.job_runtime import (
     MAX_ANSWER_CHARS,
@@ -58,6 +58,7 @@ from botai.core.ids import new_id
 from botai.core.jobs import JobContext, JobKind
 from botai.core.services import Services
 from botai.db.models import Connection, Source, Space
+from botai.search.rag import autoindex_source_artifacts
 from botai.sources import schedule
 from botai.sources.v4 import identity, playbooks, service, store
 from botai.sources.v4 import kinds as kinds_vocab
@@ -206,6 +207,18 @@ async def handle_sync(
 ) -> dict[str, Any]:
     """`JobKind.SYNC` on the v4 engine: replay the saved playbook without a model."""
     _require_v4(services)
+    if ctx.connection_id is None:
+        # A v4 source created without a v3 connection (REST/agent): the job carries `source_id`
+        # only, so the playbook is replayed by source id instead of through a connection. Status,
+        # freshness and the next schedule tick are recorded by the runner, as for any sync.
+        return await _sync_source_by_id(
+            ctx,
+            services,
+            payload,
+            http_transport=http_transport,
+            artifact_root=artifact_root,
+            source_cookies=source_cookies,
+        )
     connection_id = _connection_id(ctx, payload)
     async with services.db() as session:
         connection = await _owned_connection(session, ctx.user_id, connection_id)
@@ -244,6 +257,9 @@ async def handle_sync(
         detail = report.errors[0].detail if report.errors else "Источник недоступен"
         raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, detail)
 
+    if report.ok:
+        await _maybe_autoindex(ctx, services, source_id, _artifact_root(payload, artifact_root))
+
     body: dict[str, Any] = {
         "status": status,
         "source_id": source_id,
@@ -266,6 +282,55 @@ async def handle_sync(
             },
         }
     return body
+
+
+async def _sync_source_by_id(
+    ctx: JobContext,
+    services: Services,
+    payload: dict[str, Any],
+    *,
+    http_transport: httpx.AsyncBaseTransport | None,
+    artifact_root: str | Path | None,
+    source_cookies: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    """`SYNC` of a source that has no v3 connection: replay the playbook by `source_id`.
+
+    A source created by the agent or the REST API alone has no connection row, so the job cannot
+    address it the v3 way. The run is the same deterministic replay: `SourceRunner.sync` records
+    the status, freshness, artifacts and the next schedule tick itself; nothing here duplicates
+    scheduling. A retryable source error is raised so the queue retries it; a drift is reported in
+    the body — a repair needs a connection/agent path and stays available through the REST repair.
+    """
+    source_id = payload.get("source_id")
+    if not isinstance(source_id, str) or not source_id:
+        raise BotaiError(ErrorCode.VALIDATION, "У задачи sync нет source_id")
+    async with services.db() as session:
+        source = await service.get_source(session, user_id=ctx.user_id, source_id=source_id)
+        if source.status == "disabled":
+            raise BotaiError(ErrorCode.CONFLICT, "Источник выключен: включите его")
+        if source.playbook_id is None:
+            raise BotaiError(ErrorCode.CONFLICT, "У источника ещё нет playbook")
+    await ctx.status(f"{SYNC_PREFIX}: читаю источник")
+    toolkit = _toolkit(services, ctx, http_transport, artifact_root, source_cookies)
+    async with services.db() as session:
+        report = await toolkit.runner(session, ctx.user_id).sync(source_id)
+    await ctx.status(f"{SYNC_PREFIX}: {_report_stage(report)}")
+    if not report.ok and _only_retryable(report):
+        detail = report.errors[0].detail if report.errors else "Источник недоступен"
+        raise BotaiError(ErrorCode.SOURCE_UNAVAILABLE, detail)
+    if report.ok:
+        await _maybe_autoindex(ctx, services, source_id, _artifact_root(payload, artifact_root))
+    status = "ok" if report.ok else ("needs_reauth" if _auth_error(report) else "error")
+    return {
+        "status": status,
+        "source_id": source_id,
+        "run": report.run,
+        "counts": report.counts,
+        "reads": len(report.reads),
+        "artifact_ids": report.artifact_ids[:20],
+        "errors": [error.model_dump(mode="json") for error in report.errors],
+        "detail": "источник без подключения: прогон по source_id",
+    }
 
 
 async def handle_repair(
@@ -849,6 +914,35 @@ def _artifact_root(payload: dict[str, Any], default: str | Path | None) -> str |
     if isinstance(override, str) and override:
         return override
     return str(default) if default is not None else None
+
+
+async def _maybe_autoindex(
+    ctx: JobContext,
+    services: Services,
+    source_id: str,
+    artifact_root: str | Path | None,
+) -> None:
+    """Index the artifacts a successful sync just saved for RAG (D-011, plan 2.5).
+
+    Shared by both SYNC paths (a connection-linked source and a source addressed by `source_id`).
+    Soft by design: the RAG helper never raises — a disabled flag is a no-op and an indexer,
+    storage or timeout failure is logged as a warning without text, vectors or secrets — so
+    auto-indexing can never fail a source job, and the job result contract is unchanged. The pass
+    is bounded (`AUTOINDEX_LIMIT` artifacts of one source, `AUTOINDEX_TIMEOUT_S`) and idempotent by
+    document content hash and `(chunk_id, model)`, so every scheduled sync is safe to repeat.
+    """
+    root = (
+        Path(artifact_root)
+        if artifact_root is not None
+        else artifact_root_from_settings(services.settings)
+    )
+    await autoindex_source_artifacts(
+        services.db,
+        user_id=ctx.user_id,
+        source_id=source_id,
+        artifact_root=root,
+        enabled=services.settings.rag_autoindex,
+    )
 
 
 def _auth_error(report: Any) -> bool:
