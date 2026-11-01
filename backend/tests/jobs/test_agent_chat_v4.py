@@ -19,8 +19,9 @@ from sqlalchemy import select
 
 from botai.agent.v4.chat import make_chat_handlers
 from botai.core.errors import ErrorCode
+from botai.core.ids import new_id
 from botai.core.llm import LlmRequest, LlmResponse
-from botai.db.models import AgentRun, ChatMessage, ChatThread, Space
+from botai.db.models import AgentRun, AgentRunEvent, ChatMessage, ChatThread, Space
 from botai.sources.v4 import service as sources_service
 from tests.agent.v4.runtime_support import answer, call, tool_response
 from tests.fakeuni import login as fakeuni_login
@@ -363,6 +364,70 @@ async def test_chat_v4_asks_the_student_in_the_dialogue_and_continues_after_the_
     assert "ВШЭ" in tool_text
 
 
+@pytest.mark.parametrize("answer_channel", ["composer", "block"])
+@pytest.mark.parametrize("pasted_password", [False, True])
+async def test_chat_v4_keeps_login_email_in_the_answer_and_next_model_prompt(
+    env: Env, tmp_path: Path, answer_channel: str, pasted_password: bool
+) -> None:
+    env.settings.agent_engine = "v4"
+    client, _user, thread, _space = await _student(env)
+    email = "student.42@example.test"
+    reply = f"{email}; пароль: {SECRET}" if pasted_password else email
+    expected = f"{email}; пароль: <secret>" if pasted_password else email
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        if _steps(request) == 0:
+            return tool_response(
+                call("ask_user", {"question": "Какой email для входа?", "input_kind": "text"}, "c1")
+            )
+        return answer("Логин получен, продолжаю вход.")
+
+    provider = FlowProvider(respond)
+    sent = await _post(client, thread, "Подключи кабинет")
+    job_id = sent.json()["jobId"]
+    env.start(await _chat_worker(env, provider, tmp_path=tmp_path))
+    await env.wait_for(job_id, {"waiting_user"}, within=30)
+    pending = (await _runtime(client, thread))["pending"][0]
+    assert pending["channel"] == "dialogue"
+    client_message_id = new_id()
+    if answer_channel == "composer":
+        answered = await _post(
+            client, thread, reply, targetJobId=job_id, clientMessageId=client_message_id
+        )
+        assert answered.status_code == 202, answered.text
+    else:
+        answered = await client.post(
+            f"/api/v1/jobs/{job_id}/answers",
+            json={"blockId": pending["blockId"], "values": reply},
+        )
+        assert answered.status_code == 204, answered.text
+    job = await env.wait_for(job_id, {"done"}, within=30)
+    assert job.result is not None
+    assert job.result["stopped"] == "answer"
+    history = await _thread_messages(client, thread)
+    replies = [message for message in history if message["role"] == "user"]
+    assert replies[-1]["blocks"][0]["markdown"] == expected
+    assert SECRET not in _dumped(history)
+    tool_text = "\n".join(m.content for m in provider.requests[1].messages if m.role == "tool")
+    assert email in tool_text
+    assert "<email>" not in tool_text
+    assert SECRET not in _dumped([request.model_dump() for request in provider.requests])
+
+    if answer_channel == "composer":
+        replay = await _post(
+            client, thread, reply, targetJobId=job_id, clientMessageId=client_message_id
+        )
+        assert replay.status_code == 202, replay.text
+        assert replay.json()["message"]["id"] == answered.json()["message"]["id"]
+
+    # A later turn must read the usable login from durable history as well.
+    sent_again = await _post(client, thread, "Продолжи с тем же логином")
+    await env.wait_for(sent_again.json()["jobId"], {"waiting_user"}, within=30)
+    assert email in "\n".join(m.content for m in provider.requests[2].messages)
+    stopped = await client.post(f"/api/v1/jobs/{sent_again.json()['jobId']}/cancel")
+    assert stopped.status_code == 204
+
+
 async def test_chat_v4_plain_reply_answers_the_open_question_without_a_target(
     env: Env, tmp_path: Path
 ) -> None:
@@ -588,9 +653,20 @@ async def test_chat_v4_masks_a_broker_secret_out_of_messages_and_trace(
     assert SECRET not in _dumped(stored.blocks)
     assert SECRET not in _dumped([event.data for event in await env.events(job_id)])
     assert SECRET not in _dumped(job.result)
+    accepted = await env.answers(job_id)
+    assert len(accepted) == 1
+    assert accepted[0].is_secret is True
+    assert accepted[0].values is None
     async with env.sm() as session:
-        events = list(await session.scalars(select(AgentRun).where(AgentRun.user_id == user)))
-    assert events, "the chat run must have a durable trace"
+        payloads = list(
+            await session.scalars(
+                select(AgentRunEvent.payload)
+                .join(AgentRun, AgentRun.run_id == AgentRunEvent.run_id)
+                .where(AgentRun.user_id == user)
+            )
+        )
+    assert payloads, "the chat run must have a durable trace"
+    assert SECRET not in _dumped(payloads)
 
 
 # --- API parity and failures --------------------------------------------------------------------

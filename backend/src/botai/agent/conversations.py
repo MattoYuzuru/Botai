@@ -366,7 +366,9 @@ async def post_message(
     if calendar_link_in(body.text):
         raise await calendar.refuse_calendar_link(session, user_id, thread, services.clock.now())
     if body.client_message_id:
-        replay = await _replay(session, user_id, thread.id, body)
+        replay = await _replay(
+            session, user_id, thread.id, body, agent_engine=services.settings.agent_engine
+        )
         if replay is not None:
             return replay
     jobs = list(
@@ -421,7 +423,11 @@ async def post_message(
                 target = None  # answered while we were waiting for the lock
     if target is not None and body.attachment_ids:
         raise BotaiError(ErrorCode.VALIDATION, "Файлы отправляются обычным сообщением в чат")
-    text = safe_text(body.text) if target is not None else reject_secret_links(body.text)
+    text = (
+        safe_text(body.text, redact_personal=services.settings.agent_engine != "v4")
+        if target is not None
+        else reject_secret_links(body.text)
+    )
     # A reply is quoted by the server from the question it answers (of a task or of the agent turn);
     # a quote of the client (quick replies of the agent) is kept only for a message to the agent,
     # and only with a block that is in this thread.
@@ -569,7 +575,12 @@ async def _continued(session: AsyncSession, job: Job) -> bool:
 
 
 async def _replay(
-    session: AsyncSession, user_id: str, thread_id: str, body: MessageIn
+    session: AsyncSession,
+    user_id: str,
+    thread_id: str,
+    body: MessageIn,
+    *,
+    agent_engine: str = "v3",
 ) -> MessageAccepted | None:
     """The canonical answer of an earlier identical submission; a different body is a conflict."""
     existing = await session.scalar(
@@ -593,9 +604,19 @@ async def _replay(
         if existing.job_id
         else None
     )
+    to_task = existing_job is not None and existing_job.kind in TASK_KINDS
+    v4_reply = (
+        agent_engine == "v4"
+        and existing_job is not None
+        and any(
+            entry.get("message_id") == existing.id
+            for entry in dialogue.state_of(existing_job).get("inbox", [])
+            if isinstance(entry, dict)
+        )
+    )
     submitted = (
-        safe_text(body.text)
-        if existing_job is not None and existing_job.kind in TASK_KINDS
+        safe_text(body.text, redact_personal=agent_engine != "v4")
+        if to_task or v4_reply
         else body.text
     )
     sent_files = [
@@ -609,7 +630,6 @@ async def _replay(
         ),
         None,
     )
-    to_task = existing_job is not None and existing_job.kind in TASK_KINDS
     submitted_quote = None if to_task else _quote_of(body)  # a task's quote is the server's
     if (
         stored != submitted

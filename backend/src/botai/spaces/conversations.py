@@ -67,13 +67,30 @@ CALENDAR_LINK_TEXT = (
 )
 
 
-def safe_text(text: str) -> str:
-    """Do not durably copy a rejected URL or a labelled secret from the composer."""
+# D-008 permits ordinary identity and session data in v4. Only primary secrets pasted
+# into a text answer are hidden here; actual secret inputs still go directly to the Vault.
+_PRIMARY_SECRET = re.compile(
+    r"(?i)((?:password|passwd|pwd|пароль|otp|mfa|"
+    r"код\s+(?:mfa|подтверждения|из\s+смс|из\s+письма|доступа))"
+    r"\s*(?::|=|\s)\s*)[^\n,;]+"
+)
+
+
+def safe_text(text: str, *, redact_personal: bool = True) -> str:
+    """Reject secret links and hide labelled primary secrets before storing a text answer.
+
+    Legacy learning also pseudonymises personal/session data. The v4 dialogue keeps those
+    usable (D-008); emails and logins must reach the model exactly as the student wrote them.
+    """
     if calendar_link_in(text):
         raise BotaiError(ErrorCode.VALIDATION, CALENDAR_LINK_TEXT)
     turn = prepare_turn(text, max_length=8000)
     if turn.rejected_links:
         raise BotaiError(ErrorCode.VALIDATION, KEYED_LINK_TEXT)
+    if not redact_personal:
+        if len(text) > 8000:
+            raise BotaiError(ErrorCode.VALIDATION, "Сообщение слишком длинное")
+        return _PRIMARY_SECRET.sub(r"\1<secret>", text)
     value = turn.text
     for index, url in enumerate(turn.links):
         value = value.replace(f"[link:{index}]", url)

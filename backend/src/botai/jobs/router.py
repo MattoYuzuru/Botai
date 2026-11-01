@@ -55,7 +55,9 @@ async def answer(
 ) -> None:
     """Answers a block. A secret input goes straight into the Vault (`transient`, 10 minutes);
     only the fact of the answer is stored. A second answer to the same block is `409`."""
-    await answers.record_answer(session, services.vault, user.id, job_id, body)
+    await answers.record_answer(
+        session, services.vault, user.id, job_id, body, agent_engine=services.settings.agent_engine
+    )
 
 
 @router.post("/jobs/{job_id}/cancel", status_code=204)
