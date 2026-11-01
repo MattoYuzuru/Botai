@@ -25,6 +25,7 @@ import { jobManager } from "@/features/jobs/job-manager";
 import { isTerminal as isJobTerminal } from "@/features/jobs/job-state";
 import { toDeadlineView } from "@/features/tasks/deadlines";
 import { clientId } from "@/lib/client-id";
+import { compareInstants } from "@/lib/instants";
 import { chatApi } from "./api";
 import { AttachmentViewerHost, useAttachmentViewer } from "./attachment-viewer-host";
 import { hasCalendarLink, withoutCalendarLinks } from "./calendar-link";
@@ -419,18 +420,17 @@ export function ChatScreen() {
   // Прочитанным тред отмечается, когда история дозагружена и самое новое сообщение треда уже показано на экране.
   const lastShown = messages.reduce<(typeof messages)[number] | null>(
     (latest, message) =>
-      !latest || (Date.parse(message.createdAt) || 0) > (Date.parse(latest.createdAt) || 0)
-        ? message
-        : latest,
+      !latest || compareInstants(message.createdAt, latest.createdAt) > 0 ? message : latest,
     null,
   );
-  const lastShownAt = lastShown ? Date.parse(lastShown.createdAt) || 0 : 0;
-  const newestAt = activeThread ? Date.parse(activeThread.lastMessageAt) || 0 : 0;
+  const newestShown = Boolean(
+    lastShown && (!activeThread || compareInstants(lastShown.createdAt, activeThread.lastMessageAt) >= 0),
+  );
   useMarkRead(
     activeId,
     activeThread?.unread ?? false,
     stick.atBottom,
-    activeId !== null && !messagesResult.isPending && !messagesResult.isFetching && lastShownAt >= newestAt,
+    activeId !== null && !messagesResult.isPending && !messagesResult.isFetching && newestShown,
     lastShown?.createdAt ?? null,
   );
 

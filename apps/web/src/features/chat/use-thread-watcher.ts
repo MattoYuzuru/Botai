@@ -33,6 +33,7 @@ export function attentionToast(thread: ThreadOut): { title: string; description:
 export function useThreadWatcher(): readonly ThreadOut[] | undefined {
   const threads = useQuery(threadsQuery);
   const navigate = useNavigate();
+  const openId = useOpenThread((state) => state.id);
   const known = useRef<Map<string, ThreadOut["attention"]> | null>(null);
 
   useEffect(() => {
@@ -41,10 +42,12 @@ export function useThreadWatcher(): readonly ThreadOut[] | undefined {
     const previous = known.current;
     known.current = new Map(rows.map((thread) => [thread.id, thread.attention]));
     if (previous === null) return;
-    const openId = useOpenThread.getState().id;
     for (const thread of rows) {
+      if (thread.id === openId && document.visibilityState === "visible") {
+        toast.dismiss(`attention:${thread.id}`);
+        continue;
+      }
       if (thread.attention !== "waiting_user" || previous.get(thread.id) === "waiting_user") continue;
-      if (thread.id === openId) continue;
       const { title, description } = attentionToast(thread);
       toast(title, {
         description,
@@ -57,7 +60,7 @@ export function useThreadWatcher(): readonly ThreadOut[] | undefined {
         },
       });
     }
-  }, [threads.data, navigate]);
+  }, [threads.data, navigate, openId]);
 
   return threads.data;
 }

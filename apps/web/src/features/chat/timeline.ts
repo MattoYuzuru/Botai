@@ -65,6 +65,7 @@ export type Turn =
       steps: StepSummary[];
       running: boolean;
       finishedAt?: number;
+      startedAt?: number;
     }
   | {
       kind: "failure";
@@ -152,6 +153,7 @@ export function mergeJob(saved: JobOut, live: JobSnapshot | undefined): JobSnaps
     state: !savedTerminal && events && current ? current.state : saved.state,
     stage: !savedTerminal && events && current ? current.stage : saved.stage,
     startedAt: current?.startedAt ?? stamp(saved.startedAt) ?? stamp(saved.createdAt),
+    finishedAt: stamp(saved.finishedAt) ?? current?.finishedAt,
     problem: savedTerminal ? problem : (current?.problem ?? problem),
     result: savedTerminal ? (saved.result ?? null) : (current?.result ?? saved.result ?? null),
   };
@@ -227,7 +229,13 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
         group = { blocks: new Map(), after: turns.at(-1)?.key ?? null };
         thoughts.set(jobId, group);
       }
-      group.blocks.set(block.id, block);
+      const previous = group.blocks.get(block.id);
+      group.blocks.set(
+        block.id,
+        previous?.at && Date.parse(previous.at) < Date.parse(block.at)
+          ? { ...block, at: previous.at }
+          : block,
+      );
       return;
     }
     const key = `block:${jobId ?? fallback}:${block.id}`;
@@ -275,11 +283,12 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
     const snapshot: JobSnapshot = {
       ...initialJob(jobId),
       state: job ? job.snapshot.state : "done",
+      result: job?.snapshot.result ?? null,
       blocks: [...blocks.values()],
     };
     let finishedAt: number | undefined;
     if (job && isTerminal(job.snapshot.state)) {
-      finishedAt = lastBlockAt(job.snapshot) ?? lastDurableAt.get(jobId);
+      finishedAt = job.snapshot.finishedAt ?? lastBlockAt(job.snapshot) ?? lastDurableAt.get(jobId);
     } else if (!job) finishedAt = lastDurableAt.get(jobId);
     thinking.push({
       after,
@@ -290,6 +299,7 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
         steps: thinkingSteps(snapshot),
         running: live,
         finishedAt,
+        startedAt: job?.snapshot.startedAt ?? undefined,
       },
     });
   }

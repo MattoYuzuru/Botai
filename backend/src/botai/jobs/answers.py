@@ -160,7 +160,13 @@ async def _asked_block(
 
 
 async def record_answer(
-    session: AsyncSession, vault: Vault, user_id: str, job_id: str, body: AnswerIn
+    session: AsyncSession,
+    vault: Vault,
+    user_id: str,
+    job_id: str,
+    body: AnswerIn,
+    *,
+    agent_engine: str = "v3",
 ) -> None:
     # Serialize answer acceptance with emit/cancel, which lock the same job row.
     # A handoff committed while this request was waiting must retire the native
@@ -221,7 +227,7 @@ async def record_answer(
         if thread is not None and thread.user_id == user_id:
             # The same as in the chat: nothing is kept, the thread gets the question.
             raise await calendar.refuse_calendar_link(session, user_id, thread, datetime.now(UTC))
-        values = safe_text(values)
+        values = safe_text(values, redact_personal=agent_engine != "v4")
 
     # Claim the answer slot first (the unique key makes a second answer lose), but commit it only
     # after the secret is in the Vault.

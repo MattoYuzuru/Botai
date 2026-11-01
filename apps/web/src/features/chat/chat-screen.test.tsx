@@ -3,8 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import type { ThreadOut } from "@/api/v3";
+import { jobManager } from "@/features/jobs/job-manager";
+import { initialJob } from "@/features/jobs/job-state";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
+import { chatKeys } from "./queries";
 import { outbox } from "./runtime";
 
 const harness = chatHarness();
@@ -20,6 +23,244 @@ async function seededThreadId(): Promise<string> {
 }
 
 describe("чат на весь экран: шапка, история, источники ответа", () => {
+  it("GET истории ждёт runtime и восстанавливает трассу после завершения", async () => {
+    const threadId = await seededThreadId();
+    let finishRuntime = () => {};
+    const runtimeGate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    let done = false;
+    let lookups = 0;
+    const job = {
+      id: "J-early",
+      kind: "chat",
+      state: "running",
+      stage: "Работаю",
+      createdAt: AT,
+      startedAt: AT,
+      connectionId: null,
+    };
+    jobManager.seed({ ...initialJob(job.id), state: "running" });
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-early",
+            role: "agent",
+            jobId: job.id,
+            createdAt: AT,
+            blocks: [{ type: "thinking", id: ULID(150), at: AT, stage: "Работаю", state: "running" }],
+          },
+        ]),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/runtime", async () => {
+        await runtimeGate;
+        return HttpResponse.json({ activeJob: done ? null : job, tasks: [], pending: [], receipts: [] });
+      }),
+      http.get("*/api/v1/jobs/J-early", () => {
+        lookups += 1;
+        return HttpResponse.json(
+          done
+            ? {
+                ...job,
+                state: "done",
+                finishedAt: "2026-10-27T11:00:20Z",
+                result: { status: "answer", run_id: "R-early" },
+              }
+            : job,
+        );
+      }),
+    );
+    const { queryClient } = renderApp(`/chat?thread=${threadId}`);
+    await screen.findByRole("button", { name: /^Думал/ }, wait);
+    expect(lookups).toBe(0);
+    expect(screen.queryByRole("link", { name: "Трасса хода агента" })).toBeNull();
+    finishRuntime();
+    await screen.findByRole("button", { name: /^Думает/ }, wait);
+    expect(lookups).toBe(0);
+    done = true;
+    await queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-early",
+    );
+    expect(lookups).toBe(1);
+  });
+
+  it("первый runtime уже final: незавершённый GET истории повторяется до результата", async () => {
+    const threadId = await seededThreadId();
+    let finishRuntime = () => {};
+    const gate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    let lookups = 0;
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", async () => {
+        await gate;
+        return HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] });
+      }),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-final",
+            role: "agent",
+            jobId: "J-final",
+            createdAt: AT,
+            blocks: [{ type: "thinking", id: ULID(151), at: AT, stage: "Работаю", state: "ok" }],
+          },
+        ]),
+      ),
+      http.get("*/api/v1/jobs/J-final", () => {
+        lookups += 1;
+        return HttpResponse.json({
+          id: "J-final",
+          kind: "chat",
+          createdAt: AT,
+          startedAt: AT,
+          connectionId: null,
+          state: lookups === 1 ? "running" : "done",
+          result: lookups === 1 ? null : { status: "answer", run_id: "R-final" },
+        });
+      }),
+    );
+    const { queryClient } = renderApp(`/chat?thread=${threadId}`);
+    await screen.findByRole("button", { name: /^Думал/ }, wait);
+    expect(lookups).toBe(0);
+    finishRuntime();
+    await waitFor(() => expect(lookups).toBe(1), wait);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-final",
+    );
+    expect(lookups).toBe(2);
+    expect(
+      queryClient
+        .getQueryCache()
+        .find({ queryKey: ["chat", "history-job", "J-final"] })
+        ?.isStale(),
+    ).toBe(false);
+  });
+
+  it("история запрашивает только 20 недавних заданий, старое — при раскрытии", async () => {
+    const threadId = await seededThreadId();
+    const lookedUp: string[] = [];
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json(
+          Array.from({ length: 21 }, (_, index) => ({
+            id: `M-history-${index}`,
+            role: "agent",
+            createdAt: AT,
+            jobId: `J-history-${index}`,
+            blocks: [{ type: "thinking", id: ULID(100 + index), at: AT, stage: `Шаг ${index}`, state: "ok" }],
+          })),
+        ),
+      ),
+      http.get("*/api/v1/jobs/:jobId", ({ params }) => {
+        const id = String(params.jobId);
+        lookedUp.push(id);
+        return HttpResponse.json({
+          id,
+          kind: "chat",
+          state: "done",
+          stage: "Готово",
+          createdAt: AT,
+          startedAt: AT,
+          finishedAt: AT,
+          connectionId: null,
+          result: { status: "answer", run_id: `R-${id}` },
+        });
+      }),
+    );
+    renderApp(`/chat?thread=${threadId}`);
+    await waitFor(() => expect(lookedUp).toHaveLength(20), wait);
+    expect(lookedUp).not.toContain("J-history-0");
+    await userEvent.setup().click(screen.getAllByRole("button", { name: /^Думал/ })[0] as HTMLElement);
+    await waitFor(() => expect(lookedUp).toContain("J-history-0"), wait);
+    await waitFor(
+      () => expect(screen.getAllByRole("link", { name: "Трасса хода агента" })).toHaveLength(21),
+      wait,
+    );
+  });
+
+  it("завершённый v4 CHAT сохраняет время и трассу после финальной загрузки и перезагрузки", async () => {
+    const threadId = await seededThreadId();
+    let active = true;
+    let lookups = 0;
+    const completed = {
+      id: "J-trace",
+      kind: "chat",
+      state: "done",
+      stage: "Готово",
+      createdAt: AT,
+      startedAt: "2026-10-27T11:00:00Z",
+      finishedAt: "2026-10-27T11:00:20Z",
+      connectionId: null,
+      result: { status: "answer", run_id: "R-chat" },
+    };
+    harness.server.use(
+      http.get("*/api/v1/jobs/J-trace", () => {
+        lookups += 1;
+        return HttpResponse.json(completed);
+      }),
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({
+          activeJob: active ? completed : null,
+          tasks: [],
+          pending: [],
+          receipts: [],
+        }),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-trace",
+            role: "agent",
+            createdAt: "2026-10-27T11:00:20Z",
+            jobId: "J-trace",
+            blocks: [
+              {
+                type: "thinking",
+                id: ULID(90),
+                at: "2026-10-27T11:00:20Z",
+                stage: "Читаю расписание",
+                state: "ok",
+                detail: "Найдено три занятия",
+              },
+              { type: "text", id: ULID(91), at: "2026-10-27T11:00:20Z", markdown: "Расписание готово" },
+            ],
+          },
+        ]),
+      ),
+    );
+    const app = renderApp(`/chat?thread=${threadId}`);
+    const toggle = await screen.findByRole("button", { name: /^Думал · 20\sс$/ }, wait);
+    expect(screen.getByRole("link", { name: "Трасса хода агента" })).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    await userEvent.setup().click(toggle);
+    expect(screen.getByText("Найдено три занятия")).toBeInTheDocument();
+    active = false;
+    await app.queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
+    await waitFor(() => expect(lookups).toBe(1), wait);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    app.unmount();
+    renderApp(`/chat?thread=${threadId}`);
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-chat",
+    );
+    expect(await screen.findByRole("button", { name: /^Думал · 20\sс$/ }, wait)).toBeInTheDocument();
+    expect(lookups).toBe(2);
+  });
+
   it("название треда — заголовок, «Чат» — подпись; справа «Источники», «Чаты», «Новый чат»", async () => {
     renderApp("/chat");
     const title = await screen.findByRole("heading", { level: 1, name: "Что сегодня по расписанию?" }, wait);

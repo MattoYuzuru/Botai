@@ -13,6 +13,7 @@ bypassed by a forgotten call site.
 from __future__ import annotations
 
 import contextlib
+import logging
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from playwright.async_api import StorageState
 
 from botai.agent.v4.executor import (
     ContainerExecutor,
@@ -51,9 +53,17 @@ from botai.core.services import Services
 from botai.core.vault import SecretKind, Vault
 from botai.settings import Settings
 from botai.sources.v4.artifacts import FileArtifactStore
+from botai.sources.v4.browser import playwright_factory
+from botai.sources.v4.secrets import (
+    AgentSessionStore,
+    VaultSessionReader,
+    browser_storage_state,
+    capture_browser_session,
+)
 
 DEFAULT_WORKSPACE_ROOT = Path(tempfile.gettempdir()) / "botai-agent-v4"
 DEFAULT_ARTIFACT_ROOT = DEFAULT_WORKSPACE_ROOT / "source-artifacts"
+log = logging.getLogger(__name__)
 
 
 class AgentWiringError(RuntimeError):
@@ -122,6 +132,7 @@ async def launch_browser_control(
     *,
     workspace: Workspace,
     mask: Callable[[str], str] | None = None,
+    storage_state: StorageState | None = None,
 ) -> BrowserControl:
     """A full-control browser for the run; reuses the worker gateway's driver when available.
 
@@ -132,6 +143,7 @@ async def launch_browser_control(
     gateway = services.browser if isinstance(services.browser, PlaywrightGateway) else None
     return await BrowserControl.launch(
         gateway=gateway,
+        storage_state=storage_state,
         config=ControlConfig(
             headless=True,
             upload_root=workspace.root,
@@ -234,6 +246,7 @@ def build_source_toolkit(
     artifact_root: str | Path | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     cookies: Mapping[str, str] | None = None,
+    browser_control: BrowserControl | None = None,
 ) -> SourceToolkit:
     """The `source_*` tools over the real DB, artifact root, Vault reader and executor.
 
@@ -260,6 +273,10 @@ def build_source_toolkit(
         clock=services.clock,
         cookies=cookies,
         secret_reader=VaultSecretReader(services.vault, user_id=user_id),
+        session_reader=VaultSessionReader(services.vault),
+        browser_factory=playwright_factory(),
+        browser_control=browser_control,
+        vault=services.vault,
     )
 
 
@@ -312,11 +329,18 @@ class AgentWiring:
     control: BrowserControl | None = None
     broker: SecretBroker | None = None
     source_toolkit: SourceToolkit | None = None
+    session_store: AgentSessionStore | None = None
     owns_provider: bool = False
 
     async def aclose(self) -> None:
         # Idempotent enough for the handler's finally: a second close is a no-op in the parts.
         if self.control is not None:
+            if self.session_store is not None:
+                try:
+                    state = await capture_browser_session(self.control)
+                    await self.session_store.save(state)
+                except Exception:
+                    log.warning("Не удалось сохранить браузерную сессию агента в Vault")
             # The run is over; a broken browser must not mask its result.
             with contextlib.suppress(Exception):
                 await self.control.close()
@@ -363,10 +387,22 @@ async def build_agent_wiring(
     store: TraceStore = trace_store or DbTraceStore(services.db, user_id=user_id, job_id=job_id)
     broker = SecretBroker(services.vault, user_id=user_id, scope_id=job_id or run_id)
     active_control = control
+    session_store: AgentSessionStore | None = None
+    restored_state: StorageState | None = None
+    if active_control is not None or with_browser:
+        session_store = AgentSessionStore(services.vault, user_id=user_id)
+        saved_state = await session_store.load()
+        if saved_state:
+            restored_state = browser_storage_state(saved_state)
     if active_control is None and with_browser:
         active_control = await launch_browser_control(
-            services, workspace=workspace, mask=broker.mask
+            services,
+            workspace=workspace,
+            mask=broker.mask,
+            storage_state=restored_state,
         )
+    elif active_control is not None and restored_state is not None:
+        await active_control.new_context(storage_state=restored_state)
     tools: list[ToolHandler] = [*build_basic_tools(), *build_code_tools(executor)]
     if active_control is not None:
         tools.extend(
@@ -381,6 +417,7 @@ async def build_agent_wiring(
             artifact_root=artifact_root,
             transport=http_transport,
             cookies=source_cookies,
+            browser_control=active_control,
         )
         tools.extend(build_source_tools(source_toolkit))
         tools.extend(build_space_tools(build_space_toolkit(services)))
@@ -394,8 +431,8 @@ async def build_agent_wiring(
             )
         )
     # The broker masker is applied by the runtime to every tool result (code_exec stdout, fs_*,
-    # http, trace_read included): a parser that prints a profile e-mail must not reach the model,
-    # the conversation checkpoint or the trace (D-008/D-014).
+    # http, trace_read included): issued primary secrets must not reach the model,
+    # the conversation checkpoint or the trace (D-008/D-014). Ordinary identities remain usable.
     runtime = AgentRuntime(clock=services.clock.now, mask=broker.mask)
     return AgentWiring(
         runtime=runtime,
@@ -407,6 +444,7 @@ async def build_agent_wiring(
         control=active_control,
         broker=broker,
         source_toolkit=source_toolkit,
+        session_store=session_store,
         owns_provider=provider is None,
     )
 

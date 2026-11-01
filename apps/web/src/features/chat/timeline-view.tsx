@@ -1,4 +1,6 @@
 import { Button, ChatMessage, QuickReplies, ThinkingStream, type ViewerAttachment } from "@botai/design";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { runIdFromResult } from "@/api/agent-runs";
 import { api, call } from "@/api/client";
@@ -123,6 +125,21 @@ export function TimelineView({
     return ids;
   }, [runtime, jobs]);
 
+  // Последние 20 заданий истории загружаются автоматически; более старые — при раскрытии шагов.
+  const recentHistory = useMemo(
+    () =>
+      new Set(
+        timeline.turns
+          .flatMap((turn) =>
+            turn.kind === "thinking" && !turn.running && turn.jobId && !taskRunIds.has(turn.jobId)
+              ? [turn.jobId]
+              : [],
+          )
+          .slice(-20),
+      ),
+    [timeline.turns, taskRunIds],
+  );
+
   const base = useMemo(
     () => ({
       nowMs,
@@ -161,6 +178,8 @@ export function TimelineView({
           <li key={turn.key} data-turn={turn.kind} data-conversation-turn={turn.key}>
             <TurnView
               turn={turn}
+              resolveHistory={turn.kind === "thinking" && recentHistory.has(turn.jobId ?? "")}
+              historyReady={runtime !== undefined}
               base={base}
               job={turn.kind === "block" || turn.kind === "thinking" ? byId.get(turn.jobId ?? "") : undefined}
               receipt={
@@ -213,6 +232,8 @@ type BaseContext = Pick<
 
 function TurnView({
   turn,
+  resolveHistory,
+  historyReady,
   base,
   job,
   failedJob,
@@ -224,6 +245,8 @@ function TurnView({
   restarting,
 }: {
   turn: Turn;
+  resolveHistory: boolean;
+  historyReady: boolean;
   base: BaseContext;
   job: ThreadJob | undefined;
   failedJob: ThreadJob | undefined;
@@ -253,7 +276,15 @@ function TurnView({
         />
       );
     case "thinking":
-      return <ThinkingTurn turn={turn} nowMs={nowMs} />;
+      return (
+        <ThinkingTurn
+          turn={turn}
+          nowMs={nowMs}
+          resolveHistory={resolveHistory}
+          historyReady={historyReady}
+          runId={turn.jobId ? base.taskRunId?.(turn.jobId) : undefined}
+        />
+      );
     case "failure":
       return (
         <div className="flex flex-col items-start gap-3" data-failure="">
@@ -353,16 +384,63 @@ function HistoryBlock({
   );
 }
 
-function ThinkingTurn({ turn, nowMs }: { turn: Extract<Turn, { kind: "thinking" }>; nowMs: number }) {
+function ThinkingTurn({
+  turn,
+  nowMs,
+  runId,
+  resolveHistory,
+  historyReady,
+}: {
+  turn: Extract<Turn, { kind: "thinking" }>;
+  resolveHistory: boolean;
+  historyReady: boolean;
+  nowMs: number;
+  runId?: string;
+}) {
   const [collapsed, setCollapsed] = useState(true);
+  const historicalJob = useQuery({
+    queryKey: ["chat", "history-job", turn.jobId],
+    queryFn: ({ signal }) =>
+      call(
+        api.GET("/api/v1/jobs/{job_id}", {
+          params: { path: { job_id: turn.jobId ?? "" } },
+          signal,
+        }),
+      ),
+    enabled: historyReady && Boolean(turn.jobId) && !turn.running && !runId && (resolveHistory || !collapsed),
+    // История может загрузиться раньше runtime: только завершённый результат неизменяем.
+    staleTime: (query) =>
+      query.state.data && isTerminal(query.state.data.state) ? Number.POSITIVE_INFINITY : 0,
+    // Только реально наблюдавшееся незавершённое задание ждёт сохранения результата.
+    refetchInterval: (query) => (query.state.data && !isTerminal(query.state.data.state) ? 5_000 : false),
+    retry: false,
+    retryOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+  const traceId = runId ?? runIdFromResult(historicalJob.data?.result);
+  const startedAt =
+    turn.startedAt ?? (historicalJob.data?.startedAt ? Date.parse(historicalJob.data.startedAt) : undefined);
+  const finishedAt = historicalJob.data?.finishedAt
+    ? Date.parse(historicalJob.data.finishedAt)
+    : turn.finishedAt;
   return (
-    <ThinkingStream
-      steps={turn.steps}
-      nowMs={nowMs}
-      finishedAt={turn.finishedAt}
-      collapsed={collapsed}
-      onToggle={setCollapsed}
-    />
+    <div className="flex flex-col gap-1">
+      <ThinkingStream
+        steps={turn.steps}
+        startedAt={startedAt}
+        nowMs={nowMs}
+        finishedAt={finishedAt}
+        collapsed={collapsed}
+        onToggle={setCollapsed}
+      />
+      {traceId && (
+        <Button variant="ghost" className="self-start" asChild>
+          <Link to="/agent/runs/$runId" params={{ runId: traceId }} aria-label="Трасса хода агента">
+            Трасса
+          </Link>
+        </Button>
+      )}
+    </div>
   );
 }
 

@@ -227,8 +227,13 @@ async def mark_read(
     now = services.clock.now()
     ceiling = max(now, newest) if newest else now
     seen = min(up_to, ceiling) if up_to is not None else ceiling  # not past what exists
-    if thread.last_read_at is None or seen > thread.last_read_at:
-        thread.last_read_at = seen
+    # A delayed request from another tab must not move the watermark backwards. Comparing a
+    # previously loaded ORM value is insufficient when two /read requests overlap.
+    await session.execute(
+        update(ChatThread)
+        .where(ChatThread.id == thread_id, ChatThread.user_id == user_id)
+        .values(last_read_at=func.greatest(func.coalesce(ChatThread.last_read_at, seen), seen))
+    )
     await session.commit()
 
 

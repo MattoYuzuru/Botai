@@ -39,7 +39,6 @@ from botai.agent.chat import (
     DEFAULT_TITLE,
     INJECTION_NOTE,
     MAX_MARKDOWN,
-    UNKNOWN_BUDGET,
     title_from,
 )
 from botai.agent.harness import audit_injection
@@ -90,6 +89,13 @@ playbook, синхронизация), вузы (space_create: создать в
 - когда ссылаешься на источник, назови его и укажи URL/страницу, откуда взяты данные;
 - если данных нет или доступ не получен — скажи честно, что именно не нашлось и где смотрел;
 - вопрос студенту задавай только когда без него нельзя (ask_user), и не превращай ответ в допрос.
+- подключение доводи до проверенного результата: узнай формат через source_schema, сохрани
+  сессию источника, проверь обработчик, вызови source_sync и проверь число сохранённых записей;
+  успешный вход или пустой probe ещё не означают, что расписание появилось в приложении;
+- если пользователь просит выполнить работу, выполняй её в этом ходе; не заканчивай обещанием
+  «дальше настрою», когда можно продолжать инструментами. При блокере назови точную причину;
+- при продолжении незавершённой работы используй сохранённые источники и trace_read, чтобы
+  не повторять уже сделанные проверки и не угадывать заново найденный формат.
 """
     + "\n\n"
     + UI_GUIDE
@@ -99,7 +105,13 @@ CHAT_TASK = (
     "Ответь студенту на последнее сообщение в этом чате. Вопрос и история уже выше: это твой ход. "
     "Если нужны данные или действие — используй инструменты; в конце дай ответ студенту."
 )
-LIMIT_NOTE = "\n\nОтвет может быть неполным: я остановился по лимиту."
+LIMIT_NAMES = {
+    "steps": "числа шагов",
+    "tokens": "суммарных токенов",
+    "seconds": "времени",
+    "usd": "стоимости",
+    "hard_stop_usd": "аварийной стоимости",
+}
 ERROR_ANSWER = "Не удалось получить ответ. Попробуйте позже."
 MAX_CONTEXT_SOURCES = 12
 CITATION_TOOLS = frozenset(
@@ -203,9 +215,9 @@ async def handle_chat_v4(
     await ctx.emit(
         ThinkingBlock(
             id=thinking_id,
-            at=services.clock.now(),
+            at=now,
             stage=f"Думал · {elapsed} с",
-            state="ok",
+            state="ok" if run.result.answered else "failed",
         )
     )
 
@@ -228,7 +240,9 @@ async def handle_chat_v4(
     else:
         for block in reply:
             await ctx.emit(block)
-        stored_id = await _store_reply(services, ctx, turn.thread, reply, turn.question, now)
+        stored_id = await _store_reply(
+            services, ctx, turn.thread, reply, turn.question, services.clock.now()
+        )
 
     return _job_result(run, turn, system, stored_id, cards)
 
@@ -325,11 +339,19 @@ def _compose_answer(run: JobRun) -> str:
     if result.status == "error":
         return result.error_detail or ERROR_ANSWER
     text = result.content.strip()
-    if not text:
-        return UNKNOWN_BUDGET
     if result.limit_reached:
-        text += LIMIT_NOTE
-    return text
+        limit = LIMIT_NAMES.get(result.limit_reached, "ресурсов")
+        note = (
+            f"Работа не завершена: достигнут лимит {limit}. "
+            f"Выполнено шагов: {result.steps}. "
+            "Подробности действий сохранены в трассе. Можно продолжить в этом чате."
+        )
+        return f"{text}\n\n{note}" if text else note
+    if result.status == "paused":
+        return text or "Работа приостановлена. Можно продолжить в этом чате."
+    if result.status == "cancelled":
+        return text or "Работа остановлена."
+    return text or "Агент завершил ход без ответа. Подробности действий сохранены в трассе."
 
 
 def _stopped(result: RunResult) -> str:
@@ -486,6 +508,10 @@ def _job_result(
 ) -> dict[str, Any]:
     result = run.result
     return {
+        "run_id": result.run_id,
+        "status": result.status,
+        "limit_reached": result.limit_reached,
+        "cost_usd": result.cost_usd,
         "messageId": message_id,
         "factId": None,  # v3 facts/reuse are not part of the v4 chat turn (documented gap)
         "stopped": _stopped(result),

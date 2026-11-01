@@ -12,6 +12,7 @@ The machinery follows `agent/v4/protocol.py`: a `ToolSpec` with a strict JSON sc
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
@@ -29,12 +30,26 @@ from botai.agent.v4.protocol import (
     ToolSpec,
     object_schema,
 )
+from botai.browser.control import BrowserControl
 from botai.core.clock import Clock
 from botai.core.errors import BotaiError
+from botai.core.vault import SecretKind, Vault
 from botai.db.models import Source
 from botai.sources.v4 import artifacts, playbooks, service
-from botai.sources.v4.runner import RunReport, SecretReader, SourceRunner
+from botai.sources.v4.agent_schema import source_schema
+from botai.sources.v4.runner import (
+    BrowserFactory,
+    RunReport,
+    SecretReader,
+    SessionReader,
+    SourceRunner,
+)
 from botai.sources.v4.schemas import SourcePatch
+from botai.sources.v4.secrets import (
+    VaultSessionReader,
+    browser_storage_state,
+    capture_browser_session,
+)
 
 ExecutorFactory = Callable[[], Executor]
 MAX_REPORT_CHARS = 60_000
@@ -107,6 +122,11 @@ class ReadLiveArgs(_Args):
     save_artifact: bool = True
 
 
+class SessionArgs(_Args):
+    source_id: str
+    action: Literal["save", "load"]
+
+
 def _source_data(source: Source) -> dict[str, Any]:
     return {
         "id": source.id,
@@ -152,6 +172,10 @@ class SourceToolkit:
         cookies: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         secret_reader: SecretReader | None = None,
+        session_reader: SessionReader | None = None,
+        browser_factory: BrowserFactory | None = None,
+        browser_control: BrowserControl | None = None,
+        vault: Vault | None = None,
     ) -> None:
         self._sm = sm
         self._transport = transport
@@ -161,7 +185,13 @@ class SourceToolkit:
         self._cookies = dict(cookies or {})
         self._headers = dict(headers or {})
         self._secret_reader = secret_reader
+        self._session_reader = session_reader
+        self._browser_factory = browser_factory
+        self._browser_control = browser_control
+        self._vault = vault
         self._handlers: list[ToolHandler] = [
+            FunctionTool(self.schema_spec, self._schema),
+            FunctionTool(self.session_spec, self._session),
             FunctionTool(self.list_spec, self._list),
             FunctionTool(self.create_spec, self._create),
             FunctionTool(self.probe_spec, self._probe),
@@ -186,9 +216,64 @@ class SourceToolkit:
             cookies=self._cookies,
             headers=self._headers,
             secret_reader=self._secret_reader,
+            session_reader=self._session_reader,
+            browser_factory=self._browser_factory,
         )
 
     # --- handlers --------------------------------------------------------------------------
+
+    async def _schema(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        del arguments, context
+        return ToolResult.success(
+            summary="Схема playbook и результатов парсера", data=source_schema()
+        )
+
+    async def _session(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        user_id = _user(context)
+        if user_id is None:
+            return ToolResult.failure("no_user", "Инструмент требует пользователя")
+        args = _validate(SessionArgs, arguments)
+        if isinstance(args, ToolResult):
+            return args
+        if self._browser_control is None or self._vault is None:
+            return ToolResult.failure("browser_unavailable", "У хода нет браузера или Vault")
+        try:
+            async with self._sm() as session:
+                source = await service.get_source(
+                    session, user_id=user_id, source_id=args.source_id
+                )
+                if args.action == "save":
+                    state = await capture_browser_session(self._browser_control)
+                    await self._vault.put(
+                        user_id,
+                        source.id,
+                        SecretKind.SESSION,
+                        json.dumps(state, ensure_ascii=False),
+                    )
+                    await service.update_source(
+                        session,
+                        user_id=user_id,
+                        source_id=source.id,
+                        patch=SourcePatch(auth_ref=f"session:{source.id}"),
+                    )
+                    await session.commit()
+                else:
+                    state = await VaultSessionReader(self._vault)(source)
+                    if state is None:
+                        return ToolResult.failure(
+                            "source_auth_required", "У источника нет сохранённой браузерной сессии"
+                        )
+                    await self._browser_control.new_context(
+                        storage_state=browser_storage_state(state)
+                    )
+        except BotaiError as exc:
+            return ToolResult.failure(exc.code.value, exc.detail)
+        return ToolResult.success(
+            summary="Сессия источника сохранена в Vault"
+            if args.action == "save"
+            else "Сессия загружена в браузер",
+            data={"source_id": args.source_id, "action": args.action},
+        )
 
     async def _list(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         user_id = _user(context)
@@ -481,12 +566,34 @@ class SourceToolkit:
         policy="read",
         idempotent=True,
     )
+    schema_spec = ToolSpec(
+        name="source_schema",
+        description="Получить точные схемы spec/вывода кода, kinds, обязательные fields и рабочий пример. Вызови перед первым source_probe/source_update_playbook; не угадывай протокол.",
+        parameters=object_schema({}),
+        policy="read",
+        idempotent=True,
+        max_result_chars=20_000,
+    )
+    session_spec = ToolSpec(
+        name="source_session",
+        description="Связать авторизацию браузера с источником без cookie в коде. После успешного входа action=save сохраняет storage state в Vault и привязывает auth_ref; source_* и фоновые sync переиспользуют его. action=load загружает сессию источника в текущий браузер перед навигацией.",
+        parameters=object_schema(
+            {
+                "source_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["save", "load"]},
+            },
+            required=["source_id", "action"],
+        ),
+        policy="write_soft",
+        serial_only=True,
+    )
     create_spec = ToolSpec(
         name="source_create",
         description=(
             "Создать источник вуза: кабинет/сайт (url), календарь по личной ссылке (link), файл "
             "(file_sha256) или почту (mailbox). Источник один раз: тот же адрес отвечает конфликтом. "
-            "Созданный источник нужно проверить через source_probe, затем синхронизировать."
+            "Созданный источник нужно проверить через source_probe, затем синхронизировать. "
+            "Точные kinds и формат playbook: source_schema. После входа сохрани сессию: source_session save."
         ),
         parameters=object_schema(
             {
@@ -523,7 +630,9 @@ class SourceToolkit:
         description=(
             "Проверить источник черновиком playbook (spec/code) или готовой версией, ничего не "
             "сохраняя: сколько записей, какие ошибки, что видно. Возвращает отчёт и превью. "
-            "persist=true сохраняет артефакты пробного чтения."
+            "persist=true сохраняет артефакты пробного чтения. "
+            "Сначала source_schema: там точный spec и вывод кода {records:[{kind,external_id,fields}]}; "
+            "schedule fields: title, startsAt, endsAt (ISO datetime). Не угадывай имена."
         ),
         parameters=object_schema(
             {
@@ -587,7 +696,8 @@ class SourceToolkit:
         description=(
             "Добавить новую версию playbook источника (spec и/или код, тесты). activate=true "
             "сначала прогоняет canary и активирует версию только при успехе; при провале версия "
-            "остаётся для разбора."
+            "остаётся для разбора. Схемы spec/кода и примеры: source_schema. "
+            "Активация не импортирует записи: затем source_sync и проверь counts."
         ),
         parameters=object_schema(
             {
