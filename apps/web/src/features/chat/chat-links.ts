@@ -28,11 +28,24 @@ export function useChatLinks(): ChatLinks {
       const link = parseInternalLink(url);
       if (!link) return null;
       const href = internalHref(link);
+      // Тред открывается через роутер без сброса скролла: чат сам держит ленту у последнего сообщения.
+      // «Учёба» (документы и подключения) — обычный экран, ему сброс наверх нужен.
+      const open =
+        link.kind === "attachment"
+          ? () => openAttachment(link.id)
+          : link.kind === "thread"
+            ? () =>
+                void router.navigate({
+                  to: "/chat",
+                  search: { thread: link.id },
+                  resetScroll: false,
+                })
+            : () => router.history.push(href);
       return {
         href,
         label: internalLabel(link),
         icon: internalIcon(link),
-        onOpen: link.kind === "attachment" ? () => openAttachment(link.id) : () => router.history.push(href),
+        onOpen: open,
       };
     },
     [router, openAttachment],

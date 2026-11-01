@@ -1,5 +1,6 @@
 import { Badge, Button, EmptyState, formatAgo, Icon, Sheet, SkeletonText } from "@botai/design";
 import { Link } from "@tanstack/react-router";
+import { chatThreadLink } from "@/features/data/chat-links";
 import { type SpaceInfo, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { sourceChatLinks } from "@/features/study/v4/chat-links-v4";
 import { describeSourceKind, describeSourceStatus, kindsLabel, sourceIcon } from "@/features/study/v4/status";
@@ -31,7 +32,12 @@ export function SourcesPanel({
       size="full"
       footer={
         <Button variant="primary" fullWidth leadingIcon="plus" asChild>
-          <Link to="/chat" search={{ draft: addSourceDraft(null) }} onClick={() => onOpenChange(false)}>
+          <Link
+            to="/chat"
+            search={{ draft: addSourceDraft(null) }}
+            resetScroll={false}
+            onClick={() => onOpenChange(false)}
+          >
             Добавить вуз
           </Link>
         </Button>
@@ -81,6 +87,7 @@ function SpaceSources({
           <Link
             to="/chat"
             search={{ draft: addSourceDraft(space) }}
+            resetScroll={false}
             onClick={onNavigate}
             aria-label={`Добавить источник для ${space.shortTitle}`}
           >
@@ -120,8 +127,9 @@ function SourceLine({
   const nature = describeSourceKind(source.kinds[0] ?? "other").label;
   const kinds = kindsLabel(source.kinds);
   const chat = sourceChatLinks(source, space.title);
+  // ChatLink целиком (to + search + resetScroll): источник с тредом открывает его без сброса скролла.
   const target = source.threadId
-    ? ({ to: "/chat", search: { thread: source.threadId } } as const)
+    ? chatThreadLink(source.threadId)
     : status.needsUser || source.status === "error"
       ? (chat.repair ?? null)
       : null;
@@ -154,8 +162,7 @@ function SourceLine({
     <li data-source-id={source.id} data-source-status={source.status}>
       {target ? (
         <Link
-          to={target.to}
-          search={target.search}
+          {...target}
           onClick={onNavigate}
           className="flex min-h-14 items-start gap-3 px-3 py-3 transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed"
         >

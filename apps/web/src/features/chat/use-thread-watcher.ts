@@ -53,7 +53,7 @@ export function useThreadWatcher(): readonly ThreadOut[] | undefined {
         duration: 15_000,
         action: {
           label: "Открыть",
-          onClick: () => void navigate({ to: "/chat", search: { thread: thread.id } }),
+          onClick: () => void navigate({ to: "/chat", search: { thread: thread.id }, resetScroll: false }),
         },
       });
     }

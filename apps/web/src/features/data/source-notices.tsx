@@ -96,9 +96,9 @@ export function SourceNotices({
         const chat = connectionChatLink(connection, space.title);
         const action = view.action ? (
           <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
-            <Link to={chat.to} search={chat.search}>
-              {ACTION_LABEL[view.action]}
-            </Link>
+            {/* Spread, not `to`/`search`: ChatLink несёт `resetScroll: false`, иначе плашка открывает
+                тред сверху, хотя чат обязан вставать к последнему сообщению. */}
+            <Link {...chat}>{ACTION_LABEL[view.action]}</Link>
           </Button>
         ) : undefined;
         return (

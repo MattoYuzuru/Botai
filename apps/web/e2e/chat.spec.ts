@@ -30,6 +30,44 @@ const box = async (locator: Locator) => {
   return { left: value.x, top: value.y, right: value.x + value.width, bottom: value.y + value.height };
 };
 
+/** Насколько страница не доехала до низа: 0 — последнее сообщение прямо у нижнего края окна. */
+const distanceToBottom = (page: Page) =>
+  page.evaluate(() => {
+    const root = document.scrollingElement as HTMLElement;
+    return root.scrollHeight - root.scrollTop - root.clientHeight;
+  });
+
+const inViewport = (locator: Locator) =>
+  locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top >= 0 && rect.bottom <= window.innerHeight;
+  });
+
+/** Длинный тред на моках: четыре ответа, чтобы лента заведомо прокручивалась страницей. */
+async function longThread(page: Page) {
+  await openChat(page, "/chat?thread=new&pace=0");
+  for (const question of [
+    "Какая следующая пара?",
+    "Покажи график",
+    "Сравни нагрузку и составь план",
+    "Что сдавать на неделе?",
+  ]) {
+    await ask(page, question);
+    await expect(timeline(page).getByText(question, { exact: true })).toBeVisible();
+    await expect(composer(page)).toBeEnabled();
+  }
+  // Последний ответ дорисован, страница длиннее окна.
+  await expect(timeline(page).getByText(/Ближайшие работы/)).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const root = document.scrollingElement as HTMLElement;
+        return root.scrollHeight - root.clientHeight;
+      }),
+    )
+    .toBeGreaterThan(200);
+}
+
 test.describe("раскладка чата на весь экран", () => {
   test("ноутбук: верхняя полоса во всю ширину области, название слева, кнопки справа на линии знака рейла", async ({
     page,
@@ -123,6 +161,9 @@ test.describe("раскладка чата на весь экран", () => {
       await expect(composer(page)).toBeEnabled();
     }
     await expect(page.getByText(/выполнено 3 из 3/)).toBeVisible();
+    // Печать ответа асинхронная: геометрию ленты меряем после того, как typewriter закончил. Иначе на
+    // медленном телефоне замер попадает в середину печати и ловится phone-only флейк (см. playwright.config).
+    await expect(timeline(page).locator("[data-caret]")).toHaveCount(0, { timeout: 15_000 });
     await page.waitForTimeout(300);
     const state = await page.evaluate(() => {
       const root = document.scrollingElement as HTMLElement;
@@ -160,8 +201,10 @@ test.describe("раскладка чата на весь экран", () => {
     expect(state.scrollbarWidth).toBe("thin");
     // Рамка экрана — вся ширина окна: полоса прокрутки принадлежит окну, а не колонке.
     expect(Math.abs(state.layoutRight - state.clientWidth)).toBeLessThanOrEqual(1);
-    // Прокрутка вверх работает страницей, а шапка остаётся на месте.
-    await page.evaluate(() => window.scrollTo(0, 0));
+    // Прокрутка вверх работает страницей, а шапка остаётся на месте. Листаем как человек — колесом:
+    // прижатие снимается только явным намерением (use-stick-to-bottom), программный scrollTo его не имитирует.
+    await page.mouse.move(200, 300);
+    await page.mouse.wheel(0, -4000);
     await expect
       .poll(() => page.evaluate(() => (document.scrollingElement as HTMLElement).scrollTop))
       .toBe(0);
@@ -298,6 +341,44 @@ test.describe("панели «Чаты» и «Источники»", () => {
     await sheet.getByRole("button", { name: "Закрыть" }).click();
     await page.getByRole("button", { name: "Открыть", exact: true }).click();
     await expect(page.getByText(/Вход в lk\.fakeuni\.test\. Логин/)).toBeVisible();
+  });
+});
+
+test.describe("переход в чат открывается у последнего сообщения", () => {
+  test("вкладка «Чат»: после «Сегодня» лента возвращается к последнему ответу, а не к началу", async ({
+    page,
+  }) => {
+    await longThread(page);
+    // В самом чате лента уже у низа (допуск — порог прижатия useStickToBottom; на телефоне мок-темп иногда
+    // оставляет несколько пикселей, это не предмет регрессии): дальше проверяем именно SPA-навигацию.
+    await expect.poll(() => distanceToBottom(page)).toBeLessThanOrEqual(48);
+
+    await page.getByRole("link", { name: "Сегодня", exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Сегодня" })).toBeVisible();
+    await page.getByRole("link", { name: "Чат", exact: true }).click();
+    await expect(timeline(page)).toBeVisible();
+
+    // Роутер не должен сбросить скролл в ноль после того, как лента встала к низу.
+    await expect.poll(() => distanceToBottom(page)).toBeLessThanOrEqual(8);
+    const lastAnswer = timeline(page).getByText(/Ближайшие работы/);
+    await expect(lastAnswer).toBeVisible();
+    expect(await inViewport(lastAnswer)).toBe(true);
+  });
+
+  test("тред из панели «Чаты» тоже открывается у последнего сообщения", async ({ page }) => {
+    await longThread(page);
+    // Уходим в новый пустой чат, чтобы тред открывался уже не первым заходом, а из списка.
+    await page.getByRole("button", { name: "Новый чат" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Спросите про пары и сроки" })).toBeVisible();
+    await page.getByRole("button", { name: "Чаты" }).click();
+    const sheet = page.getByRole("dialog", { name: "Чаты" });
+    await sheet.getByRole("link", { name: /Какая следующая пара\?/ }).click();
+    await expect(timeline(page)).toBeVisible();
+
+    await expect.poll(() => distanceToBottom(page)).toBeLessThanOrEqual(8);
+    const lastAnswer = timeline(page).getByText(/Ближайшие работы/);
+    await expect(lastAnswer).toBeVisible();
+    expect(await inViewport(lastAnswer)).toBe(true);
   });
 });
 

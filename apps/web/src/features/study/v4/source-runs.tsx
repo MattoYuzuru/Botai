@@ -148,7 +148,7 @@ function RunRow({ run, nowMs, timeZone }: { run: SourceRunOut; nowMs: number; ti
         <div className="flex flex-wrap gap-2 px-3">
           {run.threadId && (
             <Button variant="ghost" size="sm" leadingIcon="chat" asChild data-touch-expanded="">
-              <Link to="/chat" search={{ thread: run.threadId }}>
+              <Link to="/chat" search={{ thread: run.threadId }} resetScroll={false}>
                 Тред задачи
               </Link>
             </Button>

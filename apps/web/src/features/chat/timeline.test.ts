@@ -601,3 +601,41 @@ describe("состояние треда из runtime", () => {
     ).toBe("Раз\n\nДва");
   });
 });
+
+describe("живой блок: признак для печати ответа", () => {
+  const block = { type: "text" as const, id: ULID(50), at: iso(NOW), markdown: "Алгоритмы в 9:30." };
+  const saved = message({ id: ULID(51), role: "agent", jobId: "chat-1", blocks: [block] });
+  const live = job("chat-1", "chat", { state: "done", blocks: [block] });
+
+  it("из снимка задания — live, из истории — нет, ключ блока один и тот же", () => {
+    const liveTurn = build({ jobs: [live] }).turns.find((turn) => turn.kind === "block");
+    const historyTurn = build({ messages: [saved] }).turns.find((turn) => turn.kind === "block");
+    expect(liveTurn).toMatchObject({ kind: "block", live: true });
+    expect(historyTurn).toMatchObject({ kind: "block", live: false });
+    expect(liveTurn?.key).toBe(historyTurn?.key);
+  });
+
+  it("после сохранения тот же блок приходит из истории: ключ не меняется, живость снимается", () => {
+    const before = build({ jobs: [live] }).turns[0];
+    const after = build({ messages: [saved] }).turns[0];
+    expect(before).toMatchObject({ kind: "block", live: true });
+    expect(after).toMatchObject({ kind: "block", live: false });
+    expect(after?.key).toBe(before?.key);
+  });
+
+  it("блок, уже сохранённый в истории, не становится живым от того же блока в снимке: история не печатается заново", () => {
+    const { turns } = build({ messages: [saved], jobs: [live] });
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: "block", live: false });
+  });
+
+  it("живой блок свежее сохранённого, но остаётся историческим, если уже был в истории", () => {
+    const patched = { ...block, markdown: "Алгоритмы перенесли на 10:00." };
+    const livePatched = job("chat-1", "chat", { state: "done", blocks: [patched] });
+    const { turns } = build({ messages: [saved], jobs: [livePatched] });
+    expect(turns[0]).toMatchObject({ kind: "block", live: false });
+    expect(turns[0]?.kind === "block" && turns[0].block.type === "text" && turns[0].block.markdown).toBe(
+      "Алгоритмы перенесли на 10:00.",
+    );
+  });
+});

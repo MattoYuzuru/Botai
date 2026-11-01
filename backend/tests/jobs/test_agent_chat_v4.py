@@ -20,7 +20,7 @@ from sqlalchemy import select
 from botai.agent.v4.chat import make_chat_handlers
 from botai.core.errors import ErrorCode
 from botai.core.llm import LlmRequest, LlmResponse
-from botai.db.models import AgentRun, ChatMessage, ChatThread
+from botai.db.models import AgentRun, ChatMessage, ChatThread, Space
 from botai.sources.v4 import service as sources_service
 from tests.agent.v4.runtime_support import answer, call, tool_response
 from tests.fakeuni import login as fakeuni_login
@@ -229,6 +229,60 @@ async def test_chat_v4_answers_with_a_tool_call_and_stores_the_reply(
         thread_row = await session.get(ChatThread, thread)
     assert thread_row is not None
     assert thread_row.title == "Кто я в личном кабинете?"
+
+
+# --- an account without universities creates its first one in the chat --------------------------
+
+
+async def test_chat_v4_creates_the_university_the_student_names(env: Env, tmp_path: Path) -> None:
+    """The production edge case: no space, no form in the UI, so the chat agent makes the space."""
+    env.settings.agent_engine = "v4"
+    client, user, thread, space = await _student(env)
+    assert space is None
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        if _steps(request) == 0:
+            return tool_response(call("space_create", {"title": "Тестовый университет"}, "c1"))
+        return answer(
+            "Создал вуз «Тестовый университет». Скажите ссылку на личный кабинет — подключу."
+        )
+
+    provider = FlowProvider(respond)
+    sent = await _post(client, thread, "У меня нет вуза. Подключи Тестовый университет")
+    assert sent.status_code == 202, sent.text
+    job_id = sent.json()["jobId"]
+    env.start(await _chat_worker(env, provider, tmp_path=tmp_path))
+    job = await env.wait_for(job_id, {"done"}, within=30)
+
+    assert job.result is not None
+    assert job.result["stopped"] == "answer"
+    assert "space_create" in job.result["tools"]
+
+    # The chat turn really made the university, and it is the student's own space.
+    async with env.sm() as session:
+        spaces = list(await session.scalars(select(Space).where(Space.user_id == user)))
+    assert len(spaces) == 1
+    assert spaces[0].university_id is not None
+    assert spaces[0].title
+
+    # The tool result reached the model as data: the next step sees the new space_id.
+    second = provider.requests[1]
+    tool_text = "\n".join(m.content for m in second.messages if m.role == "tool")
+    assert spaces[0].id in tool_text
+    assert "space_create" in tool_text
+
+    # The user-facing prompt knows the real UI and that it creates universities itself.
+    system = provider.requests[0].messages[0]
+    assert system.role == "system"
+    assert "«Учёба»" in system.content
+    assert "space_create" in system.content
+    assert "Отдельной формы или кнопки «создать вуз» в приложении нет" in system.content
+
+    stored = await _last_message(env, thread)
+    assert stored is not None
+    block = stored.blocks[0]
+    assert block["type"] == "text"
+    assert "Тестовый университет" in block["markdown"]
 
 
 # --- ask round-trip -----------------------------------------------------------------------------

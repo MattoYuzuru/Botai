@@ -73,11 +73,11 @@ export function ActiveJobBar() {
           )}
           <Button variant="secondary" size="sm" data-touch-expanded="" asChild>
             {threadId ? (
-              <Link to="/chat" search={{ thread: threadId }}>
+              <Link to="/chat" search={{ thread: threadId }} resetScroll={false}>
                 Открыть
               </Link>
             ) : (
-              <Link to="/chat" search={{ threads: 1 }}>
+              <Link to="/chat" search={{ threads: 1 }} resetScroll={false}>
                 К чатам
               </Link>
             )}

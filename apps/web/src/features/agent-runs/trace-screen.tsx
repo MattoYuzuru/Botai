@@ -77,7 +77,7 @@ export function AgentRunTraceScreen({ runId }: { runId: string }) {
   });
   const back = () => {
     if (router.history.canGoBack()) router.history.back();
-    else void navigate({ to: "/chat" });
+    else void navigate({ to: "/chat", resetScroll: false });
   };
 
   if (run.isPending) {

@@ -97,7 +97,7 @@ export function ChatScreen() {
     if (draftParam === undefined) return;
     const key = param && param !== NEW_THREAD ? param : NEW_THREAD;
     setDrafts((all) => ({ ...all, [key]: draftParam }));
-    void navigate({ to: "/chat", search: { thread: key }, replace: true });
+    void navigate({ to: "/chat", search: { thread: key }, replace: true, resetScroll: false });
     queueMicrotask(() => document.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus());
   }, [draftParam, param, navigate]);
 
@@ -105,7 +105,12 @@ export function ChatScreen() {
   useEffect(() => {
     if (listParam === undefined) return;
     setHistoryOpen(true);
-    void navigate({ to: "/chat", search: { thread: param ?? NEW_THREAD }, replace: true });
+    void navigate({
+      to: "/chat",
+      search: { thread: param ?? NEW_THREAD },
+      replace: true,
+      resetScroll: false,
+    });
   }, [listParam, param, navigate]);
 
   // Сообщения нового чата живут в очереди, пока сервер не назвал чат; их принадлежность запоминаем.
@@ -137,7 +142,7 @@ export function ChatScreen() {
   useEffect(() => {
     if (activeId === null && assignedThreadId) {
       attachments.move(NEW_THREAD, assignedThreadId);
-      void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true });
+      void navigate({ to: "/chat", search: { thread: assignedThreadId }, replace: true, resetScroll: false });
     }
   }, [activeId, assignedThreadId, navigate, attachments.move]);
 
@@ -326,7 +331,8 @@ export function ChatScreen() {
           void queryClient.invalidateQueries({ queryKey: chatKeys.messages(target) });
           void queryClient.invalidateQueries({ queryKey: chatKeys.runtime(target) });
           void queryClient.invalidateQueries({ queryKey: chatKeys.threads });
-          if (activeId === null) void navigate({ to: "/chat", search: { thread: target } });
+          if (activeId === null)
+            void navigate({ to: "/chat", search: { thread: target }, resetScroll: false });
         } catch (error) {
           toast("Не получилось предложить подключить календарь", {
             tone: "warning",
@@ -368,7 +374,7 @@ export function ChatScreen() {
     // Новый чат начинается пустым: сообщение, которое ещё создаёт прежний чат, остаётся в очереди и уйдёт туда.
     setDraftMessages([]);
     setDrafts((all) => ({ ...all, [NEW_THREAD]: "" }));
-    void navigate({ to: "/chat", search: { thread: NEW_THREAD } });
+    void navigate({ to: "/chat", search: { thread: NEW_THREAD }, resetScroll: false });
   };
 
   // Ответ или решение по действию принято: история и состояние треда обновляются.
@@ -516,7 +522,8 @@ export function ChatScreen() {
         timeZone={timeZone}
         onNew={startNewChat}
         onDeleted={(id) => {
-          if (id === activeId) void navigate({ to: "/chat", search: { thread: NEW_THREAD }, replace: true });
+          if (id === activeId)
+            void navigate({ to: "/chat", search: { thread: NEW_THREAD }, replace: true, resetScroll: false });
         }}
       />
       <SourcesPanel open={sourcesOpen} onOpenChange={setSourcesOpen} nowMs={nowMs} />

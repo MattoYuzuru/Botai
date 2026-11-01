@@ -179,6 +179,9 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     const { user } = await openNewChat();
     await ask(user, "Какая следующая пара?");
     expect(await screen.findByText("Какая следующая пара?", { selector: "p" }, wait)).toBeInTheDocument();
+    // Typewriter печатает ответ прогрессивно; ждём последнее предложение, чтобы проверять таблицу и
+    // форматирование на полностью отрисованном markdown (на медленном CI можно поймать частичную таблицу).
+    expect(await screen.findByText(/Подробнее —/, undefined, wait)).toBeInTheDocument();
     const table = await screen.findByRole("table", undefined, wait);
     expect(
       within(table)
@@ -252,6 +255,8 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     await ask(user, "Сравни нагрузку и составь план");
     expect(await screen.findByText(/выполнено 3 из 3/, undefined, wait)).toBeInTheDocument();
     expect(screen.getAllByText(/^План ·/)).toHaveLength(1);
+    // Как и в первом тесте: таблица плана дорисовывается последними символами ответа — ждём финал.
+    expect(await screen.findByText(/стоит начать с неё/, undefined, wait)).toBeInTheDocument();
     const table = await screen.findByRole("table", undefined, wait);
     // Выделение жирным в ячейках таблицы сохраняется.
     expect(

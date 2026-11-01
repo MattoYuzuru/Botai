@@ -39,6 +39,7 @@ from pydantic import AnyUrl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent.ui_map import UI_MAP
 from botai.agent.v4.factory import artifact_root_from_settings, build_source_toolkit
 from botai.agent.v4.handlers import SYSTEM_PROMPT
 from botai.agent.v4.job_runtime import (
@@ -89,6 +90,8 @@ CONNECT_SYSTEM_PROMPT = (
 Не выдумывай данные: если доступ не получен, скажи честно, где и на чём остановился.
 В конце перечисли в ответе: что за источник, какие виды данных читаются, где лежат
 (endpoint/URL), что осталось сделать."""
+    + "\n\n"
+    + UI_MAP
 )
 
 

@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { groupCitations } from "@/features/chat/citations";
 import { parseBlock } from "@/features/jobs/blocks";
 import type { AnswerState } from "@/features/jobs/job-state";
@@ -401,6 +401,20 @@ describe("summary, text, wait, handoff, unknown", () => {
     setup({ type: "text", id: ID(5), at: AT, markdown: "Готово.", quickReplies: ["Да", "Нет"] });
     expect(screen.getByText("Готово.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Да" })).toBeNull();
+  });
+
+  it("text в ленте чата (typewriter): тот же безопасный markdown; спокойное движение — сразу целиком", () => {
+    // «Спокойный режим» из настроек приложения: печати нет, блок виден сразу и целиком.
+    window.localStorage.setItem("botai.motion", "calm");
+    onTestFinished(() => window.localStorage.removeItem("botai.motion"));
+    setup(
+      { type: "text", id: ID(5), at: AT, markdown: "**Готово.**\n\n| Время |\n|---|\n| 9:30 |" },
+      {},
+      { typewriter: true },
+    );
+    expect(screen.getByText("Готово.").tagName).toBe("STRONG");
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(document.querySelector("[data-caret]")).toBeNull();
   });
 
   it("plan: шаги со своими состояниями словами", () => {

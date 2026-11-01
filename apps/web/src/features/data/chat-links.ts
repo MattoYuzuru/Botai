@@ -8,10 +8,23 @@ import type { Connection } from "@/api/types";
 export interface ChatLink {
   to: "/chat";
   search: { thread?: string; draft?: string };
+  /**
+   * Чат сам держит ленту у последнего сообщения (`useStickToBottom`), поэтому навигация не должна сбрасывать
+   * скролл в ноль: роутер делает это после рендера и перебивает прокрутку на монтировании.
+   */
+  resetScroll: false;
 }
 
-export const chatThreadLink = (threadId: string): ChatLink => ({ to: "/chat", search: { thread: threadId } });
-export const chatDraftLink = (draft: string): ChatLink => ({ to: "/chat", search: { draft } });
+export const chatThreadLink = (threadId: string): ChatLink => ({
+  to: "/chat",
+  search: { thread: threadId },
+  resetScroll: false,
+});
+export const chatDraftLink = (draft: string): ChatLink => ({
+  to: "/chat",
+  search: { draft },
+  resetScroll: false,
+});
 
 /** «Подключить ещё вуз»: фраза оставлена открытой, название вуза или адрес допишет человек. */
 export const CONNECT_UNIVERSITY_DRAFT = "Давай подключим вуз ";
