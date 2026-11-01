@@ -53,7 +53,7 @@ def toolkit(
     )
     tools = {tool.spec.name: tool for tool in source_tools.tools()}
     registry = ToolRegistry(source_tools.tools())
-    assert len(registry) == 8
+    assert len(registry) == 10
     assert registry.validate("source_list", {}) == []
     context = ToolContext(run_id="run-1", task="test", user_id="", workspace=tmp_path)
     return tools, context

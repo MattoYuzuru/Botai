@@ -440,7 +440,12 @@ async def test_any_injected_executor_is_closed_after_the_run(
             self.closed = False
 
         async def run(self, request: Any) -> ExecResult:
-            return ExecResult(stdout='{"records": []}', stderr="", exit_code=0, duration_ms=1)
+            return ExecResult(
+                stdout='{"records": [], "empty_reason": "Нет занятий за выбранный период"}',
+                stderr="",
+                exit_code=0,
+                duration_ms=1,
+            )
 
         def close(self) -> None:
             self.closed = True

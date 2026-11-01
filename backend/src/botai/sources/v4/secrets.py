@@ -25,12 +25,34 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from botai.browser.control import BrowserControl
 from botai.browser.profiles import BrowserProfileStore
+from botai.core.browser import auth_origin
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Source
 
 SESSION_KIND_NAMES = frozenset({SecretKind.SESSION.value, "profile"})
+
+
+async def capture_browser_session(control: BrowserControl) -> dict[str, Any]:
+    """Storage plus browser-observed Bearer audiences; never infer tokens from storage keys."""
+    state: dict[str, Any] = dict(await control.export_storage_state())
+    headers: dict[str, dict[str, str]] = {}
+    for entry in control.network_log():
+        origin = auth_origin(entry.url)
+        authorization = next(
+            (
+                value
+                for key, value in entry.request_headers.items()
+                if key.lower() == "authorization"
+            ),
+            "",
+        )
+        if origin and authorization.lower().startswith("bearer ") and authorization[7:].strip():
+            headers[origin] = {"origin": origin, "authorization": authorization}
+    state["http_headers"] = list(headers.values())
+    return state
 
 
 def _validation(detail: str) -> BotaiError:
@@ -78,7 +100,7 @@ class VaultSessionReader:
             raise _validation(
                 "Сохранённой сессии источника нет в Vault (вид: session): источник не прочитан"
             )
-        return self._parse_state(secret, where="Vault")
+        return self.parse_state(secret, where="Vault")
 
     def _profile_state(self, user_id: str, name: str) -> Mapping[str, Any]:
         profiles = self._profiles or BrowserProfileStore()
@@ -91,7 +113,7 @@ class VaultSessionReader:
         return dict(state)
 
     @staticmethod
-    def _parse_state(secret: SecretStr, *, where: str) -> dict[str, Any]:
+    def parse_state(secret: SecretStr, *, where: str) -> dict[str, Any]:
         raw = secret.get_secret_value()
         try:
             state: Any = json.loads(raw)
@@ -100,3 +122,54 @@ class VaultSessionReader:
         if not isinstance(state, dict):
             raise _validation(f"Состояние сессии в {where}: ожидался объект storage state")
         return state
+
+
+class AgentSessionStore:
+    """Encrypted browser working state between runs, isolated by the authenticated user.
+
+    Apply only this run's changes when saving: an unrelated origin added by another run is kept,
+    and a cookie explicitly removed in this run is not resurrected from the previous snapshot.
+    """
+
+    SCOPE = "agent-browser-v4"
+
+    def __init__(self, vault: Vault, *, user_id: str) -> None:
+        self._vault = vault
+        self._user_id = user_id
+        self._initial: dict[str, Any] = {}
+
+    async def load(self) -> dict[str, Any]:
+        self._initial = await self._read()
+        return self._initial
+
+    async def _read(self) -> dict[str, Any]:
+        secret = await self._vault.get(self._user_id, self.SCOPE, SecretKind.SESSION)
+        return VaultSessionReader.parse_state(secret, where="Vault") if secret else {}
+
+    async def save(self, state: Mapping[str, Any]) -> None:
+        latest = await self._read()
+        merged: dict[str, Any] = {}
+        for name in ("cookies", "origins", "http_headers"):
+
+            def keyed(raw: Mapping[str, Any], field: str = name) -> dict[tuple[str, ...], Any]:
+                return {
+                    (
+                        (str(item.get("domain")), str(item.get("path")), str(item.get("name")))
+                        if field == "cookies"
+                        else (str(item.get("origin")),)
+                    ): item
+                    for item in raw.get(field, [])
+                }
+
+            before, after, current = keyed(self._initial), keyed(state), keyed(latest)
+            for key in before.keys() - after.keys():
+                if name != "http_headers" and current.get(key) == before[key]:
+                    current.pop(key, None)
+            for key, value in after.items():
+                if before.get(key) != value:
+                    current[key] = value
+            merged[name] = list(current.values())
+        await self._vault.put(
+            self._user_id, self.SCOPE, SecretKind.SESSION, json.dumps(merged, ensure_ascii=False)
+        )
+        self._initial = dict(state)

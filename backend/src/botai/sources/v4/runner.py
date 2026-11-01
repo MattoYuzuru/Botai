@@ -24,13 +24,14 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from http.cookiejar import Cookie
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import SplitResult, urljoin, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.v4.executor import (
@@ -41,7 +42,9 @@ from botai.agent.v4.executor import (
     Workspace,
 )
 from botai.agent.v4.http import build_client
+from botai.browser.session import bearer_expired
 from botai.contracts.specs import Kind
+from botai.core.browser import auth_origin
 from botai.core.clock import Clock, SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import PlaybookVersion, Source, Space
@@ -53,6 +56,7 @@ from botai.sources.v4 import artifacts, domain, identity, playbooks, service, st
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import schedule as sync_schedule
+from botai.sources.vocab import REQUIRED, VOCAB
 
 RunKind = Literal["probe", "sync", "repair", "canary"]
 ProgressHook = Callable[[Mapping[str, Any]], Awaitable[None]]
@@ -190,6 +194,7 @@ class CodeOutput(BaseModel):
     documents: list[CodeDocument] = Field(default_factory=list, max_length=1000)
     cursor: dict[str, Any] | None = None
     notes: str | None = Field(default=None, max_length=2000)
+    empty_reason: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 # --- report --------------------------------------------------------------------------------------
@@ -457,13 +462,13 @@ class SourceRunner:
         """Read one page/API of the source with its session; the text is what the agent may see."""
         source = await service.get_source(self._session, user_id=self._user_id, source_id=source_id)
         resolved = self._read_url(source, url)
-        headers = await self._auth_headers(source)
+        headers = await self._auth_headers(source, url=resolved)
         client = build_client(
             transport=self._transport,
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=20.0, pool=10.0),
             headers=headers,
-            cookies=await self._http_cookies(source),
         )
+        client.cookies.update(await self._http_cookies(source))
         try:
             response = await client.request(method, resolved, json=body, timeout=60.0)
         except httpx.HTTPError as exc:
@@ -726,8 +731,8 @@ class SourceRunner:
             transport=self._transport,
             timeout=httpx.Timeout(connect=10.0, read=spec.timeout_s, write=20.0, pool=10.0),
             headers=headers,
-            cookies=await self._http_cookies(source),
         )
+        client.cookies.update(await self._http_cookies(source))
         try:
             for read in only if only is not None else spec.reads:
                 try:
@@ -746,6 +751,7 @@ class SourceRunner:
                     response = await client.request(
                         read.method,
                         url,
+                        headers=await self._auth_headers(source, url=url),
                         json=read.body if read.body is not None else None,
                         timeout=spec.timeout_s,
                     )
@@ -848,12 +854,26 @@ class SourceRunner:
             raise ValueError("Относительный адрес без entry_url источника")
         return urljoin(base.rstrip("/") + "/", value)
 
-    async def _auth_headers(self, source: Source) -> dict[str, str]:
+    async def _auth_headers(self, source: Source, *, url: str | None = None) -> dict[str, str]:
         headers = dict(self._headers)
-        if source.auth_ref and self._secret_reader is not None:
+        if (
+            source.auth_ref
+            and not source.auth_ref.startswith(("session:", "profile:"))
+            and self._secret_reader is not None
+        ):
             secret = await self._secret_reader(source.auth_ref)
             if secret:
                 headers.setdefault("authorization", f"Bearer {secret}")
+        state = await self._session_state(source)
+        if state and url:
+            for scope in state.get("http_headers", []):
+                authorization = scope.get("authorization", "")
+                if (
+                    scope.get("origin") == auth_origin(url)
+                    and authorization.lower().startswith("bearer ")
+                    and not bearer_expired(SecretStr(authorization[7:]), now=self._clock.now())
+                ):
+                    headers.setdefault("authorization", authorization)
         return headers
 
     async def _session_state(self, source: Source) -> Mapping[str, Any] | None:
@@ -869,11 +889,33 @@ class SourceRunner:
             self._session_state_cache[source.id] = state
         return self._session_state_cache[source.id]
 
-    async def _http_cookies(self, source: Source) -> dict[str, str]:
-        cookies = dict(self._cookies)
+    async def _http_cookies(self, source: Source) -> httpx.Cookies:
+        cookies = httpx.Cookies(self._cookies)
         state = await self._session_state(source)
         if state:
-            cookies.update(browser_v4.cookie_pairs(state))
+            for cookie in state.get("cookies", []):
+                # Keep origin/path scoping; a flattened jar leaks other sites' session cookies.
+                expiry = cookie.get("expires", -1)
+                cookies.jar.set_cookie(
+                    Cookie(
+                        version=0,
+                        name=cookie["name"],
+                        value=cookie["value"],
+                        port=None,
+                        port_specified=False,
+                        domain=cookie["domain"],
+                        domain_specified=True,
+                        domain_initial_dot=cookie["domain"].startswith("."),
+                        path=cookie.get("path", "/"),
+                        path_specified=True,
+                        secure=bool(cookie.get("secure", False)),
+                        expires=int(expiry) if expiry > 0 else None,
+                        discard=expiry <= 0,
+                        comment=None,
+                        comment_url=None,
+                        rest={},
+                    )
+                )
         return cookies
 
     # --- browser playbooks ---------------------------------------------------------------------
@@ -957,7 +999,12 @@ class SourceRunner:
             return run
         state = await self._session_state(source)
         try:
-            async with self._browser_factory(state) as session:
+            browser_state = (
+                {key: state[key] for key in ("cookies", "origins") if key in state}
+                if state is not None
+                else None
+            )
+            async with self._browser_factory(browser_state) as session:
                 for index, step in enumerate(plan.steps, start=1):
                     await self._emit({"event": "read", "name": f"browser:{index}", "url": None})
                     try:
@@ -1384,6 +1431,9 @@ class SourceRunner:
     ) -> _Parsed:
         parsed = _Parsed()
         files: dict[str, str] = {}
+        session_state = await self._session_state(source)
+        if session_state:
+            files["session.json"] = json.dumps(session_state, ensure_ascii=False)
         for item in fetched:
             extension = {"json": "json", "html": "html", "text": "txt"}[item.read.format]
             files[f"reads/{item.read.name}.{extension}"] = item.text()
@@ -1426,7 +1476,21 @@ class SourceRunner:
         except ValidationError as exc:
             parsed.errors.append(RunError(code="recipe_drift", detail=_validation_detail(exc)))
             return parsed
-        for raw_record in output.records:
+        if not output.records and not output.documents:
+            if output.empty_reason and output.empty_reason.strip():
+                parsed.notes.append("Пустой результат: " + output.empty_reason.strip())
+            else:
+                parsed.errors.append(
+                    RunError(
+                        code="recipe_drift",
+                        detail=(
+                            "Код вернул пустой результат. Проверьте чтение и поля; если у источника "
+                            "действительно нет данных, верните empty_reason с проверенной причиной. "
+                            "Формат и пример: source_schema."
+                        ),
+                    )
+                )
+        for index, raw_record in enumerate(output.records):
             kind_v4 = _v4_kind(raw_record.kind)
             if kind_v4 is None:
                 parsed.errors.append(
@@ -1460,6 +1524,21 @@ class SourceRunner:
             except (KeyError, TypeError, ValueError):
                 row = None
             if row is None:
+                required = ", ".join(sorted(REQUIRED[v3_kind]))
+                detail = (
+                    f"records[{index}] ({kind_v4}): поля не удалось нормализовать. "
+                    f"Обязательные поля в fields: {required}. "
+                )
+                if v3_kind == "scheduleEvents":
+                    detail += (
+                        "startsAt и endsAt — ISO datetime; вместо endsAt можно durationMinutes. "
+                    )
+                unknown = sorted(set(raw_record.fields) - VOCAB[v3_kind])
+                if unknown:
+                    detail += "Неизвестные поля: " + ", ".join(unknown[:20]) + ". "
+                parsed.errors.append(
+                    RunError(code="recipe_drift", detail=detail + "Схема и примеры: source_schema.")
+                )
                 continue
             parsed.records.append(
                 NormalizedRecord(
