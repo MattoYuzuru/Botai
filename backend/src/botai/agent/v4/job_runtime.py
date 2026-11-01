@@ -29,6 +29,7 @@ from botai.agent.v4.factory import (
     build_agent_wiring,
     run_limits_from_settings,
 )
+from botai.agent.v4.progress import JobTraceStore
 from botai.agent.v4.protocol import (
     AskAnswer,
     AskQuestion,
@@ -202,7 +203,7 @@ async def run_v4_job(
             ),
             wiring.provider,
             tools,
-            trace_store=wiring.trace_store,
+            trace_store=JobTraceStore(wiring.trace_store, ctx),
             limits=run_limits_from_settings(services.settings),
             ask=job_ask_channel(ctx, services, text_channel=text_question_channel),
         )
