@@ -434,7 +434,7 @@ function ThinkingTurn({
         onToggle={setCollapsed}
       />
       {traceId && (
-        <Button variant="ghost" size="sm" className="self-start" asChild>
+        <Button variant="ghost" className="self-start" asChild>
           <Link to="/agent/runs/$runId" params={{ runId: traceId }} aria-label="Трасса хода агента">
             Трасса
           </Link>
