@@ -143,8 +143,11 @@ describe("список чатов", () => {
 });
 
 describe("прочтение и уведомления", () => {
-  it("новый ответ в фоне уведомляет один раз, открытие чата убирает тост", async () => {
-    let rows = [thread({ id: "T1", title: "Открытый" }), thread({ id: "T2", title: "Фоновый" })];
+  it("обновление running-чата не объявляет ответ, waiting_user уведомляет и открытие чата убирает тост", async () => {
+    let rows = [
+      thread({ id: "T1", title: "Открытый" }),
+      thread({ id: "T2", title: "Фоновый", unread: true }),
+    ];
     harness.server.use(
       http.get("*/api/v1/chat/threads", () => HttpResponse.json(rows)),
       http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
@@ -155,13 +158,26 @@ describe("прочтение и уведомления", () => {
     await screen.findByRole("heading", { name: "Открытый" }, wait);
     rows = [
       rows[0] as ThreadOut,
-      thread({ id: "T2", title: "Фоновый", unread: true, lastMessageAt: "2026-10-27T11:00:00.000002Z" }),
+      thread({
+        id: "T2",
+        title: "Фоновый",
+        unread: true,
+        attention: "running",
+        lastMessageAt: "2026-10-27T11:00:00.000002Z",
+      }),
     ];
     await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
-    expect(await screen.findByText("Ботай ответил: Фоновый", undefined, wait)).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText("Ботай ответил: Фоновый")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Открыть" })).toBeNull();
+    rows = [rows[0] as ThreadOut, { ...(rows[1] as ThreadOut), attention: "waiting_user" }];
+    await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+    expect(await screen.findByText("Ботай ждёт вас: Фоновый", undefined, wait)).toBeInTheDocument();
+    await queryClient.invalidateQueries({ queryKey: chatKeys.threads, exact: true });
+    expect(screen.getAllByText("Ботай ждёт вас: Фоновый")).toHaveLength(1);
     await userEvent.setup().click(screen.getByRole("button", { name: "Открыть" }));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ thread: "T2" }), wait);
-    await waitFor(() => expect(screen.queryByText("Ботай ответил: Фоновый")).toBeNull(), wait);
+    await waitFor(() => expect(screen.queryByText("Ботай ждёт вас: Фоновый")).toBeNull(), wait);
   });
 
   it("прочтение сохраняет микросекунды последнего сообщения и не повторяется после устаревшего списка", async () => {

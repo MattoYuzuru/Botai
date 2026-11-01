@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import type { ThreadOut } from "@/api/v3";
-import { compareInstants } from "@/lib/instants";
 import { useOpenThread } from "./open-thread";
 import { threadsQuery } from "./queries";
 
@@ -35,38 +34,25 @@ export function useThreadWatcher(): readonly ThreadOut[] | undefined {
   const threads = useQuery(threadsQuery);
   const navigate = useNavigate();
   const openId = useOpenThread((state) => state.id);
-  const known = useRef<Map<string, ThreadOut> | null>(null);
+  const known = useRef<Map<string, ThreadOut["attention"]> | null>(null);
 
   useEffect(() => {
     const rows = threads.data;
     if (!rows) return;
     const previous = known.current;
-    known.current = new Map(rows.map((thread) => [thread.id, thread]));
+    known.current = new Map(rows.map((thread) => [thread.id, thread.attention]));
     if (previous === null) return;
     for (const thread of rows) {
       if (thread.id === openId && document.visibilityState === "visible") {
         toast.dismiss(`attention:${thread.id}`);
-        toast.dismiss(`answer:${thread.id}`);
         continue;
       }
-      const before = previous.get(thread.id);
-      const waiting = thread.attention === "waiting_user" && before?.attention !== "waiting_user";
-      const answered =
-        before &&
-        thread.unread &&
-        thread.attention !== "waiting_user" &&
-        compareInstants(thread.lastMessageAt, before.lastMessageAt) > 0;
-      if (!waiting && !answered) continue;
-      const { title, description } = waiting
-        ? attentionToast(thread)
-        : {
-            title: `Ботай ответил: ${thread.title}`,
-            description: "Новый ответ в чате.",
-          };
+      if (thread.attention !== "waiting_user" || previous.get(thread.id) === "waiting_user") continue;
+      const { title, description } = attentionToast(thread);
       toast(title, {
         description,
-        tone: waiting ? "warning" : "default",
-        id: `${waiting ? "attention" : "answer"}:${thread.id}`,
+        tone: "warning",
+        id: `attention:${thread.id}`,
         duration: 15_000,
         action: {
           label: "Открыть",
