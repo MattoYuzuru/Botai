@@ -82,13 +82,13 @@ export function jobProblem(job: JobSnapshot): JobProblem | null {
   if (limit)
     return {
       code: "agent_limit",
-      detail: "Агент остановился по лимиту. Уже найденные данные сохранены; можно продолжить в чате.",
+      detail: "Агент остановился по лимиту. Действия сохранены в трассе; можно продолжить в чате.",
       extra: {},
     };
   if (stopped === "cancelled" || stopped === "paused")
     return {
       code: "agent_stopped",
-      detail: "Работа агента остановлена. Уже найденные данные сохранены.",
+      detail: "Работа агента остановлена. Действия сохранены в трассе.",
       extra: {},
     };
   if (stopped !== "error") return null;
@@ -283,8 +283,8 @@ export interface StepSummary {
 }
 
 /**
- * Лог шагов для `ThinkingStream`: блоки `thinking` по порядку. Последний бегущий шаг при `waiting_user`
- * получает состояние «ждёт» — это слышно словами («Жду ответа»), а не только анимацией.
+ * Лог шагов для `ThinkingStream`: блоки `thinking` по порядку. Все бегущие шаги при `waiting_user`
+ * получают состояние «ждёт» — это слышно словами («Жду ответа»), а не только анимацией.
  */
 export function thinkingSteps(job: JobSnapshot): StepSummary[] {
   const steps: StepSummary[] = [];
@@ -300,13 +300,7 @@ export function thinkingSteps(job: JobSnapshot): StepSummary[] {
     });
   }
   if (job.state === "waiting_user") {
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const step = steps[i];
-      if (step?.state === "running") {
-        steps[i] = { ...step, state: "waiting" };
-        break;
-      }
-    }
+    return steps.map((step) => (step.state === "running" ? { ...step, state: "waiting" } : step));
   }
   // Задание завершилось, а шаг «бежит»: считаем его завершённым, иначе рельс будет врать.
   if (isTerminal(job.state)) {

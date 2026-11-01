@@ -49,7 +49,7 @@ describe("журнал события → состояние", () => {
     (status) => {
       const done = applyEvent(initialJob("J"), ev("done", { result: { status } }));
       expect(jobFailed(done)).toBe(true);
-      expect(jobProblem(done)?.detail).toContain("сохранены");
+      expect(jobProblem(done)?.detail).toContain("Действия сохранены в трассе");
     },
   );
 
@@ -276,14 +276,19 @@ describe("вопросы и ожидание человека", () => {
 });
 
 describe("шаги для ThinkingStream", () => {
-  it("ok → done, последний бегущий шаг при waiting_user → waiting", () => {
+  it("ok → done, все бегущие шаги при waiting_user → waiting и возобновляются после ответа", () => {
     let job = initialJob("J");
     job = applyEvent(job, ev("block", thinking(1, "Ищу кабинет", "ok")));
-    job = applyEvent(job, ev("block", thinking(2, "Читаю список курсов", "running")));
+    job = applyEvent(job, ev("block", thinking(2, "Агент работает", "running")));
+    job = applyEvent(job, ev("block", thinking(3, "Запрашиваю защищённые данные", "running")));
     job = applyEvent(job, ev("status", { state: "waiting_user", stage: "Жду ответа", startedAt: AT }));
-    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "waiting"]);
+    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "waiting", "waiting"]);
+    expect(job.blocks.slice(1).map((block) => block.type === "thinking" && block.state)).toEqual([
+      "running",
+      "running",
+    ]);
     job = applyEvent(job, ev("status", { state: "running", stage: "Читаю", startedAt: AT }));
-    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "running"]);
+    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "running", "running"]);
   });
 
   it("после завершения бегущие шаги закрываются: done — выполнено, failed — упало, cancelled — пропущено", () => {
