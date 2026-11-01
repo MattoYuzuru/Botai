@@ -82,6 +82,16 @@ class ReuseTests(unittest.TestCase):
                 github.blobs[name] = "c" * 40
                 self.assertIsNone(self.decide(github))
 
+    def test_successful_rerun_ignores_previous_attempt_receipt(self):
+        github = GitHub()
+        github.run["run_attempt"] = 2
+        github.extra_artifacts = [copy.deepcopy(github.artifact)]
+        github.artifact["name"] = ci.receipt_name(TREE, 2)
+        self.assertEqual(self.decide(github), 42)
+        # A second receipt for the current attempt still invalidates evidence.
+        github.extra_artifacts.append({"name": ci.receipt_name("c" * 40, 2)})
+        self.assertIsNone(self.decide(github))
+
     def test_pr_and_other_branches_always_run_full_ci_without_api(self):
         for event, ref in [
             ("pull_request", "refs/pull/1/merge"),
@@ -171,6 +181,7 @@ class ReuseTests(unittest.TestCase):
             json.JSONDecodeError("bad JSON", "", 0),
             KeyError("workflow_runs"),
             TypeError("bad metadata"),
+            AttributeError("null workflow metadata"),
         ]:
             with self.subTest(error=type(error).__name__):
 

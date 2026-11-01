@@ -70,12 +70,14 @@ def find_reusable_run(repository, tree, request=api):
         response = request(f"{prefix}/actions/runs/{run_id}/artifacts?per_page=100")
         artifacts = response["artifacts"]
         # Test code can upload artifacts too. The trusted gate must have
-        # published exactly one receipt; reject extra/fabricated receipts.
+        # published exactly one receipt for the current attempt. Receipts from
+        # earlier successful attempts are legitimate and remain immutable.
         if response["total_count"] != len(artifacts):
             continue
         if (
             sum(
                 artifact.get("name", "").startswith(RECEIPT_PREFIX)
+                and artifact.get("name", "").endswith(f"-{attempt}")
                 for artifact in artifacts
             )
             != 1
@@ -127,7 +129,14 @@ def decide(event, ref, repository, tree, request=api):
         return None, "Full CI: only a push to main can reuse PR checks."
     try:
         run_id = find_reusable_run(repository, tree, request)
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ):
         return None, "Full CI: GitHub evidence unavailable or invalid."
     if run_id is None:
         return None, "Full CI: no successful PR receipt for this exact tree."
