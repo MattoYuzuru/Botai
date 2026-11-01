@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import type { ThreadOut } from "@/api/v3";
+import { jobManager } from "@/features/jobs/job-manager";
+import { initialJob } from "@/features/jobs/job-state";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
 import { chatKeys } from "./queries";
@@ -21,6 +23,69 @@ async function seededThreadId(): Promise<string> {
 }
 
 describe("чат на весь экран: шапка, история, источники ответа", () => {
+  it("ранний GET задания до runtime не скрывает трассу после завершения", async () => {
+    const threadId = await seededThreadId();
+    let finishRuntime = () => {};
+    const runtimeGate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    let done = false;
+    let lookups = 0;
+    const job = {
+      id: "J-early",
+      kind: "chat",
+      state: "running",
+      stage: "Работаю",
+      createdAt: AT,
+      startedAt: AT,
+      connectionId: null,
+    };
+    jobManager.seed({ ...initialJob(job.id), state: "running" });
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "M-early",
+            role: "agent",
+            jobId: job.id,
+            createdAt: AT,
+            blocks: [{ type: "thinking", id: ULID(150), at: AT, stage: "Работаю", state: "running" }],
+          },
+        ]),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/runtime", async () => {
+        await runtimeGate;
+        return HttpResponse.json({ activeJob: done ? null : job, tasks: [], pending: [], receipts: [] });
+      }),
+      http.get("*/api/v1/jobs/J-early", () => {
+        lookups += 1;
+        return HttpResponse.json(
+          done
+            ? {
+                ...job,
+                state: "done",
+                finishedAt: "2026-10-27T11:00:20Z",
+                result: { status: "answer", run_id: "R-early" },
+              }
+            : job,
+        );
+      }),
+    );
+    const { queryClient } = renderApp(`/chat?thread=${threadId}`);
+    await waitFor(() => expect(lookups).toBe(1), wait);
+    expect(screen.queryByRole("link", { name: "Трасса хода агента" })).toBeNull();
+    finishRuntime();
+    await screen.findByRole("button", { name: /^Думает/ }, wait);
+    expect(lookups).toBe(1);
+    done = true;
+    await queryClient.invalidateQueries({ queryKey: chatKeys.runtime(threadId) });
+    expect(await screen.findByRole("link", { name: "Трасса хода агента" }, wait)).toHaveAttribute(
+      "href",
+      "/agent/runs/R-early",
+    );
+    expect(lookups).toBe(2);
+  });
+
   it("история запрашивает только 20 недавних заданий, старое — при раскрытии", async () => {
     const threadId = await seededThreadId();
     const lookedUp: string[] = [];

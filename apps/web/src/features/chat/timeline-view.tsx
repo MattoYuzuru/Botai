@@ -402,7 +402,9 @@ function ThinkingTurn({
         }),
       ),
     enabled: Boolean(turn.jobId) && !turn.running && !runId && (resolveHistory || !collapsed),
-    staleTime: Number.POSITIVE_INFINITY,
+    // История может загрузиться раньше runtime: только завершённый результат неизменяем.
+    staleTime: (query) =>
+      query.state.data && isTerminal(query.state.data.state) ? Number.POSITIVE_INFINITY : 0,
     retry: false,
     retryOnMount: false,
     refetchOnWindowFocus: false,
