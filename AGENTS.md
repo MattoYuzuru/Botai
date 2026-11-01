@@ -52,6 +52,10 @@
 
 ## Команды
 
+Локальный навык агента для создания аккаунтов и приглашений:
+[botai-accounts](.agents/skills/botai-accounts/SKILL.md). Используй для просьб
+«создай чистый аккаунт», «дай другу доступ»; креды сохраняются вне репозитория.
+
 ```bash
 make db          # Postgres для разработки (127.0.0.1:55432, pgvector/pgvector:pg17)
 make check       # полный локальный гейт: ruff, pyright, pytest, Biome, tsc, vitest, gen

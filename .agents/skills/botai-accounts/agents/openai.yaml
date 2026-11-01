@@ -1,0 +1,4 @@
+interface:
+  display_name: "Аккаунты BotAI"
+  short_description: "Создать чистый аккаунт или приглашение в BotAI"
+  default_prompt: "Используй $botai-accounts, чтобы создать отдельный чистый аккаунт BotAI."
