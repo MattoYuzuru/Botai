@@ -75,10 +75,31 @@ async def _eligible(
         # Includes waiting_user: the composer may be answering a protected secret/approval card.
         return False
     if newest.job_id is not None:
-        state = await session.scalar(
-            select(Job.state).where(Job.user_id == user_id, Job.id == newest.job_id)
+        job = await session.scalar(
+            select(Job)
+            .where(Job.user_id == user_id, Job.id == newest.job_id)
+            .execution_options(populate_existing=True)
         )
-        if state != "done":
+        if job is None or job.state != "done" or job.error:
+            return False
+        # A handler can finish the queue job normally while the agent run itself stopped.
+        # Match the UI's jobProblem cases, including older v3 budget/error results, after reload.
+        result = job.result or {}
+        if (
+            result.get("status")
+            in (
+                "token_limit",
+                "time_limit",
+                "step_limit",
+                "cost_limit",
+                "hard_stop",
+                "paused",
+                "cancelled",
+                "error",
+            )
+            or result.get("stopped") in ("budget", "error", "quota")
+            or result.get("limit_reached")
+        ):
             return False
     return True
 

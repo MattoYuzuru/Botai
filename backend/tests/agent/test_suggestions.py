@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections import OrderedDict
 from datetime import timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -70,10 +71,22 @@ async def test_suggestion_requires_auth_and_owned_thread(api: Api) -> None:
         assert (await client.post(path, json={"afterMessageId": new_id()})).status_code == 401
 
 
-async def test_completed_job_can_offer_a_suggestion(api: Api) -> None:
+@pytest.mark.parametrize(
+    "result", [None, {}, {"status": "done", "stopped": "answer", "limit_reached": None}]
+)
+async def test_completed_job_can_offer_a_suggestion(
+    api: Api, result: dict[str, Any] | None
+) -> None:
     thread, anchor = await answer(api)
     async with api.sm() as session:
-        job = Job(user_id=api.user_id, thread_id=thread, kind="chat", state="done", run_after=NOW)
+        job = Job(
+            user_id=api.user_id,
+            thread_id=thread,
+            kind="chat",
+            state="done",
+            result=result,
+            run_after=NOW,
+        )
         session.add(job)
         await session.flush()
         row = await session.get(ChatMessage, anchor)
@@ -82,6 +95,53 @@ async def test_completed_job_can_offer_a_suggestion(api: Api) -> None:
         await session.commit()
     api.services.llm = ScriptedLlm(queue=[LlmResponse(content="Помоги с эссе")])
     assert (await request(api, thread, anchor))["text"] == "Помоги с эссе"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        *(
+            {"status": status}
+            for status in (
+                "token_limit",
+                "time_limit",
+                "step_limit",
+                "cost_limit",
+                "hard_stop",
+                "paused",
+                "cancelled",
+                "error",
+            )
+        ),
+        {"stopped": "budget"},
+        {"stopped": "error"},
+        {"stopped": "quota"},
+        {"status": "done", "limit_reached": "tokens"},
+    ],
+)
+async def test_done_job_with_incomplete_agent_result_does_not_offer_a_suggestion(
+    api: Api, result: dict[str, Any]
+) -> None:
+    thread, anchor = await answer(api)
+    async with api.sm() as session:
+        job = Job(
+            user_id=api.user_id,
+            thread_id=thread,
+            kind="chat",
+            state="done",
+            result=result,
+            run_after=NOW,
+        )
+        session.add(job)
+        await session.flush()
+        row = await session.get(ChatMessage, anchor)
+        assert row is not None
+        row.job_id = job.id
+        await session.commit()
+    llm = ScriptedLlm()
+    api.services.llm = llm
+    assert await request(api, thread, anchor) == {"text": None, "afterMessageId": anchor}
+    assert llm.requests == []
 
 
 async def test_cache_expires_and_retains_only_bounded_answers(
@@ -233,9 +293,18 @@ async def test_accounting_scope_is_user_only_and_restores_caller(api: Api) -> No
         assert current_scope() == outer
 
 
-@pytest.mark.parametrize("change", ["message", "job"])
+@pytest.mark.parametrize("change", ["message", "job", "result"])
 async def test_anchor_is_revalidated_after_model(api: Api, change: str) -> None:
     thread, anchor = await answer(api)
+    async with api.sm() as session:
+        job = Job(user_id=api.user_id, thread_id=thread, kind="chat", state="done", run_after=NOW)
+        session.add(job)
+        await session.flush()
+        anchor_job_id = job.id
+        row = await session.get(ChatMessage, anchor)
+        assert row is not None
+        row.job_id = anchor_job_id
+        await session.commit()
 
     class Moving:
         async def complete(self, request: LlmRequest) -> LlmResponse:
@@ -243,7 +312,7 @@ async def test_anchor_is_revalidated_after_model(api: Api, change: str) -> None:
                 await add_message(
                     api.sm, api.user_id, thread, "user", "Спасибо", at=NOW + timedelta(seconds=2)
                 )
-            else:
+            elif change == "job":
                 async with api.sm() as session:
                     session.add(
                         Job(
@@ -254,6 +323,12 @@ async def test_anchor_is_revalidated_after_model(api: Api, change: str) -> None:
                             run_after=NOW,
                         )
                     )
+                    await session.commit()
+            else:
+                async with api.sm() as session:
+                    job = await session.get(Job, anchor_job_id)
+                    assert job is not None
+                    job.result = {"status": "paused"}
                     await session.commit()
             return LlmResponse(content="Помоги с эссе")
 
