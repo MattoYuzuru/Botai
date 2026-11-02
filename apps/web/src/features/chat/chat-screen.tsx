@@ -33,6 +33,7 @@ import { useChatLinks } from "./chat-links";
 import { ChatTopBar } from "./chat-top-bar";
 import { composerState } from "./composer-state";
 import { ContextButton } from "./context-meter-view";
+import { CONNECT_DRAFT } from "./drafts";
 import { EmptyChat } from "./empty-chat";
 import { useOpenThread } from "./open-thread";
 import { isCalendarLink, isSecretInChat } from "./outbox";
@@ -532,6 +533,10 @@ export function ChatScreen() {
               suggestions={suggestions}
               noSpaces={directory.loaded && directory.none}
               onPick={(text) => send(text, false)}
+              onConnect={() => {
+                setDraft(CONNECT_DRAFT);
+                document.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus();
+              }}
             />
           ) : (
             <div className="mt-auto">

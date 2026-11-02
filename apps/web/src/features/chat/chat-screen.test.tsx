@@ -397,11 +397,13 @@ describe("переходы в чат: /chat?thread=, /chat?draft=", () => {
 
 describe("пустой чат и подсказки из настоящих данных", () => {
   it("подключённому пользователю предлагает новый вуз: редактируемый черновик, без отправки", async () => {
-    const { user } = await openNewChat();
+    const { user, router } = await openNewChat();
     const link = await screen.findByRole("link", { name: "Подключить новый вуз" }, wait);
     expect(await screen.findByRole("list", { name: "Подсказки" }, wait)).toBeInTheDocument();
     await user.click(link);
     await waitFor(() => expect(composer()).toHaveValue(CONNECT_DRAFT), wait);
+    expect(router.state.location.search).toEqual({ thread: "new" });
+    expect(composer()).toHaveFocus();
     expect(outbox.snapshot).toEqual([]);
     await user.type(composer(), " ЦУ");
     expect(composer()).toHaveValue(`${CONNECT_DRAFT} ЦУ`);
