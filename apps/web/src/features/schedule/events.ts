@@ -1,6 +1,7 @@
-import type { ScheduleItem } from "@botai/design";
+import { DEFAULT_TIME_ZONE, type ScheduleItem } from "@botai/design";
 import type { ScheduleEvent } from "@/api/types";
 import type { SpaceInfo } from "@/features/data/use-space-directory";
+import { isAllDayEvent } from "./all-day";
 import { compactFacts, eventDetails } from "./event-details";
 import { disagreementNote, mergedSources } from "./sources";
 
@@ -20,12 +21,17 @@ export function sortEvents(events: readonly ScheduleEvent[]): ScheduleEvent[] {
  * Склеенная из нескольких источников пара подписана ими, расхождение источников — спокойной строкой (FR-054).
  */
 export function toScheduleItem(event: ScheduleEvent, spaces: ReadonlyMap<string, SpaceInfo>): ScheduleItem {
+  const space = spaces.get(event.provenance.spaceId);
   const details = eventDetails(event);
   return {
     id: event.id,
     start: startMs(event),
     end: endMs(event),
     title: event.title,
+    allDay: isAllDayEvent(event, space?.timeZone ?? DEFAULT_TIME_ZONE),
+    sourceTitle:
+      event.sources?.[0]?.title ??
+      space?.connections.find((source) => source.id === event.provenance.connectionId)?.title,
     badge: details.badge,
     facts: compactFacts(details),
     spaceId: event.provenance.spaceId,

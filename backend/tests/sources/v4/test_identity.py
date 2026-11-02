@@ -121,3 +121,17 @@ def test_validate_identity_accepts_known_prefixes_only() -> None:
     with pytest.raises(BotaiError) as exc:
         identity.validate_identity("example.org/schedule")
     assert exc.value.code is ErrorCode.VALIDATION
+
+
+def test_calendar_identity_includes_private_query_without_storing_it() -> None:
+    first = "https://calendar.example.org/export.ics?token=fixture-first&view=full"
+    second = first.replace("fixture-first", "fixture-second")
+    assert identity.calendar_key(first) != identity.calendar_key(second)
+    assert identity.calendar_key(first) == identity.calendar_key(
+        "webcal://calendar.example.org/export.ics?view=full&token=fixture-first"
+    )
+    assert "fixture-first" not in identity.calendar_key(first)
+
+
+def test_calendar_long_private_path_is_hashed_without_page_identity_length_limit() -> None:
+    assert len(identity.calendar_key("https://calendar.example.org/" + "x" * 1000)) == 69

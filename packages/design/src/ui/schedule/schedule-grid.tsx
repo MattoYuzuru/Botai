@@ -3,14 +3,13 @@ import {
   DEFAULT_TIME_ZONE,
   dayNumber,
   formatDayWithWeekday,
-  formatTime,
   formatWeekdayShort,
   zonedParts,
 } from "../../lib/format";
-import { Badge } from "../badge/badge";
 import { Skeleton } from "../skeleton/skeleton";
+import { ScheduleCard } from "./schedule-card";
 import type { ScheduleDayState, ScheduleItem } from "./schedule-day";
-import { KIND_BADGE, ScheduleFacts, ScheduleProvenance } from "./schedule-facts";
+import { groupScheduleItems } from "./schedule-groups";
 
 export interface ScheduleGridDay {
   /** Любой момент нужного дня, мс. */
@@ -27,6 +26,8 @@ export interface ScheduleGridProps {
   /** Метка вуза у каждой пары (сводный экран). */
   showSpace?: boolean;
   onOpenItem?: (item: ScheduleItem) => void;
+  /** Enables shared cards for overlapping events, opening every member together. */
+  onOpenGroup?: (items: readonly ScheduleItem[], date: number) => void;
   className?: string;
 }
 
@@ -42,6 +43,7 @@ export function ScheduleGrid({
   timeZone = DEFAULT_TIME_ZONE,
   showSpace = false,
   onOpenItem,
+  onOpenGroup,
   className,
 }: ScheduleGridProps) {
   const today = dayNumber(nowMs, timeZone);
@@ -83,62 +85,19 @@ export function ScheduleGrid({
               <p className="px-1 text-center type-caption text-fg-subtle">Пар нет</p>
             ) : (
               <ol className="flex flex-col gap-2">
-                {items.map((item) => {
-                  const live = item.start <= nowMs && nowMs < item.end;
-                  const Row = onOpenItem ? "button" : "div";
-                  return (
-                    <li key={item.id}>
-                      <Row
-                        {...(onOpenItem ? { type: "button" as const, onClick: () => onOpenItem(item) } : {})}
-                        data-space-id={item.spaceId}
-                        data-conflict={item.conflict || undefined}
-                        data-live={live || undefined}
-                        className={cn(
-                          "flex w-full min-w-0 flex-col gap-1 rounded-md border border-border bg-surface p-2 text-left",
-                          onOpenItem &&
-                            "cursor-pointer transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed",
-                          item.conflict && "border-warning",
-                          live && "bg-accent-subtle",
-                        )}
-                      >
-                        <span
-                          className="flex flex-wrap items-baseline gap-x-1 type-caption text-fg-muted"
-                          data-numeric=""
-                        >
-                          <time dateTime={new Date(item.start).toISOString()}>
-                            {formatTime(item.start, timeZone)}
-                          </time>
-                          <span aria-hidden="true">–</span>
-                          <time dateTime={new Date(item.end).toISOString()}>
-                            {formatTime(item.end, timeZone)}
-                          </time>
-                        </span>
-                        <span className="break-words type-label text-fg">{item.title}</span>
-                        {item.badge && (
-                          <Badge tone="info" className={cn(KIND_BADGE, "self-start")}>
-                            {item.badge}
-                          </Badge>
-                        )}
-                        <ScheduleFacts facts={item.facts} layout="stacked" />
-                        <ScheduleProvenance sources={item.sources} note={item.note} />
-                        <span className="flex flex-wrap gap-1 empty:hidden">
-                          {live && <Badge tone="accent">Идёт сейчас</Badge>}
-                          {item.conflict && (
-                            <Badge tone="warning" icon="warning">
-                              Пересечение
-                            </Badge>
-                          )}
-                          {item.changed && (
-                            <Badge tone="warning" icon="edit">
-                              Изменено
-                            </Badge>
-                          )}
-                          {showSpace && item.spaceTitle && <Badge tone="neutral">{item.spaceTitle}</Badge>}
-                        </span>
-                      </Row>
-                    </li>
-                  );
-                })}
+                {(onOpenGroup ? groupScheduleItems(items) : items.map((item) => [item])).map((group) => (
+                  <li key={group[0]?.id}>
+                    <ScheduleCard
+                      items={group}
+                      nowMs={nowMs}
+                      timeZone={timeZone}
+                      showSpace={showSpace}
+                      compact
+                      onOpenItem={onOpenItem}
+                      onOpenGroup={onOpenGroup ? (items) => onOpenGroup(items, day.date) : undefined}
+                    />
+                  </li>
+                ))}
               </ol>
             )}
           </div>

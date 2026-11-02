@@ -22,6 +22,8 @@ def source_schema() -> dict[str, Any]:
         "parser_output_schema": CodeOutput.model_json_schema(),
         "rules": [
             "spec не содержит auth/headers: сессия хранится через source_session save в Vault.",
+            "Календарь: secret_request → source_create(link=handle). readUrl={secret} подставляет ссылку из Vault только при HTTP-чтении; используй его в source_read_live и spec.reads[].url. Значение ссылки не нужно модели, коду и playbook.",
+            "iCalendar: сохраняй UID и экземпляр повторения в external_id. DTSTART;VALUE=DATE означает весь день: attributes=[{label:'Весь день',value:'Да'}], начало/конец в часовом поясе пространства, DTEND исключительный. Не объединяй разные календари по названию или времени.",
             "После входа: source_session save; в новом ходе source_session load для браузера.",
             "HTTP reads используют cookies и наблюдённый браузером Bearer только для его origin; сессия доступна коду в session.json.",
             "Код читает reads/<name>.json (либо .html/.txt) и печатает один JSON-объект.",

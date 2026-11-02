@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -40,6 +41,7 @@ from botai.browser.control import BrowserControl
 from botai.core.errors import BotaiError
 from botai.core.ids import new_id
 from botai.core.vault import SecretKind, Vault
+from botai.sources.v4.secrets import calendar_link, calendar_secret_values
 
 MASK = "***"
 MIN_MASKABLE_CHARS = 4
@@ -78,6 +80,7 @@ class SecretBroker:
         self._scope_id = scope_id
         self._ttl_s = secret_ttl_s
         self._values: dict[str, str] = {}
+        self._mask_values: set[str] = set()
 
     @property
     def handles(self) -> tuple[str, ...]:
@@ -100,6 +103,11 @@ class SecretBroker:
             expires_at=datetime.now(UTC) + timedelta(seconds=max(60.0, self._ttl_s)),
         )
         self._values[handle] = value
+        self._mask_values.add(value)
+        if value.strip().startswith(("https://", "http://", "webcal://", "webcals://")):
+            # Not every protected value is a valid URL; the original still stays masked.
+            with suppress(BotaiError):
+                self._mask_values.update(calendar_secret_values(value))
         return handle
 
     async def resolve(self, handle: str) -> str:
@@ -116,7 +124,7 @@ class SecretBroker:
         if not text:
             return text
         masked = text
-        for value in self._values.values():
+        for value in sorted(self._mask_values, key=len, reverse=True):
             if len(value) >= MIN_MASKABLE_CHARS and value in masked:
                 masked = masked.replace(value, MASK)
         return masked
@@ -127,7 +135,11 @@ class SecretBroker:
         The wiring closes the broker in `finally` before the handler composes and stores the final
         answer; the values themselves are not needed for that, only the replacement table.
         """
-        values = tuple(value for value in self._values.values() if len(value) >= MIN_MASKABLE_CHARS)
+        values = tuple(
+            value
+            for value in sorted(self._mask_values, key=len, reverse=True)
+            if len(value) >= MIN_MASKABLE_CHARS
+        )
 
         def masked(text: str) -> str:
             for value in values:
@@ -139,6 +151,7 @@ class SecretBroker:
 
     def clear(self) -> None:
         self._values.clear()
+        self._mask_values.clear()
 
     def _vault_scope(self, handle: str) -> str:
         # The Vault scope column is `varchar(26)` (the v3 block-id width), so the scope must be the
@@ -161,7 +174,7 @@ class SecretRequestTool:
     spec = ToolSpec(
         name="secret_request",
         description=(
-            "Попросить у владельца первичный секрет (пароль, код MFA, API-ключ) через защищённый "
+            "Попросить у владельца первичный секрет (пароль, код MFA, API-ключ, ключ-ссылка календаря) через защищённый "
             "ввод. Возвращает только handle: значение не попадает в промпт, результат и трассу. "
             "Используйте handle в secret_use, чтобы подставить его в поле/HTTP."
         ),
@@ -227,7 +240,7 @@ class _SecretUseArgs(BaseModel):
     url: str | None = Field(default=None, max_length=4096)
     headers: dict[str, str] = Field(default_factory=dict)
     body: Any = None
-    placement: Literal["header", "json", "form"] = "header"
+    placement: Literal["header", "json", "form", "url"] = "header"
     name: str = Field(default="Authorization", min_length=1, max_length=200)
     format: str = Field(default=_VALUE_SLOT, max_length=300)
     follow_redirects: bool = True
@@ -249,9 +262,11 @@ class SecretUseTool:
         description=(
             "Подставить первичный секрет по handle, не видя значения: в поле браузера "
             "(kind=browser_field, target как у browser_click) или в HTTP-запрос "
-            "(kind=http: placement header/json/form, name — имя заголовка/поля, format — "
+            "(kind=http: placement url/header/json/form, name — имя заголовка/поля, format — "
             "шаблон с {secret}, например 'Bearer {secret}'). Ответ HTTP и страница возвращаются "
-            "с замаскированным значением."
+            "с замаскированным значением. placement=url использует секрет как полный URL "
+            "(ключ-ссылка); url можно опустить. Для календаря с повторной синхронизацией "
+            "передай handle в source_create(link=handle), затем читай readUrl={secret}."
         ),
         parameters=object_schema(
             {
@@ -265,7 +280,7 @@ class SecretUseTool:
                 "body": {},
                 "placement": {
                     "type": "string",
-                    "enum": ["header", "json", "form"],
+                    "enum": ["header", "json", "form", "url"],
                     "default": "header",
                 },
                 "name": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -320,7 +335,13 @@ class SecretUseTool:
         )
 
     async def _http(self, args: _SecretUseArgs, secret: str) -> ToolResult:
-        if not args.url:
+        url = secret.strip() if args.placement == "url" else args.url
+        if args.placement == "url":
+            try:
+                url = calendar_link(secret)
+            except BotaiError as exc:
+                return ToolResult.failure(exc.code.value, exc.detail)
+        if not url:
             return ToolResult.failure("invalid_arguments", "kind=http требует url.")
         method = args.method.strip().upper()
         if not _METHOD.match(method):
@@ -330,7 +351,7 @@ class SecretUseTool:
         form_body: dict[str, Any] | None = None
         if args.placement == "header":
             headers[args.name] = _with_secret(args.format, secret, raw_if_plain=True)
-        else:
+        elif args.placement != "url":
             if args.body is None:
                 body: dict[str, Any] = {}
             elif isinstance(args.body, dict):
@@ -352,7 +373,7 @@ class SecretUseTool:
                 timeout=args.timeout_s or 30.0,
             ) as client:
                 response = await client.request(
-                    method, args.url, headers=headers, json=json_body, data=form_body
+                    method, url, headers=headers, json=json_body, data=form_body
                 )
         except httpx.HTTPError as exc:
             return ToolResult.failure(

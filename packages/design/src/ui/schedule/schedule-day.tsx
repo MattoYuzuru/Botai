@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
-import { countRu, DEFAULT_TIME_ZONE, formatDayWithWeekday, formatTime } from "../../lib/format";
-import { Badge } from "../badge/badge";
+import { countRu, DEFAULT_TIME_ZONE, formatDayWithWeekday } from "../../lib/format";
 import { EmptyState } from "../empty-state/empty-state";
 import { Skeleton } from "../skeleton/skeleton";
-import { KIND_BADGE, type ScheduleFact, ScheduleFacts, ScheduleProvenance } from "./schedule-facts";
+import { ScheduleCard } from "./schedule-card";
+import type { ScheduleFact } from "./schedule-facts";
+import { groupScheduleItems } from "./schedule-groups";
 
 export interface ScheduleItem {
   id: string;
@@ -12,6 +13,10 @@ export interface ScheduleItem {
   start: number;
   end: number;
   title: string;
+  /** Calendar date event; does not imply that the person is busy. */
+  allDay?: boolean;
+  /** Source of this distinct event, especially useful inside an overlap group. */
+  sourceTitle?: string;
   /** Тип занятия бейджем: «Лекция» или слова источника («Текущий рубежный контроль»). */
   badge?: string | null;
   /** Детали в порядке показа (аудитория, преподаватель, адрес, группа…): их готовит пресет `eventDetails`. */
@@ -44,6 +49,8 @@ export interface ScheduleDayProps {
   /** Компактный вид без заголовка дня — колонка недели на ноутбуке. */
   compact?: boolean;
   onOpenItem?: (item: ScheduleItem) => void;
+  /** Enables shared cards for overlapping events, opening every member together. */
+  onOpenGroup?: (items: readonly ScheduleItem[], date: number) => void;
   /** Подпись свежести данных под списком. */
   freshness?: ReactNode;
   className?: string;
@@ -64,6 +71,7 @@ export function ScheduleDay({
   showSpace = false,
   compact = false,
   onOpenItem,
+  onOpenGroup,
   freshness,
   className,
 }: ScheduleDayProps) {
@@ -97,61 +105,18 @@ export function ScheduleDay({
 
       {(state === "ok" || state === "stale") && (
         <ol className="flex flex-col gap-2">
-          {sorted.map((item) => {
-            const live = item.start <= nowMs && nowMs < item.end;
-            const Row = onOpenItem ? "button" : "div";
-            return (
-              <li key={item.id}>
-                <Row
-                  {...(onOpenItem ? { type: "button" as const, onClick: () => onOpenItem(item) } : {})}
-                  data-space-id={item.spaceId}
-                  data-conflict={item.conflict || undefined}
-                  data-live={live || undefined}
-                  className={cn(
-                    "relative flex min-h-16 w-full gap-3 rounded-lg border border-border bg-surface px-3 py-3 text-left",
-                    onOpenItem &&
-                      "cursor-pointer transition-colors duration-fast ease-soft hover:bg-hover active:bg-pressed",
-                    item.conflict && "border-warning",
-                  )}
-                >
-                  <span className="flex w-12 shrink-0 flex-col type-mono text-fg" data-numeric="">
-                    <time dateTime={new Date(item.start).toISOString()}>
-                      {formatTime(item.start, timeZone)}
-                    </time>
-                    <time dateTime={new Date(item.end).toISOString()} className="text-fg-subtle">
-                      {formatTime(item.end, timeZone)}
-                    </time>
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="type-subheading text-fg">{item.title}</span>
-                      {item.badge && (
-                        <Badge tone="info" className={KIND_BADGE}>
-                          {item.badge}
-                        </Badge>
-                      )}
-                    </span>
-                    <ScheduleFacts facts={item.facts} layout="inline" />
-                    <ScheduleProvenance sources={item.sources} note={item.note} />
-                    <span className="flex flex-wrap gap-1.5 empty:hidden">
-                      {live && <Badge tone="accent">Идёт сейчас</Badge>}
-                      {item.changed && (
-                        <Badge tone="warning" icon="edit">
-                          Изменено
-                        </Badge>
-                      )}
-                      {item.conflict && (
-                        <Badge tone="warning" icon="warning">
-                          Пересекается по времени
-                        </Badge>
-                      )}
-                      {showSpace && item.spaceTitle && <Badge tone="neutral">{item.spaceTitle}</Badge>}
-                    </span>
-                  </span>
-                </Row>
-              </li>
-            );
-          })}
+          {(onOpenGroup ? groupScheduleItems(sorted) : sorted.map((item) => [item])).map((group) => (
+            <li key={group[0]?.id}>
+              <ScheduleCard
+                items={group}
+                nowMs={nowMs}
+                timeZone={timeZone}
+                showSpace={showSpace}
+                onOpenItem={onOpenItem}
+                onOpenGroup={onOpenGroup ? (items) => onOpenGroup(items, date) : undefined}
+              />
+            </li>
+          ))}
         </ol>
       )}
 

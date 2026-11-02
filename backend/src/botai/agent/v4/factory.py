@@ -247,6 +247,7 @@ def build_source_toolkit(
     transport: httpx.AsyncBaseTransport | None = None,
     cookies: Mapping[str, str] | None = None,
     browser_control: BrowserControl | None = None,
+    broker: SecretBroker | None = None,
 ) -> SourceToolkit:
     """The `source_*` tools over the real DB, artifact root, Vault reader and executor.
 
@@ -277,6 +278,7 @@ def build_source_toolkit(
         browser_factory=playwright_factory(),
         browser_control=browser_control,
         vault=services.vault,
+        broker=broker,
     )
 
 
@@ -418,6 +420,7 @@ async def build_agent_wiring(
             transport=http_transport,
             cookies=source_cookies,
             browser_control=active_control,
+            broker=broker,
         )
         tools.extend(build_source_tools(source_toolkit))
         tools.extend(build_space_tools(build_space_toolkit(services)))

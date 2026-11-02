@@ -295,7 +295,7 @@ async def test_secret_answers_only_say_they_were_passed_under_the_question(env: 
     rows = await messages(client, thread)
     replies = user_texts(rows)
     assert [(r["markdown"], r["quote"]["text"]) for r in replies] == [
-        ("Пароль передан", "Пароль"),
+        ("Данные переданы", "Пароль"),
         ("Код передан", "Код из SMS"),
         ("Логин передан", "Почта для входа"),
     ]

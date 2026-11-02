@@ -67,7 +67,7 @@ def acknowledgement_text(block: AgentUiBlock, values: list[str] | str | bool | N
         )
     if isinstance(block, InputBlock):
         if block.input_kind == "password":
-            return "Пароль передан"
+            return "Данные переданы"
         if block.input_kind == "code":
             return "Код передан"
         if block.secret and block.input_kind == "url":

@@ -51,6 +51,17 @@ export function ScheduleScreen() {
   // `null` — «сегодня»: выбор следует за часами, пока человек не выбрал другой день.
   const [picked, setPicked] = useState<number | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
+  const [groupIds, setGroupIds] = useState<readonly string[]>([]);
+  const [groupDay, setGroupDay] = useState<number | undefined>();
+  const openEvent = (id: string) => {
+    setGroupIds([]);
+    setEventId(id);
+  };
+  const openGroup = (items: readonly { id: string }[], date: number) => {
+    setGroupDay(date);
+    setGroupIds(items.map((item) => item.id));
+    setEventId(items[0]?.id ?? null);
+  };
 
   const today = startOfDay(nowMs, timeZone);
   const day = picked ?? today;
@@ -72,8 +83,12 @@ export function ScheduleScreen() {
   }, [ready, range.start, scope.spaceId, timeZone]);
 
   const selectedEvent = events.find((row) => row.id === eventId) ?? null;
+  const selectedGroup = events.filter((row) => groupIds.includes(row.id));
   // Конфликтующая пара другого вуза в отфильтрованной неделе не приходит: для карточки берём сводную неделю.
-  const needsPartners = !scope.isAll && (selectedEvent?.conflictsWith.length ?? 0) > 0;
+  const needsPartners =
+    !scope.isAll &&
+    ((selectedEvent?.conflictsWith.length ?? 0) > 0 ||
+      selectedGroup.some((row) => row.conflictsWith.length > 0));
   const allWeek = useQuery({
     ...scheduleQuery(undefined, range.start, range.end),
     enabled: ready && needsPartners,
@@ -181,7 +196,8 @@ export function ScheduleScreen() {
               nowMs={nowMs}
               timeZone={timeZone}
               showSpace={showSpace}
-              onOpenItem={(item) => setEventId(item.id)}
+              onOpenItem={(item) => openEvent(item.id)}
+              onOpenGroup={openGroup}
             />
           )
         ) : (
@@ -208,7 +224,8 @@ export function ScheduleScreen() {
                 state={dayState}
                 showSpace={showSpace}
                 items={dayEvents.map((event) => toScheduleItem(event, directory.byId))}
-                onOpenItem={(item) => setEventId(item.id)}
+                onOpenItem={(item) => openEvent(item.id)}
+                onOpenGroup={openGroup}
               />
             )}
           </>
@@ -218,6 +235,9 @@ export function ScheduleScreen() {
       <EventSheet
         event={selectedEvent}
         events={partnerPool}
+        groupedEvents={selectedGroup}
+        groupDay={groupDay}
+        timeZone={timeZone}
         spaces={directory.byId}
         nowMs={nowMs}
         onClose={() => setEventId(null)}

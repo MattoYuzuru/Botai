@@ -56,6 +56,7 @@ from botai.sources.v4 import artifacts, domain, identity, playbooks, service, st
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import schedule as sync_schedule
+from botai.sources.v4.secrets import CALENDAR_URL_SLOT, calendar_link, calendar_secret_values
 from botai.sources.vocab import REQUIRED, VOCAB
 
 RunKind = Literal["probe", "sync", "repair", "canary"]
@@ -361,6 +362,7 @@ class SourceRunner:
         self._report_record_limit = max(1, report_record_limit)
         self._progress: ProgressHook | None = None
         self._session_state_cache: dict[str, Mapping[str, Any] | None] = {}
+        self._private_values: set[str] = set()
 
     # --- public runs ---------------------------------------------------------------------------
 
@@ -462,7 +464,7 @@ class SourceRunner:
     ) -> LiveReadResult:
         """Read one page/API of the source with its session; the text is what the agent may see."""
         source = await service.get_source(self._session, user_id=self._user_id, source_id=source_id)
-        resolved = self._read_url(source, url)
+        resolved = await self._resolve_read_url(source, url)
         headers = await self._auth_headers(source, url=resolved)
         client = build_client(
             transport=self._transport,
@@ -480,7 +482,11 @@ class SourceRunner:
                 content_type=None,
                 text="",
                 ok=False,
-                error=RunError(code="source_unavailable", detail=_short(exc), retryable=True),
+                error=RunError(
+                    code="source_unavailable",
+                    detail=_short(self._protect(str(exc))),
+                    retryable=True,
+                ),
             )
         finally:
             await client.aclose()
@@ -499,7 +505,9 @@ class SourceRunner:
             if save_artifact
             else None
         )
-        text = response.content.decode(response.encoding or "utf-8", errors="replace")
+        text = self._protect(
+            response.content.decode(response.encoding or "utf-8", errors="replace")
+        )
         truncated = len(text) > max_chars
         if response.status_code >= 400:
             code = (
@@ -737,8 +745,8 @@ class SourceRunner:
         try:
             for read in only if only is not None else spec.reads:
                 try:
-                    url = self._read_url(source, read.url)
-                except ValueError as exc:
+                    url = await self._resolve_read_url(source, read.url)
+                except (ValueError, BotaiError) as exc:
                     error = RunError(code="read_failed", detail=str(exc), read=read.name)
                     errors.append(error)
                     outcomes.append(
@@ -759,7 +767,7 @@ class SourceRunner:
                 except httpx.HTTPError as exc:
                     error = RunError(
                         code="source_unavailable",
-                        detail=_short(exc),
+                        detail=_short(self._protect(str(exc))),
                         read=read.name,
                         retryable=True,
                     )
@@ -826,7 +834,7 @@ class SourceRunner:
                         sanitized_url=sanitized,
                         status=response.status_code,
                         content_type=content_type,
-                        body=response.content,
+                        body=self._protect_bytes(response.content),
                     )
                 )
                 outcomes.append(
@@ -842,6 +850,43 @@ class SourceRunner:
         finally:
             await client.aclose()
         return fetched, outcomes, errors
+
+    async def _resolve_read_url(self, source: Source, raw: str) -> str:
+        if raw.strip() != CALENDAR_URL_SLOT:
+            return self._read_url(source, raw)
+        if (
+            not source.auth_ref
+            or not source.auth_ref.startswith("ical_url:")
+            or self._secret_reader is None
+        ):
+            raise BotaiError(
+                ErrorCode.VALIDATION, "У источника нет защищённой ссылки календаря в Vault"
+            )
+        secret = await self._secret_reader(source.auth_ref)
+        if not secret:
+            raise BotaiError(
+                ErrorCode.VALIDATION, "Ссылка календаря отсутствует в Vault: запросите её заново"
+            )
+        resolved = calendar_link(secret)
+        self._private_values.update(calendar_secret_values(secret))
+        return resolved
+
+    def _protect(self, text: str) -> str:
+        for value in sorted(self._private_values, key=len, reverse=True):
+            text = text.replace(value, "***")
+        return text
+
+    def _protect_bytes(self, data: bytes) -> bytes:
+        # Preserve the feed's charset and every unrelated byte; decoding first can either fail
+        # open on non-UTF8 content or corrupt the parser's input.
+        for value in sorted(self._private_values, key=len, reverse=True):
+            for encoding in ("utf-8", "latin-1"):
+                try:
+                    encoded = value.encode(encoding)
+                except UnicodeError:
+                    continue
+                data = data.replace(encoded, b"***")
+        return data
 
     def _read_url(self, source: Source, raw: str) -> str:
         value = raw.strip()
@@ -859,7 +904,7 @@ class SourceRunner:
         headers = dict(self._headers)
         if (
             source.auth_ref
-            and not source.auth_ref.startswith(("session:", "profile:"))
+            and not source.auth_ref.startswith(("session:", "profile:", "ical_url:"))
             and self._secret_reader is not None
         ):
             secret = await self._secret_reader(source.auth_ref)
@@ -1061,7 +1106,11 @@ class SourceRunner:
             code, retryable = _browser_error_code(exc)
             run.errors.append(RunError(code=code, detail=_short(exc), retryable=retryable))
         except Exception as exc:  # a broken browser must be an honest run error, not a crash
-            run.errors.append(RunError(code="browser_failed", detail=_short(exc), retryable=True))
+            run.errors.append(
+                RunError(
+                    code="browser_failed", detail=_short(self._protect(str(exc))), retryable=True
+                )
+            )
         run.fetched = self._captured_reads(source, spec, run.outcome)
         return run
 
@@ -1741,6 +1790,7 @@ class SourceRunner:
         kind: str | None = None,
         metadata_extra: Mapping[str, Any] | None = None,
     ) -> str | None:
+        data = self._protect_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
         storage_ref: str | None = None
         if self._artifact_store is not None:
@@ -1797,6 +1847,8 @@ class SourceRunner:
         if not url:
             return None
         try:
+            if self._private_values and url.startswith(SITE_IDENTITY_PREFIXES):
+                return f"{auth_origin(url)}/***"
             return identity.normalize_url(url)
         except Exception:  # a weird read URL must not break the report
             return None

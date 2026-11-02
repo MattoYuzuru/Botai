@@ -30,6 +30,7 @@ from botai.agent.v4.protocol import (
     ToolSpec,
     object_schema,
 )
+from botai.agent.v4.tools.secrets import HANDLE_PREFIX, SecretBroker
 from botai.browser.control import BrowserControl
 from botai.core.clock import Clock
 from botai.core.errors import BotaiError
@@ -46,8 +47,10 @@ from botai.sources.v4.runner import (
 )
 from botai.sources.v4.schemas import SourcePatch
 from botai.sources.v4.secrets import (
+    CALENDAR_URL_SLOT,
     VaultSessionReader,
     browser_storage_state,
+    calendar_link,
     capture_browser_session,
 )
 
@@ -134,6 +137,9 @@ def _source_data(source: Source) -> dict[str, Any]:
         "universityId": source.university_id,
         "title": source.title,
         "entryUrl": source.entry_url,
+        "readUrl": CALENDAR_URL_SLOT
+        if source.auth_ref and source.auth_ref.startswith("ical_url:")
+        else None,
         "kinds": list(source.kinds),
         "status": source.status,
         "playbookId": source.playbook_id,
@@ -176,6 +182,7 @@ class SourceToolkit:
         browser_factory: BrowserFactory | None = None,
         browser_control: BrowserControl | None = None,
         vault: Vault | None = None,
+        broker: SecretBroker | None = None,
     ) -> None:
         self._sm = sm
         self._transport = transport
@@ -189,6 +196,7 @@ class SourceToolkit:
         self._browser_factory = browser_factory
         self._browser_control = browser_control
         self._vault = vault
+        self._broker = broker
         self._handlers: list[ToolHandler] = [
             FunctionTool(self.schema_spec, self._schema),
             FunctionTool(self.session_spec, self._session),
@@ -301,6 +309,22 @@ class SourceToolkit:
         if isinstance(args, ToolResult):
             return args
         try:
+            link = args.link
+            if link is not None:
+                if self._vault is None:
+                    return ToolResult.failure("secret_unavailable", "Для календаря нужен Vault")
+                if link.startswith(HANDLE_PREFIX):
+                    if self._broker is None:
+                        return ToolResult.failure("unknown_handle", "Broker секрета недоступен")
+                    try:
+                        link = await self._broker.resolve(link)
+                    except ValueError:
+                        return ToolResult.failure("unknown_handle", "Неизвестный handle секрета")
+                link = calendar_link(link)
+                if args.url or args.auth_ref:
+                    return ToolResult.failure(
+                        "invalid_arguments", "Календарь по ссылке не требует url или auth_ref"
+                    )
             async with self._sm() as session:
                 source = await service.create_source(
                     session,
@@ -308,7 +332,7 @@ class SourceToolkit:
                     space_id=args.space_id,
                     title=args.title,
                     entry_url=args.url,
-                    link=args.link,
+                    link=link,
                     file_sha256=args.file_sha256,
                     mailbox=args.mailbox,
                     kinds=args.kinds,
@@ -316,6 +340,10 @@ class SourceToolkit:
                     config=args.config,
                     auth_ref=args.auth_ref,
                 )
+                if link is not None:
+                    assert self._vault is not None
+                    await self._vault.put(user_id, source.id, SecretKind.ICAL_URL, link)
+                    source.auth_ref = f"ical_url:{source.id}"
                 await session.commit()
                 data = _source_data(source)
         except BotaiError as exc:
@@ -590,7 +618,7 @@ class SourceToolkit:
     create_spec = ToolSpec(
         name="source_create",
         description=(
-            "Создать источник вуза: кабинет/сайт (url), календарь по личной ссылке (link), файл "
+            "Создать источник вуза: кабинет/сайт (url), календарь по handle защищённой ссылки (link из secret_request), файл "
             "(file_sha256) или почту (mailbox). Источник один раз: тот же адрес отвечает конфликтом. "
             "Созданный источник нужно проверить через source_probe, затем синхронизировать. "
             "Точные kinds и формат playbook: source_schema. После входа сохрани сессию: source_session save."
@@ -606,7 +634,7 @@ class SourceToolkit:
                 "url": {"type": ["string", "null"], "description": "Адрес сайта/кабинета"},
                 "link": {
                     "type": ["string", "null"],
-                    "description": "Личная ссылка календаря (секрет)",
+                    "description": "Handle из secret_request. Значение читает исполнитель; ссылка хранится в Vault. Для чтения и playbook используй url={secret} (readUrl ответа).",
                 },
                 "file_sha256": {"type": ["string", "null"], "description": "sha256 файла"},
                 "mailbox": {"type": ["string", "null"], "description": "Почтовый ящик"},

@@ -97,3 +97,86 @@ describe("ScheduleGrid: неделя сеткой для ноутбука", () =
     expect(onOpen).toHaveBeenCalledWith(target);
   });
 });
+
+describe("overlap cards", () => {
+  const available = item({
+    id: "available",
+    start: at(27, 0),
+    end: at(28, 0),
+    title: "Свободные окна",
+    allDay: true,
+    sourceTitle: "Яндекс",
+  });
+  const booking = item({
+    id: "booking",
+    start: at(27, 10),
+    end: at(27, 11),
+    title: "Запись на встречу",
+    sourceTitle: "Google",
+  });
+
+  it("opens all distinct events from one neutral group button", async () => {
+    const onOpenGroup = vi.fn();
+    render(
+      <ScheduleGrid
+        days={week({ 1: [booking, available] })}
+        state="ok"
+        nowMs={NOW}
+        timeZone={MSK}
+        onOpenGroup={onOpenGroup}
+      />,
+    );
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    const card = screen.getByRole("button", { name: /Свободные окна.*Запись на встречу/ });
+    expect(card).toHaveAttribute("data-event-count", "2");
+    expect(within(card).getByText("Весь день")).toBeInTheDocument();
+    expect(within(card).getByText("Яндекс")).toBeInTheDocument();
+    expect(within(card).getByText("Google")).toBeInTheDocument();
+    expect(within(card).queryByText(/Пересечение|Идёт сейчас/)).toBeNull();
+    await userEvent.tab();
+    expect(card).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onOpenGroup).toHaveBeenCalledWith([available, booking], week({})[1]?.date);
+  });
+
+  it("uses a compact preview in the desktop grid while keeping details available in the card", () => {
+    render(
+      <ScheduleGrid
+        days={week({
+          1: [
+            item({
+              ...booking,
+              facts: [{ key: "teacher", icon: "teacher", label: "Преподаватель", text: "Иванов" }],
+            }),
+          ],
+        })}
+        state="ok"
+        nowMs={NOW}
+        timeZone={MSK}
+      />,
+    );
+    const card = screen.getByRole("listitem").firstElementChild;
+    expect(card).toHaveAttribute("data-schedule-card", "compact");
+    expect(card?.querySelector("[data-part=event-preview]")).toHaveClass("schedule-card-details");
+    expect(within(card as HTMLElement).getByText("Иванов")).toBeInTheDocument();
+  });
+});
+
+it("keeps events separately actionable for a caller that only supports opening one event", async () => {
+  const onOpenItem = vi.fn();
+  const first = item({ id: "one", start: at(27, 10), end: at(27, 11), title: "Первое" });
+  const second = item({ id: "two", start: at(27, 10), end: at(27, 11), title: "Второе" });
+  render(
+    <ScheduleGrid
+      days={week({ 1: [first, second] })}
+      state="ok"
+      nowMs={NOW}
+      timeZone={MSK}
+      onOpenItem={onOpenItem}
+    />,
+  );
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  await userEvent.click(screen.getByRole("button", { name: /Второе/ }));
+  expect(onOpenItem).toHaveBeenCalledWith(second);
+});

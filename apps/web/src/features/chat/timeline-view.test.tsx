@@ -143,8 +143,9 @@ describe("отметка ответа: то же, что запишет серв
   });
 
   it("пароль, код, логин и любое поле входа — без значения", () => {
-    expect(answerMark(input({ inputKind: "password", secret: true }), null)).toBe("Пароль передан");
+    expect(answerMark(input({ inputKind: "password", secret: true }), null)).toBe("Данные переданы");
     expect(answerMark(input({ inputKind: "code", secret: true }), null)).toBe("Код передан");
+    expect(answerMark(input({ inputKind: "url", secret: true }), null)).toBe("Ссылка передана");
     expect(answerMark(input({ autocomplete: "username" }), "anna")).toBe("Логин передан");
     // поле входа с любым видом и без особого autocomplete: номер студенческого, дата рождения
     expect(answerMark(input({ login: true, autocomplete: "off" }), "СТ-2026-0042")).toBe("Ответ передан");

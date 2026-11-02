@@ -21,7 +21,7 @@ test.describe("«Расписание»", () => {
       expect(new Set(columns).size).toBe(1);
     } else {
       await expect(page.getByRole("navigation", { name: "Дни недели" }).getByRole("button")).toHaveCount(7);
-      await expect(page.getByRole("region", { name: /^вторник/ }).getByRole("listitem")).toHaveCount(4);
+      await expect(page.getByRole("region", { name: /^вторник/ }).locator("[data-event-id]")).toHaveCount(4);
     }
   });
 
@@ -65,9 +65,15 @@ test.describe("«Расписание»", () => {
       .getByRole("button", { name: /Алгоритмы и структуры данных/ })
       .first()
       .click();
-    const sheet = page.getByRole("dialog", { name: "Алгоритмы и структуры данных" });
-    await expect(sheet.getByText(/Основы продуктового менеджмента.*ЦУ/)).toBeVisible();
-    await expect(sheet.getByText(/Получено/)).toBeVisible();
+    const sheet = page.getByRole("dialog", { name: "События в это время" });
+    await expect(
+      sheet
+        .getByRole("region", { name: "Алгоритмы и структуры данных" })
+        .getByText(/Основы продуктового менеджмента.*ЦУ/),
+    ).toBeVisible();
+    await expect(sheet.getByText(/Получено/).first()).toBeVisible();
+    await expect(sheet.getByRole("region", { name: "Алгоритмы и структуры данных" })).toBeVisible();
+    await expect(sheet.getByRole("region", { name: "Основы продуктового менеджмента" })).toBeVisible();
   });
 
   test("карточка пары: тип занятия, адрес, аудитория, здание, группа, онлайн-ссылка; «Открыть» ведёт на страницу, а не на API", async ({
@@ -77,12 +83,20 @@ test.describe("«Расписание»", () => {
     await expect(page.locator("[data-screen=schedule]")).toHaveAttribute("data-state", "ok");
     // Компактная карточка в списке дня или в колонке недели: детали с иконками, пустых строк нет.
     const card = page.getByRole("button", { name: /Алгоритмы и структуры данных/ }).first();
+    if (isLaptop(page)) await card.hover();
     await expect(card.getByText("Текущий рубежный контроль")).toBeVisible();
     await expect(card.locator("[data-fact=address] svg")).toHaveAttribute("data-icon", "address");
     await expect(card.locator("[data-fact=room] svg")).toHaveAttribute("data-icon", "room");
-    await expect(card.locator("[data-fact=group]")).toContainText("ПМ-3 курс 26/27");
+    await expect(
+      card
+        .locator("[data-event-id]")
+        .filter({ hasText: "Алгоритмы и структуры данных" })
+        .locator("[data-fact=group]"),
+    ).toContainText("ПМ-3 курс 26/27");
     await card.click();
-    const sheet = page.getByRole("dialog", { name: "Алгоритмы и структуры данных" });
+    const sheet = page
+      .getByRole("dialog", { name: "События в это время" })
+      .getByRole("region", { name: "Алгоритмы и структуры данных" });
     await expect(sheet.getByText("ул. Учебная, д. 11")).toBeVisible();
     await expect(sheet.locator("dl svg[data-icon=building]")).toBeVisible();
     await expect(sheet.locator("dl svg[data-icon=time]")).toBeVisible();
@@ -96,6 +110,30 @@ test.describe("«Расписание»", () => {
       /^https:\/\/lk\.fakeuni\.test\/schedule\?begin_date=\d{4}-\d{2}-\d{2}$/,
     );
     expect(await sheet.locator("a[href*='/api/']").count()).toBe(0);
+  });
+
+  test("детали раскрываются на компьютере по hover и фокусу, на телефоне видны сразу", async ({ page }) => {
+    await open(page, "/schedule", "connected");
+    const card = page.getByRole("button", { name: /Алгоритмы и структуры данных/ }).first();
+    const details = card.locator("[data-part=event-preview]").first();
+    if (!isLaptop(page)) {
+      await expect(details).toBeVisible();
+      return;
+    }
+    await expect(details).toBeHidden();
+    const compactHeight = (await card.boundingBox())?.height ?? 0;
+    await card.hover();
+    await expect(details).toBeVisible();
+    await expect.poll(async () => (await card.boundingBox())?.height ?? 0).toBeGreaterThan(compactHeight);
+    await page.mouse.move(0, 0);
+    await expect(details).toBeHidden();
+    await card.focus();
+    await expect(details).toBeVisible();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const duration = await details.evaluate((node) => getComputedStyle(node).transitionDuration);
+    expect(duration.split(",").every((value) => Number.parseFloat(value) <= 0.001)).toBe(true);
+    await card.press("Enter");
+    await expect(page.getByRole("dialog", { name: "События в это время" })).toBeVisible();
   });
 
   test("нужен повторный вход: полоса «Войти снова», расписание на месте", async ({ page }) => {

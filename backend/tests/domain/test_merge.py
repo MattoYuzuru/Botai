@@ -147,6 +147,22 @@ def test_a_long_event_is_not_a_class() -> None:
     assert len(run([day, note])) == 2  # shown, never merged
 
 
+@pytest.mark.parametrize("order", [(CABINET, CALENDAR), (CALENDAR, CABINET)])
+def test_all_day_availability_keeps_each_timed_booking(order: tuple[str, str]) -> None:
+    """Availability and bookings are separate facts even with identical titles."""
+    availability = ev("availability", "Проверка работ", at(21, day=26), at(21), conn=CABINET)
+    first = ev("booking-1", "Проверка работ", at(9), at(9, 30), conn=CALENDAR)
+    second = ev("booking-2", "Проверка работ", at(10), at(10, 30), conn=CALENDAR)
+
+    result = by_id(run([availability, first, second], *order))
+
+    assert set(result) == {"availability", "booking-1", "booking-2"}
+    for original in (availability, first, second):
+        actual = result[original.id]
+        assert (actual.starts_at, actual.ends_at) == (original.starts_at, original.ends_at)
+        assert actual.sources == original.sources
+
+
 # --- titles -------------------------------------------------------------------------------------
 
 
