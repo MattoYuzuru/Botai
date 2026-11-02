@@ -188,8 +188,9 @@ export function acknowledgementText(block: KnownBlock, values: unknown): string 
     );
   }
   if (block.type === "input") {
-    if (block.inputKind === "password") return "Пароль передан";
+    if (block.inputKind === "password") return "Данные переданы";
     if (block.inputKind === "code") return "Код передан";
+    if (block.secret && block.inputKind === "url") return "Ссылка передана";
     const auth =
       block.login === true || block.autocomplete === "username" || block.autocomplete === "one-time-code";
     if (block.secret || auth) return block.autocomplete === "username" ? "Логин передан" : "Ответ передан";

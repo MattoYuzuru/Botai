@@ -269,3 +269,39 @@ async def test_masker_replaces_every_known_value() -> None:
     assert SECRET not in masked
     assert masked.count("***") == 2
     assert secrets.mask("short-ok") == "short-ok"
+
+
+@pytest.mark.parametrize("scheme", ["https", "webcal"])
+async def test_secret_use_can_fetch_a_private_url_without_exposing_its_parts(scheme: str) -> None:
+    secrets = broker()
+    link = f"{scheme}://calendar.fixture.invalid/private/fixture-path-key/feed.ics?token=fixture-query-key"
+    handle = await secrets.issue(link)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            headers={"x-echo": str(request.url)},
+            text=f"{request.url} fixture-query-key fixture-path-key /private/fixture-path-key/feed.ics",
+        )
+
+    result = await SecretUseTool(secrets, transport=httpx.MockTransport(handler)).run(
+        {"handle": handle, "placement": "url"}, ToolContext(run_id="r")
+    )
+    assert result.ok, result.error
+    assert str(seen[0].url) == link.replace("webcal://", "https://")
+    assert "authorization" not in seen[0].headers
+    encoded = json.dumps(result.to_wire())
+    for value in (link, "fixture-path-key", "fixture-query-key"):
+        assert value not in encoded
+    assert "***" in result.data["text"]
+
+
+async def test_calendar_masker_hides_private_path_tokens_without_hiding_normal_query_data() -> None:
+    secrets = broker()
+    await secrets.issue(
+        "https://calendar.fixture.invalid/ical/private-fixturekey/basic.ics?layer=20261102&tz_id=Europe/Moscow"
+    )
+    assert secrets.mask("private-fixturekey fixturekey") == "*** ***"
+    assert secrets.mask("Доступно 20261102 Europe/Moscow") == "Доступно 20261102 Europe/Moscow"

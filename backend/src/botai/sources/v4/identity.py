@@ -4,19 +4,19 @@
 `/tasks` of one cabinet are one source, a second cabinet at another path is another), a hashed
 private link (the link itself is a secret and is not stored here), a file digest or a mailbox.
 Query parameters whose *names* say they are secrets (`token`, `key`, `session`, `csrf`, `code`,
-`state`, `signature`, ...) are dropped before keying; every other pair is kept and sorted, so
+`state`, `signature`, ...) are dropped before keying sites; every other pair is kept and sorted, so
 `?view=week&group=1` and `?group=1&view=week` are the same record, a long non-secret id (a course
 id, a group filter) still identifies its source, and a token never changes identity.
 
 The private calendar link must go to the Vault, not to the database: `calendar_key` hashes the
-normalized link and only the digest reaches `sources.identity_key`.
+complete link (including its private query) and only the digest reaches `sources.identity_key`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from botai.core.errors import BotaiError, ErrorCode
 
@@ -152,8 +152,15 @@ def site_key(entry_url: str) -> str:
 
 def calendar_key(link: str) -> str:
     """The identity of a calendar connected by a private export link: a digest, never the link."""
-    normalized = normalize_url(link)
-    return f"link:{hashlib.sha256(normalized.encode()).hexdigest()}"
+    # The private query is part of calendar identity: two exports may differ only by token.
+    # Hash it before storage rather than dropping it as site/page normalization does.
+    parts = urlsplit(link.strip())
+    origin = normalize_url(urlunsplit((parts.scheme, parts.netloc, "", "", "")))
+    path = re.sub(r"/{2,}", "/", parts.path).rstrip("/")
+    normalized = f"{origin}{path}"
+    query = urlencode(sorted(parse_qsl(parts.query, keep_blank_values=True)))
+    material = f"{normalized}?{query}" if query else normalized
+    return f"link:{hashlib.sha256(material.encode()).hexdigest()}"
 
 
 def file_key(sha256: str) -> str:

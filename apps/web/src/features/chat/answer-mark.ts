@@ -7,8 +7,9 @@ import { isAuthInput } from "@/features/jobs/job-state";
  */
 export function answerMark(block: Input | Choice | Confirm, shown: string | null): string {
   if (block.type !== "input") return shown ?? "Ответ передан";
-  if (block.inputKind === "password") return "Пароль передан";
+  if (block.inputKind === "password") return "Данные переданы";
   if (block.inputKind === "code") return "Код передан";
+  if (block.secret && block.inputKind === "url") return "Ссылка передана";
   if (block.secret || isAuthInput(block))
     return block.autocomplete === "username" || block.inputKind === "email"
       ? "Логин передан"

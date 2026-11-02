@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from playwright.async_api import StorageState
 from pydantic import SecretStr
@@ -32,6 +33,50 @@ from botai.core.browser import auth_origin
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.vault import SecretKind, Vault
 from botai.db.models import Source
+
+CALENDAR_URL_SLOT = "{secret}"
+
+
+def calendar_link(raw: str) -> str:
+    """Validate a private URL without exposing it or imposing the legacy proxy's host rules."""
+    value = raw.strip()
+    try:
+        parts = urlsplit(value)
+        scheme = {"webcal": "https", "webcals": "https"}.get(parts.scheme, parts.scheme)
+        if (
+            scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username
+            or parts.password
+        ):
+            raise ValueError
+        _ = parts.port
+    except ValueError:
+        raise BotaiError(ErrorCode.VALIDATION, "Нужна ссылка http(s):// или webcal://") from None
+    return urlunsplit((scheme, parts.netloc, parts.path or "/", parts.query, ""))
+
+
+def calendar_secret_values(raw: str) -> set[str]:
+    """Mask the URL plus path/query credentials if a provider echoes only part of the link."""
+    resolved = calendar_link(raw)
+    parts = urlsplit(resolved)
+    values = {raw, resolved}
+    if len(parts.path) >= 4 and parts.path != "/":
+        values.add(parts.path)
+    for segment in parts.path.split("/"):
+        key = segment.removesuffix(".ics")
+        if len(key) >= 16 and not key.isdigit():
+            values.add(key)
+        if key.startswith("private-") and len(key[8:]) >= 4:
+            values.update({key, key[8:]})
+    for name, value in parse_qsl(parts.query):
+        name = name.casefold().replace("_", "").replace("-", "")
+        if len(value) >= 4 and any(
+            part in name for part in ("token", "key", "secret", "password", "auth", "signature")
+        ):
+            values.add(value)
+    return values
+
 
 SESSION_KIND_NAMES = frozenset({SecretKind.SESSION.value, "profile"})
 

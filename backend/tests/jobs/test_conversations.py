@@ -849,7 +849,7 @@ async def test_native_secret_never_enters_composer_history_or_receipts(env: Env)
     acknowledgement = [
         message
         for message in rows
-        if message["role"] == "user" and message["blocks"][0].get("markdown") == "Пароль передан"
+        if message["role"] == "user" and message["blocks"][0].get("markdown") == "Данные переданы"
     ]
     assert len(acknowledgement) == 1
     assert rows.index(acknowledgement[0]) > next(
