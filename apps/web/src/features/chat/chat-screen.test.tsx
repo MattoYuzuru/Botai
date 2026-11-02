@@ -7,6 +7,7 @@ import { jobManager } from "@/features/jobs/job-manager";
 import { initialJob } from "@/features/jobs/job-state";
 import { ask, chatHarness, composer, openNewChat, wait } from "@/test/chat-harness";
 import { renderApp } from "@/test/render-app";
+import { CONNECT_DRAFT } from "./drafts";
 import { chatKeys } from "./queries";
 import { outbox } from "./runtime";
 
@@ -395,6 +396,17 @@ describe("переходы в чат: /chat?thread=, /chat?draft=", () => {
 });
 
 describe("пустой чат и подсказки из настоящих данных", () => {
+  it("подключённому пользователю предлагает новый вуз: редактируемый черновик, без отправки", async () => {
+    const { user } = await openNewChat();
+    const link = await screen.findByRole("link", { name: "Подключить новый вуз" }, wait);
+    expect(await screen.findByRole("list", { name: "Подсказки" }, wait)).toBeInTheDocument();
+    await user.click(link);
+    await waitFor(() => expect(composer()).toHaveValue(CONNECT_DRAFT), wait);
+    expect(outbox.snapshot).toEqual([]);
+    await user.type(composer(), " ЦУ");
+    expect(composer()).toHaveValue(`${CONNECT_DRAFT} ЦУ`);
+  });
+
   it("до трёх подсказок, построенных из данных; нажатие отправляет вопрос", async () => {
     const { user } = await openNewChat();
     const list = await screen.findByRole("list", { name: "Подсказки" }, wait);
@@ -412,6 +424,108 @@ describe("пустой чат и подсказки из настоящих да
     const link = await screen.findByRole("link", { name: "Подключить вуз" }, wait);
     expect(link).toHaveAttribute("href", expect.stringMatching(/^\/chat\?draft=/));
     expect(screen.queryByRole("list", { name: "Подсказки" })).toBeNull();
+  });
+});
+
+describe("продолжение разговора в поле чата", () => {
+  it("после ответа фраза только видна: стрелка вставляет текст, ничего не отправляется", async () => {
+    let calls = 0;
+    harness.server.use(
+      http.post("*/api/v1/chat/threads/:threadId/suggestion", async ({ request }) => {
+        calls += 1;
+        const { afterMessageId } = (await request.json()) as { afterMessageId: string };
+        return HttpResponse.json({ text: "Помоги составить план", afterMessageId });
+      }),
+    );
+    renderApp("/chat");
+    await waitFor(
+      () =>
+        expect(document.querySelector("[data-composer-suggestion]")).toHaveTextContent(
+          "Помоги составить план",
+        ),
+      wait,
+    );
+    expect(composer()).toHaveValue("");
+    await userEvent.setup().click(composer());
+    await userEvent.setup().keyboard("{ArrowRight}");
+    expect(composer()).toHaveValue("Помоги составить план");
+    expect(outbox.snapshot).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  it("ожидание защищённого ответа не запрашивает и не показывает продолжение, даже при свободном поле", async () => {
+    let calls = 0;
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({
+          activeJob: null,
+          tasks: [],
+          receipts: [],
+          pending: [{ jobId: "background", blockId: "password", channel: "native", secret: true }],
+        }),
+      ),
+      http.post("*/api/v1/chat/threads/:threadId/suggestion", () => {
+        calls += 1;
+        return HttpResponse.json({ text: "Нельзя показывать", afterMessageId: "M" });
+      }),
+    );
+    renderApp("/chat");
+    await waitFor(
+      () => expect(composer()).toHaveAttribute("placeholder", "Пароль вводите в защищённое поле выше"),
+      wait,
+    );
+    expect(composer()).toBeEnabled();
+    expect(calls).toBe(0);
+    expect(document.querySelector("[data-composer-suggestion]")).toBeNull();
+  });
+
+  it("пока ответ агента идёт, подсказок нет; один вызов после завершения", async () => {
+    let calls = 0;
+    let answered = false;
+    const threadId = await seededThreadId();
+    harness.server.use(
+      http.get("*/api/v1/chat/threads/:threadId/runtime", () =>
+        HttpResponse.json({ activeJob: null, tasks: [], pending: [], receipts: [] }),
+      ),
+      http.get("*/api/v1/chat/threads/:threadId/messages", () =>
+        HttpResponse.json([
+          {
+            id: "question",
+            role: "user",
+            jobId: null,
+            createdAt: new Date().toISOString(),
+            blocks: [{ type: "text", markdown: "Помоги с планом" }],
+          },
+          ...(answered
+            ? [
+                {
+                  id: "answer",
+                  role: "agent",
+                  jobId: null,
+                  createdAt: new Date().toISOString(),
+                  blocks: [{ type: "text", markdown: "План готов" }],
+                },
+              ]
+            : []),
+        ]),
+      ),
+      http.post("*/api/v1/chat/threads/:threadId/suggestion", async ({ request }) => {
+        calls += 1;
+        const { afterMessageId } = (await request.json()) as { afterMessageId: string };
+        return HttpResponse.json({ text: "Что ещё учесть?", afterMessageId });
+      }),
+    );
+    const { queryClient } = renderApp(`/chat?thread=${threadId}`);
+    await waitFor(() => expect(composer()).toBeDisabled(), wait);
+    expect(document.querySelector("[data-composer-suggestion]")).toBeNull();
+    expect(calls).toBe(0);
+    answered = true;
+    await queryClient.invalidateQueries({ queryKey: chatKeys.messages(threadId) });
+    await waitFor(
+      () => expect(document.querySelector("[data-composer-suggestion]")).toHaveTextContent("Что ещё учесть?"),
+      wait,
+    );
+    expect(calls).toBe(1);
   });
 });
 

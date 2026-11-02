@@ -15,7 +15,30 @@ export const chatKeys = {
   messages: (threadId: string) => ["chat", "threads", threadId, "messages"] as const,
   context: (threadId: string) => ["chat", "threads", threadId, "context"] as const,
   runtime: (threadId: string) => ["chat", "threads", threadId, "runtime"] as const,
+  suggestion: (ownerId: string, threadId: string, afterMessageId: string) =>
+    ["chat", "suggestion", ownerId, threadId, afterMessageId] as const,
 };
+
+/** Один дешёвый вызов на ответ: ввод, возврат к чату и фокус окна не перегенерируют подсказку. */
+export const suggestionQuery = (ownerId: string, threadId: string, afterMessageId: string) =>
+  queryOptions({
+    queryKey: chatKeys.suggestion(ownerId, threadId, afterMessageId),
+    queryFn: async ({ signal }) => {
+      try {
+        return await chatApi.suggestion(threadId, afterMessageId, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // Необязательная подсказка не ломает чат; ошибка тоже кэшируется, чтобы ввод не повторял вызов.
+        return { text: null, afterMessageId };
+      }
+    },
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: Number.POSITIVE_INFINITY,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
 
 export const threadsQuery = queryOptions({
   queryKey: chatKeys.threads,

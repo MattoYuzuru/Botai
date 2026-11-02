@@ -11,6 +11,11 @@ import {
 const base = "/api/v1/chat/threads";
 const thread = (id: string) => `${base}/${encodeURIComponent(id)}`;
 
+export interface ChatSuggestion {
+  text: string | null;
+  afterMessageId: string;
+}
+
 /** Эндпоинты чата агент-хаба v3 (§3.2). Один агент на тред: ни `purpose`, ни отдельного разговора подключения. */
 export const chatApi = {
   threads: (signal?: AbortSignal) => v3<ThreadOut[]>("GET", base, { signal, cache: "no-store" }),
@@ -28,4 +33,6 @@ export const chatApi = {
   offerCalendar: (id: string) => v3<void>("POST", `${thread(id)}/calendar-link`),
   runtime: (id: string, signal?: AbortSignal) =>
     v3<ThreadRuntime>("GET", `${thread(id)}/runtime`, { signal, cache: "no-store" }),
+  suggestion: (id: string, afterMessageId: string, signal?: AbortSignal) =>
+    v3<ChatSuggestion>("POST", `${thread(id)}/suggestion`, { body: { afterMessageId }, signal }),
 };

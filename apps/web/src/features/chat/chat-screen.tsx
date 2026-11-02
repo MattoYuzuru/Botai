@@ -46,6 +46,7 @@ import { awaitingReply, buildTimeline } from "./timeline";
 import { TimelineView } from "./timeline-view";
 import { useAttachments } from "./use-attachments";
 import { useChatMascot } from "./use-chat-mascot";
+import { suggestionAnchor, useChatSuggestion } from "./use-chat-suggestion";
 import { useMarkRead } from "./use-mark-read";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { useThreadJobs } from "./use-thread-jobs";
@@ -189,6 +190,20 @@ export function ChatScreen() {
     awaiting,
   });
   const busy = composer.replying || running;
+  const followUp = useChatSuggestion({
+    ownerId,
+    threadId: activeId,
+    anchor: suggestionAnchor(messages, jobs),
+    enabled:
+      !composer.disabled &&
+      !composer.waitingForHuman &&
+      !busy &&
+      pending.length === 0 &&
+      draft.length === 0 &&
+      draftParam === undefined &&
+      attachments.items.length === 0 &&
+      !messagesResult.isError,
+  });
   // Ход агента, который сейчас идёт или ждёт человека: его можно остановить — и когда поле занято
   // вопросом-карточкой, и когда оно свободно для ответа в диалоге.
   const stopTarget = jobs.find((job) => job.kind === "chat" && !isJobTerminal(job.snapshot.state))?.id;
@@ -493,6 +508,7 @@ export function ChatScreen() {
               onStop={stopTarget ? stopAgent : undefined}
               stopping={stopping}
               placeholder={composer.placeholder}
+              suggestion={followUp}
               attachments={attachments.items}
               onAddFiles={(files, source) => attachments.add(files, source, activeId)}
               onRemoveAttachment={attachments.remove}
