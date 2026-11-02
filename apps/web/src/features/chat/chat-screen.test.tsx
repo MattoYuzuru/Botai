@@ -536,9 +536,9 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     const { user } = await openNewChat();
     await ask(user, "Какая следующая пара?");
     expect(await screen.findByText("Какая следующая пара?", { selector: "p" }, wait)).toBeInTheDocument();
-    // Typewriter печатает ответ прогрессивно; ждём последнее предложение, чтобы проверять таблицу и
-    // форматирование на полностью отрисованном markdown (на медленном CI можно поймать частичную таблицу).
-    expect(await screen.findByText(/Подробнее —/, undefined, wait)).toBeInTheDocument();
+    // Typewriter печатает markdown прогрессивно: начало последнего предложения ещё не означает,
+    // что ссылка в нём уже стала ссылкой. Ждём её целиком, затем проверяем предшествующие таблицу и курсив.
+    const cabinetLink = await screen.findByRole("link", { name: "в кабинете" }, wait);
     const table = await screen.findByRole("table", undefined, wait);
     expect(
       within(table)
@@ -547,10 +547,7 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     ).toEqual(["Время", "Предмет", "Аудитория"]);
     const italic = screen.getByText(/Расписание обновлено 12 минут назад/);
     expect(italic.tagName).toBe("EM");
-    expect(screen.getByRole("link", { name: "в кабинете" })).toHaveAttribute(
-      "href",
-      expect.stringMatching(/^https:/),
-    );
+    expect(cabinetLink).toHaveAttribute("href", expect.stringMatching(/^https:/));
     const sources = await screen.findByRole("list", { name: "Источники" });
     expect(within(sources).getAllByRole("listitem")).toHaveLength(1);
     expect(within(sources).getByText(/3 страницы/)).toBeInTheDocument();
