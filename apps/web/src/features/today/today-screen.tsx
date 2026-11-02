@@ -21,7 +21,6 @@ import { addDays } from "@/features/data/dates";
 import { scheduleQuery, todayQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
-import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { EventSheet } from "@/features/schedule/event-sheet";
 import { sortEvents, toScheduleItem } from "@/features/schedule/events";
 import { DeadlineSheet } from "@/features/tasks/deadline-sheet";
@@ -125,7 +124,6 @@ export function TodayScreen() {
     >
       <div data-screen="today" data-state={state} className="flex flex-1 flex-col gap-6">
         <SourceNotices spaces={directory.spaces} attentionIds={fetched?.data.attention} nowMs={nowMs} />
-        <MascotPresence screen="other" />
 
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <div className="flex min-w-0 flex-col gap-6">

@@ -507,6 +507,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/threads/{thread_id}/suggestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Next Message Suggestion */
+        post: operations["next_message_suggestion_api_v1_chat_threads__thread_id__suggestion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections/{connection_id}": {
         parameters: {
             query?: never;
@@ -3065,6 +3082,18 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** SuggestionIn */
+        SuggestionIn: {
+            /** Aftermessageid */
+            afterMessageId: string;
+        };
+        /** SuggestionOut */
+        SuggestionOut: {
+            /** Aftermessageid */
+            afterMessageId: string;
+            /** Text */
+            text: string | null;
+        };
         /** SyncIn */
         SyncIn: {
             /** Version */
@@ -4154,6 +4183,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThreadRuntime"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    next_message_suggestion_api_v1_chat_threads__thread_id__suggestion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuggestionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionOut"];
                 };
             };
             /** @description Validation Error */

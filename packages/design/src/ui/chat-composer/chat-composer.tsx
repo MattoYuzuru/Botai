@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
@@ -31,6 +32,8 @@ export interface ChatComposerProps {
   onSend: (text: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Неотправленная фраза-продолжение: видна только в пустом поле, → или кнопка вставляет её для редактирования. */
+  suggestion?: string | null;
   /** Насест Вари: стоит на верхней кромке поля справа, лапы на линии рамки (mascot.md §4.1). */
   mascotSlot?: ReactNode;
   /** Enter отправляет (по умолчанию — на устройствах с мышью); на телефоне Enter — перенос строки. */
@@ -91,6 +94,7 @@ export function ChatComposer({
   onSend,
   disabled = false,
   placeholder = "Спросите про пары и сроки",
+  suggestion,
   mascotSlot,
   enterToSend,
   label = "Сообщение агенту",
@@ -120,6 +124,8 @@ export function ChatComposer({
   latestValue.current = value;
   const doneButton = useRef<HTMLButtonElement>(null);
   const [announcement, setAnnouncement] = useState("");
+  const suggestionId = useId();
+  const [composing, setComposing] = useState(false);
   const dictation = useDictation({
     transcribe: onTranscribe,
     onText: (spoken) => {
@@ -137,6 +143,10 @@ export function ChatComposer({
   }, [resetKey, cancelDictation]);
   const phase = dictation.phase;
   const dictating = phase.status === "recording" || phase.status === "transcribing";
+  const ghost =
+    !disabled && !dictating && !composing && value.length === 0 && attachments.length === 0
+      ? suggestion?.trim()
+      : null;
   // Фокус идёт за состоянием: запись началась — на «Готово» (кнопка микрофона исчезла, фокус не должен
   // пропасть); запись или распознавание кончились (текст вставлен, отмена, ошибка) — в поле, курсор после текста.
   const was = useRef(phase.status);
@@ -176,7 +186,30 @@ export function ChatComposer({
     if (canSend) onSend(text);
   };
 
+  const acceptSuggestion = () => {
+    if (!ghost) return;
+    onValueChange(ghost);
+    setAnnouncement("Подсказка добавлена в поле. Можно изменить и отправить.");
+    ref.current?.focus();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      ghost &&
+      event.key === "ArrowRight" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing &&
+      !composing &&
+      event.currentTarget.selectionStart === 0 &&
+      event.currentTarget.selectionEnd === 0
+    ) {
+      event.preventDefault();
+      acceptSuggestion();
+      return;
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || !sendOnEnter) return;
     event.preventDefault();
     submit();
@@ -365,20 +398,34 @@ export function ChatComposer({
             ) : (
               attachButton
             ))}
-          <textarea
-            ref={ref}
-            value={value}
-            rows={1}
-            disabled={disabled}
-            aria-label={label}
-            placeholder={placeholder}
-            enterKeyHint={sendOnEnter ? "send" : "enter"}
-            onChange={(event) => onValueChange(event.target.value)}
-            onInput={resize}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            className="min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 type-body text-fg outline-none placeholder:text-fg-subtle disabled:cursor-not-allowed"
-          />
+          <div className={cn("relative min-w-0 flex-1", dictating && "hidden")}>
+            {ghost && (
+              <div
+                aria-hidden="true"
+                data-composer-suggestion=""
+                className="pointer-events-none absolute inset-x-0 top-0 truncate px-2 py-2.5 type-body text-fg-subtle"
+              >
+                {ghost}
+              </div>
+            )}
+            <textarea
+              ref={ref}
+              value={value}
+              rows={1}
+              disabled={disabled}
+              aria-label={label}
+              placeholder={ghost ? "" : placeholder}
+              aria-describedby={ghost ? suggestionId : undefined}
+              enterKeyHint={sendOnEnter ? "send" : "enter"}
+              onChange={(event) => onValueChange(event.target.value)}
+              onInput={resize}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
+              className="block min-h-11 w-full min-w-0 resize-none bg-transparent px-2 py-2.5 type-body text-fg outline-none placeholder:text-fg-subtle disabled:cursor-not-allowed"
+            />
+          </div>
           {disabled && onStop ? (
             <IconButton
               type="button"
@@ -433,6 +480,25 @@ export function ChatComposer({
             </>
           )}
         </div>
+        {ghost && (
+          <div className="flex items-center justify-end px-2 pb-1">
+            <span id={suggestionId} className="sr-only">
+              Подсказка: {ghost}.{" "}
+              {coarse || !finePointer
+                ? "Нажмите «Вставить подсказку», чтобы отредактировать."
+                : "Нажмите стрелку вправо, чтобы вставить и отредактировать."}
+            </span>
+            {coarse || !finePointer ? (
+              <Button type="button" variant="ghost" size="sm" onClick={acceptSuggestion}>
+                Вставить подсказку
+              </Button>
+            ) : (
+              <span aria-hidden="true" className="type-caption text-fg-muted">
+                → Вставить подсказку
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </form>
   );

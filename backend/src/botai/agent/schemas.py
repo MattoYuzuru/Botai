@@ -87,6 +87,15 @@ class MessageAccepted(ApiModel):
     job_id: str  # agent reply streams via /jobs/{id}/events
 
 
+class SuggestionIn(ApiModel):
+    after_message_id: str = Field(pattern=ULID)
+
+
+class SuggestionOut(ApiModel):
+    text: str | None
+    after_message_id: str
+
+
 class PendingRef(ApiModel):
     job_id: str
     block_id: str

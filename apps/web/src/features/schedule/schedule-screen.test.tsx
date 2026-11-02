@@ -123,6 +123,22 @@ describe("«Расписание»: неделя и день", () => {
     expect(within(list).queryByText("Математический анализ")).toBeNull();
   });
 
+  it("закрытое пересечение в одном вузе остаётся закрытым при переходе ко всем вузам", async () => {
+    const first = current.db.spaces[0];
+    if (!first) throw new Error("Нужен вуз-образец");
+    useActiveSpaceStore.getState().select(first.id);
+    renderApp("/schedule");
+    const dismiss = await screen.findByRole("button", { name: "Скрыть предупреждение о пересечениях" });
+    await userEvent.click(dismiss);
+    expect(screen.queryByRole("button", { name: "Скрыть предупреждение о пересечениях" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "ВШЭ" }));
+    const switcher = await screen.findByRole("dialog", { name: "Вуз" });
+    await userEvent.click(within(switcher).getByRole("button", { name: /Все вузы/ }));
+    await waitFor(() => expect(screenState()).toBe("ok"));
+    expect(screen.queryByRole("button", { name: "Скрыть предупреждение о пересечениях" })).toBeNull();
+    expect(screen.getAllByText("Пересекается по времени")).toHaveLength(2);
+  });
+
   it("карточка пары из отфильтрованной недели знает пару другого вуза, с которой есть пересечение", async () => {
     renderApp("/schedule");
     await waitFor(() => expect(screenState()).toBe("ok"));

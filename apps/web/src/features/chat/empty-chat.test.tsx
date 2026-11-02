@@ -58,9 +58,9 @@ describe("EmptyChat: вуз не подключён", () => {
     expect(document.querySelector("form")).toBeNull();
   });
 
-  it("когда вуз есть, приглашения подключить нет", async () => {
+  it("когда вуз есть, новый вуз всё равно можно подключить заготовкой", async () => {
     mount({ noSpaces: false });
     expect(await screen.findByText(/Агент отвечает по вашим данным/)).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Подключить вуз" })).toBeNull();
+    expect(hrefOf(screen.getByRole("link", { name: "Подключить новый вуз" })).draft).toBe(CONNECT_DRAFT);
   });
 });

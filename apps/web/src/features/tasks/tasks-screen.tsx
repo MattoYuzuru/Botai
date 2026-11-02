@@ -11,19 +11,20 @@ import {
   useOnline,
 } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { meQuery } from "@/api/queries";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
 import { resolveDataState } from "@/features/data/data-state";
 import { deadlinesQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
-import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { DeadlineSheet } from "./deadline-sheet";
 import { toDeadlineView } from "./deadlines";
 import { GROUP_NOTE, groupDeadlines } from "./groups";
 
+const PAGE_SIZE = 10;
 const TASKS = ["задание", "задания", "заданий"] as const;
 
 /**
@@ -35,11 +36,24 @@ export function TasksScreen() {
   const directory = useSpaceDirectory();
   const scope = useScope(directory);
   const online = useOnline();
+  const me = useQuery(meQuery);
+  const listKey = `${me.data?.user.id ?? ""}:${scope.activeId}`;
   const nowMs = useNow(30_000);
   const ready = directory.loaded && !directory.none;
   const query = useQuery({ ...deadlinesQuery(scope.spaceId, true), enabled: ready });
   const [openId, setOpenId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [revealed, setRevealed] = useState<{ key: string; counts: Record<string, number> }>({
+    key: listKey,
+    counts: {},
+  });
+  const counts = revealed.key === listKey ? revealed.counts : {};
+
+  useEffect(() => {
+    setOpenId(null);
+    setShowDone(false);
+    setRevealed({ key: listKey, counts: {} });
+  }, [listKey]);
 
   const fetched = query.data;
   const timeZone = scope.timeZone;
@@ -95,7 +109,6 @@ export function TasksScreen() {
     >
       <div data-screen="tasks" data-state={state} className="flex flex-col gap-6">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
-        <MascotPresence screen="deadlines" />
 
         {state === "loading" ? (
           <TasksSkeleton />
@@ -119,6 +132,8 @@ export function TasksScreen() {
             {groups.map((group) => {
               const done = group.group === "done";
               const collapsed = done && !showDone;
+              const visibleCount = counts[group.group] ?? PAGE_SIZE;
+              const listId = `tasks-${group.group}-list`;
               return (
                 <section
                   key={group.group}
@@ -147,9 +162,9 @@ export function TasksScreen() {
                     <p className="px-1 type-caption text-fg-muted">{GROUP_NOTE[group.group]}</p>
                   )}
                   {!collapsed && (
-                    <Card padding="sm" id={done ? "tasks-done-list" : undefined}>
+                    <Card padding="sm" id={listId}>
                       <ul className="flex flex-col">
-                        {group.views.map((view) => (
+                        {group.views.slice(0, visibleCount).map((view) => (
                           <li key={view.deadline.id}>
                             <DeadlineItem
                               title={view.deadline.title}
@@ -169,6 +184,21 @@ export function TasksScreen() {
                           </li>
                         ))}
                       </ul>
+                      {visibleCount < group.views.length && (
+                        <Button
+                          variant="ghost"
+                          className="mt-2 w-full"
+                          aria-controls={listId}
+                          onClick={() =>
+                            setRevealed({
+                              key: listKey,
+                              counts: { ...counts, [group.group]: visibleCount + PAGE_SIZE },
+                            })
+                          }
+                        >
+                          Загрузить ещё
+                        </Button>
+                      )}
                     </Card>
                   )}
                 </section>

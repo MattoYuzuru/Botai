@@ -108,7 +108,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full browser suite takes ~19.5 min on hosted runners, before setup/cleanup.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:

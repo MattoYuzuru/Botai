@@ -1,9 +1,11 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { meQuery } from "@/api/queries";
 import { useActiveSpaceStore } from "@/app/active-space";
 import type { DataVariant } from "@/mocks/data-handlers";
+import { seedDeadlines } from "@/mocks/data-seed";
 import type { Scenario } from "@/mocks/db";
 import { createDataServer, NOW } from "@/test/data-server";
 import { renderApp } from "@/test/render-app";
@@ -120,6 +122,86 @@ describe("«Задания»: группы и срочность", () => {
     const sheet = await screen.findByRole("dialog", { name: "Прочитать главы 3–4" });
     expect(within(sheet).getByText("Срок не указан")).toBeInTheDocument();
     expect(within(sheet).queryByText(/Срок по плану курса/)).toBeNull();
+  });
+});
+
+describe("«Задания»: постепенная загрузка", () => {
+  function serveLargeGroups() {
+    const base = seedDeadlines(current.db)[0];
+    if (!base) throw new Error("Нужно задание-образец");
+    const rows = [
+      ...Array.from({ length: 118 }, (_, index) => ({
+        ...base,
+        id: `overdue-${index}`,
+        title: `Просроченное задание ${index + 1}`,
+        dueAt: new Date(NOW - 86_400_000).toISOString(),
+        effectiveDueAt: null,
+        state: "open" as const,
+      })),
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...base,
+        id: `done-${index}`,
+        title: `Сданное задание ${index + 1}`,
+        state: "graded" as const,
+      })),
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...base,
+        id: `undated-${index}`,
+        title: `Задание без срока ${index + 1}`,
+        dueAt: null,
+        effectiveDueAt: null,
+        state: "open" as const,
+      })),
+    ];
+    current.server.use(http.get("*/api/v1/deadlines", () => HttpResponse.json(rows)));
+  }
+
+  it("118 просроченных раскрываются по 10; счётчик полный, остальные группы независимы", async () => {
+    serveLargeGroups();
+    renderApp("/tasks");
+    const overdue = await group("Просрочено");
+    const list = within(overdue);
+    expect(list.getByRole("heading")).toHaveTextContent("Просрочено118");
+    expect(list.getAllByRole("listitem")).toHaveLength(10);
+    await userEvent.click(list.getByRole("button", { name: "Загрузить ещё" }));
+    expect(list.getAllByRole("listitem")).toHaveLength(20);
+    expect(within(await group("Без срока")).getAllByRole("listitem")).toHaveLength(10);
+    for (let page = 0; page < 10; page++) {
+      await userEvent.click(list.getByRole("button", { name: "Загрузить ещё" }));
+    }
+    expect(list.getAllByRole("listitem")).toHaveLength(118);
+    expect(list.queryByRole("button", { name: "Загрузить ещё" })).toBeNull();
+    await userEvent.click(list.getByRole("button", { name: /Просроченное задание 118/ }));
+    expect(await screen.findByRole("dialog", { name: "Просроченное задание 118" })).toBeInTheDocument();
+  });
+
+  it("сданные остаются свёрнуты и тоже раскрываются порциями; смена вуза или аккаунта сбрасывает раскрытие", async () => {
+    serveLargeGroups();
+    const { queryClient } = renderApp("/tasks");
+    const overdue = await group("Просрочено");
+    await userEvent.click(within(overdue).getByRole("button", { name: "Загрузить ещё" }));
+    const done = within(await group("Сдано"));
+    expect(done.queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(done.getByRole("button", { name: /Показать 12/ }));
+    expect(done.getAllByRole("listitem")).toHaveLength(10);
+    await userEvent.click(done.getByRole("button", { name: "Загрузить ещё" }));
+    expect(done.getAllByRole("listitem")).toHaveLength(12);
+    await userEvent.click(done.getByRole("button", { name: "Скрыть" }));
+    await userEvent.click(done.getByRole("button", { name: /Показать 12/ }));
+    expect(done.getAllByRole("listitem")).toHaveLength(12);
+    await userEvent.click(await screen.findByRole("button", { name: /Все вузы/ }));
+    const switcher = await screen.findByRole("dialog", { name: "Вуз" });
+    await userEvent.click(within(switcher).getByRole("button", { name: /Высшая школа экономики/ }));
+    const scoped = await group("Просрочено");
+    await waitFor(() => expect(within(scoped).getAllByRole("listitem")).toHaveLength(10));
+    expect(within(await group("Сдано")).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(scoped).getByRole("button", { name: "Загрузить ещё" }));
+    const me = queryClient.getQueryData(meQuery.queryKey);
+    if (!me) throw new Error("Пользователь не загружен");
+    await act(async () => {
+      queryClient.setQueryData(meQuery.queryKey, { ...me, user: { ...me.user, id: "other-user" } });
+    });
+    await waitFor(() => expect(within(scoped).getAllByRole("listitem")).toHaveLength(10));
   });
 });
 

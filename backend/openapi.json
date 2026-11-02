@@ -4497,6 +4497,45 @@
         "title": "SpaceUpdate",
         "type": "object"
       },
+      "SuggestionIn": {
+        "properties": {
+          "afterMessageId": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "title": "Aftermessageid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "afterMessageId"
+        ],
+        "title": "SuggestionIn",
+        "type": "object"
+      },
+      "SuggestionOut": {
+        "properties": {
+          "afterMessageId": {
+            "title": "Aftermessageid",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "text",
+          "afterMessageId"
+        ],
+        "title": "SuggestionOut",
+        "type": "object"
+      },
       "SyncIn": {
         "properties": {
           "version": {
@@ -6298,6 +6337,58 @@
           }
         },
         "summary": "Thread Runtime",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/chat/threads/{thread_id}/suggestion": {
+      "post": {
+        "operationId": "next_message_suggestion_api_v1_chat_threads__thread_id__suggestion_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Message Suggestion",
         "tags": [
           "agent"
         ]

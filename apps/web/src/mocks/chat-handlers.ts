@@ -403,6 +403,19 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       return HttpResponse.json(state().messages[id] ?? []);
     }),
 
+    http.post("*/api/v1/chat/threads/:threadId/suggestion", async ({ params, request }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const { afterMessageId } = (await request.json()) as { afterMessageId: string };
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      const last = state().messages[id]?.at(-1);
+      return HttpResponse.json({
+        afterMessageId,
+        text: last?.id === afterMessageId && last.role === "agent" ? "Расскажи подробнее" : null,
+      });
+    }),
+
     http.post("*/api/v1/chat/threads/:threadId/calendar-link", async ({ params }) => {
       await wait();
       if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");

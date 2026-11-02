@@ -1,5 +1,4 @@
 import {
-  Banner,
   Button,
   EmptyState,
   IconButton,
@@ -14,6 +13,7 @@ import {
 } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { meQuery } from "@/api/queries";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
 import { resolveDataState, scheduleListState, toScheduleState } from "@/features/data/data-state";
@@ -21,19 +21,11 @@ import { addDays, isSameDay, startOfDay } from "@/features/data/dates";
 import { scheduleQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
-import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
+import { ConflictWarning } from "./conflict-warning";
 import { EventSheet } from "./event-sheet";
 import { sortEvents, toScheduleItem } from "./events";
-import {
-  conflictingCount,
-  conflictSummary,
-  eventsOnDay,
-  stripDays,
-  weekCountLabel,
-  weekOf,
-  weekRangeLabel,
-} from "./week";
+import { eventsOnDay, stripDays, weekCountLabel, weekOf, weekRangeLabel } from "./week";
 
 /**
  * «Расписание» (`/schedule`): лента дней недели и пары выбранного дня; на ноутбуке — неделя сеткой в семь
@@ -44,6 +36,7 @@ export function ScheduleScreen() {
   const directory = useSpaceDirectory();
   const scope = useScope(directory);
   const online = useOnline();
+  const me = useQuery(meQuery);
   const nowMs = useNow(30_000);
   const wide = useMediaQuery("(min-width: 64rem)");
   const queryClient = useQueryClient();
@@ -84,11 +77,8 @@ export function ScheduleScreen() {
 
   const selectedEvent = events.find((row) => row.id === eventId) ?? null;
   const selectedGroup = events.filter((row) => groupIds.includes(row.id));
-  // Конфликтующая пара другого вуза в отфильтрованной неделе не приходит: для карточки берём сводную неделю.
-  const needsPartners =
-    !scope.isAll &&
-    ((selectedEvent?.conflictsWith.length ?? 0) > 0 ||
-      selectedGroup.some((row) => row.conflictsWith.length > 0));
+  // В фильтре нет второй стороны пересечения: полная неделя нужна карточке и устойчивой сигнатуре предупреждения.
+  const needsPartners = !scope.isAll && events.some((row) => row.conflictsWith.length > 0);
   const allWeek = useQuery({
     ...scheduleQuery(undefined, range.start, range.end),
     enabled: ready && needsPartners,
@@ -124,7 +114,6 @@ export function ScheduleScreen() {
   });
   const dayEvents = eventsOnDay(events, day, timeZone);
   const showSpace = directory.spaces.length > 1 && scope.isAll;
-  const conflicts = conflictingCount(events);
   const weekHasPairs = events.length > 0;
   const isCurrentWeek = range.start === weekOf(today, timeZone).start;
   const dayState = scheduleListState(state, dayEvents.length > 0);
@@ -143,7 +132,6 @@ export function ScheduleScreen() {
     >
       <div data-screen="schedule" data-state={state} className="flex flex-col gap-4">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
-        <MascotPresence screen="schedule" />
 
         <div className="flex items-center gap-2">
           <IconButton
@@ -171,10 +159,13 @@ export function ScheduleScreen() {
           )}
         </div>
 
-        {conflicts > 0 && (
-          <Banner tone="warning" icon="warning">
-            {conflictSummary(conflicts)}
-          </Banner>
+        {me.data && (scope.isAll || allWeek.data) && (
+          <ConflictWarning
+            key={me.data.user.id}
+            userId={me.data.user.id}
+            events={events}
+            partnerEvents={partnerPool}
+          />
         )}
 
         {wide ? (

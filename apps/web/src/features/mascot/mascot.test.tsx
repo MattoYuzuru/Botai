@@ -165,9 +165,9 @@ describe("состояние Вари из состояния источнико
     expect(run(["syncing"])).toBe("ready");
   });
 
-  it("вузов нет или подключений нет — «empty» (приглашение подключить, а не «всё сдано»); список не загружен — unknown", () => {
+  it("вузов нет — empty; вуз v4 без старых подключений — ready; список не загружен — unknown", () => {
     expect(run([])).toBe("empty");
-    expect(run(["none", "none"])).toBe("empty");
+    expect(run(["none", "none"])).toBe("ready");
     expect(run(["none", "ok"])).toBe("ready");
     expect(run(["ok"], true, { loaded: false })).toBe("unknown");
     expect(run(["none"], true, { connectionsLoaded: false })).toBe("unknown");
@@ -175,12 +175,12 @@ describe("состояние Вари из состояния источнико
 });
 
 describe("MascotPresence: тихое присутствие и действия", () => {
-  function mount(screenName: "today" | "schedule", scenario: Scenario = "connected") {
+  function mount(screenName: "today" | "schedule" | "deadlines", scenario: Scenario = "connected") {
     setScenario(scenario);
     const root = createRootRoute({
       component: () => (
         <>
-          <MascotPresence screen={screenName === "today" ? "other" : "schedule"} />
+          <MascotPresence screen={screenName === "today" ? "other" : screenName} />
           <Outlet />
         </>
       ),
