@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from botai.agent import actions, conversations, notes, threads
+from botai.agent import actions, conversations, notes, suggestions, threads
 from botai.agent.context_meter import build_context
 from botai.agent.schemas import (
     ApproveIn,
@@ -15,6 +15,8 @@ from botai.agent.schemas import (
     MessageIn,
     MessageOut,
     ReadIn,
+    SuggestionIn,
+    SuggestionOut,
     ThreadCreate,
     ThreadOut,
     ThreadPatch,
@@ -86,6 +88,13 @@ async def post_message(
     thread_id: str, body: MessageIn, user: AuthUser, session: DbSession, services: ServicesDep
 ) -> MessageAccepted:
     return await conversations.post_message(session, services, user.id, thread_id, body)
+
+
+@router.post("/chat/threads/{thread_id}/suggestion", response_model=SuggestionOut)
+async def next_message_suggestion(
+    thread_id: str, body: SuggestionIn, user: AuthUser, session: DbSession, services: ServicesDep
+) -> SuggestionOut:
+    return await suggestions.suggest(session, services, user.id, thread_id, body.after_message_id)
 
 
 @router.post("/chat/threads/{thread_id}/calendar-link", status_code=204)
