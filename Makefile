@@ -3,7 +3,7 @@ SHELL := /bin/bash
 BACKEND := backend
 export DATABASE_URL ?= postgresql+asyncpg://botai:botai@127.0.0.1:55432/botai
 
-.PHONY: setup db db-stop gen migrate check check-backend check-web check-gen test-backend test-web dev-api dev-web dev-worker bench
+.PHONY: setup db db-stop gen migrate check check-ci check-backend check-web check-gen test-backend test-web dev-api dev-web dev-worker bench
 
 setup:            ## install backend and frontend dependencies
 	cd $(BACKEND) && uv sync --frozen
@@ -21,7 +21,10 @@ gen:              ## regenerate contracts copies, OpenAPI and TS types
 migrate:
 	cd $(BACKEND) && uv run --frozen alembic upgrade head
 
-check: check-backend check-web check-gen   ## full gate
+check: check-ci check-backend check-web check-gen   ## full gate
+
+check-ci:
+	python3 -m unittest discover -s scripts/tests -v
 
 check-backend:
 	cd $(BACKEND) && uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run --frozen pyright && uv run --frozen pytest -q
