@@ -21,7 +21,6 @@ import { addDays, isSameDay, startOfDay } from "@/features/data/dates";
 import { scheduleQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
-import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { ConflictWarning } from "./conflict-warning";
 import { EventSheet } from "./event-sheet";
@@ -78,11 +77,8 @@ export function ScheduleScreen() {
 
   const selectedEvent = events.find((row) => row.id === eventId) ?? null;
   const selectedGroup = events.filter((row) => groupIds.includes(row.id));
-  // Конфликтующая пара другого вуза в отфильтрованной неделе не приходит: для карточки берём сводную неделю.
-  const needsPartners =
-    !scope.isAll &&
-    ((selectedEvent?.conflictsWith.length ?? 0) > 0 ||
-      selectedGroup.some((row) => row.conflictsWith.length > 0));
+  // В фильтре нет второй стороны пересечения: полная неделя нужна карточке и устойчивой сигнатуре предупреждения.
+  const needsPartners = !scope.isAll && events.some((row) => row.conflictsWith.length > 0);
   const allWeek = useQuery({
     ...scheduleQuery(undefined, range.start, range.end),
     enabled: ready && needsPartners,
@@ -136,7 +132,6 @@ export function ScheduleScreen() {
     >
       <div data-screen="schedule" data-state={state} className="flex flex-col gap-4">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
-        <MascotPresence screen="schedule" />
 
         <div className="flex items-center gap-2">
           <IconButton
@@ -164,7 +159,14 @@ export function ScheduleScreen() {
           )}
         </div>
 
-        {me.data && <ConflictWarning key={me.data.user.id} userId={me.data.user.id} events={events} />}
+        {me.data && (scope.isAll || allWeek.data) && (
+          <ConflictWarning
+            key={me.data.user.id}
+            userId={me.data.user.id}
+            events={events}
+            partnerEvents={partnerPool}
+          />
+        )}
 
         {wide ? (
           state !== "loading" && !weekHasPairs && (state === "ok" || state === "empty") ? (

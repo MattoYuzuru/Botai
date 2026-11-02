@@ -10,7 +10,6 @@ import {
 } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WallMascot } from "@/features/connect/wall-mascot";
 import type { Scope, SpaceDirectory, SpaceInfo } from "@/features/data/use-space-directory";
@@ -225,19 +224,6 @@ describe("MascotPresence: тихое присутствие и действия"
     expect(container.querySelector("[data-mascot-stage]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Войти снова" })).toBeNull();
   });
-
-  it.each(["today", "schedule", "deadlines"] as const)(
-    "v4: вуз с данными без v3-подключений не приглашает подключить заново: %s",
-    async (screenName) => {
-      const { container } = mount(screenName);
-      current.server.use(http.get("*/api/v1/spaces/:spaceId/connections", () => HttpResponse.json([])));
-      await waitFor(() => {
-        expect(container.querySelector("[data-mascot-stage]")).not.toBeNull();
-      });
-      expect(screen.queryByRole("button", { name: "Подключить вуз" })).toBeNull();
-      expect(container.querySelector("svg.varya")?.getAttribute("data-sit")).toBe("overdue");
-    },
-  );
 
   it("нет данных: приглашение «Подключить вуз» открывает чат с заготовкой в поле ввода", async () => {
     const user = userEvent.setup();

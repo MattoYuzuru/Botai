@@ -19,7 +19,6 @@ import { resolveDataState } from "@/features/data/data-state";
 import { deadlinesQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
-import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { DeadlineSheet } from "./deadline-sheet";
 import { toDeadlineView } from "./deadlines";
@@ -110,7 +109,6 @@ export function TasksScreen() {
     >
       <div data-screen="tasks" data-state={state} className="flex flex-col gap-6">
         <SourceNotices spaces={scope.spaces} nowMs={nowMs} />
-        <MascotPresence screen="deadlines" />
 
         {state === "loading" ? (
           <TasksSkeleton />
