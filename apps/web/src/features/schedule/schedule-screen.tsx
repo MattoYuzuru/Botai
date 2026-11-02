@@ -1,5 +1,4 @@
 import {
-  Banner,
   Button,
   EmptyState,
   IconButton,
@@ -14,6 +13,7 @@ import {
 } from "@botai/design";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { meQuery } from "@/api/queries";
 import { Screen } from "@/app/screen";
 import { ConnectedSpaceSwitcher } from "@/app/space-switcher";
 import { resolveDataState, scheduleListState, toScheduleState } from "@/features/data/data-state";
@@ -23,17 +23,10 @@ import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/feature
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { MascotPresence } from "@/features/mascot/mascot-presence";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
+import { ConflictWarning } from "./conflict-warning";
 import { EventSheet } from "./event-sheet";
 import { sortEvents, toScheduleItem } from "./events";
-import {
-  conflictingCount,
-  conflictSummary,
-  eventsOnDay,
-  stripDays,
-  weekCountLabel,
-  weekOf,
-  weekRangeLabel,
-} from "./week";
+import { eventsOnDay, stripDays, weekCountLabel, weekOf, weekRangeLabel } from "./week";
 
 /**
  * «Расписание» (`/schedule`): лента дней недели и пары выбранного дня; на ноутбуке — неделя сеткой в семь
@@ -44,6 +37,7 @@ export function ScheduleScreen() {
   const directory = useSpaceDirectory();
   const scope = useScope(directory);
   const online = useOnline();
+  const me = useQuery(meQuery);
   const nowMs = useNow(30_000);
   const wide = useMediaQuery("(min-width: 64rem)");
   const queryClient = useQueryClient();
@@ -124,7 +118,6 @@ export function ScheduleScreen() {
   });
   const dayEvents = eventsOnDay(events, day, timeZone);
   const showSpace = directory.spaces.length > 1 && scope.isAll;
-  const conflicts = conflictingCount(events);
   const weekHasPairs = events.length > 0;
   const isCurrentWeek = range.start === weekOf(today, timeZone).start;
   const dayState = scheduleListState(state, dayEvents.length > 0);
@@ -171,11 +164,7 @@ export function ScheduleScreen() {
           )}
         </div>
 
-        {conflicts > 0 && (
-          <Banner tone="warning" icon="warning">
-            {conflictSummary(conflicts)}
-          </Banner>
-        )}
+        {me.data && <ConflictWarning key={me.data.user.id} userId={me.data.user.id} events={events} />}
 
         {wide ? (
           state !== "loading" && !weekHasPairs && (state === "ok" || state === "empty") ? (

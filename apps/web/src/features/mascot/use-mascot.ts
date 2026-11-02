@@ -50,8 +50,8 @@ export function availabilityOf(directory: SpaceDirectory, scope: Scope, online: 
   if (!online || states.includes("offline")) return "offline";
   if (states.includes("reauth")) return "reauth";
   if (states.includes("repairing")) return "repairing";
-  // Вузы есть, подключений нет: приглашение подключить, а не «всё сдано».
-  if (states.every((state) => state === "none")) return "empty";
+  // В v4 источники живут отдельно от старых connections. Сам вуз уже подключён:
+  // отсутствие v3-подключений не означает, что нужно снова приглашать его подключить.
   return "ready";
 }
 

@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WallMascot } from "@/features/connect/wall-mascot";
 import type { Scope, SpaceDirectory, SpaceInfo } from "@/features/data/use-space-directory";
@@ -165,9 +166,9 @@ describe("состояние Вари из состояния источнико
     expect(run(["syncing"])).toBe("ready");
   });
 
-  it("вузов нет или подключений нет — «empty» (приглашение подключить, а не «всё сдано»); список не загружен — unknown", () => {
+  it("вузов нет — empty; вуз v4 без старых подключений — ready; список не загружен — unknown", () => {
     expect(run([])).toBe("empty");
-    expect(run(["none", "none"])).toBe("empty");
+    expect(run(["none", "none"])).toBe("ready");
     expect(run(["none", "ok"])).toBe("ready");
     expect(run(["ok"], true, { loaded: false })).toBe("unknown");
     expect(run(["none"], true, { connectionsLoaded: false })).toBe("unknown");
@@ -175,12 +176,12 @@ describe("состояние Вари из состояния источнико
 });
 
 describe("MascotPresence: тихое присутствие и действия", () => {
-  function mount(screenName: "today" | "schedule", scenario: Scenario = "connected") {
+  function mount(screenName: "today" | "schedule" | "deadlines", scenario: Scenario = "connected") {
     setScenario(scenario);
     const root = createRootRoute({
       component: () => (
         <>
-          <MascotPresence screen={screenName === "today" ? "other" : "schedule"} />
+          <MascotPresence screen={screenName === "today" ? "other" : screenName} />
           <Outlet />
         </>
       ),
@@ -224,6 +225,19 @@ describe("MascotPresence: тихое присутствие и действия"
     expect(container.querySelector("[data-mascot-stage]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Войти снова" })).toBeNull();
   });
+
+  it.each(["today", "schedule", "deadlines"] as const)(
+    "v4: вуз с данными без v3-подключений не приглашает подключить заново: %s",
+    async (screenName) => {
+      const { container } = mount(screenName);
+      current.server.use(http.get("*/api/v1/spaces/:spaceId/connections", () => HttpResponse.json([])));
+      await waitFor(() => {
+        expect(container.querySelector("[data-mascot-stage]")).not.toBeNull();
+      });
+      expect(screen.queryByRole("button", { name: "Подключить вуз" })).toBeNull();
+      expect(container.querySelector("svg.varya")?.getAttribute("data-sit")).toBe("overdue");
+    },
+  );
 
   it("нет данных: приглашение «Подключить вуз» открывает чат с заготовкой в поле ввода", async () => {
     const user = userEvent.setup();
