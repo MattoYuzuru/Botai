@@ -14,7 +14,33 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.snapshot.outputs.sha }}
+      tree: ${{ steps.snapshot.outputs.tree }}
+      reuse: ${{ steps.reuse.outputs.reuse || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - id: snapshot
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - id: reuse
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_reuse.py
+
   backend:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -37,6 +63,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -57,10 +85,14 @@ jobs:
           BOTAI_SANDBOX_IMAGE: botai-sandbox:ci
 
   web:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -73,10 +105,14 @@ jobs:
       - run: pnpm --filter @botai/web build
 
   web-e2e:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -93,10 +129,14 @@ jobs:
           CI: "true"
 
   generated:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -112,10 +152,16 @@ jobs:
         run: ./scripts/gen.sh && git diff --exit-code -- backend/openapi.json backend/src/botai/contracts/schemas apps/web/src/api
 
   guards:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: CI reuse regression tests
+        run: python3 -m unittest discover -s scripts/tests -v
       - name: No secrets in tracked files
         run: |
           if git grep -nE 'sk-[a-f0-9]{32}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' -- ':!*.md'; then
@@ -125,10 +171,29 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [backend, web, web-e2e, generated, guards]
+    needs: [plan, backend, web, web-e2e, generated, guards]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - run: |
-          for r in ${{ join(needs.*.result, ' ') }}; do
-            [ "$r" = "success" ] || { echo "a required job did not succeed: $r"; exit 1; }
-          done
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha || github.sha }}
+      - name: Require full checks or verified PR evidence
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          REUSE: ${{ needs.plan.outputs.reuse }}
+          RESULTS: ${{ needs.backend.result }} ${{ needs.web.result }} ${{ needs.web-e2e.result }} ${{ needs.generated.result }} ${{ needs.guards.result }}
+        run: bash scripts/ci_gate.sh
+      - name: Record the fully tested PR tree
+        if: github.event_name == 'pull_request'
+        env:
+          TESTED_TREE: ${{ needs.plan.outputs.tree }}
+        run: printf '%s\n' "$TESTED_TREE" > "$RUNNER_TEMP/ci-tree.txt"
+      - name: Publish PR CI receipt
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-tree-v1-${{ needs.plan.outputs.tree }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-tree.txt
+          if-no-files-found: error
+          retention-days: 14
