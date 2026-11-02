@@ -2,6 +2,7 @@ import {
   Badge,
   Banner,
   Button,
+  countRu,
   formatDayWithWeekday,
   formatTime,
   Icon,
@@ -22,6 +23,10 @@ export interface EventSheetProps {
   event: ScheduleEvent | null;
   /** Пары, среди которых ищутся участники пересечения. */
   events: readonly ScheduleEvent[];
+  /** Separate events grouped visually on the selected calendar day. */
+  groupedEvents?: readonly ScheduleEvent[];
+  groupDay?: number;
+  timeZone?: string;
   spaces: ReadonlyMap<string, SpaceInfo>;
   nowMs: number;
   onClose: () => void;
@@ -35,18 +40,56 @@ export interface EventSheetProps {
  * «Открыть в личном кабинете» ведёт на страницу интерфейса источника, а не на адрес API. На ноутбуке шит —
  * правая панель.
  */
-export function EventSheet({ event, events, spaces, nowMs, onClose }: EventSheetProps) {
+export function EventSheet({
+  event,
+  events,
+  groupedEvents = [],
+  groupDay,
+  timeZone,
+  spaces,
+  nowMs,
+  onClose,
+}: EventSheetProps) {
   const last = useRef<ScheduleEvent | null>(null);
   if (event) last.current = event;
   const shown = event ?? last.current;
+  const lastGroup = useRef<readonly ScheduleEvent[]>([]);
+  if (event) lastGroup.current = groupedEvents;
+  const group = event ? groupedEvents : lastGroup.current;
+  const grouped = group.length > 1;
   return (
     <Sheet
       open={event !== null}
       onOpenChange={(open) => !open && onClose()}
-      title={shown?.title ?? "Пара"}
-      description={shown ? describeDay(shown, spaces, nowMs) : undefined}
+      title={grouped ? "События в это время" : (shown?.title ?? "Пара")}
+      description={
+        grouped && groupDay !== undefined
+          ? formatDayWithWeekday(groupDay, nowMs, timeZone)
+          : shown
+            ? describeDay(shown, spaces, nowMs)
+            : undefined
+      }
     >
-      {shown && <EventDetails event={shown} events={events} spaces={spaces} nowMs={nowMs} />}
+      {grouped ? (
+        <div className="flex flex-col gap-6">
+          <p className="type-ui text-fg-muted">
+            {countRu(group.length, ["событие", "события", "событий"])}. Подробности и источники каждого —
+            ниже.
+          </p>
+          {group.map((member) => (
+            <section
+              key={member.id}
+              aria-label={member.title}
+              className="flex flex-col gap-3 border-t border-border pt-4"
+            >
+              <h3 className="type-heading text-fg">{member.title}</h3>
+              <EventDetails event={member} events={events} spaces={spaces} nowMs={nowMs} />
+            </section>
+          ))}
+        </div>
+      ) : (
+        shown && <EventDetails event={shown} events={events} spaces={spaces} nowMs={nowMs} />
+      )}
     </Sheet>
   );
 }
@@ -139,7 +182,7 @@ function EventDetails({
       )}
 
       <SourceCitation
-        title={connection?.title ?? "Расписание"}
+        title={event.sources?.[0]?.title ?? connection?.title ?? "Расписание"}
         url={openUrl}
         fetchedAt={Date.parse(event.provenance.fetchedAt)}
         nowMs={nowMs}

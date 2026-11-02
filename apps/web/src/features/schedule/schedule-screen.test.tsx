@@ -18,7 +18,7 @@ function useScenario(scenario: Scenario, variant: DataVariant | null = null) {
 }
 
 /** Ноутбук: `(min-width: 64rem)` совпадает, остальные запросы — нет. */
-function useLaptop() {
+function setLaptop() {
   vi.spyOn(window, "matchMedia").mockImplementation(
     (query: string) =>
       ({
@@ -61,12 +61,7 @@ describe("«Расписание»: неделя и день", () => {
     expect(days[1]).toHaveAttribute("aria-current", "date");
     const list = screen.getByRole("region", { name: "вторник, 27 октября" });
     const rows = within(list).getAllByRole("listitem");
-    expect(rows.map((row) => row.querySelector("time")?.textContent)).toEqual([
-      "09:30",
-      "11:10",
-      "11:30",
-      "15:00",
-    ]);
+    expect(rows.map((row) => row.querySelector("time")?.textContent)).toEqual(["09:30", "11:10", "15:00"]);
     expect(within(list).getByText("ЦУ")).toBeInTheDocument();
   });
 
@@ -150,7 +145,11 @@ describe("«Расписание»: карточка пары по пресет�
     await waitFor(() => expect(screenState()).toBe("ok"));
     const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
     await userEvent.click(within(list).getByRole("button", { name: /Алгоритмы и структуры данных/ }));
-    return screen.findByRole("dialog", { name: "Алгоритмы и структуры данных" });
+    const sheet = await screen.findByRole("dialog", { name: "События в это время" });
+    expect(
+      within(sheet).getByRole("region", { name: "Основы продуктового менеджмента" }),
+    ).toBeInTheDocument();
+    return within(sheet).getByRole("region", { name: "Алгоритмы и структуры данных" });
   };
 
   it("в списке дня у пары бейдж типа словами источника и детали с иконками: аудитория, адрес, преподаватель, группа", async () => {
@@ -159,7 +158,8 @@ describe("«Расписание»: карточка пары по пресет�
     const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
     const card = within(list).getByRole("button", { name: /Алгоритмы и структуры данных/ });
     expect(within(card).getByText("Текущий рубежный контроль")).toBeInTheDocument();
-    const facts = [...card.querySelectorAll("[data-fact]")].map((fact) => [
+    const member = within(card).getByText("Алгоритмы и структуры данных").closest("[data-event-id]");
+    const facts = [...(member?.querySelectorAll("[data-fact]") ?? [])].map((fact) => [
       fact.getAttribute("data-fact"),
       fact.querySelector("svg")?.getAttribute("data-icon"),
       fact.textContent,
@@ -271,7 +271,8 @@ describe("«Расписание»: карточка пары по пресет�
     await waitFor(() => expect(screenState()).toBe("ok"));
     const list = await screen.findByRole("region", { name: "вторник, 27 октября" });
     await userEvent.click(within(list).getByRole("button", { name: /Основы продуктового менеджмента/ }));
-    const sheet = await screen.findByRole("dialog", { name: "Основы продуктового менеджмента" });
+    const group = await screen.findByRole("dialog", { name: "События в это время" });
+    const sheet = within(group).getByRole("region", { name: "Основы продуктового менеджмента" });
     expect(within(sheet).getByText("Онлайн")).toBeInTheDocument();
     expect(within(sheet).getByRole("link", { name: "Подключиться к занятию" })).toHaveAttribute(
       "href",
@@ -359,7 +360,7 @@ describe("«Расписание»: источники одного вуза с�
   });
 
   it("на ноутбуке то же в колонке недели", async () => {
-    useLaptop();
+    setLaptop();
     serve(merged({ disagreement: { kind: "teacher", detail: "«Календарь» — преподаватель Иванов" } }));
     renderApp("/schedule");
     const grid = await screen.findByRole("region", { name: "Неделя" });
@@ -373,7 +374,7 @@ describe("«Расписание»: источники одного вуза с�
 
 describe("«Расписание»: ноутбук", () => {
   it("неделя сеткой в семь колонок вместо ленты дней, пересечения подписаны", async () => {
-    useLaptop();
+    setLaptop();
     renderApp("/schedule");
     const grid = await screen.findByRole("region", { name: "Неделя" });
     await waitFor(() => expect(screenState()).toBe("ok"));
@@ -438,5 +439,46 @@ describe("«Расписание»: состояния данных", () => {
     await screen.findByRole("heading", { level: 1, name: "Расписание" });
     expect(document.querySelector("[aria-busy=true]")).not.toBeNull();
     expect(screen.queryByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toBeNull();
+  });
+});
+
+describe("«Расписание»: разные календарные события в одном блоке", () => {
+  it.each([false, true])("сохраняет окно на весь день и записи внутри дня; desktop=%s", async (desktop) => {
+    if (desktop) setLaptop();
+    const spaceId = current.db.spaces[0]?.id;
+    const available = eventFixture({
+      id: "availability",
+      title: "Окна консультаций",
+      startsAt: "2026-10-26T21:00:00Z",
+      endsAt: "2026-10-27T21:00:00Z",
+      kind: "other",
+      attributes: [{ label: "Весь день", value: "Да" }],
+      sources: [{ connectionId: "yandex", title: "Яндекс Календарь" }],
+      provenance: provenanceFixture({ spaceId, connectionId: "yandex" }),
+    });
+    const booking = eventFixture({
+      id: "booking",
+      title: "Запись на консультацию",
+      startsAt: "2026-10-27T08:00:00Z",
+      endsAt: "2026-10-27T09:00:00Z",
+      sources: [{ connectionId: "google", title: "Google Календарь" }],
+      provenance: provenanceFixture({ spaceId, connectionId: "google" }),
+    });
+    current.server.use(http.get("*/api/v1/schedule", () => HttpResponse.json([booking, available])));
+    renderApp("/schedule");
+    const card = await screen.findByRole("button", { name: /Окна консультаций.*Запись на консультацию/ });
+    expect(card).toHaveAttribute("data-event-count", "2");
+    expect(card).toHaveAttribute("data-schedule-card", desktop ? "compact" : "expanded");
+    expect(card).not.toHaveAttribute("data-conflict");
+    expect(within(card).getByText("Весь день")).toBeInTheDocument();
+    await userEvent.click(card);
+    const sheet = await screen.findByRole("dialog", { name: "События в это время" });
+    const first = within(sheet).getByRole("region", { name: "Окна консультаций" });
+    const second = within(sheet).getByRole("region", { name: "Запись на консультацию" });
+    expect(within(first).getByText("Весь день")).toBeInTheDocument();
+    expect(within(second).getByText("11:00–12:00")).toBeInTheDocument();
+    expect(within(first).getByText("Яндекс Календарь")).toBeInTheDocument();
+    expect(within(second).getByText("Google Календарь")).toBeInTheDocument();
+    expect(within(sheet).queryByText("Пересекается по времени")).toBeNull();
   });
 });

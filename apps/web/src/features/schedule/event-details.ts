@@ -1,6 +1,7 @@
-import { formatTime, type IconName, safeHttpUrl } from "@botai/design";
+import { DEFAULT_TIME_ZONE, formatTime, type IconName, safeHttpUrl } from "@botai/design";
 import type { ScheduleEvent } from "@/api/types";
 import type { EventFormat, EventKind } from "@/features/data/types";
+import { isAllDayEvent } from "./all-day";
 
 export const EVENT_KIND_LABEL: Record<EventKind, string | null> = {
   lecture: "Лекция",
@@ -79,7 +80,9 @@ export const EVENT_FIELDS: readonly EventFieldDef[] = [
     label: "Время",
     compact: false,
     text: (event, { timeZone }) =>
-      `${formatTime(parse(event.startsAt), timeZone)}–${formatTime(parse(event.endsAt), timeZone)}`,
+      isAllDayEvent({ ...event, attributes: event.attributes ?? [] }, timeZone ?? DEFAULT_TIME_ZONE)
+        ? "Весь день"
+        : `${formatTime(parse(event.startsAt), timeZone)}–${formatTime(parse(event.endsAt), timeZone)}`,
   },
   {
     key: "lesson",
@@ -191,7 +194,8 @@ export function eventDetails(event: EventDetailsSource, context: EventFieldConte
   for (const [index, attribute] of (event.attributes ?? []).entries()) {
     const label = clean(attribute.label);
     const text = clean(attribute.value);
-    if (!label || !text || seen.has(text.toLowerCase())) continue;
+    if (!label || !text || seen.has(text.toLowerCase()) || /^(весь день|all[ _-]?day)$/i.test(label))
+      continue;
     seen.add(text.toLowerCase());
     const icon = attributeIcon(label);
     // Компактная карточка берёт из атрибутов только учебное здание: остальное — в шите.

@@ -1,0 +1,34 @@
+/* Desktop week cards reveal their details downwards without covering neighbouring events.
+ * Touch devices keep the full presentation. Keyboard focus reveals the same preview as hover. */
+.schedule-card-details {
+  grid-template-rows: 1fr;
+}
+
+@media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+  [data-schedule-card="compact"] .schedule-card-details {
+    grid-template-rows: 0fr;
+    visibility: hidden;
+    opacity: 0;
+    transition:
+      grid-template-rows var(--default-transition-duration) var(--ease-soft),
+      opacity var(--default-transition-duration) var(--ease-soft),
+      visibility var(--default-transition-duration);
+  }
+
+  [data-schedule-card="compact"] .schedule-card-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  [data-schedule-card="compact"]:is(:hover, :focus-visible, :focus-within) .schedule-card-details {
+    grid-template-rows: 1fr;
+    visibility: visible;
+    opacity: 1;
+  }
+
+  [data-schedule-card="compact"]:is(:hover, :focus-visible, :focus-within) .schedule-card-title {
+    -webkit-line-clamp: unset;
+  }
+}
