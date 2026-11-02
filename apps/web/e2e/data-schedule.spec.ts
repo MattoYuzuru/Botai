@@ -66,7 +66,11 @@ test.describe("«Расписание»", () => {
       .first()
       .click();
     const sheet = page.getByRole("dialog", { name: "События в это время" });
-    await expect(sheet.getByText(/Основы продуктового менеджмента.*ЦУ/)).toBeVisible();
+    await expect(
+      sheet
+        .getByRole("region", { name: "Алгоритмы и структуры данных" })
+        .getByText(/Основы продуктового менеджмента.*ЦУ/),
+    ).toBeVisible();
     await expect(sheet.getByText(/Получено/).first()).toBeVisible();
     await expect(sheet.getByRole("region", { name: "Алгоритмы и структуры данных" })).toBeVisible();
     await expect(sheet.getByRole("region", { name: "Основы продуктового менеджмента" })).toBeVisible();
@@ -83,7 +87,12 @@ test.describe("«Расписание»", () => {
     await expect(card.getByText("Текущий рубежный контроль")).toBeVisible();
     await expect(card.locator("[data-fact=address] svg")).toHaveAttribute("data-icon", "address");
     await expect(card.locator("[data-fact=room] svg")).toHaveAttribute("data-icon", "room");
-    await expect(card.locator("[data-fact=group]")).toContainText("ПМ-3 курс 26/27");
+    await expect(
+      card
+        .locator("[data-event-id]")
+        .filter({ hasText: "Алгоритмы и структуры данных" })
+        .locator("[data-fact=group]"),
+    ).toContainText("ПМ-3 курс 26/27");
     await card.click();
     const sheet = page
       .getByRole("dialog", { name: "События в это время" })
