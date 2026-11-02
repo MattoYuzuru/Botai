@@ -1,3 +1,4 @@
+import type { components } from "@/api/schema.gen";
 import type { Message } from "@/api/types";
 import {
   type MessageAccepted,
@@ -11,10 +12,7 @@ import {
 const base = "/api/v1/chat/threads";
 const thread = (id: string) => `${base}/${encodeURIComponent(id)}`;
 
-export interface ChatSuggestion {
-  text: string | null;
-  afterMessageId: string;
-}
+export type ChatSuggestion = components["schemas"]["SuggestionOut"];
 
 /** Эндпоинты чата агент-хаба v3 (§3.2). Один агент на тред: ни `purpose`, ни отдельного разговора подключения. */
 export const chatApi = {
