@@ -131,7 +131,7 @@ describe("«Расписание»: неделя и день", () => {
     const dismiss = await screen.findByRole("button", { name: "Скрыть предупреждение о пересечениях" });
     await userEvent.click(dismiss);
     expect(screen.queryByRole("button", { name: "Скрыть предупреждение о пересечениях" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "ВШЭ", exact: true }));
+    await userEvent.click(screen.getByRole("button", { name: "ВШЭ" }));
     const switcher = await screen.findByRole("dialog", { name: "Вуз" });
     await userEvent.click(within(switcher).getByRole("button", { name: /Все вузы/ }));
     await waitFor(() => expect(screenState()).toBe("ok"));
