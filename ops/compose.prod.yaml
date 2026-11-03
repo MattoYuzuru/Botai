@@ -57,6 +57,10 @@ x-app: &app
     BOTAI_AGENT_LIMITS_SECONDS: "${BOTAI_AGENT_LIMITS_SECONDS:-1800}"
     BOTAI_AGENT_LIMITS_TOKENS: "${BOTAI_AGENT_LIMITS_TOKENS:-3000000}"
     BOTAI_AGENT_LIMITS_USD: "${BOTAI_AGENT_LIMITS_USD:-0.30}"
+    # Per-user daily model quota (backend/src/botai/usage/service.py): tokens per quota day,
+    # `0` disables the daily cap. The owner can raise it in compose.vars for incident follow-up
+    # (docs/development/diagnostics.md, «Ретрай хода из чата»); the pool cap still applies.
+    QUOTA_TOKENS_PER_DAY: "${QUOTA_TOKENS_PER_DAY:-20000000}"
     # RAG (docs/v4/18-rag.md): on in production, local offline embeddings by default (no key);
     # the owner switches to an API provider with BOTAI_RAG_* + BOTAI_EMBEDDING_API_KEY in
     # compose.vars/secrets. The artifact root is the same persistent host dir as sources.
