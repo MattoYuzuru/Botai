@@ -57,6 +57,11 @@ export {
   type ContextSourceItem,
   formatTokens,
 } from "./context-meter/context-meter";
+export {
+  DataTable,
+  type DataTableColumn,
+  type DataTableProps,
+} from "./data-table/data-table";
 export { DeadlineItem, type DeadlineItemProps } from "./deadline-item/deadline-item";
 export { Dialog, type DialogProps } from "./dialog/dialog";
 export { EmptyState, type EmptyStateProps } from "./empty-state/empty-state";
@@ -64,7 +69,15 @@ export { Field, type FieldProps, useFieldControl } from "./field/field";
 export { FilePicker, type FilePickerProps, formatBytes } from "./file-picker/file-picker";
 export { GradeTile, type GradeTileProps } from "./grade-tile/grade-tile";
 export { HandoffCard, type HandoffCardProps } from "./handoff-card/handoff-card";
-export { Icon, type IconName, type IconProps, type IconSize, iconRegistry } from "./icon";
+export {
+  ICON_NAMES,
+  Icon,
+  type IconName,
+  type IconProps,
+  type IconSize,
+  iconRegistry,
+  isIconName,
+} from "./icon";
 export { IconButton, type IconButtonProps } from "./icon-button/icon-button";
 export { Input, type InputProps } from "./input/input";
 export {
@@ -101,6 +114,13 @@ export {
 } from "./mascot-bubble/mascot-bubble";
 export { HOP_MS, MascotDock, type MascotDockProps } from "./mascot-dock/mascot-dock";
 export { MascotStage, type MascotStageProps, REACTION_MS } from "./mascot-stage/mascot-stage";
+export {
+  MONOGRAM_MAX_CHARS,
+  MonogramBadge,
+  type MonogramBadgeProps,
+  monogramText,
+} from "./monogram-badge/monogram-badge";
+export { Panel, type PanelProps, type PanelState } from "./panel/panel";
 export { PasswordInput, type PasswordInputProps } from "./password-input/password-input";
 export {
   PlanCard,
@@ -108,6 +128,7 @@ export {
   type PlanStep,
   type PlanStepState,
 } from "./plan-card/plan-card";
+export { ProfileCard, type ProfileCardProps, type ProfileField } from "./profile-card/profile-card";
 export { ProgressRail, type ProgressRailProps } from "./progress-rail/progress-rail";
 export {
   MAX_QUICK_REPLIES,
@@ -121,6 +142,14 @@ export {
   type RadioGroupProps,
   type RadioItem,
 } from "./radio-group/radio-group";
+export {
+  type RankItem,
+  RankList,
+  type RankListProps,
+  RankRow,
+  type RankRowProps,
+  rankSummary,
+} from "./rank-list/rank-list";
 export {
   ScheduleDay,
   type ScheduleDayProps,
@@ -158,6 +187,14 @@ export {
   type SourceStatusBarProps,
 } from "./source-status/source-status-bar";
 export { Spinner } from "./spinner/spinner";
+export {
+  StatGrid,
+  type StatGridProps,
+  StatTile,
+  type StatTileProps,
+  type StatTrend,
+  type StatTrendDirection,
+} from "./stat-tile/stat-tile";
 export { Swatch, type SwatchProps } from "./swatch/swatch";
 export { Switch, type SwitchProps } from "./switch/switch";
 export { SyncIndicator, type SyncIndicatorProps, type SyncState } from "./sync-indicator/sync-indicator";
