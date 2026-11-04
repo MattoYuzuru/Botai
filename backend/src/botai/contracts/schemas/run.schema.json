@@ -119,7 +119,7 @@
     "runResult": {
       "type": "object",
       "title": "RunResult",
-      "description": "Итог run (runtime.RunResult): ответ, счётчики, чекпоинт messages и trace; can_resume для paused/step_limit/time_limit/token_limit/cost_limit.",
+      "description": "Итог run (runtime.RunResult): ответ, счётчики, чекпоинт messages и trace; can_resume для paused/cancelled/hard_stop/step_limit/time_limit/token_limit/cost_limit и для ошибок провайдера, после которых разговор цел (error с кодом llm_unavailable, quota_exceeded или llm_error).",
       "additionalProperties": false,
       "required": ["run_id", "status", "trace"],
       "properties": {
@@ -134,6 +134,12 @@
         "limit_reached": { "type": ["string", "null"] },
         "error_code": { "type": ["string", "null"] },
         "error_detail": { "type": "string", "default": "" },
+        "error_extra": {
+          "type": "object",
+          "description": "Данные ошибки провайдера (например, scope и resetsAt для quota_exceeded); по ним продолжение цепочки решает, сколько ждать.",
+          "additionalProperties": true,
+          "default": {}
+        },
         "messages": { "type": "array", "items": { "$ref": "#/$defs/llmMessage" } },
         "trace": { "$ref": "#/$defs/runTrace" }
       }
