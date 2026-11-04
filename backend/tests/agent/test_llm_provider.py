@@ -284,20 +284,31 @@ async def test_retries_5xx_twice_then_succeeds() -> None:
     out = await provider(wire, sleeps=sleeps).complete(req())
     assert out.content == "ок"
     assert len(wire.requests) == 3
-    assert len(sleeps) == 2
+    assert sleeps == pytest.approx([1.0, 2.0], rel=0.25)  # the first two steps of the backoff
 
 
-async def test_gives_up_after_two_retries_with_llm_unavailable() -> None:
+async def test_gives_up_after_four_retries_with_llm_unavailable() -> None:
+    sleeps: list[float] = []
     wire = Wire(lambda _r: httpx.Response(503))
     gate = FakeGate()
     with usage_scope("U1", "J1"), pytest.raises(BotaiError) as exc:
-        await provider(wire, gate=gate).complete(req())
+        await provider(wire, gate=gate, sleeps=sleeps).complete(req())
     assert exc.value.code == ErrorCode.LLM_UNAVAILABLE
     assert exc.value.status == 503
-    assert len(wire.requests) == 3
+    assert len(wire.requests) == 5  # the first attempt plus four retries
+    assert sleeps == pytest.approx([1.0, 2.0, 5.0, 10.0], rel=0.25)  # jitter is ±25 %
     assert gate.recorded == []  # nothing is billed for a failed call
     assert TEST_KEY not in exc.value.detail
     assert "http" not in exc.value.detail.lower()
+
+
+async def test_retry_after_above_the_cap_is_capped_at_30_seconds() -> None:
+    sleeps: list[float] = []
+    wire = Wire(lambda _r: httpx.Response(503, headers={"retry-after": "120"}))
+    with pytest.raises(BotaiError):
+        await provider(wire, sleeps=sleeps).complete(req())
+    assert len(wire.requests) == 5
+    assert sleeps == [30.0] * 4  # the provider's 120 s would stall the run for two minutes
 
 
 async def test_429_honours_retry_after_and_timeouts_are_retried() -> None:

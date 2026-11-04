@@ -9,7 +9,7 @@ What the provider does, in order, for every `complete()`:
    `llm_profile_*` settings for every field the request leaves unset;
 2. checks the user's quota (`botai.usage.service.check_quota`) when a usage scope is active;
 3. sends the request (streaming by default: 15 s idle timeout between chunks; non-streaming:
-   60 s), retrying twice on 5xx / 429 / timeouts / broken streams;
+   60 s), retrying four times (five attempts) on 5xx / 429 / timeouts / broken streams;
 4. maps `usage` (cache hit / miss, output, reasoning) and records it after success.
 
 The API key is read from `settings.deepseek_api_key` only to build the `Authorization` header.
@@ -59,13 +59,14 @@ log = logging.getLogger("botai.agent.llm")
 DEEPSEEK_HOST = "api.deepseek.com"
 CHAT_PATH = "/chat/completions"
 
-# LLD §5: 60 s per call; for a stream, 15 s between chunks. Two retries on 5xx/429/timeouts.
+# LLD §5: 60 s per call; for a stream, 15 s between chunks. Four retries (five attempts) on
+# 5xx/429/timeouts: backoff 1/2/5/10 s with jitter, `Retry-After` honoured up to 30 s.
 CALL_TIMEOUT_S = 60.0
 STREAM_IDLE_TIMEOUT_S = 15.0
 STREAM_TOTAL_CAP_S = 600.0
-RETRIES = 2
-BACKOFF_S = (1.0, 3.0)
-MAX_RETRY_AFTER_S = 20.0
+RETRIES = 4
+BACKOFF_S = (1.0, 2.0, 5.0, 10.0)
+MAX_RETRY_AFTER_S = 30.0
 
 # `max_tokens` bounds answer + reasoning in thinking mode. Callers think in answer tokens, so the
 # provider adds headroom for the chain of thought (otherwise `learn` with the default 2000 would
