@@ -45,6 +45,8 @@ from botai.db.models import (
     Location,
     NewsItem,
     Person,
+    ProfileField,
+    RankingEntry,
     ScheduleEvent,
     Space,
 )
@@ -59,7 +61,9 @@ from botai.domain.schemas import (
     GradeOut,
     NewsOut,
     PersonOut,
+    ProfileFieldOut,
     Provenance,
+    RankingEntryOut,
     ScheduleEventOut,
     TodayOut,
 )
@@ -75,6 +79,8 @@ _SECTION_TABLES = (
     ("people", Person),
     ("locations", Location),
     ("news", NewsItem),
+    ("profile", ProfileField),
+    ("ranking", RankingEntry),
 )
 
 # A document of a source the student switched off is not shown or searched anywhere (FR-054): like
@@ -107,6 +113,8 @@ _PRIORITY_KIND = {
     "people": "people",
     "locations": "locations",
     "news": "news",
+    "profile": "profile",
+    "ranking": "ranking",
 }
 
 
@@ -160,27 +168,38 @@ def _event_source(row: Any, live: LiveSources) -> EventSource:
     return EventSource(connection_id=row.connection_id, source_id=row.source_id, title=source.title)
 
 
-async def _course_titles(
+async def _course_refs(
     session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Any]
-) -> dict[tuple[str, str], str]:
-    """Titles of the courses the given rows refer to, looked up by the row's own provenance: a v3
-    row resolves against its connection's courses, a v4 row against its source's (one query)."""
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """`(id, title)` of the courses the given rows refer to, looked up by the row's own
+    provenance: a v3 row resolves against its connection's courses, a v4 row against its source's
+    (one query)."""
     wanted = {row.course_external_id for row in rows if row.course_external_id}
     if not wanted:
         return {}
     found = await session.execute(
-        select(Course.connection_id, Course.source_id, Course.external_id, Course.title).where(
+        select(
+            Course.id, Course.connection_id, Course.source_id, Course.external_id, Course.title
+        ).where(
             Course.user_id == user_id,
             live.filter_of(Course),
             Course.external_id.in_(wanted),
         )
     )
-    out: dict[tuple[str, str], str] = {}
-    for connection_id, source_id, external_id, title in found.all():
+    out: dict[tuple[str, str], tuple[str, str]] = {}
+    for course_id, connection_id, source_id, external_id, title in found.all():
         key = source_id if source_id is not None and source_id in live.sources else connection_id
         if key is not None:
-            out[(key, external_id)] = title
+            out[(key, external_id)] = (course_id, title)
     return out
+
+
+async def _course_titles(
+    session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Any]
+) -> dict[tuple[str, str], str]:
+    """Titles of the courses the given rows refer to (see `_course_refs`)."""
+    refs = await _course_refs(session, user_id, live, rows)
+    return {key: title for key, (_, title) in refs.items()}
 
 
 async def _assignment_descriptions(
@@ -602,10 +621,11 @@ async def list_grades(
             key_of=lambda row: _grade_key(row, live),
         )
     ]
-    titles = await _course_titles(session, user_id, live, kept)
+    courses = await _course_refs(session, user_id, live, kept)
     out: list[GradeOut] = []
     for r in kept:
         source = live.resolve(r)
+        course = courses.get((source.id, r.course_external_id or ""))
         out.append(
             GradeOut(
                 id=r.id,
@@ -613,9 +633,12 @@ async def list_grades(
                 value=r.value,
                 scale=r.scale,
                 weight=r.weight,
-                course_title=titles.get((source.id, r.course_external_id or "")),
+                course_title=course[1] if course else None,
                 graded_at=r.graded_at,
                 provenance=_prov(r, live),
+                value_num=r.value_num,
+                scale_max=r.scale_max,
+                course_id=course[0] if course else None,
             )
         )
     return out
@@ -717,6 +740,115 @@ async def list_news(
             body=r.body,
             published_at=r.published_at,
             url=r.url,
+            provenance=_prov(r, live),
+        )
+        for r in kept
+    ]
+
+
+def _profile_key(row: ProfileField, live: LiveSources) -> tuple[str, str]:
+    return (live.resolve(row).space_id, _text_key(row.field))
+
+
+async def list_profile(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    space_id: str | None = None,
+    now: datetime | None = None,
+) -> list[ProfileFieldOut]:
+    """The fields of the student's card, grouped as the source groups them."""
+    now = now or SystemClock().now()
+    await _require_space(session, user_id, space_id)
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
+        return []
+    rows = list(
+        await session.scalars(
+            select(ProfileField)
+            .where(ProfileField.user_id == user_id, live.filter_of(ProfileField))
+            .order_by(
+                ProfileField.group_text.asc().nulls_first(), ProfileField.label, ProfileField.id
+            )
+            .limit(MAX_ROWS)
+        )
+    )
+    kind = _PRIORITY_KIND["profile"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[ProfileField] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _profile_key(row, live),
+        )
+    ]
+    return [
+        ProfileFieldOut(
+            id=r.id,
+            field=r.field,
+            label=r.label,
+            value=r.value,
+            group=r.group_text,
+            provenance=_prov(r, live),
+        )
+        for r in kept
+    ]
+
+
+def _ranking_key(row: RankingEntry, live: LiveSources) -> tuple[str, str, int, str]:
+    return (live.resolve(row).space_id, _text_key(row.board), row.position, _text_key(row.label))
+
+
+async def list_ranking(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    space_id: str | None = None,
+    board: str | None = None,
+    now: datetime | None = None,
+) -> list[RankingEntryOut]:
+    """Places of the rating boards, by board and place; `board` narrows to one board."""
+    now = now or SystemClock().now()
+    await _require_space(session, user_id, space_id)
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    if live.is_empty:
+        return []
+    stmt = select(RankingEntry).where(RankingEntry.user_id == user_id, live.filter_of(RankingEntry))
+    if board is not None:
+        stmt = stmt.where(RankingEntry.board == board)
+    rows = list(
+        await session.scalars(
+            stmt.order_by(RankingEntry.board, RankingEntry.position, RankingEntry.id).limit(
+                MAX_ROWS
+            )
+        )
+    )
+    kind = _PRIORITY_KIND["ranking"]
+    preferences = await sources.preferences(session, user_id, live, [kind])
+    kept: list[RankingEntry] = [
+        row
+        for row in sources.dedupe_preferring(
+            rows,
+            live=live,
+            preferences=preferences,
+            kind=kind,
+            key_of=lambda row: _ranking_key(row, live),
+        )
+    ]
+    return [
+        RankingEntryOut(
+            id=r.id,
+            board=r.board,
+            position=r.position,
+            label=r.label,
+            score=r.score,
+            score_num=r.score_num,
+            is_me=r.is_me,
+            total=r.total,
+            period=r.period,
             provenance=_prov(r, live),
         )
         for r in kept

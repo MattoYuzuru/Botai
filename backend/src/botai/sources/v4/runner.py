@@ -43,21 +43,19 @@ from botai.agent.v4.executor import (
 )
 from botai.agent.v4.http import build_client
 from botai.browser.session import bearer_expired
-from botai.contracts.specs import Kind
 from botai.core.browser import auth_origin
 from botai.core.clock import Clock, SystemClock
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import PlaybookVersion, Source, Space
 from botai.settings import get_settings
 from botai.sources import extract
-from botai.sources.adapter import Record
-from botai.sources.normalize import coerce
+from botai.sources.normalize import coerce_fields
 from botai.sources.v4 import artifacts, domain, identity, playbooks, service, state
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import schedule as sync_schedule
 from botai.sources.v4.secrets import CALENDAR_URL_SLOT, calendar_link, calendar_secret_values
-from botai.sources.vocab import REQUIRED, VOCAB
+from botai.sources.vocab import ALL_REQUIRED, ALL_VOCAB, DomainKind
 
 RunKind = Literal["probe", "sync", "repair", "canary"]
 ProgressHook = Callable[[Mapping[str, Any]], Awaitable[None]]
@@ -71,8 +69,8 @@ MAX_REPORT_RECORDS = 200
 MAX_ERROR_DETAIL = 2000
 MAX_BROWSER_TEXT = 100_000
 
-V4_TO_KIND: dict[str, Kind] = kinds_vocab.READING_KINDS
-KIND_TO_V4: dict[Kind, str] = kinds_vocab.KIND_TO_READING
+V4_TO_KIND: dict[str, DomainKind] = kinds_vocab.READING_KINDS
+KIND_TO_V4: dict[DomainKind, str] = kinds_vocab.KIND_TO_READING
 SITE_IDENTITY_PREFIXES = ("http://", "https://")
 
 
@@ -1407,15 +1405,8 @@ class SourceRunner:
                 source_url=source_url,
                 open_url=self._sanitize(read.open_url) or source_url,
             )
-        record = Record(
-            kind=v3_kind,
-            external_id=str(external_id),
-            fields=payload,
-            source_url=item.url,
-            open_url=read.open_url,
-        )
         try:
-            row = coerce(v3_kind, record, tz)
+            row = coerce_fields(v3_kind, payload, item.url, tz)
         except (KeyError, TypeError, ValueError):
             return None
         if row is None:
@@ -1570,19 +1561,17 @@ class SourceRunner:
                     )
                 )
                 continue
-            record = Record(
-                kind=v3_kind,
-                external_id=raw_record.external_id,
-                fields=raw_record.fields,
-                source_url=self._sanitize(raw_record.source_url or "") or "",
-                open_url=raw_record.open_url,
-            )
             try:
-                row = coerce(v3_kind, record, tz)
+                row = coerce_fields(
+                    v3_kind,
+                    raw_record.fields,
+                    self._sanitize(raw_record.source_url or "") or "",
+                    tz,
+                )
             except (KeyError, TypeError, ValueError):
                 row = None
             if row is None:
-                required = ", ".join(sorted(REQUIRED[v3_kind]))
+                required = ", ".join(sorted(ALL_REQUIRED[v3_kind]))
                 detail = (
                     f"records[{index}] ({kind_v4}): поля не удалось нормализовать. "
                     f"Обязательные поля в fields: {required}. "
@@ -1591,7 +1580,7 @@ class SourceRunner:
                     detail += (
                         "startsAt и endsAt — ISO datetime; вместо endsAt можно durationMinutes. "
                     )
-                unknown = sorted(set(raw_record.fields) - VOCAB[v3_kind])
+                unknown = sorted(set(raw_record.fields) - ALL_VOCAB[v3_kind])
                 if unknown:
                     detail += "Неизвестные поля: " + ", ".join(unknown[:20]) + ". "
                 parsed.errors.append(

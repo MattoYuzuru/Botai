@@ -64,7 +64,9 @@
       { "id": "tasks", "url": "/api/micro-lms/tasks/student", "method": "GET", "format": "json" }
     ],
     "reads": [
-      { "dataKind": "assignments", "request": "tasks", "extract": "json" }
+      { "dataKind": "assignments", "request": "tasks", "extract": "json" },
+      { "dataKind": "profile", "request": "tasks", "extract": "json" },
+      { "dataKind": "ranking", "request": "tasks", "extract": "json" }
     ],
     "spec": {
       "format": "json",

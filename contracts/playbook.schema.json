@@ -102,7 +102,7 @@
         "properties": {
           "dataKind": {
             "type": "string",
-            "enum": ["schedule", "deadlines", "assignments", "courses", "grades", "people", "locations", "news", "documents", "messages"]
+            "enum": ["schedule", "deadlines", "assignments", "courses", "grades", "people", "locations", "news", "documents", "messages", "profile", "ranking"]
           },
           "request": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "id entrypoint или имя шага." },
           "paging": { "type": "string", "enum": ["none", "offset", "cursor", "dateWindow", "page"] },

@@ -18,6 +18,7 @@ Rules (docs/architecture/lld.md §3):
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -32,8 +33,9 @@ from botai.contracts.specs import Kind
 from botai.db import models as m
 from botai.sources.adapter import OCCURRENCE_PREFIX, AdapterResult, ExtractedDocument, Record
 from botai.sources.extract import clean_text, parse_datetime
+from botai.sources.grade_scale import grade_numbers, plain_number
 from botai.sources.states import task_state
-from botai.sources.vocab import REQUIRED
+from botai.sources.vocab import ALL_REQUIRED, DomainKind
 
 MODELS: dict[Kind, type[Any]] = {
     "courses": m.Course,
@@ -44,6 +46,13 @@ MODELS: dict[Kind, type[Any]] = {
     "people": m.Person,
     "locations": m.Location,
     "news": m.NewsItem,
+}
+# What the v4 domain writer reads: the v3 tables plus the v4-only kinds (the v3 recipe language
+# does not know them, `sources.vocab.V4Kind`; the v3 loops over `MODELS` stay as they were).
+ALL_MODELS: dict[DomainKind, type[Any]] = {
+    **MODELS,
+    "profile": m.ProfileField,
+    "ranking": m.RankingEntry,
 }
 # Columns whose change means "the student should notice" for a class.
 _EVENT_MATERIAL = (
@@ -179,12 +188,57 @@ def _attributes(value: Any) -> list[dict[str, str]]:
     return out
 
 
+# What a source or a playbook's code prints for "no value": it must not become a literal "None".
+_NO_VALUE = frozenset({"none", "null", "nil", "nan", "undefined", "n/a", "-", "—", "–", "н/д"})
+
+
+def _present(value: str | None) -> str | None:
+    """The text, or None when it only says that there is no value."""
+    if value is None or value.casefold() in _NO_VALUE:
+        return None
+    return value
+
+
 def _grade_value(value: Any) -> str | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return _text(value, 60)
+    return _present(_text(value, 60))
+
+
+def _position(value: Any, *, high: int) -> int | None:
+    """A whole number from 1 to `high`: a place or a size of a list."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    return value if isinstance(value, int) and 1 <= value <= high else None
+
+
+_TRUE = frozenset({"true", "yes", "да", "1"})
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().casefold() in _TRUE
+
+
+# A card field that holds a secret is not a student's data: it is dropped, never stored.
+_SECRET_FIELD = re.compile(
+    r"парол|password|passwd|token|токен|secret|секрет|\bcvv\b|\bcvc\b|\botp\b|api[-_ ]?key|"
+    r"пин[- ]?код|одноразов",
+    re.IGNORECASE,
+)
+
+
+def _card_text(value: Any, limit: int) -> str | None:
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    return _present(_text(value, limit))
 
 
 Coercer = Callable[[Mapping[str, Any], str, ZoneInfo], dict[str, Any] | None]
@@ -254,13 +308,19 @@ def _deadline(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | 
 
 
 def _grade(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None:
+    value = _grade_value(f.get("value"))
+    scale = _present(_text(f.get("scale"), 60))
+    # Numbers only when the source gave both plainly; never averaged or converted (D-039).
+    value_num, scale_max = grade_numbers(value, scale)
     return {
-        "title": _text(f.get("title"), 300),
+        "title": _present(_text(f.get("title"), 300)),
         "course_external_id": _text(f.get("courseId"), 200),
-        "value": _grade_value(f.get("value")),
-        "scale": _text(f.get("scale"), 60),
+        "value": value,
+        "scale": scale,
         "weight": _float(f.get("weight")),
         "graded_at": _dt(f.get("gradedAt"), tz),
+        "value_num": value_num,
+        "scale_max": scale_max,
     }
 
 
@@ -293,7 +353,39 @@ def _news(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None
     }
 
 
-COERCERS: dict[Kind, Coercer] = {
+def _profile(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None:
+    """One field of the student's card: the value stays the text the source printed."""
+    field = _text(f.get("field"), 100)
+    label = _card_text(f.get("label"), 200) or field
+    if field is None or _SECRET_FIELD.search(f"{field} {label}"):
+        return None
+    return {
+        "field": field,
+        "label": label,
+        "value": _card_text(f.get("value"), 500),
+        "group_text": _card_text(f.get("group"), 100),
+    }
+
+
+def _ranking(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None:
+    """One place of a rating board; `score_num` only when the source gave a plain number."""
+    score = _present(_text(f.get("score"), 60))
+    score_num = plain_number(f.get("scoreNum"))
+    if score_num is None:
+        score_num = plain_number(score)
+    return {
+        "board": _text(f.get("board"), 120),
+        "position": _position(f.get("position"), high=1_000_000),
+        "label": _text(f.get("label"), 300),
+        "score": score,
+        "score_num": score_num,
+        "is_me": _flag(f.get("isMe")),
+        "total": _position(f.get("total"), high=10_000_000),
+        "period": _present(_text(f.get("period"), 60)),
+    }
+
+
+COERCERS: dict[DomainKind, Coercer] = {
     "courses": _course,
     "scheduleEvents": _event,
     "assignments": _assignment,
@@ -302,9 +394,11 @@ COERCERS: dict[Kind, Coercer] = {
     "people": _person,
     "locations": _location,
     "news": _news,
+    "profile": _profile,
+    "ranking": _ranking,
 }
 # Columns that must be non-empty after coercion, per kind (the model's NOT NULL columns).
-_REQUIRED_COLUMNS: dict[Kind, tuple[str, ...]] = {
+_REQUIRED_COLUMNS: dict[DomainKind, tuple[str, ...]] = {
     "courses": ("title",),
     "scheduleEvents": ("title", "starts_at", "ends_at"),
     "assignments": ("title",),
@@ -313,6 +407,8 @@ _REQUIRED_COLUMNS: dict[Kind, tuple[str, ...]] = {
     "people": ("name",),
     "locations": ("title",),
     "news": ("title", "published_at"),
+    "profile": ("field", "label", "value"),
+    "ranking": ("board", "position", "label"),
 }
 
 
@@ -320,14 +416,24 @@ def _open_url(record: Record) -> str | None:
     return _url(record.open_url, record.source_url)
 
 
-def coerce(kind: Kind, record: Record, tz: ZoneInfo) -> dict[str, Any] | None:
-    """Domain columns for a record, or None when it lacks what the kind cannot do without."""
-    if not REQUIRED[kind] <= {k for k, v in record.fields.items() if v is not None}:
+def coerce_fields(
+    kind: DomainKind, fields: Mapping[str, Any], source_url: str, tz: ZoneInfo
+) -> dict[str, Any] | None:
+    """Domain columns for the fields of a record, or None when it lacks what the kind needs.
+
+    The v4 runner calls this directly: its kinds include `profile` and `ranking`, which no v3
+    `Record` can carry."""
+    if not ALL_REQUIRED[kind] <= {k for k, v in fields.items() if v is not None}:
         return None
-    row = COERCERS[kind](record.fields, record.source_url, tz)
+    row = COERCERS[kind](fields, source_url, tz)
     if row is None or any(row.get(col) is None for col in _REQUIRED_COLUMNS[kind]):
         return None
     return row
+
+
+def coerce(kind: Kind, record: Record, tz: ZoneInfo) -> dict[str, Any] | None:
+    """Domain columns for a record, or None when it lacks what the kind cannot do without."""
+    return coerce_fields(kind, record.fields, record.source_url, tz)
 
 
 # --- persistence ----------------------------------------------------------------------------

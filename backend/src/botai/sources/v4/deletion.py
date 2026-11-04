@@ -8,8 +8,11 @@ What goes with the source:
 
 * `source_artifacts` and `source_state` — `ON DELETE CASCADE` on the `sources` row;
 * the normalized product rows the source wrote (`schedule_events`, `courses`, `assignments`,
-  `deadlines`, `grades`, `people`, `locations`, `news_items`) — its data must not survive as
-  provenance-less rows that no read can see anyway;
+  `deadlines`, `grades`, `people`, `locations`, `news_items`, `profile_fields`,
+  `ranking_entries`) — its data must not survive as provenance-less rows that no read can see
+  anyway;
+* the panels that hang on it: an agent's panel built for this source goes with it, a system panel
+  goes when no live source of the space has its data any more (D-039, `panels.service`);
 * its id in every `source_priorities` list of the space (the setting keeps its order otherwise).
 
 What stays on purpose:
@@ -28,6 +31,8 @@ deleted: 409 tells the owner to wait instead of pulling the record from under a 
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,12 +45,15 @@ from botai.db.models import (
     Location,
     NewsItem,
     Person,
+    ProfileField,
+    RankingEntry,
     ScheduleEvent,
     Source,
     SourceArtifact,
     SourcePriority,
     SourceState,
 )
+from botai.panels import service as panels_service
 from botai.sources.v4 import service
 from botai.sources.v4.sync_jobs import find_in_flight
 
@@ -57,6 +65,8 @@ DOMAIN_MODELS = (
     Location,
     NewsItem,
     Person,
+    ProfileField,
+    RankingEntry,
     ScheduleEvent,
 )
 """The normalized rows a v4 source writes (`sources/v4/domain.py`); deleted with the source."""
@@ -77,14 +87,30 @@ async def delete_source(session: AsyncSession, *, user_id: str, source_id: str) 
             extra={"jobId": running},
         )
     await _clean_priorities(session, source)
-    for model in DOMAIN_MODELS:
-        await session.execute(
-            delete(model).where(model.user_id == user_id, model.source_id == source.id)
-        )
+    await delete_source_rows(session, user_id=user_id, source_ids=[source.id])
+    # Before the row goes: the foreign key of a panel to its source is SET NULL.
+    await panels_service.prune_after_source_removal(
+        session, user_id=user_id, space_id=source.space_id, source_id=source.id
+    )
     # The row itself: artifacts and state go by ON DELETE CASCADE; jobs and traces keep no
     # foreign key to it, playbooks stay as learned knowledge.
     await session.delete(source)
     await session.flush()
+
+
+async def delete_source_rows(
+    session: AsyncSession, *, user_id: str, source_ids: Sequence[str]
+) -> None:
+    """Delete every normalized row the given sources of the user wrote (all domain tables).
+
+    A source goes by `delete_source`; the sources of a deleted space go through here before the
+    space row, whose cascade would otherwise leave their rows behind with `source_id` NULL."""
+    if not source_ids:
+        return
+    for model in DOMAIN_MODELS:
+        await session.execute(
+            delete(model).where(model.user_id == user_id, model.source_id.in_(list(source_ids)))
+        )
 
 
 async def _clean_priorities(session: AsyncSession, source: Source) -> None:
@@ -101,4 +127,4 @@ async def _clean_priorities(session: AsyncSession, source: Source) -> None:
     await session.flush()
 
 
-__all__ = ["DOMAIN_MODELS", "delete_source"]
+__all__ = ["DOMAIN_MODELS", "delete_source", "delete_source_rows"]

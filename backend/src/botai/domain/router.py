@@ -17,6 +17,8 @@ from botai.domain.schemas import (
     GradeOut,
     NewsOut,
     PersonOut,
+    ProfileFieldOut,
+    RankingEntryOut,
     ScheduleEventOut,
     TodayOut,
 )
@@ -90,3 +92,25 @@ async def news(
     user: AuthUser, session: DbSession, clock: ClockDep, space_id: str | None = None
 ) -> list[NewsOut]:
     return await repo.list_news(session, user.id, space_id=space_id, now=clock.now())
+
+
+@router.get("/profile", response_model=list[ProfileFieldOut])
+async def profile(
+    user: AuthUser, session: DbSession, clock: ClockDep, space_id: str | None = None
+) -> list[ProfileFieldOut]:
+    """The fields of the student's card that the university's sources show."""
+    return await repo.list_profile(session, user.id, space_id=space_id, now=clock.now())
+
+
+@router.get("/ranking", response_model=list[RankingEntryOut])
+async def ranking(
+    user: AuthUser,
+    session: DbSession,
+    clock: ClockDep,
+    space_id: str | None = None,
+    board: str | None = None,
+) -> list[RankingEntryOut]:
+    """Places of the rating boards (all of them, or one `board`)."""
+    return await repo.list_ranking(
+        session, user.id, space_id=space_id, board=board, now=clock.now()
+    )

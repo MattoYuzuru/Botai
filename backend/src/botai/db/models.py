@@ -367,6 +367,10 @@ class Grade(_Domain, Base):
     scale: Mapped[str | None] = mapped_column(String(60))
     weight: Mapped[float | None] = mapped_column(Float)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The number and the top of the scale, only when the source printed both unambiguously
+    # ("8" of "10 баллов"); otherwise NULL. Never computed, never converted between scales (D-039).
+    value_num: Mapped[float | None] = mapped_column(Float)
+    scale_max: Mapped[float | None] = mapped_column(Float)
 
 
 class Person(_Domain, Base):
@@ -393,6 +397,45 @@ class NewsItem(_Domain, Base):
     body: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     url: Mapped[str | None] = mapped_column(Text)
+
+
+class ProfileField(_Domain, Base):
+    """One field of the student's card as the source shows it (v4 kind `profile`, D-039).
+
+    `value` is the text the source printed, never parsed; `external_id` is the stable key of the
+    field in the source. Rows of v3 connections never exist (the kind is v4-only), so
+    `connection_id` stays NULL."""
+
+    __tablename__ = "profile_fields"
+    __table_args__ = _uq("profile_fields")
+    field: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    group_text: Mapped[str | None] = mapped_column(String(100))
+
+
+class RankingEntry(_Domain, Base):
+    """One place on one board of a rating list (v4 kind `ranking`, D-039).
+
+    `score` is the source's own text, `score_num` its number when the source gave one
+    unambiguously. `is_me` marks the student's own place; other people keep a name and a score
+    only. `connection_id` stays NULL (v4-only kind)."""
+
+    __tablename__ = "ranking_entries"
+    __table_args__ = (
+        *_uq("ranking_entries"),
+        Index("ix_ranking_entries_user_board", "user_id", "board"),
+    )
+    board: Mapped[str] = mapped_column(String(120), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str] = mapped_column(String(300), nullable=False)
+    score: Mapped[str | None] = mapped_column(String(60))
+    score_num: Mapped[float | None] = mapped_column(Float)
+    is_me: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    total: Mapped[int | None] = mapped_column(Integer)
+    period: Mapped[str | None] = mapped_column(String(60))
 
 
 # --- documents and retrieval (ADR-0006) ---------------------------------------------------------
@@ -785,6 +828,8 @@ SOURCE_DATA_KINDS = (
     "news",
     "documents",
     "messages",
+    "profile",
+    "ranking",
 )
 PLAYBOOK_LANGUAGES = ("declarative", "python", "js")
 ARTIFACT_KINDS = ("page", "json", "file", "har", "screenshot", "log", "doc", "other")
@@ -1010,6 +1055,67 @@ class SourcePriority(Base):
     source_ids: Mapped[list[str]] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=_utc_now,
+        nullable=False,
+    )
+
+
+# --- panels of «Учёба» (D-039) -------------------------------------------------------------------
+
+PANEL_TYPES = ("kpi", "chart", "table", "ranking", "profile", "list")
+PANEL_STATUSES = ("proposed", "active", "dismissed")
+PANEL_ORIGINS = ("system", "agent")
+
+
+class Panel(Base):
+    """A thin view config over the domain data of one university: no data lives here.
+
+    `spec` is validated by `botai.panels.schemas` (a closed, versioned vocabulary of strings,
+    numbers and enums; never HTML or a URL) and names a dataset by kind, not by rows. `key` is a
+    stable slug, unique inside the space: it makes system panels and agent proposals idempotent.
+    The student's switches are `visible` (everywhere) and `hidden_in_all` (only in the all
+    universities mode); `status` is the life of a proposal (`proposed` → `active` | `dismissed`).
+    """
+
+    __tablename__ = "panels"
+    __table_args__ = (
+        UniqueConstraint("space_id", "key", name="uq_panels_space_id_key"),
+        Index("ix_panels_space_id_position", "space_id", "position"),
+        CheckConstraint(f"type IN ({_in_list(PANEL_TYPES)})", name="type_valid"),
+        CheckConstraint(f"status IN ({_in_list(PANEL_STATUSES)})", name="status_valid"),
+        CheckConstraint(f"origin IN ({_in_list(PANEL_ORIGINS)})", name="origin_valid"),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    space_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("spaces.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    key: Mapped[str] = mapped_column(String(60), nullable=False)
+    type: Mapped[str] = mapped_column(String(10), nullable=False)
+    spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="active", server_default="active"
+    )
+    visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    hidden_in_all: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    position: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    origin: Mapped[str] = mapped_column(String(10), nullable=False, default="system")
+    proposed_by_job_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = ts_now()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -7,7 +7,16 @@ has no column to land in.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from botai.contracts.specs import Kind
+
+# Kinds that exist only in v4 (docs/v4/23-panels-backend.md): the v3 recipe language and its
+# schemas (`contracts/specs.Kind`, `recipe.schema.json`) stay exactly as they were. The v3 tables
+# below (`VOCAB`, `REQUIRED`, `KEY_FIELDS`, `KIND_LABELS`) are iterated by the v3 learner, so the
+# new kinds live in their own tables and are merged into the `ALL_*` views the v4 runner reads.
+V4Kind = Literal["profile", "ranking"]
+DomainKind = Kind | V4Kind
 
 VOCAB: dict[Kind, frozenset[str]] = {
     "courses": frozenset({"externalId", "title", "code", "term", "description", "url", "archived"}),
@@ -95,3 +104,41 @@ KIND_LABELS: dict[Kind, str] = {
     "locations": "Аудитории",
     "news": "Новости",
 }
+
+# --- v4-only kinds: a student card and a rating board (D-039) --------------------------------------
+
+V4_VOCAB: dict[V4Kind, frozenset[str]] = {
+    # One row per shown field of the student's card: the key the source uses, its caption, the value
+    # exactly as the source printed it (never parsed), and an optional group of the card.
+    "profile": frozenset({"externalId", "field", "label", "value", "group"}),
+    # One row per place of one board. `score` is the source's own text, `scoreNum` its number when
+    # unambiguous; nothing here is computed by the application.
+    "ranking": frozenset(
+        {
+            "externalId",
+            "board",
+            "position",
+            "label",
+            "score",
+            "scoreNum",
+            "isMe",
+            "total",
+            "period",
+        }
+    ),
+}
+V4_REQUIRED: dict[V4Kind, frozenset[str]] = {
+    "profile": frozenset({"field", "value"}),
+    "ranking": frozenset({"board", "position", "label"}),
+}
+V4_KEY_FIELDS: dict[V4Kind, tuple[str, ...]] = {
+    "profile": ("field", "value"),
+    "ranking": ("board", "position", "label"),
+}
+V4_KIND_LABELS: dict[V4Kind, str] = {"profile": "Профиль", "ranking": "Рейтинг"}
+
+# What the v4 runner and the agent's source protocol read: the v3 kinds plus the v4-only ones.
+ALL_VOCAB: dict[DomainKind, frozenset[str]] = {**VOCAB, **V4_VOCAB}
+ALL_REQUIRED: dict[DomainKind, frozenset[str]] = {**REQUIRED, **V4_REQUIRED}
+ALL_KEY_FIELDS: dict[DomainKind, tuple[str, ...]] = {**KEY_FIELDS, **V4_KEY_FIELDS}
+ALL_KIND_LABELS: dict[DomainKind, str] = {**KIND_LABELS, **V4_KIND_LABELS}
