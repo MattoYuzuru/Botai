@@ -108,7 +108,10 @@ code/state и значения, похожие на токен (≥24 симво
 - **Природа:** `site`, `portal`, `lms`, `api`, `calendar`, `sheet`, `doc`, `file`, `mail`, `feed`,
   `other`.
 - **Данные:** `schedule`, `deadlines`, `assignments`, `courses`, `grades`, `people`, `locations`,
-  `news`, `documents`, `messages`.
+  `news`, `documents`, `messages`, `profile`, `ranking`. Последние два — только v4: карточка
+  студента и места в рейтинге, таблицы `profile_fields` и `ranking_entries`; словарь v3-рецептов
+  их не знает. У оценок есть числовые `value_num`/`scale_max`, когда источник напечатал число и
+  шкалу однозначно. Подробности и панели — [23-panels-backend.md](23-panels-backend.md).
 - **Статусы:** `draft`, `probing`, `learning`, `waiting_user`, `active`, `syncing`, `stale`,
   `needs_reauth`, `needs_link`, `error`, `disabled`, `archived` (03 §6.2).
 - **Доверие:** `high`, `normal`, `low`. **Языки playbook:** `declarative`, `python`, `js`.
