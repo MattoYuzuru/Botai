@@ -35,7 +35,13 @@ export function ProposedPanelCard({ panel, zone }: { panel: PanelOut; zone: stri
       <div
         role="img"
         aria-label={`Предпросмотр панели «${panel.spec.title}»`}
-        className="pointer-events-none max-h-60 select-none overflow-hidden rounded-lg [mask-image:linear-gradient(to_bottom,black_80%,transparent)]"
+        className={
+          // График показывается целиком: обрезка по высоте скрыла бы нулевую линию столбцов и исказила разницу.
+          // Остальные панели длинные, поэтому обрезаются с затуханием.
+          panel.type === "chart"
+            ? "pointer-events-none select-none rounded-lg"
+            : "pointer-events-none max-h-60 select-none overflow-hidden rounded-lg [mask-image:linear-gradient(to_bottom,black_80%,transparent)]"
+        }
       >
         <div aria-hidden="true" inert>
           <PanelView panel={panel} context={{ zone, preview: true }} headingLevel={4} />

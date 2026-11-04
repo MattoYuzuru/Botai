@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GradePointOut, GradesData, PanelOut } from "@/api/panels";
 import {
   chartGroups,
+  estimateHeight,
   gradeText,
   groupBySpace,
   layoutPanels,
@@ -114,6 +115,54 @@ describe("область экрана", () => {
   it("один вуз: только его панели, hiddenInAll не действует; чужие отброшены", () => {
     const result = panelsForScope(panels, { spaceIds: ["a"], grouped: false });
     expect(result.map((p) => p.id)).toEqual(["a0", "a1", "a-hidden"]);
+  });
+
+  it("раскладка выравнивает колонки: профиль встаёт под график, если боковая колонка иначе вдвое длиннее", () => {
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      position: index + 1,
+      label: `У${index + 1}`,
+      score: null,
+      scoreNum: null,
+      isMe: false,
+      total: null,
+      period: null,
+    }));
+    const chart = panel({ id: "c", type: "chart", data: grades([point({ id: "1" })]) });
+    const rating = panel({
+      id: "r",
+      type: "ranking",
+      data: { kind: "ranking", board: "b", total: 6, participants: null, period: null, rows },
+    });
+    const profile = panel({
+      id: "p",
+      type: "profile",
+      data: {
+        kind: "profile",
+        total: 5,
+        fields: Array.from({ length: 5 }, (_, index) => ({
+          field: `f${index}`,
+          label: `Поле ${index}`,
+          value: "x",
+          group: null,
+        })),
+      },
+    });
+    const alone = layoutPanels([chart, rating, profile]);
+    expect(alone.main.map((p) => p.id)).toEqual(["c", "p"]);
+    expect(alone.side.map((p) => p.id)).toEqual(["r"]);
+    // Рядом есть длинный список: основная колонка и так длинная, профиль уходит вбок.
+    const list = panel({
+      id: "l",
+      type: "list",
+      data: grades(Array.from({ length: 5 }, (_, index) => point({ id: `g${index}` }))),
+    });
+    const full = layoutPanels([chart, list, rating, profile]);
+    expect(full.main.map((p) => p.id)).toEqual(["c", "l"]);
+    expect(full.side.map((p) => p.id)).toEqual(["r", "p"]);
+    // Без широких панелей узкие остаются боковыми.
+    expect(layoutPanels([rating, profile]).main).toEqual([]);
+    // Оценка высоты не падает на панели без данных.
+    expect(estimateHeight(panel({ id: "n", type: "chart" }))).toBeGreaterThan(0);
   });
 
   it("раскладка: показатели, основные и боковые панели", () => {

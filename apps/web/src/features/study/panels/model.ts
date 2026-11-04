@@ -315,15 +315,80 @@ export interface PanelLayout {
   side: PanelOut[];
 }
 
+/** Рамка панели с заголовком и отступами, px: к ней добавляется высота тела. */
+const PANEL_CHROME = 72;
+
 /**
- * Раскладка панелей одного вуза. Порядок внутри каждой группы — серверный. На телефоне группы идут одна за
- * другой в одну колонку (лента, основное, боковое), на ноутбуке боковые панели встают справа от основных.
+ * Грубая высота панели на ноутбуке, px. Нужна только для выравнивания колонок: мерки сняты со снимков
+ * 1280 px (график ≈ 400, рейтинг из 6 строк ≈ 480, профиль из 5 полей ≈ 410, список из 5 строк ≈ 400).
+ */
+export function estimateHeight(panel: PanelOut): number {
+  const data: unknown = panel.data;
+  const rows = (value: unknown) => (Array.isArray(value) ? value.length : 0);
+  if (!isObject(data)) return PANEL_CHROME + 160;
+  switch (panel.type) {
+    case "chart": {
+      const scales = new Set(
+        (Array.isArray(data.points) ? data.points : []).flatMap((point: unknown) =>
+          isObject(point) && typeof point.scaleMax === "number" ? [point.scaleMax] : [],
+        ),
+      );
+      return PANEL_CHROME + 330 * Math.max(1, scales.size);
+    }
+    case "ranking":
+      return PANEL_CHROME + 70 + 60 * rows(data.rows);
+    case "profile":
+      return PANEL_CHROME + 90 + 58 * rows(data.fields);
+    case "list":
+      return PANEL_CHROME + 66 * rows(data.points);
+    case "table":
+      return PANEL_CHROME + 48 * (rows(data.points) + 1);
+    default:
+      return PANEL_CHROME + 160;
+  }
+}
+
+/**
+ * Раскладка панелей одного вуза. Порядок внутри каждой колонки — серверный. На телефоне колонки идут одна за
+ * другой в одну колонку (лента, основная, боковая), на ноутбуке боковая встаёт справа.
+ *
+ * Широкие панели (график, таблица, список) всегда в основной колонке 2/3. Узкие (рейтинг, профиль) уходят в ту
+ * колонку, где после них колонки ближе по высоте: так под графиком нет пустоты, а боковая не вытягивается втрое
+ * длиннее основной. Если широких панелей нет, узкие идут рядом в три колонки.
  */
 export function layoutPanels(panels: readonly PanelOut[]): PanelLayout {
   const narrow = (panel: PanelOut) => panel.type === "ranking" || panel.type === "profile";
-  return {
-    band: panels.filter((panel) => panel.type === "kpi"),
-    main: panels.filter((panel) => panel.type !== "kpi" && !narrow(panel)),
-    side: panels.filter(narrow),
-  };
+  const band = panels.filter((panel) => panel.type === "kpi");
+  const rest = panels.filter((panel) => panel.type !== "kpi");
+  if (!rest.some((panel) => !narrow(panel))) return { band, main: [], side: rest };
+  const main: PanelOut[] = [];
+  const side: PanelOut[] = [];
+  let mainHeight = 0;
+  let sideHeight = 0;
+  // Широкие панели занимают основную колонку до распределения узких, иначе узкая, стоящая раньше графика, заняла бы её.
+  for (const panel of rest.filter((item) => !narrow(item))) mainHeight += estimateHeight(panel);
+  let placedWide = 0;
+  const wideTotal = mainHeight;
+  mainHeight = 0;
+  for (const panel of rest) {
+    const height = estimateHeight(panel);
+    if (!narrow(panel)) {
+      main.push(panel);
+      mainHeight += height;
+      placedWide += height;
+      continue;
+    }
+    // Высота основной колонки с учётом ещё не поставленных широких панелей: они всё равно там окажутся.
+    const futureMain = mainHeight + (wideTotal - placedWide);
+    const intoMain = Math.abs(futureMain + height - sideHeight);
+    const intoSide = Math.abs(futureMain - (sideHeight + height));
+    if (intoMain < intoSide) {
+      main.push(panel);
+      mainHeight += height;
+    } else {
+      side.push(panel);
+      sideHeight += height;
+    }
+  }
+  return { band, main, side };
 }

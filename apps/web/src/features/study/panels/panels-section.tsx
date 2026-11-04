@@ -33,11 +33,11 @@ function PanelGrid({
   collapsed: Collapsed;
 }) {
   const { band, main, side } = layoutPanels(panels);
-  const view = (panel: PanelOut, bare = false) => (
+  const view = (panel: PanelOut, bare = false, wide = false) => (
     <PanelView
       key={panel.id}
       panel={panel}
-      context={{ zone, preview: false }}
+      context={{ zone, preview: false, wide }}
       headingLevel={headingLevel}
       collapsed={collapsed.isCollapsed(panel.id)}
       onCollapsedChange={(value) => collapsed.set(panel.id, value)}
@@ -47,23 +47,20 @@ function PanelGrid({
       titleHidden={panel.spec.title.trim().toLowerCase() === SECTION_TITLE.toLowerCase()}
     />
   );
-  const column = "flex min-w-0 flex-col gap-3 lg:gap-4";
+  // Последняя панель колонки растягивается до низа соседней: ряд заканчивается ровно, без пустоты под короче.
+  const column = "flex min-w-0 flex-col gap-3 lg:gap-4 [&>*:last-child]:flex-1";
   return (
     <div className="flex min-w-0 flex-col gap-3 lg:gap-4">
       {band.map((panel) => view(panel, true))}
       {(main.length > 0 || side.length > 0) && (
-        <div className="grid min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-3 lg:gap-4">
+        <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-3 lg:gap-4">
           {main.length > 0 && (
             <div className={`${column} ${side.length > 0 ? "lg:col-span-2" : "lg:col-span-3"}`}>
-              {main.map((panel) => view(panel))}
+              {main.map((panel) => view(panel, false, side.length > 0))}
             </div>
           )}
           {side.length > 0 && (
-            <div
-              className={
-                main.length > 0 ? column : `${column} lg:col-span-3 lg:grid lg:grid-cols-3 lg:items-start`
-              }
-            >
+            <div className={main.length > 0 ? column : `${column} lg:col-span-3 lg:grid lg:grid-cols-3`}>
               {side.map((panel) => view(panel))}
             </div>
           )}

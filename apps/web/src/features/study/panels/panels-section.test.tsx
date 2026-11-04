@@ -62,7 +62,8 @@ describe("«Успеваемость»: панели из реестра", () =>
     expect(latest).toHaveTextContent("8/ из 10");
     expect(latest).toHaveTextContent("Контрольная №2");
     expect(within(tiles).getByRole("group", { name: "Лучшая оценка" })).toHaveTextContent("10/ из 10");
-    expect(within(tiles).getByRole("group", { name: "Оценок" })).toHaveTextContent("8");
+    // 7 из 8 оценок числовые: подпись говорит об этом словами, без выдуманного «среднего».
+    expect(within(tiles).getByRole("group", { name: "Оценок" })).toHaveTextContent("8из них с баллом: 7");
     // График со шкалой источника.
     // Шкала названа словами источника (и у графика, и у предпросмотра предложения агента).
     expect(within(first).getAllByText("Шкала источника: 10 баллов").length).toBeGreaterThan(0);
@@ -267,6 +268,17 @@ describe("предложения агента", () => {
     const item = current.db.panels.find((panel) => panel.key === "grades-by-course");
     expect(item).toMatchObject({ status: "active", visible: true });
     expect(await screen.findByRole("heading", { name: "Оценки по предметам" })).toBeInTheDocument();
+  });
+
+  it("предпросмотр столбчатого графика не обрезан: ось доходит до нуля", async () => {
+    useActiveSpaceStore.setState({ id: hse().id });
+    renderApp("/study");
+    const card = await proposal();
+    const preview = card.querySelector("[data-panel-preview]") as HTMLElement;
+    // Оси y графика в SVG: подписи делений, нулевая — последняя. Обрезка по высоте её скрыла бы.
+    const ticks = [...preview.querySelectorAll("svg text")].map((node) => node.textContent);
+    expect(ticks).toContain("0");
+    expect(preview.closest("[role=img]")?.className).not.toMatch(/max-h|overflow-hidden/);
   });
 
   it("«Не сейчас» отклоняет предложение, панель не появляется", async () => {

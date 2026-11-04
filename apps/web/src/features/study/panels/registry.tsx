@@ -35,6 +35,8 @@ export interface RenderContext {
   zone: string;
   /** Предпросмотр предложения: без кнопок и ссылок внутри. */
   preview: boolean;
+  /** Панель стоит в широкой колонке: узкие панели используют ширину (профиль — в две колонки полей). */
+  wide?: boolean;
 }
 
 export type Rendered =
@@ -92,7 +94,12 @@ export const PANEL_RENDERERS: Renderers = {
             label="Оценок"
             value={formatNumber(data.total)}
             icon="grade"
-            caption={data.numeric > 0 ? `с числом: ${formatNumber(data.numeric)}` : undefined}
+            // Если числовые все, подпись ничего не добавляет; иначе говорит, сколько оценок можно нанести на график.
+            caption={
+              data.numeric > 0 && data.numeric < data.total
+                ? `из них с баллом: ${formatNumber(data.numeric)}`
+                : undefined
+            }
           />,
         );
       } else {
@@ -215,7 +222,7 @@ export const PANEL_RENDERERS: Renderers = {
     };
   },
 
-  profile: (body, panel) => {
+  profile: (body, panel, { wide }) => {
     const data = body.data;
     if (!data || data.fields.length === 0) {
       return {
@@ -231,6 +238,12 @@ export const PANEL_RENDERERS: Renderers = {
         <ProfileCard
           name={view.name ?? panel.space.title}
           subtitle={view.name ? panel.space.title : undefined}
+          // В широкой колонке поля идут в два столбца: профиль не вытягивается в длинную полосу.
+          className={
+            wide
+              ? "md:[&_dl]:grid md:[&_dl]:grid-cols-2 md:[&_dl]:gap-x-8 md:[&_dl>div:nth-child(2)]:border-t-0"
+              : undefined
+          }
           monogram={
             <MonogramBadge
               size="lg"

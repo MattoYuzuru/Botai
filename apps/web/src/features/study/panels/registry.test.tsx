@@ -77,4 +77,20 @@ describe("реестр: таблица", () => {
     const { container } = view(odd);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("показатели: подпись «из них с баллом» только когда числовые не все", () => {
+    const base = tablePanel([point("1"), point("2")]);
+    const kpi = (numeric: number): PanelOut =>
+      ({
+        ...base,
+        type: "kpi",
+        spec: { ...base.spec, type: "kpi", view: { metrics: ["count"] } },
+        data: { kind: "grades", total: 3, numeric, points: [], latest: null, best: null },
+      }) as PanelOut;
+    const { unmount } = view(kpi(2));
+    expect(screen.getByText("из них с баллом: 2")).toBeInTheDocument();
+    unmount();
+    view(kpi(3));
+    expect(screen.queryByText(/из них/)).toBeNull();
+  });
 });
