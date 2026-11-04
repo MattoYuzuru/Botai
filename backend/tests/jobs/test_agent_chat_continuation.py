@@ -24,7 +24,7 @@ from botai.agent.v4.checkpoints import SegmentCheckpointer, checkpoint_store
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobKind
-from botai.core.llm import LlmRequest, LlmResponse
+from botai.core.llm import LlmMessage, LlmRequest, LlmResponse
 from botai.db.models import (
     AgentRun,
     AgentRunCheckpoint,
@@ -79,6 +79,21 @@ def step_tool(n: int, *, big: bool = False) -> LlmResponse:
 
 def tool_calls_of(request: LlmRequest) -> list[tuple[str, str]]:
     return [(c.name, c.id) for m in request.messages for c in m.tool_calls]
+
+
+def assert_continues_from_checkpoint(request: LlmRequest, expected_calls: list[str]) -> None:
+    """The request carries the saved conversation and tells the model not to read the traces."""
+    assert request.messages[0].role == "system"
+    # the system prompt keeps trace_read to a spot check of one step (D-040), never a way to continue
+    assert "trace_read нужен только для точечной проверки" in request.messages[0].content
+    assert [name for name, _ in tool_calls_of(request)] == expected_calls
+    instruction = request.messages[-1]
+    assert instruction.role == "user"
+    assert "не перечитыва" in instruction.content  # «не перечитывай/не перечитывая трассы»
+    assert "trace_read" not in instruction.content
+    assert not any(
+        "trace_read" in m.content for m in request.messages[1:] if m.role in ("tool", "assistant")
+    )
 
 
 def settings(env: Env, **values: Any) -> None:
@@ -209,8 +224,8 @@ async def test_two_automatic_continuations_finish_one_job_with_one_reply(
     assert [name for name, _ in tool_calls_of(second_start)] == ["fs_write"] * 3
     assert second_start.messages[-1].role == "user"
     assert second_start.messages[-1].content.startswith("Это продолжение твоего хода (часть 2)")
-    assert all(name != "trace_read" for r in provider.requests for name, _ in tool_calls_of(r))
-    assert all("trace_read" not in m.content for m in second_start.messages if m.role == "tool")
+    assert_continues_from_checkpoint(second_start, ["fs_write"] * 3)
+    assert "Это продолжение твоего хода (часть 2)" in second_start.messages[-1].content
     # the workspace is shared by the segments: the file of the first one is read by the last
     final_tools = [m.content for m in provider.requests[8].messages if m.role == "tool"]
     assert any("payload-0" in content for content in final_tools)
@@ -221,12 +236,12 @@ async def test_two_automatic_continuations_finish_one_job_with_one_reply(
     assert any("Продолжаю автоматически (1 из 2): достигнут лимит шагов." in s for s in stages)
     assert any("Продолжаю автоматически (2 из 2): достигнут лимит шагов." in s for s in stages)
 
-    # checkpoints: one per segment, chained, the last one is the answer and is not resumable
+    # checkpoints: one per segment, chained; the turn is answered, so none of them is resumable
     rows = await checkpoints_of(env, job_id)
     assert [r.segment for r in rows] == [0, 1, 2]
     assert [r.parent_run_id for r in rows] == [None, rows[0].run_id, rows[1].run_id]
     assert [r.status for r in rows] == ["step_limit", "step_limit", "answer"]
-    assert [r.resumable for r in rows] == [True, True, False]
+    assert [r.resumable for r in rows] == [False, False, False]
     assert len({r.chain_id for r in rows}) == 1
     assert rows[0].chain_id == job_id
     assert rows[2].cost_usd_chain > rows[0].cost_usd_chain
@@ -248,14 +263,13 @@ async def test_two_automatic_continuations_finish_one_job_with_one_reply(
     assert all(f["trace_read_calls"] == 0 for f in segments)
     assert segments[1]["message_count"] > segments[0]["message_count"]
     async with env.sm() as session:
-        notes = list(
-            await session.scalars(
-                select(AgentRunEvent.payload)
-                .join(AgentRun, AgentRun.run_id == AgentRunEvent.run_id)
-                .where(AgentRun.job_id == job_id, AgentRunEvent.kind == "note")
-                .order_by(AgentRun.started_at)
-            )
+        stored = await session.scalars(
+            select(AgentRunEvent.payload)
+            .join(AgentRun, AgentRun.run_id == AgentRunEvent.run_id)
+            .where(AgentRun.job_id == job_id, AgentRunEvent.kind == "note")
         )
+        # The test clock is frozen, so `started_at` ties: the segments order the notes, not the clock.
+        notes = sorted(stored, key=lambda note: note["segment"])
     assert [n["decision"] for n in notes] == ["continue", "continue", "stop"]
     assert notes[1]["resumed_from"] == "checkpoint"
     assert notes[0]["resumed_from"] == "history"
@@ -339,7 +353,7 @@ async def test_the_chain_money_cap_stops_and_the_next_message_resumes_without_tr
     assert roles[-1] == "user"
     assert "Твоя предыдущая работа была прервана" in resumed.messages[-1].content
     assert any(m.role == "user" and m.content == "Продолжить" for m in resumed.messages)
-    assert all(name != "trace_read" for r in provider.requests for name, _ in tool_calls_of(r))
+    assert_continues_from_checkpoint(resumed, ["fs_write"] * 4)
     # the new job is a new chain: its money is counted from zero, the old chain is not touched
     assert await spent(env, second_id) < 0.01
     assert (await spent(env, job_id)) >= 0.5
@@ -881,8 +895,13 @@ async def test_resume_run_id_is_checked_for_owner_thread_and_freshness(
     assert unknown.json()["code"] == ErrorCode.STALE_TARGET.value
     foreign = await _post(other, other_thread, "Продолжить", resumeRunId=run_id)
     assert foreign.status_code == 409  # somebody else's run
-    wrong_thread = await _post(other, other_thread, "Продолжить", resumeRunId=run_id)
-    assert wrong_thread.status_code == 409
+    other_thread_of_owner = await client.post("/api/v1/chat/threads", json={})
+    assert other_thread_of_owner.status_code == 201, other_thread_of_owner.text
+    wrong_thread = await _post(
+        client, other_thread_of_owner.json()["id"], "Продолжить", resumeRunId=run_id
+    )
+    assert wrong_thread.status_code == 409  # the owner's own run, but of another thread
+    assert wrong_thread.json()["code"] == ErrorCode.STALE_TARGET.value
     malformed = await _post(client, thread, "Продолжить", resumeRunId="not-a-ulid")
     assert malformed.status_code == 422
 
@@ -924,3 +943,203 @@ async def test_the_job_events_carry_the_continuation_stage_for_a_client_that_rec
     # the checkpoint store is the one the settings describe
     assert checkpoint_store(env.services) is not None
     assert text("1") is not None
+
+
+# --- review fixes: stale buttons, lost final saves, replays, fresh context ------------------------------
+
+
+async def test_a_second_press_of_continue_after_the_resumed_turn_answered_is_stale(
+    env: Env, tmp_path: Path
+) -> None:
+    settings(env, agent_limits_steps=3, agent_continuations_max=0)
+    client, _user, thread, _space = await _student(env)
+    state = {"answer": False}
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        return answer("закончил") if state["answer"] else step_tool(_steps(request))
+
+    provider = MeteredProvider(env, respond)
+    first = await _post(client, thread, "Начни работу")
+    await start_worker(env, provider, tmp_path)
+    job = await env.wait_for(first.json()["jobId"], {"done"}, within=30)
+    assert job.result is not None
+    run_id = job.result["resume"]["runId"]
+
+    state["answer"] = True
+    pressed = await _post(client, thread, "Продолжить", resumeRunId=run_id)
+    assert pressed.status_code == 202, pressed.text
+    second = await env.wait_for(pressed.json()["jobId"], {"done"}, within=30)
+    assert second.result is not None
+    assert second.result["chain"]["resumedFrom"] == "thread"
+    requests_before = len(provider.requests)
+
+    # the old button is pressed again: that turn was taken over and answered, it must not restart
+    again = await _post(client, thread, "Продолжить", resumeRunId=run_id)
+    assert again.status_code == 409
+    assert again.json()["code"] == ErrorCode.STALE_TARGET.value
+    assert len(provider.requests) == requests_before
+    async with env.sm() as session:
+        old = await session.get(AgentRunCheckpoint, run_id)
+    assert old is not None
+    assert not old.resumable  # retired when the resuming turn saved its own first snapshot
+
+
+async def test_an_answered_turn_is_not_resumed_when_its_final_save_was_lost(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings(env)
+    client, _user, thread, _space = await _student(env)
+    original = SegmentCheckpointer.save
+
+    async def final_save_fails(self: SegmentCheckpointer, snapshot: Any) -> None:
+        if snapshot.final:
+            raise RuntimeError("the database blinked")
+        await original(self, snapshot)
+
+    monkeypatch.setattr(SegmentCheckpointer, "save", final_save_fails)
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        return step_tool(0) if _steps(request) == 0 else answer("Ответ получен.")
+
+    provider = MeteredProvider(env, respond)
+    first = await _post(client, thread, "Сделай и ответь")
+    job_id = first.json()["jobId"]
+    await start_worker(env, provider, tmp_path)
+    job = await env.wait_for(job_id, {"done"}, within=30)
+
+    assert job.result is not None
+    assert job.result["stopped"] == "answer"
+    replies = await agent_texts(env, thread, job_id)
+    assert [r.blocks[0]["markdown"] for r in replies] == ["Ответ получен."]
+    rows = await checkpoints_of(env, job_id)
+    assert rows  # the snapshot of the step reached the database, the final one did not
+    assert not any(r.resumable for r in rows)
+
+    followup = await _post(client, thread, "А теперь другой вопрос")
+    done = await env.wait_for(followup.json()["jobId"], {"done"}, within=30)
+    assert done.result is not None
+    assert done.result["chain"]["resumedFrom"] == "fresh"
+    assert tool_calls_of(provider.requests[2]) == []  # the follow-up's first request: no old work
+
+
+async def test_a_job_requeued_after_its_reply_was_stored_does_not_call_the_model(
+    env: Env, tmp_path: Path
+) -> None:
+    settings(env)
+    client, _user, thread, _space = await _student(env)
+    provider = MeteredProvider(env, lambda request: _answer_now())
+    first = await _post(client, thread, "привет")
+    job_id = first.json()["jobId"]
+    await start_worker(env, provider, tmp_path)
+    job = await env.wait_for(job_id, {"done"}, within=30)
+    assert job.result is not None
+    message_id = job.result["messageId"]
+    assert len(provider.requests) == 1
+
+    # the worker died after the reply was committed and before the job was marked done
+    async with env.sm() as session:
+        await session.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(state="queued", result=None, finished_at=None, locked_by=None, locked_at=None)
+        )
+        await session.commit()
+    again = await env.wait_for(job_id, {"done"}, within=30)
+
+    assert len(provider.requests) == 1  # no second model call
+    assert again.result is not None
+    assert again.result["messageId"] == message_id
+    assert again.result["stopped"] == "answer"
+    assert len(await agent_texts(env, thread, job_id)) == 1
+
+
+async def test_a_job_requeued_after_a_stopped_reply_keeps_its_progress_resumable(
+    env: Env, tmp_path: Path
+) -> None:
+    settings(env, agent_limits_steps=3, agent_continuations_max=0)
+    client, _user, thread, _space = await _student(env)
+    provider = MeteredProvider(env, lambda request: _tool(request))
+    first = await _post(client, thread, "Работай")
+    job_id = first.json()["jobId"]
+    await start_worker(env, provider, tmp_path)
+    job = await env.wait_for(job_id, {"done"}, within=30)
+    assert job.result is not None
+    run_id = job.result["resume"]["runId"]
+    requests = len(provider.requests)
+
+    async with env.sm() as session:
+        await session.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(state="queued", result=None, finished_at=None, locked_by=None, locked_at=None)
+        )
+        await session.commit()
+    again = await env.wait_for(job_id, {"done"}, within=30)
+
+    assert len(provider.requests) == requests
+    assert again.result is not None
+    assert again.result["resume"]["resumable"] is True
+    assert again.result["resume"]["runId"] == run_id
+    assert len(await agent_texts(env, thread, job_id)) == 1
+
+
+async def test_a_resumed_turn_gets_todays_context_in_front_of_the_new_question(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings(env, agent_limits_steps=3, agent_continuations_max=0, agent_resume_window_hours=72)
+    client, _user, thread, _space = await _student(env)
+    calls = {"n": 0}
+
+    async def numbered_context(session: Any, user_id: str, thread_row: Any, now: Any) -> Any:
+        calls["n"] += 1
+        return LlmMessage(role="user", content=f"Контекст приложения №{calls['n']}")
+
+    monkeypatch.setattr(chat_module, "turn_context", numbered_context)
+    state = {"answer": False}
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        return answer("закончил") if state["answer"] else step_tool(_steps(request))
+
+    provider = MeteredProvider(env, respond)
+    first = await _post(client, thread, "Начни работу")
+    await start_worker(env, provider, tmp_path)
+    await env.wait_for(first.json()["jobId"], {"done"}, within=30)
+
+    state["answer"] = True
+    env.advance(days=2)  # another day: the checkpoint is within the window, its context is not
+    second = await _post(client, thread, "Продолжай")
+    done = await env.wait_for(second.json()["jobId"], {"done"}, within=30)
+    assert done.result is not None
+    assert done.result["chain"]["resumedFrom"] == "thread"
+
+    request = provider.requests[-1]
+    contexts = [
+        (index, m.content)
+        for index, m in enumerate(request.messages)
+        if m.content.startswith("Контекст приложения")
+    ]
+    assert [text for _, text in contexts] == ["Контекст приложения №1", "Контекст приложения №2"]
+    last_tool = max(i for i, m in enumerate(request.messages) if m.role == "tool")
+    question = next(i for i, m in enumerate(request.messages) if m.content == "Продолжай")
+    assert last_tool < contexts[1][0] < question  # today's context sits right before the question
+
+
+async def test_a_message_while_the_turn_waits_for_the_model_is_busy(
+    env: Env, tmp_path: Path
+) -> None:
+    settings(env)
+    client, _user, thread, _space = await _student(env)
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        raise BotaiError(ErrorCode.LLM_UNAVAILABLE, "Модель временно недоступна")
+
+    provider = MeteredProvider(env, respond)
+    sent = await _post(client, thread, "Сделай")
+    job_id = sent.json()["jobId"]
+    await start_worker(env, provider, tmp_path)
+    waiting = await wait_queued(env, job_id, "Модель временно недоступна")
+    assert waiting.run_after > env.clock.now()  # deferred, not claimable yet
+
+    busy = await _post(client, thread, "Ещё вопрос")
+    assert busy.status_code == 409
+    assert busy.json()["code"] == ErrorCode.AGENT_BUSY.value

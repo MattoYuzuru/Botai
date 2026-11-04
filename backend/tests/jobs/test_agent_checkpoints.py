@@ -223,6 +223,13 @@ async def test_a_thread_resumes_only_the_last_turn_when_it_stopped_and_is_fresh(
     # a newer turn that did not leave a checkpoint hides the old one: it already moved on
     newer = await f.job()
     assert await store.resumable_in_thread(f.user_id, f.thread_id, window=WINDOW) is None
+    # the button of the old turn is stale too, for everyone but that newer job itself
+    assert await store.resumable_by_run(f.user_id, f.thread_id, run_id, window=WINDOW) is None
+    named = await store.resumable_by_run(
+        f.user_id, f.thread_id, run_id, window=WINDOW, exclude_job_id=newer
+    )
+    assert named is not None
+    assert named.run_id == run_id
     # ... except for that newer job itself, which is the one asking
     asking = await store.resumable_in_thread(
         f.user_id, f.thread_id, window=WINDOW, exclude_job_id=newer
@@ -396,3 +403,72 @@ async def test_the_synthetic_answer_of_an_interrupted_call_survives_the_round_tr
     assert loaded is not None
     assert loaded.messages == messages
     assert loaded.status == "cancelled"
+
+
+async def test_the_first_save_of_a_resuming_turn_retires_the_checkpoint_it_took_over(
+    env: Env,
+) -> None:
+    f = await fixture(env)
+    store = f.store()
+    old_job = await f.job()
+    old_run = new_id()
+    await store.save(f.position(old_job), snapshot(old_run, conversation(2)))
+    new_job = await f.job()
+    sink = SegmentCheckpointer(store, f.position(new_job, parent=old_run))
+
+    # until the new turn has a snapshot of its own the old one is still where the work stands
+    before = await store.get(f.user_id, old_run)
+    assert before is not None
+    assert before.resumable
+    await sink.save(snapshot(new_id(), conversation(3), status="running", final=False))
+
+    taken = await store.get(f.user_id, old_run)
+    assert taken is not None
+    assert not taken.resumable
+    named = await store.resumable_by_run(
+        f.user_id, f.thread_id, old_run, window=WINDOW, exclude_job_id=new_job
+    )
+    assert named is None
+
+
+async def test_a_later_segment_does_not_retire_its_parent(env: Env) -> None:
+    f = await fixture(env)
+    store = f.store()
+    job = await f.job()
+    first = new_id()
+    await store.save(f.position(job), snapshot(first, conversation(2)))
+    sink = SegmentCheckpointer(store, f.position(job, segment=1, parent=first))
+    await sink.save(snapshot(new_id(), conversation(3)))
+    parent = await store.get(f.user_id, first)
+    assert parent is not None
+    assert parent.resumable  # the job's own earlier segment is history of the chain, not taken over
+
+
+async def test_nul_and_lone_surrogates_do_not_break_the_snapshot(env: Env) -> None:
+    f = await fixture(env)
+    store = f.store()
+    job = await f.job()
+    run_id = new_id()
+    dirty = (
+        LlmMessage(role="user", content="Сделай"),
+        LlmMessage(
+            role="assistant",
+            tool_calls=[
+                LlmToolCall(
+                    id="c1", name="http_request", arguments={"q": "a\x00b", "k\x00": "\ud800"}
+                )
+            ],
+        ),
+        LlmMessage(role="tool", tool_call_id="c1", content="page\x00 text \ud83d and \udc00 end"),
+    )
+
+    encoded = encode_messages(dirty)
+    assert "\x00" not in str(encoded)
+    assert encoded_size(encoded) > 0  # a lone surrogate no longer breaks the size calculation
+
+    outcome = await store.save(f.position(job), snapshot(run_id, dirty))
+    assert outcome.saved
+    loaded = await store.get(f.user_id, run_id)
+    assert loaded is not None
+    assert loaded.messages[2].content == "page text � and � end"
+    assert loaded.messages[1].tool_calls[0].arguments == {"q": "ab", "k": "�"}

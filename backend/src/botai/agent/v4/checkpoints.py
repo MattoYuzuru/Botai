@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -82,8 +83,27 @@ class SaveOutcome:
     compacted: bool = False
 
 
+_UNSTORABLE = re.compile(r"\x00|[\ud800-\udfff]")
+
+
+def _clean_text(value: str) -> str:
+    """JSONB stores neither NUL nor a lone surrogate: drop the first, replace the second."""
+    return _UNSTORABLE.sub(lambda hit: "" if hit.group() == "\x00" else "\ufffd", value)
+
+
+def _clean(value: Any) -> Any:
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {_clean_text(str(key)): _clean(item) for key, item in value.items()}
+    return value
+
+
 def encode_messages(messages: Sequence[LlmMessage]) -> list[dict[str, Any]]:
-    return [message.model_dump(mode="json", exclude_none=True) for message in messages]
+    """The messages as JSON the database accepts (see `_clean_text`)."""
+    return [_clean(message.model_dump(mode="json", exclude_none=True)) for message in messages]
 
 
 def decode_messages(rows: Sequence[dict[str, Any]]) -> tuple[LlmMessage, ...]:
@@ -260,15 +280,7 @@ class CheckpointStore:
     async def _disown_chain(self, position: ChainPosition) -> None:
         """No snapshot fits: older ones of this chain would resume at a stale point, so they stop
         being resumable (the student's next message then starts from the thread history)."""
-        async with self._db() as session, session.begin():
-            await session.execute(
-                update(AgentRunCheckpoint)
-                .where(
-                    AgentRunCheckpoint.user_id == position.user_id,
-                    AgentRunCheckpoint.job_id == position.job_id,
-                )
-                .values(resumable=False)
-            )
+        await self.retire_job(position.user_id, position.job_id)
 
     async def latest_for_job(self, user_id: str, job_id: str) -> StoredCheckpoint | None:
         """The newest checkpoint of the chain a job owns (its last segment, partial or final)."""
@@ -311,6 +323,25 @@ class CheckpointStore:
             )
         return _stored(row) if row is not None else None
 
+    async def _last_chat_job(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        thread_id: str,
+        exclude_job_id: str | None,
+    ) -> str | None:
+        return await session.scalar(
+            select(Job.id)
+            .where(
+                Job.user_id == user_id,
+                Job.thread_id == thread_id,
+                Job.kind == JobKind.CHAT.value,
+                *([Job.id != exclude_job_id] if exclude_job_id else []),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+
     async def resumable_in_thread(
         self,
         user_id: str,
@@ -327,17 +358,7 @@ class CheckpointStore:
         """
         now = self._clock.now()
         async with self._db() as session:
-            last_job = await session.scalar(
-                select(Job.id)
-                .where(
-                    Job.user_id == user_id,
-                    Job.thread_id == thread_id,
-                    Job.kind == JobKind.CHAT.value,
-                    *([Job.id != exclude_job_id] if exclude_job_id else []),
-                )
-                .order_by(Job.created_at.desc(), Job.id.desc())
-                .limit(1)
-            )
+            last_job = await self._last_chat_job(session, user_id, thread_id, exclude_job_id)
             if last_job is None:
                 return None
             row = await session.scalar(
@@ -357,9 +378,19 @@ class CheckpointStore:
         return _stored(row)
 
     async def resumable_by_run(
-        self, user_id: str, thread_id: str, run_id: str, *, window: timedelta
+        self,
+        user_id: str,
+        thread_id: str,
+        run_id: str,
+        *,
+        window: timedelta,
+        exclude_job_id: str | None = None,
     ) -> StoredCheckpoint | None:
-        """A checkpoint the student named (the «Продолжить» button): theirs, this thread, fresh."""
+        """A checkpoint the student named (the «Продолжить» button): theirs, this thread, fresh.
+
+        It must also be what `resumable_in_thread` would pick: the last segment of the thread's
+        newest CHAT job. A button of an old turn that was resumed and answered since stays stale.
+        """
         checkpoint = await self.get(user_id, run_id)
         now = self._clock.now()
         if (
@@ -370,7 +401,30 @@ class CheckpointStore:
             or checkpoint.updated_at < now - window
         ):
             return None
+        current = await self.resumable_in_thread(
+            user_id, thread_id, window=window, exclude_job_id=exclude_job_id
+        )
+        if current is None or current.run_id != checkpoint.run_id:
+            return None
         return checkpoint
+
+    async def retire_run(self, user_id: str, run_id: str) -> None:
+        """A later turn took this checkpoint over: it must not be resumed a second time."""
+        async with self._db() as session, session.begin():
+            await session.execute(
+                update(AgentRunCheckpoint)
+                .where(AgentRunCheckpoint.user_id == user_id, AgentRunCheckpoint.run_id == run_id)
+                .values(resumable=False)
+            )
+
+    async def retire_job(self, user_id: str, job_id: str) -> None:
+        """The job's turn ended with an answer: none of its checkpoints is resumable any more."""
+        async with self._db() as session, session.begin():
+            await session.execute(
+                update(AgentRunCheckpoint)
+                .where(AgentRunCheckpoint.user_id == user_id, AgentRunCheckpoint.job_id == job_id)
+                .values(resumable=False)
+            )
 
 
 def checkpoint_store(services: Services) -> CheckpointStore:
@@ -402,10 +456,17 @@ class SegmentCheckpointer:
         self.position = position
         self.last: SaveOutcome | None = None
         self.final: SaveOutcome | None = None
+        self._parent_retired = False
 
     async def save(self, snapshot: CheckpointSnapshot) -> None:
         outcome = await self._store.save(self.position, snapshot)
         self.last = outcome
+        if outcome.saved and not self._parent_retired and self.position.segment == 0:
+            # Segment 0 with a parent is a turn that took a stopped turn's checkpoint over: from
+            # here on this job's own checkpoint is the state, the parent must not be resumed again.
+            self._parent_retired = True
+            if self.position.parent_run_id is not None:
+                await self._store.retire_run(self.position.user_id, self.position.parent_run_id)
         if snapshot.final:
             self.final = outcome
 

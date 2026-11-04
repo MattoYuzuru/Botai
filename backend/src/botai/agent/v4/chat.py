@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import AnyUrl
 from sqlalchemy import func, select
@@ -77,7 +77,7 @@ from botai.agent.v4.continuation import (
 from botai.agent.v4.factory import run_limits_from_settings
 from botai.agent.v4.job_runtime import JobRun, run_v4_job
 from botai.agent.v4.providers.base import Provider
-from botai.agent.v4.runtime import RunResult, is_resumable
+from botai.agent.v4.runtime import RunResult, RunStatus, is_resumable
 from botai.agent.v4.trace_store import DbTraceStore
 from botai.agent.v4.traces import RunTrace, TraceEvent
 from botai.contracts.agent_ui import ASKING_TYPES, AgentUiBlock, TextBlock, ThinkingBlock
@@ -257,6 +257,11 @@ async def handle_chat_v4(
 
     turn = await _load_turn(services, ctx.user_id, thread_id, message_id, now, job_id=ctx.job_id)
     store = checkpoint_store(services)
+    stored = await _existing_reply(services, ctx, thread_id)
+    if stored is not None:
+        # The reply of this job is already in the thread (the worker died after committing it):
+        # the job is done, the model is not called again.
+        return await _replayed_result(services, ctx, store, turn, stored)
     plan = await _plan_segment(store, services, ctx, payload, thread_id, now)
     messages, task = _segment_input(plan, turn)
     system = CHAT_SYSTEM_PROMPT
@@ -387,6 +392,10 @@ async def handle_chat_v4(
         stored_id = await _store_reply(
             services, ctx, turn.thread, reply, turn.question, services.clock.now()
         )
+    if result.answered:
+        # An answered turn is over, whether or not its final snapshot reached the database: the
+        # next message must start from the thread, not from a checkpoint of this job.
+        await store.retire_job(ctx.user_id, ctx.job_id)
 
     return _job_result(
         run,
@@ -401,6 +410,64 @@ async def handle_chat_v4(
         cap=cap,
         resumable=saved and is_resumable(result.status, result.error_code),
         resume_run_id=plan.checkpoint.run_id if early is not None and plan.checkpoint else run_id,
+    )
+
+
+async def _replayed_result(
+    services: Services,
+    ctx: JobContext,
+    store: CheckpointStore,
+    turn: ChatTurn,
+    message_id: str,
+) -> dict[str, Any]:
+    """The result of a job whose reply was committed before the worker lost it (no model call)."""
+    latest = await store.latest_for_job(ctx.user_id, ctx.job_id)
+    # A snapshot still marked "running" never got its final save: the reply is all that is left.
+    status = latest.status if latest is not None and latest.status != "running" else "answer"
+    run_id = latest.run_id if latest is not None else new_id()
+    result = RunResult(
+        run_id=run_id,
+        status=cast(RunStatus, status),
+        error_code=latest.error_code if latest is not None else None,
+        messages=latest.messages if latest is not None else (),
+        trace=RunTrace(run_id=run_id, status=cast(RunStatus, status)),
+    )
+    if result.answered:
+        await store.retire_job(ctx.user_id, ctx.job_id)
+    cap = services.settings.agent_chain_hard_stop_usd
+    spent = await chain_spent(
+        services,
+        ctx.user_id,
+        ctx.job_id,
+        floor=latest.cost_usd_chain if latest is not None else 0.0,
+    )
+    plan = SegmentPlan(
+        mode="job",
+        checkpoint=latest,
+        segment=latest.segment if latest is not None else 0,
+        continuations=latest.continuations if latest is not None else 0,
+        chain_id=latest.chain_id if latest is not None else ctx.job_id,
+        chain_started_at=latest.chain_started_at if latest is not None else services.clock.now(),
+        cost_before=spent,
+        tokens_before=latest.tokens_chain if latest is not None else 0,
+        parent_run_id=latest.parent_run_id if latest is not None else None,
+    )
+    totals = ChainTotals(
+        steps=0, tools=[], source_ids=[], tokens=plan.tokens_before, cache_share=0.0
+    )
+    return _job_result(
+        JobRun(run_id=run_id, result=result, workspace=Path(".")),
+        turn,
+        CHAT_SYSTEM_PROMPT,
+        message_id,
+        [],
+        totals=totals,
+        decision=Stop("answer" if result.answered else "error"),
+        plan=plan,
+        spent=spent,
+        cap=cap,
+        resumable=bool(latest and latest.resumable and not result.answered),
+        resume_run_id=run_id,
     )
 
 
@@ -436,7 +503,9 @@ async def _plan_segment(
     checkpoint: StoredCheckpoint | None = None
     explicit = payload.get("resume_run_id")
     if isinstance(explicit, str) and explicit:
-        checkpoint = await store.resumable_by_run(ctx.user_id, thread_id, explicit, window=window)
+        checkpoint = await store.resumable_by_run(
+            ctx.user_id, thread_id, explicit, window=window, exclude_job_id=ctx.job_id
+        )
     if checkpoint is None:
         checkpoint = await store.resumable_in_thread(
             ctx.user_id, thread_id, window=window, exclude_job_id=ctx.job_id
@@ -459,8 +528,13 @@ def _segment_input(plan: SegmentPlan, turn: ChatTurn) -> tuple[list[LlmMessage],
     if plan.checkpoint is not None and plan.mode == "job":
         return list(plan.checkpoint.messages), CONTINUE_JOB_TASK.format(segment=plan.segment + 1)
     if plan.checkpoint is not None:
-        files = [turn.files.message] if turn.files.message is not None else []
-        return [*plan.checkpoint.messages, *files, *turn.question_messages], CONTINUE_THREAD_TASK
+        # Today's context (date, tasks, memory, the message's files) goes in front of the new
+        # question: the checkpoint's own context is from the turn that stopped.
+        return [
+            *plan.checkpoint.messages,
+            turn.context,
+            *turn.question_messages,
+        ], CONTINUE_THREAD_TASK
     messages = [turn.context]
     if turn.summary is not None:
         messages.append(turn.summary)
