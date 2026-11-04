@@ -17,7 +17,8 @@ Order of the conditions (the first that holds wins):
 7. a per-minute quota error waits up to a minute;
 8. `llm_unavailable` waits 60/180/600 seconds, at most 3 times in a row;
 9. every other error and a pause stop;
-10. no progress (fewer than 3 steps, or 3 identical tool calls in a row) stops;
+10. no progress (fewer than 3 steps, except after a time/token/cost limit where a few heavy steps
+    are healthy, or 3 identical tool calls in a row) stops;
 11. `hard_stop` stops;
 12. a soft limit (steps, time, tokens, cost) continues at once.
 
@@ -43,6 +44,8 @@ TRANSIENT_DELAYS_S: tuple[float, ...] = (60.0, 180.0, 600.0)
 MINUTE_QUOTA_MAX_DELAY_S = 60.0
 NO_PROGRESS_STEPS = 3
 IDENTICAL_CALLS_IN_A_ROW = 3
+# A segment that ended on one of these may be short in steps and still healthy (heavy steps).
+HEAVY_STEP_LIMITS: frozenset[str] = frozenset({"cost_limit", "token_limit", "time_limit"})
 
 SOFT_LIMIT_STATUSES: frozenset[str] = frozenset(
     {"step_limit", "time_limit", "token_limit", "cost_limit"}
@@ -169,7 +172,7 @@ def decide_continuation(
 
 def no_progress(result: RunResult) -> bool:
     """A segment that did next to nothing, or only repeated one call, is not worth another one."""
-    if result.steps < NO_PROGRESS_STEPS:
+    if result.steps < NO_PROGRESS_STEPS and result.status not in HEAVY_STEP_LIMITS:
         return True
     return identical_calls_in_a_row(result) >= IDENTICAL_CALLS_IN_A_ROW
 
@@ -296,6 +299,7 @@ def stop_text(
 
 __all__ = [
     "DETAIL_MAX",
+    "HEAVY_STEP_LIMITS",
     "IDENTICAL_CALLS_IN_A_ROW",
     "LIMIT_REASONS",
     "LIMIT_TEXTS",

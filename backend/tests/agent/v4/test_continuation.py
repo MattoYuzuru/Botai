@@ -194,10 +194,27 @@ def test_other_errors_and_a_pause_stop() -> None:
 
 def test_no_progress_stops_a_limit_segment() -> None:
     assert decide(result(steps=2)) == Stop("no_progress")
+    assert decide(result("time_limit", steps=2, calls=[])) == Continue(0.0, "seconds")
     same = [("echo", {"url": "x"})] * 3
     assert decide(result(calls=same, steps=9)) == Stop("no_progress")
     mixed = [("echo", {"url": "x"}), ("echo", {"url": "y"}), ("echo", {"url": "x"})] * 2
     assert decide(result(calls=mixed, steps=9)) == Continue(0.0, "steps")
+
+
+def test_a_few_heavy_steps_are_progress_when_the_segment_ended_on_cost_tokens_or_time() -> None:
+    for status, reason in (
+        ("cost_limit", "usd"),
+        ("token_limit", "tokens"),
+        ("time_limit", "seconds"),
+    ):
+        heavy = result(status, steps=2)  # type: ignore[arg-type]
+        assert not no_progress(heavy)
+        assert decide(heavy) == Continue(0.0, reason)
+        # the identical-calls rule still holds for every limit
+        same = [("echo", {"url": "x"})] * 3
+        assert decide(result(status, steps=3, calls=same)) == Stop("no_progress")  # type: ignore[arg-type]
+    # a step limit with fewer than three steps is a tiny limit, not a heavy step
+    assert no_progress(result("step_limit", steps=2))
 
 
 def test_hard_stop_stops_and_is_not_a_continuation() -> None:

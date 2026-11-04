@@ -24,6 +24,7 @@ pytestmark = pytest.mark.db
 async def test_chat_token_limit_names_actual_reason_and_exposes_trace(env: Env) -> None:
     client, _, thread, _ = await _student(env)
     env.settings.agent_limits_tokens = 1000
+    env.settings.agent_continuations_max = 0  # a heavy segment goes on by itself; this one stops
     provider = MockProvider(
         responses=[
             tool_response(call("fs_list", {}, "c1"), usage=usage(hit=1000)),
