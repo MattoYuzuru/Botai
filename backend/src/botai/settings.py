@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     # In phase 0 v4 is scaffolding only: no runtime is wired to this flag yet.
     agent_engine: Literal["v3", "v4"] = Field(default="v3", validation_alias="BOTAI_AGENT_ENGINE")
     # Soft, per-task limits of the v4 engine (D-009): None = no limit; a number is a visible
-    # counter/warning, and a stop only under the owner's policy (`agent_auto_continue=False`).
+    # counter/warning; crossing one ends the segment of a chat turn (continued by the chain below).
     # These are not architectural walls and do not bound the v3 research path.
     agent_limits_steps: int | None = Field(
         default=None, ge=1, le=100_000, validation_alias="BOTAI_AGENT_LIMITS_STEPS"
@@ -122,12 +122,47 @@ class Settings(BaseSettings):
     agent_limits_usd: float | None = Field(
         default=None, gt=0, le=1000, validation_alias="BOTAI_AGENT_LIMITS_USD"
     )
-    # The emergency stop is not soft: past it the task stops even with `agent_auto_continue`.
+    # The emergency stop is not soft: past it the task stops. One segment never spends more.
     agent_hard_stop_usd: float = Field(
         default=2.0, gt=0, le=1000, validation_alias="BOTAI_AGENT_HARD_STOP_USD"
     )
-    # Ask the student before continuing past a soft limit; True = continue automatically.
-    agent_auto_continue: bool = Field(default=False, validation_alias="BOTAI_AGENT_AUTO_CONTINUE")
+    # Continuity of a chat turn (D-040): a soft limit or a transient provider error ends a segment;
+    # the same job continues from a persisted checkpoint, bounded by all of these. 0 continuations
+    # = the manual behaviour (stop and wait for «Продолжить»). The removed
+    # `BOTAI_AGENT_AUTO_CONTINUE` is ignored if an old env file still sets it.
+    agent_continuations_max: int = Field(
+        default=5, ge=0, le=50, validation_alias="BOTAI_AGENT_CONTINUATIONS_MAX"
+    )
+    # The money of the whole chain (all segments of one job, from `llm_usage`); mandatory.
+    agent_chain_hard_stop_usd: float = Field(
+        default=2.0, gt=0, le=1000, validation_alias="BOTAI_AGENT_CHAIN_HARD_STOP_USD"
+    )
+    agent_chain_max_seconds: float = Field(
+        default=3600.0, gt=0, le=86_400, validation_alias="BOTAI_AGENT_CHAIN_MAX_SECONDS"
+    )
+    # A checkpoint above this size is compacted (old tool results shortened); if it is still too
+    # big it is not saved and the turn falls back to the manual path.
+    agent_checkpoint_max_bytes: int = Field(
+        default=6 * 1024 * 1024,
+        ge=64 * 1024,
+        le=64 * 1024 * 1024,
+        validation_alias="BOTAI_AGENT_CHECKPOINT_MAX_BYTES",
+    )
+    agent_checkpoint_ttl_hours: float = Field(
+        default=72.0, gt=0, le=24 * 30, validation_alias="BOTAI_AGENT_CHECKPOINT_TTL_HOURS"
+    )
+    # How often a running segment is snapshotted: after this many steps or seconds, whichever comes
+    # first (the end of a segment and a cancellation are always saved).
+    agent_checkpoint_every_steps: int = Field(
+        default=8, ge=1, le=1000, validation_alias="BOTAI_AGENT_CHECKPOINT_EVERY_STEPS"
+    )
+    agent_checkpoint_every_seconds: float = Field(
+        default=20.0, ge=0, le=3600, validation_alias="BOTAI_AGENT_CHECKPOINT_EVERY_SECONDS"
+    )
+    # A stopped turn is resumed by the student's next message only while its checkpoint is this fresh.
+    agent_resume_window_hours: float = Field(
+        default=24.0, gt=0, le=24 * 30, validation_alias="BOTAI_AGENT_RESUME_WINDOW_HOURS"
+    )
     # Sources v4: where the content-addressed artifact store keeps page/JSON/dump bytes. A state
     # directory by default; production points it at a persistent volume (docs/v4/14 §7).
     source_artifacts_dir: str = Field(

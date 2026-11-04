@@ -394,6 +394,16 @@ export function ChatScreen() {
     [ownerId, attachments, activeId, composer.targetJobId, setDraft, keepCalendarLinkOut],
   );
 
+  // «Продолжить» у остановленного хода: обычное сообщение чата, которое называет чекпоинт хода. Сервер проверяет,
+  // что он ваш, свежий и из этого чата, и агент продолжает работу с сохранённого места, а не читает трассы заново.
+  const continueTurn = useCallback(
+    (resumeRunId: string) => {
+      if (!ownerId || activeId === null) return;
+      outbox.send("Продолжить", { ownerId, threadId: activeId, spaceId: null, resumeRunId });
+    },
+    [ownerId, activeId],
+  );
+
   const startNewChat = () => {
     // Новый чат начинается пустым: сообщение, которое ещё создаёт прежний чат, остаётся в очереди и уйдёт туда.
     setDraftMessages([]);
@@ -550,6 +560,8 @@ export function ChatScreen() {
                 links={links}
                 onQuickReply={(text) => send(text, false, timeline.quickReplies?.quote)}
                 quickRepliesDisabled={composer.disabled}
+                onContinue={continueTurn}
+                continueDisabled={composer.disabled || busy}
                 onRestart={restart}
                 restarting={reconnect.isPending}
                 onChanged={refreshThread}

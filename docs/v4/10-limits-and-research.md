@@ -138,8 +138,19 @@ HSE-аккаунт — 15 слайсов, 14 перепостановок, 25:36
 | `agent_limits_seconds` | `BOTAI_AGENT_LIMITS_SECONDS` | `None` | мягкий лимит активного времени, с |
 | `agent_limits_tokens` | `BOTAI_AGENT_LIMITS_TOKENS` | `None` | мягкий лимит токенов |
 | `agent_limits_usd` | `BOTAI_AGENT_LIMITS_USD` | `None` | мягкий лимит стоимости, $ |
-| `agent_hard_stop_usd` | `BOTAI_AGENT_HARD_STOP_USD` | `2.0` | аварийный стоп по стоимости задачи; не мягкий: останавливает даже при `agent_auto_continue=true` (D-009 требует аварийный стоп) |
-| `agent_auto_continue` | `BOTAI_AGENT_AUTO_CONTINUE` | `false` | `false` — на мягком лимите спросить/остановиться; `true` — продолжать автоматически |
+| `agent_hard_stop_usd` | `BOTAI_AGENT_HARD_STOP_USD` | `2.0` | аварийный стоп по стоимости одного сегмента; не мягкий (D-009 требует аварийный стоп) |
+| `agent_continuations_max` | `BOTAI_AGENT_CONTINUATIONS_MAX` | `5` | сколько раз ход чата продолжается сам между сегментами (D-040); `0` — только вручную, кнопкой «Продолжить» |
+| `agent_chain_hard_stop_usd` | `BOTAI_AGENT_CHAIN_HARD_STOP_USD` | `2.0` | **обязательный** потолок денег на всю цепочку одного хода (сумма `llm_usage` по job'у); сегмент получает `hard_stop_usd = потолок − потрачено` |
+| `agent_chain_max_seconds` | `BOTAI_AGENT_CHAIN_MAX_SECONDS` | `3600` | потолок времени цепочки, паузы между сегментами входят |
+| `agent_checkpoint_max_bytes` | `BOTAI_AGENT_CHECKPOINT_MAX_BYTES` | `6291456` | потолок чекпоинта; выше — сокращаются старые ответы инструментов, не влезло — не сохраняется |
+| `agent_checkpoint_ttl_hours` | `BOTAI_AGENT_CHECKPOINT_TTL_HOURS` | `72` | срок жизни чекпоинта |
+| `agent_resume_window_hours` | `BOTAI_AGENT_RESUME_WINDOW_HOURS` | `24` | в течение какого времени следующее сообщение продолжает остановленный ход от чекпоинта |
+| `agent_checkpoint_every_steps` / `_seconds` | `BOTAI_AGENT_CHECKPOINT_EVERY_STEPS` / `_SECONDS` | `8` / `20` | частота снимков работающего сегмента (конец сегмента и отмена сохраняются всегда) |
+
+`BOTAI_AGENT_AUTO_CONTINUE` удалён: его смысл («не останавливаться вовсе») заменён ограниченной
+цепочкой сегментов ([11-runtime.md](11-runtime.md) §5.1). Старая переменная в env игнорируется.
+Остановки цепочки (деньги, число продолжений, время, квота суток ≥ 90 %, повторные сбои модели,
+нет прогресса) объясняются в чате словами и оставляют кнопку «Продолжить».
 | `botai_research_no_progress_slices` | `BOTAI_RESEARCH_NO_PROGRESS_SLICES` | `3` | сколько подряд слайсов без новых находок терпеть до `source_no_progress` |
 
 Мягкие лимиты `agent_limits_*` — **только для v4-runtime** (фаза 1): в фазе 0 они
@@ -249,9 +260,9 @@ cd backend && uv run --frozen ruff check . && uv run --frozen ruff format --chec
 ## 5. Что осталось (вне фазы 0)
 
 - **v4-runtime и мягкие лимиты.** `agent_engine`, `agent_limits_*`,
-  `agent_hard_stop_usd`, `agent_auto_continue` — каркас: их применит
-  `agent/runtime.py` фазы 1 (D-009: `soft/ask/hard/global stop`, счётчики видны
-  агенту и владельцу). Сейчас они только валидируются и не влияют на задачи.
+  `agent_hard_stop_usd` применяет `agent/v4/runtime.py` (D-009: счётчики видны агенту и
+  владельцу, мягкий лимит завершает сегмент, аварийный стоп не смягчается); продолжение хода
+  между сегментами — D-040, [11-runtime.md](11-runtime.md) §5.1.
 - **Точный счётчик запросов на уровне браузера.** Полное исключение перелёта —
   учёт каждого сетевого запроса в новом браузерном слое/прокси (фаза 1), а не на
   границах страниц. Сейчас перелёт ограничен стоимостью одной страницы и виден в

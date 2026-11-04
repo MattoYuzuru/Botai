@@ -7,6 +7,7 @@ import {
   isTerminal,
   jobFailed,
   jobProblem,
+  jobResume,
   needsHuman,
   pendingQuestions,
   supersededAuthQuestions,
@@ -316,5 +317,79 @@ describe("шаги для ThinkingStream", () => {
       ["failed", "Не принял пароль"],
       ["skipped", undefined],
     ]);
+  });
+});
+
+const resume = (extra: object = {}) => ({
+  resumable: true,
+  runId: ID(40),
+  reason: "money",
+  spentUsd: 2,
+  capUsd: 2,
+  continuations: 1,
+  ...extra,
+});
+const doneWith = (result: object) =>
+  applyEvent(initialJob("J"), ev("done", { result: { stopped: "budget", ...result } }));
+
+describe("остановленный ход с сохранённой работой (D-040)", () => {
+  it("разбирает result.resume и отбрасывает всё, что на него не похоже", () => {
+    expect(jobResume({ resume: resume() })).toEqual({
+      resumable: true,
+      runId: ID(40),
+      reason: "money",
+      spentUsd: 2,
+      capUsd: 2,
+      continuations: 1,
+    });
+    expect(jobResume(null)).toBeNull();
+    expect(jobResume({})).toBeNull();
+    expect(jobResume({ resume: "yes" })).toBeNull();
+    expect(jobResume({ resume: resume({ runId: "" }) })).toBeNull();
+    expect(jobResume({ resume: resume({ resumable: "true" }) })).toBeNull();
+    expect(jobResume({ resume: resume({ spentUsd: "много" }) })?.spentUsd).toBe(0);
+  });
+
+  it("остановка с сохранённой работой — карточка с «можно продолжить», без кодов и трасс", () => {
+    const job = doneWith({ resume: resume() });
+    expect(jobFailed(job)).toBe(true);
+    expect(jobProblem(job)).toEqual({
+      code: "agent_limit",
+      detail: "Работа остановлена, прогресс сохранён. Можно продолжить с того же места.",
+      extra: {},
+    });
+    // ход, остановленный студентом, — «остановлен», а не «упёрся в лимит»
+    expect(jobProblem(doneWith({ resume: resume({ reason: "cancelled" }) }))?.code).toBe("agent_stopped");
+  });
+
+  it("если прогресс сохранить не удалось, честно говорит об этом и не зовёт продолжать", () => {
+    const problem = jobProblem(doneWith({ resume: resume({ resumable: false }) }));
+    expect(problem?.detail).toBe(
+      "Работа остановлена, прогресс сохранить не удалось. Опишите задачу ещё раз.",
+    );
+    expect(problem?.detail).not.toMatch(/продолжить/);
+  });
+
+  it("ход, закончившийся ответом, не имеет остановки", () => {
+    expect(jobProblem(applyEvent(initialJob("J"), ev("done", { result: { stopped: "answer" } })))).toBeNull();
+  });
+
+  it("задание, которое ждёт следующей части в очереди, показывает эту стадию как «ждёт»", () => {
+    let job = applyEvent(
+      initialJob("J"),
+      ev("status", { state: "running", stage: "Агент v4: выполняю задачу" }),
+    );
+    const stage = "Модель временно недоступна. Попробую снова через 3 мин (попытка 2 из 3).";
+    job = applyEvent(job, ev("block", thinking(1, "Проверяю файлы", "ok")));
+    job = applyEvent(job, ev("block", { ...thinking(2, stage, "ok"), detail: "Потрачено $0.42 из $2.00." }));
+    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "done"]);
+    job = applyEvent(job, ev("status", { state: "queued", stage }));
+    expect(thinkingSteps(job).map((step) => [step.label, step.state])).toEqual([
+      ["Проверяю файлы", "done"],
+      [stage, "waiting"],
+    ]);
+    // сервер вернул задание в работу: строка снова «выполнена»
+    job = applyEvent(job, ev("status", { state: "running", stage: "Агент v4: выполняю задачу" }));
+    expect(thinkingSteps(job).map((step) => step.state)).toEqual(["done", "done"]);
   });
 });

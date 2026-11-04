@@ -2581,6 +2581,8 @@ export interface components {
             /** Clientmessageid */
             clientMessageId?: string | null;
             quote?: components["schemas"]["QuoteIn"] | null;
+            /** Resumerunid */
+            resumeRunId?: string | null;
             /** Targetjobid */
             targetJobId?: string | null;
             /**

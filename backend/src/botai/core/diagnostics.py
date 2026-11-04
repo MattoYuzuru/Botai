@@ -30,7 +30,7 @@ _IDS = {"job_id", "connection_id", "thread_id", "message_id", "block_id", "reque
 _ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}\Z")
 _HEX = re.compile(r"[0-9a-f]{16}\Z")
 _EVENT = re.compile(
-    r"(?:diagnostics|http|job|dialogue|chat|llm|browser|auth|learn|observe|canary|egress|search|speech)\.[a-z_.]{1,64}\Z"
+    r"(?:diagnostics|http|job|chain|dialogue|chat|llm|browser|auth|learn|observe|canary|egress|search|speech)\.[a-z_.]{1,64}\Z"
 )
 _NUMBERS = set(
     [
@@ -132,6 +132,15 @@ _NUMBERS = set(
         "top_level",
         "records",
         "window_count",
+        # chat continuity (agent/v4/chat.py, D-040): one event per segment of a chain
+        "segment",
+        "continuations",
+        "input_tokens_at_start",
+        "cost_usd",
+        "spent_usd",
+        "trace_read_calls",
+        "checkpoint_bytes",
+        "chain_elapsed_ms",
     ]
 )
 _BOOLEANS = set(
@@ -191,6 +200,8 @@ _BOOLEANS = set(
         "stored",
         "has_error",
         "body_reduced",
+        "compacted",
+        "resumed",
     ]
 )
 _CODES: dict[str, set[str]] = {
@@ -212,8 +223,22 @@ _CODES: dict[str, set[str]] = {
         "invalid_plan",
         "provider_failed",
         "timeout",
+        # chain stops (agent/v4/continuation.py)
+        "answer",
+        "cancelled",
+        "money",
+        "count",
+        "manual",
+        "time",
+        "quota",
+        "transient",
+        "hard_stop",
+        "paused",
+        "error",
     },
-    "decision": {"allow", "deny"},
+    "continue_reason": {"steps", "seconds", "tokens", "usd", "transient", "quota_minute"},
+    "resume_mode": {"fresh", "job", "thread"},
+    "decision": {"allow", "deny", "continue", "stop"},
     "method": {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "OTHER"},
     "resource_type": {
         "xhr",

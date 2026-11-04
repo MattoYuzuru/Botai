@@ -16,9 +16,11 @@ import { type ParsedBlock, parseBlock } from "@/features/jobs/blocks";
 import {
   initialJob,
   isTerminal,
+  type JobResume,
   type JobSnapshot,
   jobFailed,
   jobProblem,
+  jobResume,
   type StepSummary,
   thinkingSteps,
 } from "@/features/jobs/job-state";
@@ -75,6 +77,8 @@ export type Turn =
       text: string;
       /** Источник можно перепроверить («Войти заново»). */
       connectionId: string | null;
+      /** Ход агента остановился, но его работа сохранена: кнопка «Продолжить» продолжит с этого места. */
+      resume: JobResume | null;
     };
 
 export interface Timeline {
@@ -283,6 +287,7 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
     const snapshot: JobSnapshot = {
       ...initialJob(jobId),
       state: job ? job.snapshot.state : "done",
+      stage: job?.snapshot.stage ?? null,
       result: job?.snapshot.result ?? null,
       blocks: [...blocks.values()],
     };
@@ -364,6 +369,7 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
       jobId: job.id,
       text: failureText(job.snapshot),
       connectionId: isTaskKind(job.kind) && job.kind !== "ingest" ? job.connectionId : null,
+      resume: resumableTurn(job),
     });
   }
 
@@ -377,6 +383,13 @@ export function buildTimeline({ messages, pending, jobs, nowMs }: TimelineInput)
         }
       : null;
   return { turns: placeThinking(turns, thinking), quickReplies };
+}
+
+/** Остановленный ход агента с сохранённой работой: его можно продолжить кнопкой. */
+function resumableTurn(job: ThreadJob): JobResume | null {
+  if (job.kind !== "chat" || job.snapshot.state !== "done") return null;
+  const resume = jobResume(job.snapshot.result);
+  return resume?.resumable ? resume : null;
 }
 
 /** Когда пришёл последний блок задания: так «Думал · 12 с» замирает, а не тикает дальше. */

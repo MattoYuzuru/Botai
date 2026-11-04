@@ -28,6 +28,8 @@ export interface OutboxPost {
   clientMessageId: string;
   targetJobId?: string;
   quote?: MessageQuote;
+  /** «Продолжить»: чекпоинт остановленного хода, от которого агент продолжает работу. */
+  resumeRunId?: string;
 }
 
 export interface OutboxItem {
@@ -44,6 +46,8 @@ export interface OutboxItem {
   targetJobId?: string;
   /** Вопрос, на который отвечает сообщение (кнопка быстрого ответа): уходит вместе с текстом. */
   quote?: MessageQuote;
+  /** Кнопка «Продолжить»: сообщение продолжает остановленный ход с сохранённого места. */
+  resumeRunId?: string;
   createdAt: number;
   /** `queued` — нет сети, ждёт её; `sending` — идёт отправка или короткая пауза перед следующей попыткой. */
   status: "queued" | "sending";
@@ -207,6 +211,7 @@ export class Outbox {
       attachments?: readonly OutboxAttachment[];
       targetJobId?: string;
       quote?: MessageQuote;
+      resumeRunId?: string;
     },
   ): OutboxItem {
     const item: OutboxItem = {
@@ -218,6 +223,7 @@ export class Outbox {
       attachments: [...(target.attachments ?? [])],
       targetJobId: target.targetJobId,
       quote: target.quote,
+      resumeRunId: target.resumeRunId,
       createdAt: this.deps.now(),
       status: this.deps.online() ? "sending" : "queued",
       attempts: 0,
@@ -349,6 +355,7 @@ export class Outbox {
         clientMessageId: item.id,
         targetJobId: item.targetJobId,
         quote: item.quote,
+        resumeRunId: item.resumeRunId,
       });
       if (!this.items.some((candidate) => candidate.id === item.id)) return "rejected";
       this.remove(item.id);

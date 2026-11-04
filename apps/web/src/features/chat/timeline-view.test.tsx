@@ -433,3 +433,69 @@ describe("печать ответа агента", () => {
     expect(shownText(container)).toBe(markdown);
   });
 });
+
+describe("«Продолжить» у остановленного хода", () => {
+  const failure = (key: string, runId: string | null): Turn => ({
+    kind: "failure",
+    key,
+    jobId: "J",
+    text: "Работа остановлена, прогресс сохранён.",
+    connectionId: null,
+    resume: runId
+      ? { resumable: true, runId, reason: "money", spentUsd: 2, capUsd: 2, continuations: 1 }
+      : null,
+  });
+  const chatJob: ThreadJob = {
+    id: "J",
+    kind: "chat",
+    connectionId: null,
+    snapshot: { ...initialJob("J"), state: "done" },
+  };
+  const tree = (turns: Turn[], extra: { onContinue?: (id: string) => void; disabled?: boolean }) => (
+    <TimelineView
+      timeline={{ turns, quickReplies: null }}
+      jobs={[chatJob]}
+      runtime={undefined}
+      threadId="T"
+      nowMs={NOW}
+      timeZone="Europe/Moscow"
+      links={links}
+      onQuickReply={() => {}}
+      quickRepliesDisabled={false}
+      onContinue={extra.onContinue}
+      continueDisabled={extra.disabled}
+      onRestart={() => {}}
+      restarting={false}
+      onChanged={() => {}}
+    />
+  );
+  const after: Turn = {
+    kind: "user",
+    key: "next",
+    text: "Привет",
+    attachments: [],
+    quote: null,
+    at: NOW + 1,
+    status: "sending",
+  };
+
+  it("кнопка отправляет чекпоинт хода", () => {
+    const pick = vi.fn();
+    render(tree([failure("failure:J", "RUN7")], { onContinue: pick }));
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+    expect(pick).toHaveBeenCalledExactlyOnceWith("RUN7");
+  });
+
+  it("кнопки нет, если сохранить работу не удалось, если агент уже отвечает или если ход не последний", () => {
+    const pick = vi.fn();
+    const { rerender } = render(tree([failure("failure:J", null)], { onContinue: pick }));
+    expect(screen.queryByRole("button", { name: "Продолжить" })).toBeNull();
+    rerender(tree([failure("failure:J", "RUN7")], { onContinue: pick, disabled: true }));
+    expect(screen.queryByRole("button", { name: "Продолжить" })).toBeNull();
+    rerender(tree([failure("failure:J", "RUN7"), after], { onContinue: pick }));
+    expect(screen.queryByRole("button", { name: "Продолжить" })).toBeNull();
+    rerender(tree([failure("failure:J", "RUN7")], {}));
+    expect(screen.queryByRole("button", { name: "Продолжить" })).toBeNull();
+    expect(pick).not.toHaveBeenCalled();
+  });
+});

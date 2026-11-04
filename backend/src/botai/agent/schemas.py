@@ -66,6 +66,10 @@ class MessageIn(ApiModel):
     )
     client_message_id: str | None = Field(default=None, pattern=ULID)
     target_job_id: str | None = Field(default=None, pattern=ULID)
+    # The «Продолжить» button: continue the agent turn that stopped at this run's checkpoint. Must
+    # be the user's own, resumable and fresh; a plain message does the same when the last turn of
+    # the thread stopped without an answer (the server picks that checkpoint itself).
+    resume_run_id: str | None = Field(default=None, pattern=ULID)
 
     @model_validator(mode="after")
     def something_is_sent(self) -> MessageIn:

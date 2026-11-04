@@ -39,7 +39,7 @@ from botai.agent.v4.protocol import (
     ToolResult,
 )
 from botai.agent.v4.providers.base import Provider
-from botai.agent.v4.runtime import Mask, RunResult, RunTask
+from botai.agent.v4.runtime import CheckpointSink, Mask, RunLimits, RunResult, RunTask
 from botai.contracts.agent_ui import ChoiceBlock, ChoiceOption, InputBlock, TextBlock
 from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
@@ -157,8 +157,16 @@ async def run_v4_job(
     phase_prefix: str | None = None,
     metadata: dict[str, Any] | None = None,
     text_question_channel: TextQuestionChannel = "block",
+    limits: RunLimits | None = None,
+    checkpoint_sink: CheckpointSink | None = None,
+    workspace_run_id: str | None = None,
 ) -> JobRun:
-    """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`."""
+    """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`.
+
+    `limits` replaces the settings-derived limits (a chat segment gets what is left of the chain's
+    money and time); `checkpoint_sink` receives the run's snapshots (D-040); `workspace_run_id`
+    makes several segments share one workspace directory.
+    """
     active_run_id = run_id or new_id()
     wiring: AgentWiring | None = None
     mask: Mask = _identity_mask
@@ -175,6 +183,7 @@ async def run_v4_job(
                 http_transport=http_transport,
                 artifact_root=artifact_root,
                 source_cookies=source_cookies,
+                workspace_run_id=workspace_run_id,
             )
         except AgentWiringError as exc:
             # A configuration refusal (prod local-executor, missing sources DB, broken RAG) is not a
@@ -204,8 +213,9 @@ async def run_v4_job(
             wiring.provider,
             tools,
             trace_store=JobTraceStore(wiring.trace_store, ctx),
-            limits=run_limits_from_settings(services.settings),
+            limits=limits if limits is not None else run_limits_from_settings(services.settings),
             ask=job_ask_channel(ctx, services, text_channel=text_question_channel),
+            checkpoint_sink=checkpoint_sink,
         )
         workspace = wiring.workspace.root
     finally:

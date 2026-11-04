@@ -70,15 +70,29 @@ class AgentWiringError(RuntimeError):
     """The requested wiring is not allowed here (configuration/security, not a model error)."""
 
 
-def run_limits_from_settings(settings: Settings) -> RunLimits:
-    """Map the owner-facing `agent_limits_*` settings onto the runtime's soft limits (D-009)."""
+def run_limits_from_settings(
+    settings: Settings,
+    *,
+    hard_stop_usd: float | None = None,
+    max_seconds: float | None = None,
+) -> RunLimits:
+    """Map the owner-facing `agent_limits_*` settings onto the runtime's soft limits (D-009).
+
+    A chat segment passes `hard_stop_usd` (what is left of the chain's money cap) and `max_seconds`
+    (its share of the job's time budget); both can only tighten the settings, never loosen them.
+    """
+    hard_stop = settings.agent_hard_stop_usd
+    if hard_stop_usd is not None:
+        hard_stop = min(hard_stop, hard_stop_usd)
+    seconds = settings.agent_limits_seconds
+    if max_seconds is not None:
+        seconds = max_seconds if seconds is None else min(seconds, max_seconds)
     return RunLimits(
         max_steps=settings.agent_limits_steps,
-        max_seconds=settings.agent_limits_seconds,
+        max_seconds=seconds,
         max_tokens=settings.agent_limits_tokens,
         max_usd=settings.agent_limits_usd,
-        hard_stop_usd=settings.agent_hard_stop_usd,
-        auto_continue=settings.agent_auto_continue,
+        hard_stop_usd=hard_stop,
     )
 
 
@@ -369,8 +383,12 @@ async def build_agent_wiring(
     http_transport: httpx.AsyncBaseTransport | None = None,
     artifact_root: str | Path | None = None,
     source_cookies: Mapping[str, str] | None = None,
+    workspace_run_id: str | None = None,
 ) -> AgentWiring:
     """Assemble the runtime for one run. The caller owns `aclose` (handler does it in finally).
+
+    `workspace_run_id` names the workspace directory: the segments of one chat turn share it, so
+    the files of an earlier segment are still there after a continuation (the browser is not).
 
     With `agent_engine=v4` the product tools are part of the run: `source_*` over the real source
     service/runner and `rag_*` over the real RAG service. A missing required collaborator (the DB
@@ -383,7 +401,7 @@ async def build_agent_wiring(
         if workspace_root is not None
         else workspace_root_from_settings(settings)
     )
-    workspace = workspace_for(root, run_id)
+    workspace = workspace_for(root, workspace_run_id or run_id)
     executor = build_executor(settings, workspace, limits=exec_limits)
     active_provider = provider or build_provider(settings)
     store: TraceStore = trace_store or DbTraceStore(services.db, user_id=user_id, job_id=job_id)
@@ -436,7 +454,12 @@ async def build_agent_wiring(
     # The broker masker is applied by the runtime to every tool result (code_exec stdout, fs_*,
     # http, trace_read included): issued primary secrets must not reach the model,
     # the conversation checkpoint or the trace (D-008/D-014). Ordinary identities remain usable.
-    runtime = AgentRuntime(clock=services.clock.now, mask=broker.mask)
+    runtime = AgentRuntime(
+        clock=services.clock.now,
+        mask=broker.mask,
+        checkpoint_every_steps=settings.agent_checkpoint_every_steps,
+        checkpoint_every_seconds=settings.agent_checkpoint_every_seconds,
+    )
     return AgentWiring(
         runtime=runtime,
         provider=active_provider,

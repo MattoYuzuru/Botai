@@ -8,7 +8,7 @@ whatever background tasks are running. Nothing here knows what the thread was "f
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -26,6 +26,7 @@ from botai.agent.schemas import (
     ThreadRuntime,
 )
 from botai.agent.threads import primary_task
+from botai.agent.v4.checkpoints import checkpoint_store
 from botai.attachments import service as attachments
 from botai.contracts.agent_ui import AgentUiBlock, AttachmentBlock, Quote, TextBlock
 from botai.core.calendar_link import calendar_link_in
@@ -435,6 +436,7 @@ async def post_message(
         quote = await dialogue.question_quote(session, target) if text.strip() else None
     else:
         quote = await _verified(session, user_id, thread.id, _quote_of(body))
+    resume_run_id: str | None = None
     if target is not None:
         if target.connection_id:
             conn = await repo.get_connection(session, user_id, target.connection_id)
@@ -447,6 +449,7 @@ async def post_message(
             raise BotaiError(ErrorCode.AGENT_BUSY, "Ассистент ещё отвечает на прошлое сообщение")
         if any(_waiting_secret(job) for job in jobs) and looks_like_secret(text):
             raise BotaiError(ErrorCode.SECRET_IN_CHAT, SECRET_IN_CHAT_TEXT)
+        resume_run_id = await _checked_resume(services, user_id, thread.id, body)
     # Appends to a thread are serialized: even two events in one clock tick keep their order.
     now = services.clock.now()
     at = await dialogue.message_time(session, user_id, thread.id, now)
@@ -491,7 +494,11 @@ async def post_message(
             JobKind.CHAT,
             user_id=user_id,
             thread_id=thread.id,
-            payload={"thread_id": thread.id, "message_id": message.id},
+            payload={
+                "thread_id": thread.id,
+                "message_id": message.id,
+                **({"resume_run_id": resume_run_id} if resume_run_id else {}),
+            },
             now=now,
             dedupe=False,
         )
@@ -507,6 +514,25 @@ async def post_message(
         connection_id=target.connection_id if target else None,
     )
     return MessageAccepted(message=message_out(message), job_id=job_id)
+
+
+async def _checked_resume(
+    services: Services, user_id: str, thread_id: str, body: MessageIn
+) -> str | None:
+    """The checkpoint the «Продолжить» button names, if it is the student's, resumable and fresh."""
+    if body.resume_run_id is None or services.settings.agent_engine != "v4":
+        return None
+    window = timedelta(hours=services.settings.agent_resume_window_hours)
+    checkpoint = await checkpoint_store(services).resumable_by_run(
+        user_id, thread_id, body.resume_run_id, window=window
+    )
+    if checkpoint is None:
+        raise BotaiError(
+            ErrorCode.STALE_TARGET,
+            "Прогресс этой работы уже недоступен: он устарел или удалён. "
+            "Напишите, что нужно сделать, и я начну заново.",
+        )
+    return checkpoint.run_id
 
 
 async def offer_calendar_link(

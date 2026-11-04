@@ -1294,6 +1294,48 @@ class AgentRunEvent(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
+class AgentRunCheckpoint(Base):
+    """The persisted, masked conversation of a v4 chat segment (D-040).
+
+    One row per run (a segment of a chat turn): `chain_id` is the CHAT job that owns the chain,
+    `segment` its 0-based index, `parent_run_id` the run it continued. `messages` is plain JSONB
+    with the same masking as the trace; a row expires (`expires_at`, 72 h) and is removed with its
+    thread. Cumulative `cost_usd_chain`/`tokens_chain` include the segments before it.
+    """
+
+    __tablename__ = "agent_run_checkpoints"
+    __table_args__ = (
+        Index("ix_agent_run_checkpoints_thread", "user_id", "thread_id", "updated_at"),
+        Index("ix_agent_run_checkpoints_job", "job_id", "segment"),
+        Index("ix_agent_run_checkpoints_expires", "expires_at"),
+    )
+    run_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    user_id: Mapped[str] = _user_fk()
+    thread_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    chain_id: Mapped[str] = mapped_column(String(26), nullable=False)
+    segment: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    parent_run_id: Mapped[str | None] = mapped_column(String(26))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    error_code: Mapped[str | None] = mapped_column(String(40))
+    resumable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
+    message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    format_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    cost_usd_chain: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    tokens_chain: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    continuations: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    chain_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = ts_now()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # --- actions: the owner's autonomy policy and the append-only action journal (D-006, D-025, D-026) -
 #
 # Additive next to the v3 `action_proposals`/`audit_log` tables: the v3 path keeps working behind

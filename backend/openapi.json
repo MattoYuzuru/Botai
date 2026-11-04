@@ -2681,6 +2681,18 @@
               }
             ]
           },
+          "resumeRunId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resumerunid"
+          },
           "targetJobId": {
             "anyOf": [
               {
