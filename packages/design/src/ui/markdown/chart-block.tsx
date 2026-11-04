@@ -100,6 +100,13 @@ const clipLabel = (label: string, max: number) =>
 export interface ChartBlockProps {
   spec: ChartSpec;
   className?: string;
+  /**
+   * Без собственной рамки и видимого заголовка: график внутри `Panel` или другой карточки (рамку и заголовок
+   * даёт хозяин). Заголовок остаётся для скринридера. В чате не используется.
+   */
+  bare?: boolean;
+  /** Кнопка «Показать таблицу» зрячим. Таблица для скринридера остаётся всегда. */
+  tableToggle?: boolean;
 }
 
 /**
@@ -107,7 +114,7 @@ export interface ChartBlockProps {
  * (подписи всегда 13 px). Доступность: `<figure>`, у графика `role="img"` с описанием, таблица с теми же данными
  * лежит рядом (для скринридера всегда, зрячим — кнопка «Показать таблицу»). Анимации нет.
  */
-export function ChartBlock({ spec, className }: ChartBlockProps) {
+export function ChartBlock({ spec, className, bare = false, tableToggle = true }: ChartBlockProps) {
   const { ref, width: measured } = useElementWidth<HTMLDivElement>();
   const [tableShown, setTableShown] = useState(false);
   const tableId = useId();
@@ -227,9 +234,16 @@ export function ChartBlock({ spec, className }: ChartBlockProps) {
   return (
     <figure
       data-chart={spec.type}
-      className={cn("flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface p-3", className)}
+      data-bare={bare ? "" : undefined}
+      className={cn(
+        "flex min-w-0 flex-col gap-2",
+        !bare && "rounded-lg border border-border bg-surface p-3",
+        className,
+      )}
     >
-      {spec.title && <figcaption className="type-label text-fg">{spec.title}</figcaption>}
+      {spec.title && (
+        <figcaption className={bare ? "sr-only" : "type-label text-fg"}>{spec.title}</figcaption>
+      )}
       <div
         ref={ref}
         className="overflow-x-auto"
@@ -313,18 +327,20 @@ export function ChartBlock({ spec, className }: ChartBlockProps) {
           ))}
         </ul>
       )}
-      <div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-3"
-          aria-expanded={tableShown}
-          aria-controls={tableId}
-          onClick={() => setTableShown((value) => !value)}
-        >
-          {tableShown ? "Скрыть таблицу" : "Показать таблицу"}
-        </Button>
-      </div>
+      {tableToggle && (
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-3"
+            aria-expanded={tableShown}
+            aria-controls={tableId}
+            onClick={() => setTableShown((value) => !value)}
+          >
+            {tableShown ? "Скрыть таблицу" : "Показать таблицу"}
+          </Button>
+        </div>
+      )}
       <div
         id={tableId}
         data-chart-table=""

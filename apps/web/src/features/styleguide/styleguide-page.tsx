@@ -14,6 +14,7 @@ import { AttachmentsSection } from "./sections-attachments";
 import { ContextSection } from "./sections-chat-parts";
 import { ControlsSection, PaletteSection, StatusSection, TypographySection } from "./sections-foundation";
 import { MascotSection } from "./sections-mascot";
+import { PanelsSection } from "./sections-panels";
 import { ChatSection, NavigationSection, StudySection } from "./sections-product";
 
 type ThemeChoice = "system" | "light" | "dark";
@@ -33,6 +34,7 @@ const SECTIONS = [
   ["controls", "Ввод"],
   ["status", "Состояния"],
   ["study", "Учебные данные"],
+  ["panels", "Панели «Учёбы»"],
   ["chat", "Чат и агент"],
   ["attachments", "Вложения"],
   ["context", "Контекст"],
@@ -51,6 +53,7 @@ function Gallery({ mascotOnly = false }: { mascotOnly?: boolean }) {
       <ControlsSection />
       <StatusSection />
       <StudySection />
+      <PanelsSection />
       <ChatSection />
       <AttachmentsSection />
       <ContextSection />

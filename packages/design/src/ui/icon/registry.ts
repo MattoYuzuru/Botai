@@ -18,6 +18,7 @@ import {
   IconCamera,
   IconCertificate,
   IconChalkboardTeacher,
+  IconChartBar,
   IconCheck,
   IconChecks,
   IconChevronDown,
@@ -42,6 +43,7 @@ import {
   IconHelpCircle,
   IconHistory,
   IconHourglassHigh,
+  IconId,
   IconInfoCircle,
   IconKey,
   IconKeyboard,
@@ -69,10 +71,14 @@ import {
   IconSelector,
   IconSettings,
   IconShieldLock,
+  IconStar,
   IconSun,
   IconTable,
   IconTool,
   IconTrash,
+  IconTrendingDown,
+  IconTrendingUp,
+  IconTrophy,
   IconUser,
   IconUsers,
   IconUsersGroup,
@@ -97,6 +103,14 @@ export const iconRegistry = {
   document: IconFileText,
   connection: IconPlugConnected,
   space: IconBuilding,
+
+  // Панели «Учёбы»: показатели, рейтинг, профиль студента.
+  chart: IconChartBar,
+  trophy: IconTrophy,
+  star: IconStar,
+  idCard: IconId,
+  trend: IconTrendingUp,
+  "trend-down": IconTrendingDown,
 
   // Детали занятия (пресет `eventDetails`): значение сразу узнаётся по иконке.
   address: IconMapPin,
@@ -176,3 +190,11 @@ export const iconRegistry = {
 } as const satisfies Record<string, TablerIcon>;
 
 export type IconName = keyof typeof iconRegistry;
+
+/** Все имена реестра, в порядке объявления. Бэкенд и приложение сверяют с ним иконки панелей. */
+export const ICON_NAMES: readonly IconName[] = Object.freeze(Object.keys(iconRegistry) as IconName[]);
+
+/** Строка — имя иконки реестра. Для проверки значения из данных (спека панели) перед `<Icon />`. */
+export function isIconName(value: unknown): value is IconName {
+  return typeof value === "string" && Object.hasOwn(iconRegistry, value);
+}
