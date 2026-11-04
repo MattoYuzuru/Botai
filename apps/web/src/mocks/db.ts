@@ -6,6 +6,7 @@ import type { components } from "@/api/schema.gen";
 import type { Connection, Space } from "@/api/types";
 import type { JobVariant } from "./connect-script";
 import type { JobSim } from "./job-sim";
+import { seedPanelWorld } from "./panels-seed";
 
 type S = components["schemas"];
 
@@ -24,6 +25,8 @@ export type MockPolicy = S["PolicyOut"];
 export type MockAction = S["ActionOut"];
 /** Запуск источника (`SourceRunOut`): задание, его итог, ошибка и ссылки на тред/трассу. */
 export type MockSourceRun = S["SourceRunOut"];
+/** Панель «Учёбы» без данных и вуза: данные строит обработчик, вуз берётся из `spaceId`. */
+export type MockPanel = Omit<S["PanelOut"], "data" | "space"> & { spaceId: string };
 
 export type Scenario = "fresh" | "empty" | "connected" | "reauth" | "stale";
 
@@ -85,6 +88,8 @@ export interface MockDb {
   actionsLog: MockAction[];
   /** История запусков источников: задания connect/sync/repair и их итоги. */
   sourceRuns: MockSourceRun[];
+  /** Панели «Успеваемости» (D-039): конфиги; данные собираются при запросе. */
+  panels: MockPanel[];
   universities: S["UniversityOut"][];
   /** Задания подключения (живут только в памяти вкладки). */
   sims: Map<string, JobSim>;
@@ -189,6 +194,7 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
     actionPolicies: [],
     actionsLog: [],
     sourceRuns: [],
+    panels: [],
     universities: seedUniversities(),
     sims: new Map(),
     jobVariant: "basic",
@@ -221,6 +227,7 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
   ];
   seedSourceWorld(db, scenario, iso);
   seedActionWorld(db, iso);
+  seedPanelWorld(db, iso);
   return db;
 }
 
@@ -610,6 +617,7 @@ export function restoreDb(now: () => number = Date.now): MockDb | null {
       actionPolicies: parsed.actionPolicies ?? [],
       actionsLog: parsed.actionsLog ?? [],
       sourceRuns: parsed.sourceRuns ?? [],
+      panels: parsed.panels ?? [],
       playbooks: parsed.playbooks ?? {},
       playbookVersions: parsed.playbookVersions ?? {},
       artifacts: parsed.artifacts ?? [],

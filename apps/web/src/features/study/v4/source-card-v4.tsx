@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { humanMessage } from "@/api/errors";
+import { panelKeys } from "@/api/panels";
 import {
   type ArtifactOut,
   deleteSource,
@@ -148,6 +149,8 @@ function SourceCardDetails({
     void queryClient.invalidateQueries({ queryKey: sourceKeys.artifacts(shown.id) });
     void queryClient.invalidateQueries({ queryKey: sourceKeys.runs(shown.id) });
     void queryClient.invalidateQueries({ queryKey: sourceKeys.priority(space.id, "schedule") });
+    // Перечитанный или починенный источник мог отдать оценки, профиль или рейтинг — панели «Успеваемости».
+    void queryClient.invalidateQueries({ queryKey: panelKeys.all });
   };
 
   const sync = useMutation({

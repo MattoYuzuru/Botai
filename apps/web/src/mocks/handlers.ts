@@ -16,6 +16,7 @@ import {
   ulid,
 } from "./db";
 import { JobSim } from "./job-sim";
+import { createPanelsHandlers } from "./panels-handlers";
 import { createSourcesHandlers } from "./sources-handlers";
 import { createUsageHandlers } from "./usage-handlers";
 
@@ -136,6 +137,7 @@ export function createHandlers(
     ...createActionHandlers(db, { latency }),
     ...createUsageHandlers(db, { latency }),
     ...createSourcesHandlers(db, { latency, persist }),
+    ...createPanelsHandlers(db, { latency, persist }),
     ...createChatHandlers(db, { latency, persist, jobPace }),
     http.post("*/api/v1/auth/login", async ({ request }) => {
       await wait();

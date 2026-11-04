@@ -7,6 +7,7 @@ import { ScreenSyncIndicator } from "@/features/data/source-notices";
 import { type SpaceInfo, useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { AccountSettings } from "@/features/settings/account";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
+import { PanelsSection } from "../panels/panels-section";
 import { SourceCardV4 } from "./source-card-v4";
 import { UniversityPanelV4 } from "./university-panel-v4";
 import type { StudySource } from "./use-study-sources";
@@ -62,6 +63,7 @@ export function StudyScreenV4() {
         </div>
       ) : (
         <div data-screen="study" data-state={state} className="flex flex-col gap-6">
+          <PanelsSection scope={scope} />
           {universities.map((space) => (
             <UniversityPanelV4
               key={space.id}
