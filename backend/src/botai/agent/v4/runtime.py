@@ -102,6 +102,25 @@ RESUMABLE_STATUSES: frozenset[str] = frozenset(
 CHECKPOINT_EVERY_STEPS = 8
 CHECKPOINT_EVERY_SECONDS = 20.0
 
+# Tools whose effect outlives the run: after a step that called one the checkpoint is saved at once,
+# so a restart does not replay the side effect from an older snapshot.
+SIDE_EFFECT_TOOL_PREFIXES: tuple[str, ...] = ("action_",)
+SIDE_EFFECT_TOOLS: frozenset[str] = frozenset(
+    {"source_sync", "source_update_playbook", "ui_propose_panel"}
+)
+SAFE_HTTP_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+
+
+def has_side_effects(call: LlmToolCall) -> bool:
+    """Whether a tool call changes something outside the run (an action, a sync, a write request)."""
+    if call.name in SIDE_EFFECT_TOOLS or call.name.startswith(SIDE_EFFECT_TOOL_PREFIXES):
+        return True
+    if call.name == "http_request":
+        method = call.arguments.get("method", "GET")
+        return not (isinstance(method, str) and method.strip().upper() in SAFE_HTTP_METHODS)
+    return False
+
+
 INTERRUPTED_TOOL_TEXT = (
     '<source_data tool="interrupted">\n'
     "[Результат не получен: ход прервали до конца работы инструмента. "
@@ -539,11 +558,11 @@ class AgentRuntime:
                 if message.role != "system"
             )
 
-        async def save_checkpoint(*, final: bool = False) -> None:
+        async def save_checkpoint(*, final: bool = False, force: bool = False) -> None:
             nonlocal saved_steps, saved_at
             if checkpoint_sink is None:
                 return
-            if not final and not (
+            if not (final or force) and not (
                 steps - saved_steps >= self._checkpoint_every_steps
                 or self._monotonic() - saved_at >= self._checkpoint_every_seconds
             ):
@@ -705,7 +724,7 @@ class AgentRuntime:
                             LlmMessage(role="tool", tool_call_id=item.call.id, content=item.text)
                         )
                     tool_calls += len(executed)
-                    await save_checkpoint()
+                    await save_checkpoint(force=any(has_side_effects(i.call) for i in executed))
                     continue
                 convo.append(
                     LlmMessage(
@@ -1035,6 +1054,7 @@ __all__ = [
     "LIMIT_STATUS",
     "RESUMABLE_ERRORS",
     "RESUMABLE_STATUSES",
+    "SIDE_EFFECT_TOOLS",
     "AgentRuntime",
     "CheckpointSink",
     "CheckpointSnapshot",
@@ -1047,6 +1067,7 @@ __all__ = [
     "RunResult",
     "RunTask",
     "default_pricing",
+    "has_side_effects",
     "is_resumable",
     "repair_dangling_tool_calls",
 ]

@@ -14,6 +14,7 @@ from botai.agent.v4.providers import MockProvider
 from botai.agent.v4.runtime import (
     INTERRUPTED_TOOL_TEXT,
     CheckpointSnapshot,
+    has_side_effects,
     is_resumable,
     repair_dangling_tool_calls,
 )
@@ -357,3 +358,47 @@ async def test_a_segment_hard_stop_override_stops_the_run_before_the_next_model_
     assert result.limit_reached == "hard_stop_usd"
     assert len(provider.requests) == 1
     assert result.can_resume
+
+
+async def test_a_step_with_a_side_effect_is_saved_at_once_whatever_the_cadence() -> None:
+    provider = MockProvider.from_responses(
+        tool_response(call("echo", {"text": "read"}, "c1")),
+        tool_response(call("action_execute", {"text": "send"}, "c2")),
+        tool_response(call("echo", {"text": "read again"}, "c3")),
+        answer("готово"),
+    )
+    sink = Sink()
+    await runtime(checkpoint_every_steps=100, checkpoint_every_seconds=1000).run(
+        task(),
+        provider,
+        [handler_tool("echo"), handler_tool("action_execute")],
+        checkpoint_sink=sink,
+    )
+    # only the step that executed the action was saved before the final snapshot
+    assert [(s.steps, s.final) for s in sink.snapshots] == [(2, False), (4, True)]
+    calls = [c.name for m in sink.snapshots[0].messages for c in m.tool_calls]
+    assert calls == ["echo", "action_execute"]
+    assert sink.snapshots[0].messages[-1].role == "tool"  # the result of the effect is in it
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "expected"),
+    [
+        ("action_execute", {}, True),
+        ("action_propose", {}, True),
+        ("source_sync", {"source_id": "s"}, True),
+        ("source_update_playbook", {}, True),
+        ("ui_propose_panel", {}, True),
+        ("http_request", {"url": "https://x.example/a", "method": "POST"}, True),
+        ("http_request", {"url": "https://x.example/a", "method": " delete "}, True),
+        ("http_request", {"url": "https://x.example/a", "method": "get"}, False),
+        ("http_request", {"url": "https://x.example/a", "method": "HEAD"}, False),
+        ("http_request", {"url": "https://x.example/a"}, False),
+        ("source_read", {}, False),
+        ("fs_write", {}, False),
+    ],
+)
+def test_which_calls_have_side_effects(
+    name: str, arguments: dict[str, Any], expected: bool
+) -> None:
+    assert has_side_effects(LlmToolCall(id="c", name=name, arguments=arguments)) is expected
