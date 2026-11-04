@@ -44,7 +44,7 @@ from botai.core.errors import BotaiError
 from botai.core.services import Services
 from botai.db.models import Job, Source, User
 from botai.jobs.events import TERMINAL
-from botai.sources.normalize import MODELS
+from botai.sources.normalize import ALL_MODELS
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import playbooks, service, store, sync_jobs
 from botai.sources.v4.runner import RunReport
@@ -360,7 +360,7 @@ async def domain_rows(services: Services, source_id: str, kinds: Sequence[str]) 
             reading = kinds_vocab.reading_kind(kind)
             if reading is None:
                 continue
-            model: Any = MODELS[reading]
+            model: Any = ALL_MODELS[reading]
             rows[kind] = int(
                 await session.scalar(
                     select(func.count()).select_from(model).where(model.source_id == source_id)
