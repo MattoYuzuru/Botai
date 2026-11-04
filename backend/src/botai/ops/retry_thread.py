@@ -1,6 +1,6 @@
 """Operator command: retry a dead chat turn by sending the thread a normal student message.
 
-    python -m botai.ops.retry_thread --thread ULID [--text TEXT] [--dry-run]
+    python -m botai.ops.retry_thread --thread ULID [--text TEXT] [--resume] [--dry-run]
 
 A production turn can die on a provider failure (`llm_unavailable`) or on a soft limit; the chat
 stays in the thread, and the owner wants the agent to continue from it. The command does exactly
@@ -10,9 +10,13 @@ message to a task that waits for a plain answer continues that task; otherwise i
 turn, and an in-flight turn is refused with `agent_busy`). The default text asks the agent to
 continue without repeating the whole request.
 
-`--dry-run` reads the thread, its owner, the last message and the last job and prints them; it
-writes nothing and posts nothing. The command prints only identifiers and states, never message
-text, prompts, keys or other secrets.
+A turn that stopped without an answer leaves a checkpoint (`agent_run_checkpoints`, D-040): when it
+is resumable and fresh, the message continues from it and the agent does not re-read its traces.
+That is the default; `--resume` insists on it and fails if there is nothing to resume.
+
+`--dry-run` reads the thread, its owner, the last message, the last job and the resumable
+checkpoint and prints them; it writes nothing and posts nothing. The command prints only
+identifiers, states and counters, never message text, prompts, keys or other secrets.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -31,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.conversations import post_message
 from botai.agent.schemas import MessageIn
+from botai.agent.v4.checkpoints import StoredCheckpoint, checkpoint_store
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.services import Services
 from botai.db.models import ChatMessage, ChatThread, Job, User
@@ -61,6 +66,38 @@ class DryRunInfo:
     job_id: str | None
     job_kind: str | None
     job_state: str | None
+    checkpoint: CheckpointInfo | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointInfo:
+    run_id: str
+    status: str
+    segment: int
+    message_count: int
+    size_bytes: int
+    updated_at: datetime
+    expires_at: datetime
+
+
+def _info(checkpoint: StoredCheckpoint) -> CheckpointInfo:
+    return CheckpointInfo(
+        run_id=checkpoint.run_id,
+        status=checkpoint.status,
+        segment=checkpoint.segment,
+        message_count=checkpoint.message_count,
+        size_bytes=checkpoint.bytes,
+        updated_at=checkpoint.updated_at,
+        expires_at=checkpoint.expires_at,
+    )
+
+
+async def resumable_checkpoint(services: Services, thread: ThreadInfo) -> StoredCheckpoint | None:
+    """The checkpoint the thread's next message would continue from (resumable and fresh)."""
+    window = timedelta(hours=services.settings.agent_resume_window_hours)
+    return await checkpoint_store(services).resumable_in_thread(
+        thread.owner_id, thread.thread_id, window=window
+    )
 
 
 async def find_thread(session: AsyncSession, thread_id: str) -> ThreadInfo:
@@ -74,9 +111,12 @@ async def find_thread(session: AsyncSession, thread_id: str) -> ThreadInfo:
     return ThreadInfo(thread_id=thread.id, owner_id=owner.id, owner_name=owner.display_name)
 
 
-async def inspect_thread(session: AsyncSession, thread_id: str) -> DryRunInfo:
-    """Everything `--dry-run` prints: the thread, its owner, the last message and the last job."""
+async def inspect_thread(
+    session: AsyncSession, thread_id: str, services: Services | None = None
+) -> DryRunInfo:
+    """Everything `--dry-run` prints: the thread, owner, last message, last job and checkpoint."""
     thread = await find_thread(session, thread_id)
+    checkpoint = await resumable_checkpoint(services, thread) if services is not None else None
     message = await session.scalar(
         select(ChatMessage)
         .where(ChatMessage.thread_id == thread_id)
@@ -96,6 +136,7 @@ async def inspect_thread(session: AsyncSession, thread_id: str) -> DryRunInfo:
         job_id=job.id if job is not None else None,
         job_kind=job.kind if job is not None else None,
         job_state=job.state if job is not None else None,
+        checkpoint=_info(checkpoint) if checkpoint is not None else None,
     )
 
 
@@ -120,6 +161,12 @@ def _parser() -> argparse.ArgumentParser:
         help=f"текст сообщения (по умолчанию «{DEFAULT_TEXT}»)",
     )
     p.add_argument(
+        "--resume",
+        action="store_true",
+        help="продолжить от чекпоинта прерванного хода; ошибка, если свежего чекпоинта нет "
+        "(без флага чекпоинт используется сам, когда он есть)",
+    )
+    p.add_argument(
         "--dry-run", action="store_true", help="только прочитать чат и задания; ничего не писать"
     )
     return p
@@ -137,6 +184,17 @@ def _message(dry: DryRunInfo, out: Callable[[str], None]) -> None:
         out("Последнее задание: нет")
     else:
         out(f"Последнее задание: {dry.job_id} ({dry.job_kind}), состояние {dry.job_state}")
+    checkpoint = dry.checkpoint
+    if checkpoint is None:
+        out("Чекпоинт для продолжения: нет")
+    else:
+        out(
+            f"Чекпоинт для продолжения: {checkpoint.run_id}, статус {checkpoint.status}, "
+            f"часть {checkpoint.segment + 1}, сообщений {checkpoint.message_count}, "
+            f"{checkpoint.size_bytes} байт, "
+            f"обновлён {checkpoint.updated_at.isoformat(timespec='seconds')}, "
+            f"истекает {checkpoint.expires_at.isoformat(timespec='seconds')}"
+        )
 
 
 def _report_botai_error(exc: BotaiError, err: Callable[[str], None]) -> int:
@@ -163,7 +221,7 @@ async def run(
     try:
         async with services.db() as session:
             if args.dry_run:
-                _message(await inspect_thread(session, args.thread), out)
+                _message(await inspect_thread(session, args.thread, services), out)
                 out("--dry-run: ничего не отправлено")
                 return 0
             info = await find_thread(session, args.thread)
@@ -173,6 +231,14 @@ async def run(
                 raise RetryThreadError(
                     "текст сообщения не прошёл проверку: нужно от 1 до 8000 символов"
                 ) from None
+            checkpoint = await resumable_checkpoint(services, info)
+            if args.resume and checkpoint is None:
+                raise RetryThreadError(
+                    "нечего продолжать: у последнего хода нет свежего чекпоинта "
+                    "(он устарел, ход закончился ответом или ещё идёт)"
+                )
+            if checkpoint is not None:
+                body = body.model_copy(update={"resume_run_id": checkpoint.run_id})
             accepted = await post_message(session, services, info.owner_id, info.thread_id, body)
     except RetryThreadError as exc:
         err(f"Ошибка: {exc}")
@@ -183,6 +249,8 @@ async def run(
     out(f"Владелец: {info.owner_name} ({info.owner_id})")
     out(f"Сообщение: {accepted.message.id}")
     out(f"Задание: {accepted.job_id}")
+    if checkpoint is not None:
+        out(f"Продолжение от чекпоинта: {checkpoint.run_id}")
     out("Ход поставлен в очередь: ответ появится в чате.")
     return 0
 

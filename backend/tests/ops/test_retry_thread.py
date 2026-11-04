@@ -63,16 +63,37 @@ def job_row() -> Any:
     return SimpleNamespace(id=JOB_ID, kind="chat", state="failed")
 
 
+RUN_ID = "0001KJEH7M3XQ4P9R2T5V8W0YZ"
+
+
+def checkpoint_row() -> Any:
+    return SimpleNamespace(
+        run_id=RUN_ID,
+        status="cost_limit",
+        segment=2,
+        message_count=41,
+        bytes=123_456,
+        updated_at=NOW,
+        expires_at=NOW,
+    )
+
+
 def install(
     monkeypatch: pytest.MonkeyPatch,
     session: FakeSession,
     post: Callable[..., Awaitable[Any]] | None = None,
+    checkpoint: Any = None,
 ) -> None:
-    """The two production entry points the CLI uses, replaced with fakes."""
+    """The production entry points the CLI uses, replaced with fakes (no checkpoint by default)."""
     services = SimpleNamespace(db=FakeDb(session))
     monkeypatch.setattr(retry_thread, "build_services", lambda: services)
     if post is not None:
         monkeypatch.setattr(retry_thread, "post_message", post)
+
+    async def resumable(_services: object, _thread: object) -> Any:
+        return checkpoint
+
+    monkeypatch.setattr(retry_thread, "resumable_checkpoint", resumable)
 
 
 def ids_post(calls: list[dict[str, Any]]) -> Callable[..., Awaitable[Any]]:
@@ -184,6 +205,7 @@ async def test_dry_run_without_messages_or_jobs_says_so(monkeypatch: pytest.Monk
     text = "\n".join(out)
     assert "Последнее сообщение: нет" in text
     assert "Последнее задание: нет" in text
+    assert "Чекпоинт для продолжения: нет" in text
 
 
 @pytest.mark.parametrize("thread", ["not-a-ulid", "0001KJEH7G8QDYGYYXT2K3ZFW", ""])
@@ -238,3 +260,62 @@ def test_main_is_wired_to_run(monkeypatch: pytest.MonkeyPatch) -> None:
         retry_thread.main()
     assert exc.value.code == 3
     assert calls == [["--thread", THREAD_ID]]
+
+
+async def test_a_fresh_checkpoint_is_resumed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    install(
+        monkeypatch,
+        FakeSession(thread_row(), owner_row()),
+        ids_post(calls),
+        checkpoint=checkpoint_row(),
+    )
+    out: list[str] = []
+    rc = await retry_thread.run(["--thread", THREAD_ID], out=out.append, err=lambda _line: None)
+    assert rc == 0
+    assert calls[0]["body"].resume_run_id == RUN_ID
+    assert f"Продолжение от чекпоинта: {RUN_ID}" in "\n".join(out)
+
+
+async def test_without_a_checkpoint_the_message_is_a_plain_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    install(monkeypatch, FakeSession(thread_row(), owner_row()), ids_post(calls))
+    rc = await retry_thread.run(
+        ["--thread", THREAD_ID], out=lambda _line: None, err=lambda _line: None
+    )
+    assert rc == 0
+    assert calls[0]["body"].resume_run_id is None
+
+
+async def test_resume_flag_without_a_checkpoint_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def must_not_post(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("nothing to resume: nothing may be posted")
+
+    install(monkeypatch, FakeSession(thread_row(), owner_row()), must_not_post)
+    err: list[str] = []
+    rc = await retry_thread.run(
+        ["--thread", THREAD_ID, "--resume"], out=lambda _line: None, err=err.append
+    )
+    assert rc == 1
+    assert "нечего продолжать" in "\n".join(err)
+
+
+async def test_dry_run_shows_the_checkpoint_without_message_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession(thread_row(), owner_row(), message_row(), job_row())
+    install(monkeypatch, session, checkpoint=checkpoint_row())
+    out: list[str] = []
+    rc = await retry_thread.run(
+        ["--thread", THREAD_ID, "--dry-run"], out=out.append, err=lambda _line: None
+    )
+    assert rc == 0
+    text = "\n".join(out)
+    assert RUN_ID in text
+    assert "cost_limit" in text
+    assert "часть 3" in text
+    assert "сообщений 41" in text

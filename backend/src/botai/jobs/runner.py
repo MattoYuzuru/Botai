@@ -91,11 +91,14 @@ def without_follow_up(result: dict[str, Any] | None) -> dict[str, Any] | None:
     return {key: value for key, value in result.items() if key != FOLLOW_UP_KEY}
 
 
+# The worker tells a handler its active-time budget under this payload key (not persisted).
+BUDGET_KEY = "_budget_seconds"
+
 # Active-time budgets per kind (lld.md §5). Time spent waiting for the student is not counted.
 BUDGETS: dict[str, float] = {
     JobKind.SYNC.value: 120.0,
     JobKind.ACTION.value: 120.0,
-    JobKind.CHAT.value: 900.0,  # an agent turn of up to 30 model steps with tools
+    JobKind.CHAT.value: 900.0,  # one segment of an agent turn; its soft time limit is 60 s shorter
     JobKind.INGEST.value: 600.0,
     JobKind.CONNECT.value: 1800.0,
     JobKind.REPAIR.value: 1800.0,
@@ -415,6 +418,9 @@ class Worker:
                     # Retry accounting belongs to the worker. Preserve routing/intent
                     # metadata, but do not expose this counter to handler results or prompts.
                     payload = {k: v for k, v in job.payload.items() if k != "_retry_failures"}
+                    # A segment of a chat turn ends with a soft time limit before this budget does
+                    # (agent.v4.chat): the handler learns the budget, it is never stored.
+                    payload[BUDGET_KEY] = budget
                     result = await handler(ctx, self.services, payload)
         except JobClaimLost:
             diagnostic_event("job.claim_lost", attempt=job.attempts)
@@ -825,11 +831,13 @@ class Worker:
             await asyncio.sleep(self.config.maintenance_seconds)
 
     async def maintain(self) -> None:
+        from botai.agent.v4.checkpoints import purge_expired_checkpoints
         from botai.jobs.research import purge_expired
 
         purge_diagnostics()
         await self.recover_orphans()
         await purge_expired(self.services.db, self.services.clock.now())
+        await purge_expired_checkpoints(self.services.db, self.services.clock.now())
         async with self.services.db() as session:
             await purge_finished(session, self.services.clock.now())
             await session.commit()
