@@ -817,6 +817,7 @@ async def _sources_context(session: AsyncSession, user_id: str, space_id: str | 
 
 PROGRESS_SAVED = "Прогресс сохранён — нажмите «Продолжить», чтобы идти дальше."
 ERROR_REASONS = frozenset({"transient", "quota", "money", "count", "time", "manual"})
+LIMIT_NAMED_REASONS = frozenset({"manual", "no_progress", "hard_stop", "error"})
 
 
 def _compose_answer(
@@ -848,13 +849,16 @@ def _compose_answer(
         if reason in ERROR_REASONS:
             return f"{base}\n\n{explain}"
         return f"{base} {PROGRESS_SAVED}" if saved and result.can_resume else base
-    if reason == "manual" and result.limit_reached:
+    if result.limit_reached and reason in LIMIT_NAMED_REASONS:
+        # The limit that ended the segment is named, whatever the chain then decided about it.
         limit = LIMIT_NAMES.get(result.limit_reached, "ресурсов")
-        note = (
-            f"Работа не завершена: достигнут лимит {limit}. Выполнено шагов: {result.steps}. "
-            + (PROGRESS_SAVED if saved else "Подробности действий сохранены в трассе.")
-        )
-        return f"{text}\n\n{note}" if text else note
+        note = f"Работа не завершена: достигнут лимит {limit}. Выполнено шагов: {result.steps}."
+        if reason != "manual":
+            explain = f"{note} {explain}"
+        elif saved:
+            explain = f"{note} {PROGRESS_SAVED}"
+        else:
+            explain = f"{note} Подробности действий сохранены в трассе."
     return f"{text}\n\n{explain}" if text else explain
 
 
