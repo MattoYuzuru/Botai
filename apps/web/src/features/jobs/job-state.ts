@@ -44,6 +44,11 @@ export interface JobSnapshot {
   lastEventId: string | null;
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
 /** Известные коды backend/core/errors.py; произвольный legacy detail не становится кодом или текстом UI. */
 const RESULT_ERROR_CODES = new Set([
   "source_auth_required",
@@ -71,10 +76,51 @@ const RESULT_ERROR_CODES = new Set([
   "internal_error",
 ]);
 
+/**
+ * Остановленный ход агента: сервер сохранил его работу (чекпоинт) и говорит, можно ли продолжить с того же
+ * места. `runId` уходит в `resumeRunId` сообщения кнопки «Продолжить».
+ */
+export interface JobResume {
+  resumable: boolean;
+  runId: string;
+  /** Почему остановился: money, count, time, quota, transient, no_progress, hard_stop, manual, error… */
+  reason: string;
+  spentUsd: number;
+  capUsd: number;
+  continuations: number;
+}
+
+const finite = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/** Разбор `result.resume` задания-хода; всё, что не похоже на описание чекпоинта, — `null`. */
+export function jobResume(result: Record<string, unknown> | null | undefined): JobResume | null {
+  const raw = asRecord(result?.resume);
+  if (!raw || typeof raw.resumable !== "boolean" || typeof raw.runId !== "string" || !raw.runId) return null;
+  return {
+    resumable: raw.resumable,
+    runId: raw.runId,
+    reason: typeof raw.reason === "string" ? raw.reason : "",
+    spentUsd: finite(raw.spentUsd),
+    capUsd: finite(raw.capUsd),
+    continuations: finite(raw.continuations),
+  };
+}
+
 /** Старые задания могли завершиться done с бизнес-ошибкой внутри result. */
 export function jobProblem(job: JobSnapshot): JobProblem | null {
   if (job.problem) return job.problem;
   if (job.state !== "done") return null;
+  const resume = jobResume(job.result);
+  if (resume) {
+    // Ход остановился, не дав ответа: текст причины уже в ответе агента, здесь — что с работой дальше.
+    return {
+      code: resume.reason === "cancelled" ? "agent_stopped" : "agent_limit",
+      detail: resume.resumable
+        ? "Работа остановлена, прогресс сохранён. Можно продолжить с того же места."
+        : "Работа остановлена, прогресс сохранить не удалось. Опишите задачу ещё раз.",
+      extra: {},
+    };
+  }
   const stopped = job.result?.status;
   const limit =
     ["token_limit", "time_limit", "step_limit", "cost_limit", "hard_stop"].includes(String(stopped)) ||
@@ -121,11 +167,6 @@ export interface RawEvent {
   event: string;
   data: string;
 }
-
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 
 function parseJson(data: string): unknown {
   try {
@@ -301,6 +342,14 @@ export function thinkingSteps(job: JobSnapshot): StepSummary[] {
   }
   if (job.state === "waiting_user") {
     return steps.map((step) => (step.state === "running" ? { ...step, state: "waiting" } : step));
+  }
+  // Ход ждёт следующей части (пауза после сбоя модели или автоматическое продолжение): последняя строка шагов —
+  // сама эта стадия, и она «ждёт», пока сервер не вернёт задание в работу.
+  if (job.state === "queued" && job.stage) {
+    const last = steps.at(-1);
+    if (last && last.label === job.stage && last.state === "done") {
+      return [...steps.slice(0, -1), { ...last, state: "waiting" }];
+    }
   }
   // Задание завершилось, а шаг «бежит»: считаем его завершённым, иначе рельс будет врать.
   if (isTerminal(job.state)) {

@@ -42,6 +42,7 @@ const KEYWORDS = {
   handoff: /вручную|сам[ао]?\s+отправ|через сайт/i,
   request: /справк|заявлен|запиш|консультац/i,
   failure: /сбой/i,
+  limit: /по лимиту/i,
   connect: /подключ|добавь (сайт|источник|вуз)|smart lms/i,
   chart: /график|диаграмм/i,
   plan: /сложн|составь план|сравн/i,
@@ -51,6 +52,7 @@ type Intent = keyof typeof KEYWORDS | "unknown";
 
 export function intentOf(question: string): Intent {
   for (const key of [
+    "limit",
     "failure",
     "handoff",
     "connect",
@@ -317,7 +319,12 @@ const attachmentReply = (files: readonly MockAttachment[]): string =>
 export interface ReplyInput {
   question: string;
   files: readonly MockAttachment[];
+  /** «Продолжить»: чекпоинт остановленного хода, с которого агент продолжает (D-040). */
+  resumeRunId?: string;
 }
+
+const LIMIT_TEXT =
+  "Остановился: потрачено $2.00 из $2.00 на эту задачу. Прогресс сохранён — нажмите «Продолжить», чтобы идти дальше.";
 
 /** Ход агента: этапы, затем ответ. Блоки идут в поток задания, а в историю треда попадают по правилам сервера. */
 export async function runReply(
@@ -327,7 +334,9 @@ export async function runReply(
   input: ReplyInput,
 ): Promise<void> {
   const { db, state } = ctx;
-  const { question, files } = input;
+  const { question, files, resumeRunId } = input;
+  /** Ход, остановленный лимитом: его работа сохранена, сервер называет чекпоинт для кнопки «Продолжить». */
+  let stoppedRunId: string | null = null;
   const at = () => ctx.iso();
   const step = async (stage: string, ms = 600, detail?: string) => {
     const id = ulid();
@@ -347,7 +356,14 @@ export async function runReply(
     const connection = db.connections.find((item) => item.kind === "portal") ?? db.connections[0];
     const fetchedAt = ctx.iso(db.now() - 12 * 60_000);
 
-    if (files.length > 0 && !question.trim()) {
+    if (resumeRunId) {
+      await step("Продолжаю с сохранённого места", 400);
+      finalText = "Продолжил с места остановки и закончил: расписание на неделю собрано.";
+    } else if (intent === "limit") {
+      await step("Собираю данные по источникам", 400);
+      finalText = LIMIT_TEXT;
+      stoppedRunId = ulid();
+    } else if (files.length > 0 && !question.trim()) {
       await step("Смотрю вложения", 400);
       finalText = attachmentReply(files);
       quickReplies = files.some((file) => file.kind === "audio") ? ["Что у меня сегодня?"] : undefined;
@@ -586,8 +602,21 @@ export async function runReply(
     sim.status("Готово");
     sim.emit("done", {
       result: {
-        stopped: "answer",
-        steps: 2,
+        stopped: stoppedRunId ? "budget" : "answer",
+        ...(stoppedRunId
+          ? {
+              status: "hard_stop",
+              resume: {
+                resumable: true,
+                runId: stoppedRunId,
+                reason: "money",
+                spentUsd: 2,
+                capUsd: 2,
+                continuations: 0,
+              },
+            }
+          : {}),
+        steps: stoppedRunId ? 3 : 2,
         sources: sources.map((source) => ({
           title: source.title,
           kind: "data",

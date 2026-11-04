@@ -528,7 +528,11 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       const accepted = { message, jobId } satisfies MessageAccepted;
       if (acceptedKey) state().accepted[acceptedKey] = accepted;
       save();
-      void runReply(ctx, sim, id, { question: text, files: attached });
+      void runReply(ctx, sim, id, {
+        question: text,
+        files: attached,
+        ...(body.resumeRunId ? { resumeRunId: body.resumeRunId } : {}),
+      });
       return HttpResponse.json(accepted, { status: 202 });
     }),
 

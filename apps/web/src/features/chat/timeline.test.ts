@@ -677,3 +677,54 @@ describe("живой блок: признак для печати ответа",
     );
   });
 });
+
+describe("остановленный ход агента: кнопка «Продолжить»", () => {
+  const stopped = (extra: object = {}): Partial<JobSnapshot> => ({
+    state: "done",
+    result: {
+      stopped: "budget",
+      resume: {
+        resumable: true,
+        runId: "RUN1",
+        reason: "money",
+        spentUsd: 2,
+        capUsd: 2,
+        continuations: 1,
+        ...extra,
+      },
+    },
+  });
+  const failureOf = (jobs: ThreadJob[]) =>
+    build({ jobs }).turns.find((turn) => turn.kind === "failure") as Extract<Turn, { kind: "failure" }>;
+
+  it("карточка остановленного хода несёт чекпоинт, от которого продолжать", () => {
+    expect(failureOf([job("J", "chat", stopped())]).resume?.runId).toBe("RUN1");
+  });
+
+  it("без сохранённой работы, у фоновой задачи и у ответа кнопки нет", () => {
+    expect(failureOf([job("J", "chat", stopped({ resumable: false }))]).resume).toBeNull();
+    expect(failureOf([job("T", "sync", stopped())]).resume).toBeNull();
+    expect(
+      build({ jobs: [job("J", "chat", { state: "done", result: { stopped: "answer" } })] }).turns,
+    ).not.toContainEqual(expect.objectContaining({ kind: "failure" }));
+  });
+
+  it("задание, которое ждёт следующей части в очереди, ещё не сбой: карточки нет, стадия видна", () => {
+    const stage = "Продолжаю автоматически (1 из 5): достигнут лимит шагов.";
+    const timeline = build({
+      jobs: [
+        job("J", "chat", {
+          state: "queued",
+          stage,
+          blocks: [
+            { type: "thinking", id: ULID(1), at: iso(NOW - 3_000), stage, state: "ok" },
+          ] as JobSnapshot["blocks"],
+        }),
+      ],
+    });
+    expect(kinds(timeline.turns)).toEqual(["thinking"]);
+    const turn = timeline.turns[0] as Extract<Turn, { kind: "thinking" }>;
+    expect(turn.running).toBe(true);
+    expect(turn.steps.map((step) => [step.label, step.state])).toEqual([[stage, "waiting"]]);
+  });
+});

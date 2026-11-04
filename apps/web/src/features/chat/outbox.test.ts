@@ -452,3 +452,28 @@ describe("очередь исходящих сообщений", () => {
     expect(storage.data.size).toBe(0);
   });
 });
+
+describe("«Продолжить»: сообщение несёт чекпоинт остановленного хода", () => {
+  it("resumeRunId уходит на сервер вместе с сообщением и переживает перезагрузку страницы", async () => {
+    const { outbox, deps, storage, setOnline } = setup();
+    setOnline(false);
+    outbox.send("Продолжить", { ...target, resumeRunId: "RUN7" });
+    expect(JSON.parse(storage.data.get("botai.chat.outbox") ?? "[]")[0].resumeRunId).toBe("RUN7");
+
+    setOnline(true);
+    outbox.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deps.postMessage).toHaveBeenCalledExactlyOnceWith(
+      "t1",
+      expect.objectContaining({ text: "Продолжить", resumeRunId: "RUN7" }),
+    );
+  });
+
+  it("обычное сообщение чекпоинта не несёт", async () => {
+    const { outbox, deps } = setup();
+    outbox.send("Привет", target);
+    await vi.advanceTimersByTimeAsync(0);
+    const post = vi.mocked(deps.postMessage).mock.calls[0]?.[1];
+    expect(post?.resumeRunId).toBeUndefined();
+  });
+});

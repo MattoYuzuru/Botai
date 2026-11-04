@@ -59,6 +59,9 @@ interface TimelineViewProps {
   links: ChatLinks;
   onQuickReply: (text: string) => void;
   quickRepliesDisabled: boolean;
+  /** «Продолжить» у остановленного хода агента: чекпоинт хода (`resumeRunId`) уходит вместе с сообщением. */
+  onContinue?: (runId: string) => void;
+  continueDisabled?: boolean;
   /** «Войти заново» у источника, вход в который не завершился. */
   onRestart: (connectionId: string) => void;
   restarting: boolean;
@@ -96,6 +99,8 @@ export function TimelineView({
   links,
   onQuickReply,
   quickRepliesDisabled,
+  onContinue,
+  continueDisabled = false,
   onRestart,
   restarting,
   onChanged,
@@ -171,6 +176,10 @@ export function TimelineView({
   );
   const receipts = runtime?.receipts ?? [];
   const visible = timeline.turns.filter((turn) => !(turn.kind === "block" && open.has(turn.key)));
+  // «Продолжить» стоит только у последнего остановленного хода и только пока после него ничего не началось.
+  const lastTurn = visible.findLast((turn) => turn.kind !== "thinking");
+  const continuable =
+    onContinue && !continueDisabled && lastTurn?.kind === "failure" ? lastTurn.resume?.runId : undefined;
   return (
     <>
       <ol className="flex flex-col gap-5" aria-label="Сообщения" data-timeline="">
@@ -193,6 +202,7 @@ export function TimelineView({
               onRestart={onRestart}
               restarting={restarting}
               failedJob={turn.kind === "failure" ? byId.get(turn.jobId) : undefined}
+              onContinue={turn === lastTurn && continuable ? () => onContinue?.(continuable) : undefined}
             />
             {timeline.quickReplies?.key === turn.key && (
               <div className="pt-3">
@@ -243,6 +253,7 @@ function TurnView({
   acknowledged,
   onRestart,
   restarting,
+  onContinue,
 }: {
   turn: Turn;
   resolveHistory: boolean;
@@ -256,6 +267,7 @@ function TurnView({
   acknowledged: ReadonlySet<string>;
   onRestart: (connectionId: string) => void;
   restarting: boolean;
+  onContinue: (() => void) | undefined;
 }) {
   switch (turn.kind) {
     case "user":
@@ -303,6 +315,15 @@ function TurnView({
               className="h-auto min-h-11 max-w-full whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0"
             >
               Войти заново
+            </Button>
+          )}
+          {onContinue && (
+            <Button
+              variant="primary"
+              onClick={onContinue}
+              className="h-auto min-h-11 max-w-full whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0"
+            >
+              Продолжить
             </Button>
           )}
         </div>
