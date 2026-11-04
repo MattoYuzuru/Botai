@@ -38,6 +38,7 @@ from botai.agent.v4.tools import build_basic_tools
 from botai.agent.v4.tools.actions import build_action_tools
 from botai.agent.v4.tools.browser import build_browser_tools
 from botai.agent.v4.tools.code import build_code_tools
+from botai.agent.v4.tools.panels import PanelToolkit, build_panel_tools
 from botai.agent.v4.tools.rag import build_rag_tools
 from botai.agent.v4.tools.secrets import SecretBroker, build_secret_tools
 from botai.agent.v4.tools.sources import SourceToolkit, build_source_tools
@@ -314,6 +315,23 @@ def build_space_toolkit(services: Services) -> SpaceToolkit:
     return SpaceToolkit(sm=db)
 
 
+def build_panel_toolkit(
+    services: Services, *, mask: Callable[[str], str] | None = None
+) -> PanelToolkit:
+    """The `ui_propose_panel`/`panel_list`/`panel_update` tools over the real DB session factory.
+
+    `mask` is the run's secret masker: a panel title or rationale that holds a secret the broker
+    issued is refused, not stored. The DB is required for the same reason as for the source tools.
+    """
+    db = getattr(services, "db", None)
+    if db is None:
+        raise AgentWiringError(
+            "Вузы v4 включены, но у сервисов нет фабрики сессий БД: panel_* инструменты нельзя "
+            "собрать (нужен services.db)."
+        )
+    return PanelToolkit(sm=db, clock=services.clock, mask=mask)
+
+
 def build_rag_toolset(services: Services) -> list[ToolHandler]:
     """The `rag_*` tools over the real DB session factory; a broken RAG config fails loudly.
 
@@ -442,6 +460,7 @@ async def build_agent_wiring(
         )
         tools.extend(build_source_tools(source_toolkit))
         tools.extend(build_space_tools(build_space_toolkit(services)))
+        tools.extend(build_panel_tools(build_panel_toolkit(services, mask=broker.mask)))
         tools.extend(build_rag_toolset(services))
         tools.extend(
             build_action_tools(

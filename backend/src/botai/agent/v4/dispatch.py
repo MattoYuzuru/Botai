@@ -39,7 +39,7 @@ from pydantic import AnyUrl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from botai.agent.ui_map import UI_MAP
+from botai.agent.ui_map import DISCOVERY_FLOW, UI_MAP
 from botai.agent.v4.factory import artifact_root_from_settings, build_source_toolkit
 from botai.agent.v4.handlers import SYSTEM_PROMPT
 from botai.agent.v4.job_runtime import (
@@ -87,11 +87,16 @@ CONNECT_SYSTEM_PROMPT = (
    проверь source_probe перед активацией, если сомневаешься.
 4. Синхронизация. Выполни source_sync и убедись по отчёту, что записи прочитаны.
 5. Если источник уже создан (source_id дан ниже) — не создавай дубликат, работай с ним.
+6. Находки. Пока исследуешь или чинишь источник, отмечай данные сверх запрошенных (оценки,
+   рейтинг, профиль), проверяй их чтением и предлагай подключить одним вопросом студенту
+   (см. «Находки в источнике» ниже); без согласия playbook не расширяй.
 Не выдумывай данные: если доступ не получен, скажи честно, где и на чём остановился.
 В конце перечисли в ответе: что за источник, какие виды данных читаются, где лежат
 (endpoint/URL), что осталось сделать."""
     + "\n\n"
     + UI_MAP
+    + "\n\n"
+    + DISCOVERY_FLOW
 )
 
 

@@ -137,7 +137,7 @@ async def test_first_read_makes_the_default_panels_with_data(
     _, space_id, _ = await _full_student(v4_client, tx_sessionmaker, clock)
     panels = await _panels(v4_client)
     assert [p["key"] for p in panels][:3] == ["grades-overview", "grades-chart", "student-profile"]
-    assert len(panels) == 4
+    assert len(panels) == 5
     for panel in panels:
         assert set(panel) == PANEL_KEYS  # camelCase, nothing else
         assert panel["status"] == "active"
@@ -153,7 +153,7 @@ async def test_first_read_makes_the_default_panels_with_data(
         }
         assert panel["spec"]["type"] == panel["type"]
         assert panel["spec"]["v"] == 1
-    assert [p["position"] for p in panels] == [0, 1, 2, 3]
+    assert [p["position"] for p in panels] == [0, 1, 2, 3, 4]
 
     kpi, chart, profile, ranking = (panels[0], panels[1], panels[2], panels[3])
     assert kpi["spec"] == {
@@ -239,7 +239,7 @@ async def test_first_read_makes_the_default_panels_with_data(
     }
 
     # a second read makes nothing new
-    assert len(await _panels(v4_client)) == 4
+    assert len(await _panels(v4_client)) == 5
 
 
 async def test_a_student_without_data_has_no_panels(
@@ -269,10 +269,11 @@ async def test_panels_are_grouped_by_university_and_can_be_filtered(
         (first_space, "student-profile"),
         (second_space, "grades-overview"),
         (second_space, "grades-chart"),
+        (second_space, "grades-recent"),
     ]
     assert everything[0]["space"]["title"] == "Первый вуз"
     only_second = await _panels(v4_client, space_id=second_space)
-    assert [p["key"] for p in only_second] == ["grades-overview", "grades-chart"]
+    assert [p["key"] for p in only_second] == ["grades-overview", "grades-chart", "grades-recent"]
     # each university sees only its own data
     assert only_second[0]["data"]["total"] == 1
     assert everything[0]["data"]["kind"] == "profile"
@@ -287,7 +288,7 @@ async def test_another_students_panels_are_invisible_and_untouchable(
     sm = tx_sessionmaker
     await _full_student(v4_client, sm, clock)
     mine = await _panels(v4_client)
-    assert len(mine) == 4
+    assert len(mine) == 5
 
     other = new_client()
     other_user, other_space, other_source = await _student(other, sm, clock)
@@ -338,7 +339,7 @@ async def test_patch_switches_visibility_and_order(
     assert listed["grades-overview"]["visible"] is False
     assert listed["grades-overview"]["data"] is None
     assert listed["grades-chart"]["data"] is not None
-    assert len(listed) == 4  # the switched-off panel is still listed, so the screen can offer it
+    assert len(listed) == 5  # the switched-off panel is still listed, so the screen can offer it
 
     shown = await v4_client.patch(
         f"/api/v1/panels/{overview['id']}", json={"visible": True, "position": 7}
@@ -455,7 +456,7 @@ async def test_a_panel_with_a_broken_stored_spec_is_skipped_not_a_500(
         await session.commit()
     keys = [p["key"] for p in await _panels(v4_client)]
     assert panel["key"] not in keys
-    assert len(keys) == 3
+    assert len(keys) == 4
     assert (
         await v4_client.patch(f"/api/v1/panels/{panel['id']}", json={"visible": False})
     ).status_code == 404
@@ -617,7 +618,7 @@ async def test_a_switched_off_source_hides_its_data_from_panels(
 ) -> None:
     sm = tx_sessionmaker
     _, _, source_id = await _full_student(v4_client, sm, clock)
-    assert len(await _panels(v4_client)) == 4
+    assert len(await _panels(v4_client)) == 5
     switched = await v4_client.post(f"/api/v1/sources/{source_id}/disable")
     assert switched.status_code in (200, 204), switched.text
     panels = _by_key(await _panels(v4_client))

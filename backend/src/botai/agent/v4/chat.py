@@ -55,7 +55,7 @@ from botai.agent.memory import (
 )
 from botai.agent.tokens import estimate_messages, estimate_tokens
 from botai.agent.turn_context import turn_context
-from botai.agent.ui_map import UI_GUIDE
+from botai.agent.ui_map import DISCOVERY_FLOW, UI_GUIDE
 from botai.agent.v4.checkpoints import (
     ChainPosition,
     CheckpointStore,
@@ -110,7 +110,8 @@ CHAT_SYSTEM_PROMPT = (
 Ты отвечаешь в чате, но у тебя есть полный harness, а не только текст: произвольный HTTP
 (http_request), браузер (browser_*), код в песочнице задачи (code_exec, fs_*), секреты
 (secret_request/secret_use), вопросы студенту (ask_user), источники (source_*: список, чтение,
-playbook, синхронизация), вузы (space_create: создать вуз студента), поиск по материалам
+playbook, синхронизация), вузы (space_create: создать вуз студента), панели «Учёбы»
+(panel_list, ui_propose_panel, panel_update), поиск по материалам
 (rag_*: rag_search/rag_ingest), действия (action_* — по политике), свои трассы (trace_read).
 
 Правила:
@@ -137,6 +138,8 @@ playbook, синхронизация), вузы (space_create: создать в
 """
     + "\n\n"
     + UI_GUIDE
+    + "\n\n"
+    + DISCOVERY_FLOW
 )
 
 CHAT_TASK = (

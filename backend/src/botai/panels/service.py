@@ -44,6 +44,7 @@ from botai.panels.schemas import (
     ChartView,
     Dataset,
     KpiSpec,
+    ListSpec,
     PanelSpecModel,
     PanelStatus,
     ProfileSpec,
@@ -54,6 +55,7 @@ from botai.panels.schemas import (
 
 GRADES_OVERVIEW = "grades-overview"
 GRADES_CHART = "grades-chart"
+GRADES_RECENT = "grades-recent"
 STUDENT_PROFILE = "student-profile"
 RANKING_PREFIX = "ranking:"
 MAX_PANELS_PER_SPACE = 24
@@ -252,8 +254,8 @@ async def ensure_default_panels(session: AsyncSession, *, user_id: str, space_id
 
     Idempotent by the unique `(space_id, key)`: a panel that exists in any status or visibility
     is left exactly as it is, so the student's switches and refusals are never undone. Grades give
-    an overview and (when some of them have numbers) a chart, the card fields give the profile,
-    every rating board gives its own ranking panel."""
+    an overview, (when some of them have numbers) a chart and a list of the latest ones, the card
+    fields give the profile, every rating board gives its own ranking panel."""
     await get_space(session, user_id, space_id)
     data = await space_data(session, user_id=user_id, space_id=space_id)
     wanted: list[tuple[str, PanelSpecModel]] = []
@@ -302,6 +304,14 @@ async def ensure_default_panels(session: AsyncSession, *, user_id: str, space_id
                 title=_plain_title(board, "Рейтинг"),
                 icon="trophy",
                 dataset=Dataset(kind="ranking", board=board),
+            ),
+        )
+    if data.grades:
+        # Words («отлично», «зачтено») have no chart; the latest grades are readable at any scale.
+        want(
+            GRADES_RECENT,
+            lambda: ListSpec(
+                type="list", title="Последние оценки", icon="grade", dataset=Dataset(kind="grades")
             ),
         )
     made: list[str] = []

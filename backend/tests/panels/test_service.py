@@ -96,9 +96,10 @@ async def test_default_panels_follow_the_data_and_are_made_once(
 
     made = await _ensure(sm, account)
     assert made[:3] == ["grades-overview", "grades-chart", "student-profile"]
-    assert len(made) == 5
-    assert all(key.startswith("ranking:") for key in made[3:])
-    assert len(set(made)) == 5
+    assert len(made) == 6
+    assert all(key.startswith("ranking:") for key in made[3:5])
+    assert made[5] == "grades-recent"
+    assert len(set(made)) == 6
 
     again = await _ensure(sm, account)  # idempotent
     assert again == []
@@ -111,7 +112,7 @@ async def test_default_panels_follow_the_data_and_are_made_once(
     assert {r.origin for r in rows} == {"system"}
     assert {r.status for r in rows} == {"active"}
     assert all(r.visible and not r.hidden_in_all for r in rows)
-    assert [r.position for r in sorted(rows, key=lambda r: r.position)] == [0, 1, 2, 3, 4]
+    assert [r.position for r in sorted(rows, key=lambda r: r.position)] == [0, 1, 2, 3, 4, 5]
     chart = next(r for r in rows if r.key == "grades-chart")
     assert chart.spec["view"] == {"variant": "line", "x": "date", "limit": 24}
     boards = {r.spec["dataset"]["board"] for r in rows if r.type == "ranking"}
@@ -128,7 +129,7 @@ async def test_grades_without_numbers_give_an_overview_but_no_chart(
     await add_grades(
         sm, user_id=account.user_id, source_id=source, grades=[G("Зачёт", "зачтено", "зачёт")]
     )
-    assert await _ensure(sm, account) == ["grades-overview"]
+    assert await _ensure(sm, account) == ["grades-overview", "grades-recent"]
     # a later sync brings a numeric grade without dates: the chart appears, by course
     await add_grades(
         sm,
@@ -152,7 +153,7 @@ async def test_the_chart_is_by_course_when_numeric_grades_have_no_dates(
         source_id=source,
         grades=[G("Тест", "7", "10", 7.0, 10.0)],
     )
-    assert await _ensure(sm, account) == ["grades-overview", "grades-chart"]
+    assert await _ensure(sm, account) == ["grades-overview", "grades-chart", "grades-recent"]
     chart = await _panel(sm, account.space_id, "grades-chart")
     assert chart.spec["view"]["x"] == "course"
     assert chart.spec["view"]["variant"] == "bar"

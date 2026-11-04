@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Generator
 
 import httpx
@@ -87,7 +88,8 @@ async def test_a_typo_turns_dictation_off_with_a_warning_and_the_api_still_start
     warning = capsys.readouterr().err
     assert "Dictation is off" in warning
     assert name in warning  # the setting is named...
-    assert value not in warning  # ...its value never is
+    # ...its value never is (log timestamps are cut first: "60" may be a part of the time)
+    assert value not in re.sub(r"\d{4}-\d{2}-\d{2}[ T][\d:.,]+", "", warning)
     assert KEY not in warning
     service = build_speech_service(Settings(_env_file=None))  # type: ignore[call-arg]
     assert not service.available
