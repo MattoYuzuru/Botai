@@ -419,8 +419,9 @@ class Worker:
                     # metadata, but do not expose this counter to handler results or prompts.
                     payload = {k: v for k, v in job.payload.items() if k != "_retry_failures"}
                     # A segment of a chat turn ends with a soft time limit before this budget does
-                    # (agent.v4.chat): the handler learns the budget, it is never stored.
-                    payload[BUDGET_KEY] = budget
+                    # (agent.v4.chat): that handler learns the budget; it is never stored.
+                    if job.kind == JobKind.CHAT.value:
+                        payload[BUDGET_KEY] = budget
                     result = await handler(ctx, self.services, payload)
         except JobClaimLost:
             diagnostic_event("job.claim_lost", attempt=job.attempts)

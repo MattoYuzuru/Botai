@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
@@ -111,6 +112,35 @@ async def test_concurrency_is_bounded(env: Env) -> None:
     for job_id in ids:
         await env.wait_for(job_id, {"done"})
     assert peak == 2
+
+
+async def test_a_chat_handler_learns_its_budget_and_other_handlers_do_not(env: Env) -> None:
+    acc = await env.account()
+    _, conn = await env.connection(acc.id)
+    seen: dict[str, Payload] = {}
+
+    def recording(kind: str) -> Callable[[JobContext, Services, Payload], Awaitable[Payload]]:
+        async def handler(ctx: JobContext, services: Services, payload: Payload) -> Payload:
+            seen[kind] = dict(payload)
+            return {}
+
+        return handler
+
+    chat = await env.services.queue.enqueue(JobKind.CHAT, user_id=acc.id, payload={"x": 1})
+    connect = await env.services.queue.enqueue(
+        JobKind.CONNECT, user_id=acc.id, connection_id=conn, payload={"x": 2}
+    )
+    env.start(
+        env.worker(
+            {JobKind.CHAT: recording("chat"), JobKind.CONNECT: recording("connect")},
+            budgets={JobKind.CHAT.value: 900.0, JobKind.CONNECT.value: 1800.0},
+        )
+    )
+    await env.wait_for(chat, {"done"})
+    await env.wait_for(connect, {"done"})
+    assert seen["chat"] == {"x": 1, "_budget_seconds": 900.0}
+    assert seen["connect"] == {"x": 2}  # the budget is for the chat segment only
+    assert "_budget_seconds" not in (await env.job(chat)).payload  # and it is never stored
 
 
 # --- failures and retries -------------------------------------------------------------------------
