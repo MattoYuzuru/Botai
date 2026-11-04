@@ -9,7 +9,7 @@ plainly that there is no create-university form.
 
 from __future__ import annotations
 
-from botai.agent.ui_map import UI_GUIDE, UI_MAP, UNIVERSITY_FLOW
+from botai.agent.ui_map import DISCOVERY_FLOW, UI_GUIDE, UI_MAP, UNIVERSITY_FLOW
 from botai.agent.v4.chat import CHAT_SYSTEM_PROMPT
 from botai.agent.v4.dispatch import CONNECT_SYSTEM_PROMPT
 
@@ -46,3 +46,22 @@ def test_both_user_facing_prompts_carry_the_map() -> None:
     assert UI_MAP in CONNECT_SYSTEM_PROMPT
     # The chat prompt also lists the tool that creates the university.
     assert "space_create" in CHAT_SYSTEM_PROMPT
+
+
+def test_the_map_mentions_the_panels_inside_study_and_adds_no_tab() -> None:
+    flat = " ".join(UI_MAP.split())
+    assert "Вверху «Учёбы» блок «Успеваемость»" in flat
+    assert "Новых вкладок для них нет" in flat
+    assert "Пять вкладок" in UI_MAP  # still five
+
+
+def test_connect_and_repair_prompts_carry_the_discovery_rules() -> None:
+    # REPAIR runs on the same system prompt as CONNECT, so one assertion covers both jobs.
+    assert DISCOVERY_FLOW in CONNECT_SYSTEM_PROMPT
+    assert DISCOVERY_FLOW in CHAT_SYSTEM_PROMPT
+    flat = " ".join(DISCOVERY_FLOW.split())
+    assert "Отказ ничего не меняет" in flat
+    assert "канарейка обязательна" in flat
+    assert "ui_propose_panel" in flat
+    assert "panel_list" in flat
+    assert "Находки" in " ".join(CONNECT_SYSTEM_PROMPT.split())

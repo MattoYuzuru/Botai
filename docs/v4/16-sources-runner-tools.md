@@ -131,6 +131,9 @@ cookies=None, headers=None, secret_reader=None)`; `toolkit.tools()` → `list[To
 | `source_update_playbook` | write_soft | `source_id`, `spec?/code?`, `tests?`, `canary?`, `activate?` | новая версия; при `activate` сначала canary, активация только при успехе; playbook создаётся, если его нет |
 | `source_disable` | write_soft | `source_id` | обратимо выключить источник |
 | `source_read_live` | read | `source_id`, `url`, `method?`, `max_chars?`, `save_artifact?` | прочитать страницу/API сессией источника, текст + артефакт |
+| `ui_propose_panel` | write_soft | `space_id`, `key`, `type`, `title`, `dataset`, `rationale`, `source_id?`, `icon?`, `view?` | предложить панель «Учёбы» (D-039), спросить студента через `ask_user`; см. [23-panels-backend.md](23-panels-backend.md) §9 |
+| `panel_list` | read | `space_id?`, `status?` | панели студента (только свои) |
+| `panel_update` | write_soft | `panel_id`, `visible?/hidden_in_all?/position?` | переключатели панели, только по просьбе студента |
 
 JSON-схемы строгие (`object_schema`, `additionalProperties:false`), проверяются runtime до вызова.
 Неуспех инструмента — `ToolResult.failure(code, detail, data=...)`: модель видит код и отчёт, а не

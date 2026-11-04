@@ -5,7 +5,9 @@ Three logged-in JSON endpoints for the panels tests (all names and numbers are m
 * `/api/v2/grades`: grades with a scale in several spellings, a grade in words, a placeholder
   ("None") and one without a scale: only the plain number-with-scale ones get `valueNum`;
 * `/api/v2/profile`: the fields of the student's card, including a field that holds a secret;
-* `/api/v2/ratings`: two boards, the student's own place marked with `me`.
+* `/api/v2/ratings`: two boards, the student's own place marked with `me`;
+* `/api/v2/menu`: the cabinet's sections as links, so a schedule-only reader can notice that the
+  same cabinet also has grades, a rating and a card (the agent-discovery tests, D-039).
 """
 
 from __future__ import annotations
@@ -113,6 +115,22 @@ def ratings() -> list[dict[str, object]]:
         row("group", group, 1, "Иванова А.", "88,0", me=True),
         row("group", group, 2, "Участник 05", "85,5"),
     ]
+
+
+def menu() -> list[dict[str, str]]:
+    return [
+        {"title": "Расписание", "href": "/api/v2/timetable", "kind": "schedule"},
+        {"title": "Мои оценки", "href": "/api/v2/grades", "kind": "grades"},
+        {"title": "Рейтинг потока и группы", "href": "/api/v2/ratings", "kind": "ranking"},
+        {"title": "Карточка студента", "href": "/api/v2/profile", "kind": "profile"},
+    ]
+
+
+@router.get("/api/v2/menu", response_model=None)
+async def menu_list(request: Request) -> Response | dict[str, object]:
+    if not is_logged_in(request):
+        return _unauth()
+    return {"items": menu()}
 
 
 @router.get("/api/v2/grades", response_model=None)
