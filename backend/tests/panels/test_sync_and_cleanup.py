@@ -214,7 +214,7 @@ async def test_a_sync_reads_grades_card_and_ratings_and_makes_the_panels_once(
         )
     keys = [p.key for p in panels]
     assert keys[:3] == ["grades-overview", "grades-chart", "student-profile"]
-    assert len(keys) == 5
+    assert len(keys) == 6
     assert sum(k.startswith("ranking:") for k in keys) == 2
     assert {p.origin for p in panels} == {"system"}
 
@@ -222,7 +222,7 @@ async def test_a_sync_reads_grades_card_and_ratings_and_makes_the_panels_once(
     assert second.ok
     assert second.domain["grades"] == {"inserted": 0, "updated": 0, "unchanged": 5, "skipped": 0}
     assert second.domain["ranking"]["inserted"] == 0
-    assert await _count(sm, Panel, space_id=account.space_id) == 5  # no duplicates, nothing reset
+    assert await _count(sm, Panel, space_id=account.space_id) == 6  # no duplicates, nothing reset
     assert await _count(sm, Grade, source_id=source_id) == 5
 
 
@@ -350,7 +350,9 @@ async def test_deleting_a_source_deletes_its_new_kind_rows_and_its_panels(
     account = Account(user_id=user.id, space_id=space_id, university_id="")
     doomed = await _seed(sm, account, title="Удаляемый")
     kept = await _seed(sm, account, title="Остающийся", url="https://other.test/app")
-    assert len(await _make_panels(sm, account)) == 4  # overview, chart, profile, one ranking
+    assert (
+        len(await _make_panels(sm, account)) == 5
+    )  # overview, chart, profile, one ranking, latest
 
     # an agent's panel built for the doomed source, and one for the other source
     from botai.panels import service as panels
@@ -435,7 +437,7 @@ async def test_deleting_a_university_deletes_its_rows_and_panels_and_only_its_ow
         # not left behind with a NULL provenance, and the other university is untouched
         assert await _count(sm, model, user_id=user.id) == 1, model.__name__
         assert await _count(sm, model, source_id=kept) == 1, model.__name__
-    assert await _count(sm, Panel, space_id=kept_space) == 4
+    assert await _count(sm, Panel, space_id=kept_space) == 5
 
 
 async def test_resetting_an_account_clears_panels_and_new_kind_rows_of_that_account_only(
