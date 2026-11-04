@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.db
 BACKEND = Path(__file__).resolve().parents[2]
-BEFORE = "b4e8c1a7d920"
+BEFORE = "d5b2e7f9a1c3"
 REVISION = "c3a1f0d2e4b5"
 TABLE = "agent_run_checkpoints"
 

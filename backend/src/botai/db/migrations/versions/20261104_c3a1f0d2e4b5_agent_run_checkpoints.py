@@ -10,7 +10,7 @@ Additive: one new table and its indexes. The downgrade drops exactly that table;
 derived, short-lived data (the traces keep the full record), so nothing else is lost.
 
 Revision ID: c3a1f0d2e4b5
-Revises: b4e8c1a7d920
+Revises: d5b2e7f9a1c3
 Create Date: 2026-11-04
 """
 
@@ -21,7 +21,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "c3a1f0d2e4b5"
-down_revision = "b4e8c1a7d920"
+down_revision = "d5b2e7f9a1c3"
 branch_labels = None
 depends_on = None
 
