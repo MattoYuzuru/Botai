@@ -46,7 +46,11 @@ def test_soft_limits_are_off_by_default_and_have_an_emergency_stop() -> None:
     assert settings.agent_limits_tokens is None
     assert settings.agent_limits_usd is None
     assert settings.agent_hard_stop_usd == 2.0
-    assert settings.agent_auto_continue is False
+    assert settings.agent_continuations_max == 5
+    assert settings.agent_chain_hard_stop_usd == 2.0
+    assert settings.agent_chain_max_seconds == 3600
+    assert settings.agent_checkpoint_max_bytes == 6 * 1024 * 1024
+    assert settings.agent_checkpoint_ttl_hours == 72
 
 
 def test_soft_limits_are_read_from_their_own_names(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,7 +60,10 @@ def test_soft_limits_are_read_from_their_own_names(monkeypatch: pytest.MonkeyPat
         ("BOTAI_AGENT_LIMITS_TOKENS", "250000"),
         ("BOTAI_AGENT_LIMITS_USD", "1.25"),
         ("BOTAI_AGENT_HARD_STOP_USD", "3"),
-        ("BOTAI_AGENT_AUTO_CONTINUE", "true"),
+        ("BOTAI_AGENT_CONTINUATIONS_MAX", "0"),
+        ("BOTAI_AGENT_CHAIN_HARD_STOP_USD", "1.5"),
+        ("BOTAI_AGENT_CHAIN_MAX_SECONDS", "600"),
+        ("BOTAI_AGENT_CHECKPOINT_MAX_BYTES", "1048576"),
     ):
         monkeypatch.setenv(name, value)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
@@ -65,7 +72,19 @@ def test_soft_limits_are_read_from_their_own_names(monkeypatch: pytest.MonkeyPat
     assert settings.agent_limits_tokens == 250_000
     assert settings.agent_limits_usd == 1.25
     assert settings.agent_hard_stop_usd == 3.0
-    assert settings.agent_auto_continue is True
+    assert settings.agent_continuations_max == 0
+    assert settings.agent_chain_hard_stop_usd == 1.5
+    assert settings.agent_chain_max_seconds == 600
+    assert settings.agent_checkpoint_max_bytes == 1_048_576
+
+
+def test_the_removed_auto_continue_variable_does_not_break_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BOTAI_AGENT_AUTO_CONTINUE", "true")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert not hasattr(settings, "agent_auto_continue")
+    assert settings.agent_continuations_max == 5
 
 
 @pytest.mark.parametrize(

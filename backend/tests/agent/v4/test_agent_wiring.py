@@ -33,7 +33,6 @@ def test_soft_limits_are_mapped_from_settings() -> None:
         agent_limits_tokens=250_000,
         agent_limits_usd=1.25,
         agent_hard_stop_usd=3.0,
-        agent_auto_continue=True,
     )
     limits = run_limits_from_settings(settings)
 
@@ -42,7 +41,19 @@ def test_soft_limits_are_mapped_from_settings() -> None:
     assert limits.max_tokens == 250_000
     assert limits.max_usd == 1.25
     assert limits.hard_stop_usd == 3.0
-    assert limits.auto_continue is True
+    assert limits.auto_continue is False
+
+
+def test_a_chat_segment_can_only_tighten_the_limits() -> None:
+    settings = fixture_settings(agent_limits_seconds=1800, agent_hard_stop_usd=2.0)
+    tight = run_limits_from_settings(settings, hard_stop_usd=0.5, max_seconds=840)
+    assert tight.hard_stop_usd == 0.5
+    assert tight.max_seconds == 840
+    loose = run_limits_from_settings(settings, hard_stop_usd=9.0, max_seconds=99_999)
+    assert loose.hard_stop_usd == 2.0
+    assert loose.max_seconds == 1800
+    unset = run_limits_from_settings(fixture_settings(), max_seconds=840)
+    assert unset.max_seconds == 840
 
 
 def test_unset_soft_limits_mean_no_limit() -> None:

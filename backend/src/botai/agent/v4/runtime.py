@@ -16,6 +16,7 @@ set `auto_continue=False` (D-009), while `hard_stop_usd` is the emergency stop t
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -23,7 +24,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -81,6 +82,40 @@ LIMIT_STATUS: dict[str, RunStatus] = {
 CONTENT_IN_TRACE_CHARS = 4_000
 RESULT_IN_TRACE_CHARS = 4_000
 
+# A provider failure that leaves a valid conversation behind: the work is not lost, the next segment
+# (or the student's next message) continues from the checkpoint (D-040).
+RESUMABLE_ERRORS: frozenset[str] = frozenset({"llm_unavailable", "quota_exceeded", "llm_error"})
+RESUMABLE_STATUSES: frozenset[str] = frozenset(
+    {
+        "paused",
+        "cancelled",
+        "step_limit",
+        "time_limit",
+        "token_limit",
+        "cost_limit",
+        "hard_stop",
+    }
+)
+
+# Default checkpoint cadence: after a complete step, but not more often than this (the final
+# snapshot and the one on cancellation/exception are never throttled).
+CHECKPOINT_EVERY_STEPS = 8
+CHECKPOINT_EVERY_SECONDS = 20.0
+
+INTERRUPTED_TOOL_TEXT = (
+    '<source_data tool="interrupted">\n'
+    "[Результат не получен: ход прервали до конца работы инструмента. "
+    "Повтори вызов, если он всё ещё нужен.]\n"
+    "</source_data>"
+)
+
+
+def is_resumable(status: str, error_code: str | None) -> bool:
+    """Whether a run that ended like this leaves a conversation the next segment can continue."""
+    if status in RESUMABLE_STATUSES:
+        return True
+    return status == "error" and error_code in RESUMABLE_ERRORS
+
 
 def _carries_task(messages: Sequence[LlmMessage], task: str) -> bool:
     """Whether the checkpoint already contains this exact instruction as a user message."""
@@ -109,7 +144,9 @@ class RunLimits(BaseModel):
 
     With `auto_continue=False` crossing a soft limit stops the run with a resumable checkpoint;
     with `auto_continue=True` the run only writes a warning and continues. `hard_stop_usd` is
-    never softened: it is the emergency stop against a runaway agent.
+    never softened: it is the emergency stop against a runaway agent. The product never sets
+    `auto_continue` (the field stays because the run contract lists it): a chat turn continues
+    between segments instead, under `agent.v4.continuation` (D-040).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -161,6 +198,8 @@ class RunResult(BaseModel):
     limit_reached: str | None = None
     error_code: str | None = None
     error_detail: str = ""
+    # Machine-readable details of the provider error (quota `scope`/`resetsAt`, `limit`, `used`).
+    error_extra: dict[str, Any] = Field(default_factory=dict)
     messages: tuple[LlmMessage, ...] = ()
     trace: RunTrace
 
@@ -170,14 +209,36 @@ class RunResult(BaseModel):
 
     @property
     def can_resume(self) -> bool:
-        return self.status in (
-            "paused",
-            "step_limit",
-            "time_limit",
-            "token_limit",
-            "cost_limit",
-            "hard_stop",
-        )
+        return is_resumable(self.status, self.error_code)
+
+
+class CheckpointSnapshot(BaseModel):
+    """The state of a run at a step boundary: a consistent, masked conversation plus counters.
+
+    `messages` has no system message (the caller supplies it again), every assistant `tool_calls`
+    is followed by one tool message per call (a dangling call gets a synthetic result) and no
+    primary secret survives in content, arguments or `reasoning_content`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: str
+    status: RunStatus
+    messages: tuple[LlmMessage, ...]
+    steps: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0)
+    limit_reached: str | None = None
+    error_code: str | None = None
+    resumable: bool = True
+    final: bool = False
+
+
+class CheckpointSink(Protocol):
+    """Where the runtime hands its snapshots (D-040). A failure here never fails the run."""
+
+    async def save(self, snapshot: CheckpointSnapshot) -> None: ...
 
 
 class ManualControl:
@@ -298,12 +359,52 @@ def _mask_json(value: Any, mask: Mask) -> Any:
 
 
 def _mask_message(message: LlmMessage, mask: Mask) -> LlmMessage:
-    """The checkpoint copy of a message: no primary secret in content or tool-call arguments."""
+    """The checkpoint copy of a message: no primary secret in content, reasoning or arguments."""
     tool_calls = [
         call.model_copy(update={"arguments": _mask_value(dict(call.arguments), mask)})
         for call in message.tool_calls
     ]
-    return message.model_copy(update={"content": mask(message.content), "tool_calls": tool_calls})
+    reasoning = message.reasoning_content
+    return message.model_copy(
+        update={
+            "content": mask(message.content),
+            "reasoning_content": mask(reasoning) if reasoning is not None else None,
+            "tool_calls": tool_calls,
+        }
+    )
+
+
+def repair_dangling_tool_calls(messages: Sequence[LlmMessage]) -> list[LlmMessage]:
+    """A conversation the provider accepts: every `tool_calls` has exactly its tool messages.
+
+    An exception or a cancellation can land between the assistant message with `tool_calls` and the
+    tool answers; resuming such a checkpoint is a 400 from the provider. Missing answers get a
+    synthetic "interrupted" result right after their assistant message; tool messages that do not
+    belong to the preceding assistant message are dropped.
+    """
+    repaired: list[LlmMessage] = []
+    index = 0
+    total = len(messages)
+    while index < total:
+        message = messages[index]
+        index += 1
+        if message.role == "tool":
+            continue  # an orphan: its assistant message is gone or did not ask for it
+        repaired.append(message)
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        answers: dict[str, LlmMessage] = {}
+        while index < total and messages[index].role == "tool":
+            answer = messages[index]
+            if answer.tool_call_id is not None:
+                answers.setdefault(answer.tool_call_id, answer)
+            index += 1
+        for call in message.tool_calls:
+            repaired.append(
+                answers.get(call.id)
+                or LlmMessage(role="tool", tool_call_id=call.id, content=INTERRUPTED_TOOL_TEXT)
+            )
+    return repaired
 
 
 def _json_safe(value: Any) -> Any:
@@ -340,7 +441,11 @@ class AgentRuntime:
         clock: Clock | None = None,
         monotonic: Monotonic = time.monotonic,
         mask: Mask | None = None,
+        checkpoint_every_steps: int = CHECKPOINT_EVERY_STEPS,
+        checkpoint_every_seconds: float = CHECKPOINT_EVERY_SECONDS,
     ) -> None:
+        self._checkpoint_every_steps = max(1, checkpoint_every_steps)
+        self._checkpoint_every_seconds = max(0.0, checkpoint_every_seconds)
         self._control: RunControlView = control or _NullControl()
         self._approve = approve
         self._pricing: Pricing = pricing or default_pricing
@@ -359,6 +464,7 @@ class AgentRuntime:
         trace_store: TraceStore | None = None,
         limits: RunLimits | None = None,
         ask: AskUser | None = None,
+        checkpoint_sink: CheckpointSink | None = None,
     ) -> RunResult:
         registry = tools if isinstance(tools, ToolRegistry) else ToolRegistry(tools)
         store: TraceStore = trace_store or MemoryTraceStore()
@@ -377,6 +483,7 @@ class AgentRuntime:
         limit_reached: str | None = None
         error_code: str | None = None
         error_detail = ""
+        error_extra: dict[str, Any] = {}
         model = task.model or ""
         warned: set[str] = set()
         system = task.system.strip()
@@ -419,6 +526,47 @@ class AgentRuntime:
             seq += 1
             events.append(event)
             await store.append(event)
+
+        saved_steps = 0
+        saved_at = started_mono
+
+        def masked_conversation() -> tuple[LlmMessage, ...]:
+            # The checkpoint is persisted/resumed and shown in traces: mask it even though the live
+            # conversation keeps the model's own turns exactly as the provider produced them.
+            return tuple(
+                _mask_message(message, self._mask)
+                for message in repair_dangling_tool_calls(convo)
+                if message.role != "system"
+            )
+
+        async def save_checkpoint(*, final: bool = False) -> None:
+            nonlocal saved_steps, saved_at
+            if checkpoint_sink is None:
+                return
+            if not final and not (
+                steps - saved_steps >= self._checkpoint_every_steps
+                or self._monotonic() - saved_at >= self._checkpoint_every_seconds
+            ):
+                return
+            saved_steps = steps
+            saved_at = self._monotonic()
+            snapshot = CheckpointSnapshot(
+                run_id=task.run_id,
+                status=status if final else "running",
+                messages=masked_conversation(),
+                steps=steps,
+                tool_calls=tool_calls,
+                total_tokens=total_tokens,
+                cost_usd=round(cost_usd, 6),
+                limit_reached=limit_reached,
+                error_code=error_code,
+                resumable=is_resumable(status, error_code) if final else True,
+                final=final,
+            )
+            try:
+                await checkpoint_sink.save(snapshot)
+            except Exception:  # a lost snapshot must never fail the student's turn
+                log.exception("v4 checkpoint of run %s was not saved", task.run_id)
 
         await emit(
             "run_started",
@@ -500,10 +648,16 @@ class AgentRuntime:
                     status = "error"
                     error_code = exc.code.value
                     error_detail = exc.detail
+                    error_extra = _json_safe(dict(exc.extra)) if exc.extra else {}
                     await emit(
                         "error",
                         step=steps,
-                        payload={"code": error_code, "detail": error_detail, "retryable": False},
+                        payload={
+                            "code": error_code,
+                            "detail": error_detail,
+                            "retryable": False,
+                            **({"extra": error_extra} if error_extra else {}),
+                        },
                     )
                     break
                 except Exception:
@@ -551,6 +705,7 @@ class AgentRuntime:
                             LlmMessage(role="tool", tool_call_id=item.call.id, content=item.text)
                         )
                     tool_calls += len(executed)
+                    await save_checkpoint()
                     continue
                 convo.append(
                     LlmMessage(
@@ -565,6 +720,10 @@ class AgentRuntime:
         except asyncio.CancelledError:
             status = "cancelled"
             await emit("cancel", step=steps, payload={"reason": "cancelled"})
+            # The student pressed stop, the worker shuts down or its time budget ran out: keep the
+            # work. A second cancellation while saving must not hide the first one.
+            with contextlib.suppress(Exception):
+                await save_checkpoint(final=True)
             raise
         except Exception:
             log.exception("v4 run %s failed unexpectedly", task.run_id)
@@ -600,11 +759,8 @@ class AgentRuntime:
             events=tuple(events),
         )
 
-        # The checkpoint is persisted/resumed and shown in traces: mask it even though the live
-        # conversation keeps the model's own turns exactly as the provider produced them.
-        checkpoint = tuple(
-            _mask_message(message, self._mask) for message in convo if message.role != "system"
-        )
+        checkpoint = masked_conversation()
+        await save_checkpoint(final=True)
         log.info(
             "v4 run %s status=%s steps=%d tools=%d tokens=%d cost_usd=%.6f",
             task.run_id,
@@ -626,6 +782,7 @@ class AgentRuntime:
             limit_reached=limit_reached,
             error_code=error_code,
             error_detail=error_detail,
+            error_extra=error_extra,
             messages=checkpoint,
             trace=trace,
         )
@@ -872,8 +1029,15 @@ def _tool_result_payload(call: LlmToolCall, result: ToolResult, text_chars: int)
 
 
 __all__ = [
+    "CHECKPOINT_EVERY_SECONDS",
+    "CHECKPOINT_EVERY_STEPS",
+    "INTERRUPTED_TOOL_TEXT",
     "LIMIT_STATUS",
+    "RESUMABLE_ERRORS",
+    "RESUMABLE_STATUSES",
     "AgentRuntime",
+    "CheckpointSink",
+    "CheckpointSnapshot",
     "Clock",
     "Emit",
     "ManualControl",
@@ -883,4 +1047,6 @@ __all__ = [
     "RunResult",
     "RunTask",
     "default_pricing",
+    "is_resumable",
+    "repair_dangling_tool_calls",
 ]
