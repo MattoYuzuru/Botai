@@ -163,13 +163,16 @@ result.trace         # RunTrace с событиями, токенами и ст�
    sources), `DbTraceStore` на сессию, workspace на задачу.
 3. `RunLimits` из настроек: `max_steps=agent_limits_steps`, `max_seconds=agent_limits_seconds`,
    `max_tokens=agent_limits_tokens`, `max_usd=agent_limits_usd`,
-   `hard_stop_usd=agent_hard_stop_usd`, `auto_continue=agent_auto_continue`. `None` = без
-   предела (D-009), умолчаний-стен нет.
+   `hard_stop_usd=agent_hard_stop_usd`. `None` = без предела (D-009), умолчаний-стен нет.
+   Ход чата получает от `agent/v4/chat.py` свои пределы сегмента: `hard_stop_usd` = остаток денег
+   цепочки, `max_seconds` ≤ бюджет CHAT-job − 60 с (`run_limits_from_settings(settings,
+   hard_stop_usd=…, max_seconds=…)` только ужесточает настройки).
 4. `RunTask` из job-контекста: kind → системный промпт и профиль (`purpose`, `tier`, `model`),
    durable state → `messages`, задача → `task`, том → `workspace`.
-5. Чекпоинт после каждого шага уже в трассе; для resume сохранять `result.messages` (сжатый
-   `run_state` в БД — в wiring). `ask_user` паркует run в `waiting_user`, повторный ответ
-   продолжает с чекпоинта.
+5. Чекпоинт хода чата — таблица `agent_run_checkpoints` (§5.1, D-040): runtime отдаёт снимки
+   в `CheckpointSink` после полных шагов и в конце, тот же job продолжается сегментами и после
+   рестарта воркера. `ask_user` паркует run в `waiting_user`, повторный ответ продолжает с
+   чекпоинта.
 
 Пока wiring не сделан, runtime вызывается только тестами; `make check` и production v3 не
 затронуты.
@@ -183,16 +186,65 @@ result.trace         # RunTrace с событиями, токенами и ст�
 | `agent_limits_tokens` | `max_tokens` | мягкий счётчик токенов (hit+miss+output) |
 | `agent_limits_usd` | `max_usd` | мягкий счётчик денег |
 | `agent_hard_stop_usd` | `hard_stop_usd` | аварийный стоп: срабатывает всегда |
-| `agent_auto_continue` | `auto_continue` | True = только предупреждение в трассе, False = стоп |
+| `agent_continuations_max` и др. | — | продолжение между сегментами, не внутри run (§5.1) |
 
 - Лимит — наблюдаемая величина: в трассе событие `limit` с `steps/elapsed_s/total_tokens/
-  cost_usd`. При `auto_continue=False` run завершается статусом `*_limit` и **резюмируемым**
-  чекпоинтом; при `True` — пишет предупреждение и продолжает (страховка — `hard_stop_usd`).
+  cost_usd`. Run всегда завершается статусом `*_limit` и **резюмируемым** чекпоинтом; продолжать
+  его или нет решает не runtime, а цепочка сегментов (§5.1). Поле `RunLimits.auto_continue`
+  осталось только потому, что его перечисляет контракт `run.schema.json`; продукт его не
+  выставляет, а `BOTAI_AGENT_AUTO_CONTINUE` удалён (старая переменная в env игнорируется).
 - Жёстких «шагов на задачу» по умолчанию нет; `max_calls_per_step` (16) и
   `max_parallel_tools` (8) — санитарные пределы одного ответа модели, оба настраиваются,
   `max_calls_per_step=None` снимает предел.
 - Пауза/отмена владельцем: `RunControlView` → статус `paused`/`cancelled`, сообщения сохранены.
   Вопрос `ask_user` блокирует run (worker должен парковать его, не держа слот).
+
+### 5.1. Чекпоинты и продолжение хода (D-040)
+
+**Runtime.** `run(..., checkpoint_sink=…)` вызывает `CheckpointSink.save(CheckpointSnapshot)`
+после полного шага (не чаще чем раз в `BOTAI_AGENT_CHECKPOINT_EVERY_STEPS`=8 шагов или
+`…_SECONDS`=20 с), в конце run'а и при отмене/исключении перед повторным `raise`. Снимок —
+беседа без system-сообщения, **согласованная** (каждому `assistant.tool_calls` отвечают tool-
+сообщения; недостающие закрываются синтетическим «результат не получен»,
+`repair_dangling_tool_calls`) и **замаскированная** (content, аргументы вызовов и
+`reasoning_content`). Сбой самого sink'а ход не ломает. Резюмируемы статусы `paused`,
+`cancelled`, `*_limit`, `hard_stop` и `error` с кодами `llm_unavailable`, `quota_exceeded`,
+`llm_error` (`is_resumable`); `RunResult.error_extra` несёт `scope`/`resetsAt` квоты.
+
+**Хранилище.** `agent_run_checkpoints` (PK `run_id`; `chain_id` = id CHAT-job'а, `segment`,
+`parent_run_id`, `status`, `resumable`, `messages` JSONB, накопленные `cost_usd_chain`/
+`tokens_chain`, `continuations`, `chain_started_at`, `expires_at`). Один run — одна строка,
+`run_id` при продолжении **новый** (уникальность `(run_id, seq)` трассы). TTL 72 ч, чистится в
+`Worker.maintain()`, строки уходят вместе с тредом (CASCADE). Потолок
+`BOTAI_AGENT_CHECKPOINT_MAX_BYTES` (6 МиБ): старые tool-ответы сокращаются до 1,5 тыс., затем
+300 символов, последние ~20 сообщений остаются целыми, пара `tool_calls`↔`tool` не рвётся; если
+и так не влезло — снимок не сохраняется, цепочка останавливается и честно говорит, что прогресс
+не сохранён.
+
+**Цепочка.** Мягкий лимит или временная ошибка модели завершает *сегмент*; чистая функция
+`decide_continuation` (`agent/v4/continuation.py`) решает, продолжать ли тот же CHAT-job через
+`JobDeferred` (слот воркера свободен между сегментами). Порядок условий: ответ → отмена →
+**деньги цепочки ≥ `BOTAI_AGENT_CHAIN_HARD_STOP_USD`** (2.0, по `llm_usage` job'а; каждый сегмент
+получает `hard_stop_usd = потолок − потрачено`) → число продолжений ≥ `BOTAI_AGENT_CONTINUATIONS_MAX`
+(5; 0 = только вручную) → время цепочки ≥ `BOTAI_AGENT_CHAIN_MAX_SECONDS` (3600, паузы входят) →
+квота суток ≥ 90 % → ошибка квоты (`minute` — пауза ≤ 60 с, иначе стоп) → `llm_unavailable`
+(пауза 60/180/600 с, не больше 3 подряд) → прочие ошибки и пауза → нет прогресса (< 3 шагов или
+3 одинаковых вызова подряд) → `hard_stop` → мягкий лимит: продолжить сразу.
+
+**Следующее сообщение.** Если последний ход треда остановился не ответом и его чекпоинт свежий
+(< `BOTAI_AGENT_RESUME_WINDOW_HOURS`=24 ч), новое сообщение (кнопка «Продолжить» с
+`resumeRunId`, `retry_thread`, обычный текст) идёт от чекпоинта: беседа хода + сообщение +
+заметка «окружение перезапущено», `trace_read` для продолжения не нужен. Это новая цепочка со
+своим потолком денег. `resumeRunId` проверяется (владелец, тред, свежесть), иначе `409
+stale_target`.
+
+**Окружение.** Сегменты одной цепочки делят каталог workspace (файлы на месте); браузер
+открывается заново (cookies восстанавливаются), handle'ы секретов недействительны — об этом
+говорит инструкция продолжения.
+
+**Метрики.** На сегмент: диагностика `chain.segment` (`input_tokens_at_start`, `tokens`,
+`cost_usd`, `trace_read_calls`, `checkpoint_bytes`, `message_count`, `compacted`, решение и
+причина) и событие трассы `note` с `event="continuation"`.
 
 ## 6. Провайдеры и настройки
 
@@ -244,7 +296,8 @@ uv run --frozen pytest tests/agent/v4 -q
 Покрыто: цикл «tool call → результат → ответ», порядок tool-схем, параллельные чтения и
 последовательные записи, unknown tool / bad JSON / schema violation / exception / timeout /
 policy denial как данные, `<source_data>`-обёртка (нельзя закрыть), чекпоинт и resume,
-мягкие лимиты steps/seconds/tokens/usd, `auto_continue`, `hard_stop_usd`, пауза/отмена,
+мягкие лимиты steps/seconds/tokens/usd, `hard_stop_usd`, пауза/отмена, чекпоинты
+(`test_runtime_checkpoints.py`), решение цепочки (`test_continuation.py`),
 `sse`/wire DeepSeek-адаптера, Anthropic (system/tools/tool_result/usage/401/500/429),
 OpenAI-compat (tools/usage/429/overrides), ретраи, `http_request` (методы, JSON/form/raw,
 редиректы, таймаут, сеть, cap, save_to, escape), `fs_*` (roundtrip, append, offset, binary,
