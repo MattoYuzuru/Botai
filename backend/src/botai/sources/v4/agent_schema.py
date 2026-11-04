@@ -6,7 +6,7 @@ from typing import Any
 
 from botai.sources.v4.kinds import ALL_KINDS, DATA_KINDS, READING_KINDS
 from botai.sources.v4.runner import CodeOutput, PlaybookSpecV1
-from botai.sources.vocab import REQUIRED, VOCAB
+from botai.sources.vocab import ALL_REQUIRED, ALL_VOCAB
 
 
 def source_schema() -> dict[str, Any]:
@@ -15,7 +15,7 @@ def source_schema() -> dict[str, Any]:
         "source_kinds": list(ALL_KINDS),
         "record_kinds": list(DATA_KINDS),
         "fields": {
-            kind: {"required": sorted(REQUIRED[reading]), "allowed": sorted(VOCAB[reading])}
+            kind: {"required": sorted(ALL_REQUIRED[reading]), "allowed": sorted(ALL_VOCAB[reading])}
             for kind, reading in READING_KINDS.items()
         },
         "playbook_spec_schema": PlaybookSpecV1.model_json_schema(),
@@ -28,6 +28,9 @@ def source_schema() -> dict[str, Any]:
             "HTTP reads используют cookies и наблюдённый браузером Bearer только для его origin; сессия доступна коду в session.json.",
             "Код читает reads/<name>.json (либо .html/.txt) и печатает один JSON-объект.",
             "records: [{kind, external_id, fields}]. fields использует camelCase, не колонки БД.",
+            "grades: value — как напечатал источник; scale — «10», «из 10», «10 баллов» — вместе с числовым value это даёт числа для графиков. Пустое значение не пиши как строку «None»: пропусти запись. Средние не считай — их показывают только как дал источник.",
+            "profile: одно поле карточки студента на запись: fields {field (ключ), label (подпись), value (строка как в источнике), group?}. Пароли и токены не сохраняются.",
+            "ranking: одно место рейтинга на запись: fields {board (название списка), position (место, целое ≥ 1), label (имя или номер), score (текст как в источнике), scoreNum? (число), isMe? (true для своей строки), total? (всего в списке), period?}. Чужих людей храни минимально: имя и балл.",
             "schedule: startsAt + endsAt (или durationMinutes); даты — ISO datetime с timezone.",
             "Пустой кодовый результат требует empty_reason с проверенной причиной отсутствия данных.",
             "Если сессия истекла или API вернул 401/403, код возвращает {auth_required: true}; source_sync отметит needs_reauth и не запишет records.",

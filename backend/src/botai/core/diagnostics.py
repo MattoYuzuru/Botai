@@ -238,6 +238,8 @@ _CODES: dict[str, set[str]] = {
         "locations",
         "news",
         "documents",
+        "profile",
+        "ranking",
     },
     "job_kind": {"connect", "repair", "sync", "chat", "action", "ingest"},
     "phase": {

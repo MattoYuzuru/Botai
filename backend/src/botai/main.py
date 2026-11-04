@@ -25,6 +25,7 @@ from botai.core.ids import new_id
 from botai.core.logging import configure_logging
 from botai.domain.router import router as domain_router
 from botai.jobs.router import router as jobs_router
+from botai.panels.router import router as panels_router
 from botai.settings import get_settings
 from botai.sources.router import router as sources_router
 from botai.sources.v4.router import router as sources_v4_router
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
         auth_router,
         spaces_router,
         domain_router,
+        panels_router,
         jobs_router,
         usage_router,
         browser_router,

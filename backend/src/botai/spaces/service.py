@@ -20,7 +20,7 @@ from botai.core.errors import BotaiError, ErrorCode
 from botai.core.jobs import JobKind
 from botai.core.queue import JobQueue
 from botai.core.vault import SecretKind, Vault
-from botai.db.models import Connection, Job, Space, University
+from botai.db.models import Connection, Job, Source, Space, University
 from botai.domain import primary
 from botai.jobs.events import IN_FLIGHT
 from botai.jobs.queue import SOURCE_KINDS, TASK_KINDS, PgJobQueue, enqueue_in_session
@@ -253,6 +253,16 @@ async def delete_space(session: AsyncSession, user_id: str, space_id: str) -> No
         )
     )
     await repo.purge_connection_secrets(session, user_id, connection_ids)
+    # The rows of the space's v4 sources carry `source_id` with ON DELETE SET NULL: left alone they
+    # would outlive the space as provenance-less rows (panels go by their own cascade).
+    from botai.sources.v4.deletion import delete_source_rows
+
+    source_ids = list(
+        await session.scalars(
+            select(Source.id).where(Source.user_id == user_id, Source.space_id == space.id)
+        )
+    )
+    await delete_source_rows(session, user_id=user_id, source_ids=source_ids)
     await session.delete(space)
     await session.commit()
 

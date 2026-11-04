@@ -135,5 +135,7 @@ class SectionOut(ApiModel):
         "locations",
         "news",
         "documents",
+        "profile",
+        "ranking",
     ]
     count: int

@@ -13,7 +13,9 @@ The v4 runner reads a playbook and coerces every record to the same column dicts
 * a complete run does not delete rows it did not see (same policy as the v3 normalizer): their old
   `seen_at` is the honest "last time this source had it";
 * a kind without a domain table (`documents`, `messages`) stays in the run report and is counted as
-  skipped, not silently dropped.
+  skipped, not silently dropped;
+* after the rows of `grades`, `profile` or `ranking` are written, the system panels of the
+  university are ensured (`panels.service.ensure_default_panels`, idempotent, D-039).
 
 Writers of one source are serialized by an advisory transaction lock, so two concurrent syncs of
 one source cannot insert the same natural key twice.
@@ -31,10 +33,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import Source
-from botai.sources.normalize import MODELS, lock_connection
+from botai.panels import service as panels_service
+from botai.sources.normalize import ALL_MODELS, lock_connection
 from botai.sources.v4 import kinds as kinds_vocab
 
 _CHUNK = 500
+# The kinds whose arrival gives the university its default panels (grades, profile, ranking).
+_PANEL_KINDS = frozenset({"grades", "profile", "ranking"})
 # Columns whose change means "the student should notice" for a class (the v3 normalizer's set).
 _EVENT_MATERIAL = (
     "title",
@@ -151,7 +156,7 @@ async def write_records(
         if reading is None:
             st.skipped += len(kind_records)
             continue
-        model = MODELS[reading]
+        model = ALL_MODELS[reading]
         rows: dict[str, tuple[DomainRecord, Mapping[str, Any]]] = {}
         for record in kind_records:
             if not record.external_id or not record.fields:
@@ -192,4 +197,8 @@ async def write_records(
             else:
                 st.unchanged += 1
     await session.flush()
+    if _PANEL_KINDS & set(by_kind):
+        await panels_service.ensure_default_panels(
+            session, user_id=user_id, space_id=source.space_id
+        )
     return {kind_name: st.as_dict() for kind_name, st in stats.items()}

@@ -110,6 +110,37 @@ class GradeOut(ApiModel):
     course_title: str | None
     graded_at: datetime | None
     provenance: Provenance
+    # Set only when the source printed both a plain number and the top of its scale (D-039);
+    # never computed or converted. `value` and `scale` stay the source's own text.
+    value_num: float | None = None
+    scale_max: float | None = None
+    course_id: str | None = None  # `CourseOut.id` of the grade's course, when the source links one
+
+
+class ProfileFieldOut(ApiModel):
+    """One field of the student's card exactly as the source printed it."""
+
+    id: str
+    field: str
+    label: str
+    value: str
+    group: str | None
+    provenance: Provenance
+
+
+class RankingEntryOut(ApiModel):
+    """One place on a rating board; `score` is the source's text, `score_num` its plain number."""
+
+    id: str
+    board: str
+    position: int
+    label: str
+    score: str | None
+    score_num: float | None
+    is_me: bool
+    total: int | None
+    period: str | None
+    provenance: Provenance
 
 
 class PersonOut(ApiModel):

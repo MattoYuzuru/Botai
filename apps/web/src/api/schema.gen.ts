@@ -910,6 +910,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/panels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Panels
+         * @description The panels of one university (or of all), in display order, with their resolved data.
+         *
+         *     Active panels also include the ones the student switched off (`visible: false`, `data: null`),
+         *     so the screen can offer the switch. The system panels a university's data deserves are made
+         *     here on first read if the sync has not made them yet.
+         */
+        get: operations["list_panels_api_v1_panels_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/panels/{panel_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Panel
+         * @description The student's switches: `visible`, `hiddenInAll`, `position`.
+         */
+        patch: operations["patch_panel_api_v1_panels__panel_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/panels/{panel_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Panel
+         * @description Accept a panel the agent proposed (or bring back a dismissed one): it becomes active and
+         *     visible.
+         */
+        post: operations["accept_panel_api_v1_panels__panel_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/panels/{panel_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Panel
+         * @description Refuse a panel: it disappears and the agent does not propose the same key again.
+         */
+        post: operations["dismiss_panel_api_v1_panels__panel_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/people": {
         parameters: {
             query?: never;
@@ -919,6 +1004,46 @@ export interface paths {
         };
         /** People */
         get: operations["people_api_v1_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Profile
+         * @description The fields of the student's card that the university's sources show.
+         */
+        get: operations["profile_api_v1_profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ranking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ranking
+         * @description Places of the rating boards (all of them, or one `board`).
+         */
+        get: operations["ranking_api_v1_ranking_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1840,6 +1965,52 @@ export interface components {
             /** Version */
             version?: number | null;
         };
+        /** ChartSpec */
+        ChartSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "chart";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["ChartView"];
+        };
+        /**
+         * ChartView
+         * @description Individual grades over time or by course, in the source's own scale: no averages.
+         */
+        ChartView: {
+            /**
+             * Limit
+             * @default 24
+             */
+            limit: number;
+            /**
+             * Variant
+             * @default line
+             * @enum {string}
+             */
+            variant: "bar" | "line";
+            /**
+             * X
+             * @default date
+             * @enum {string}
+             */
+            x: "date" | "course";
+        };
         /** ConnectionCreate */
         ConnectionCreate: {
             /** Kind */
@@ -1953,6 +2124,21 @@ export interface components {
             title: string;
             /** Url */
             url: string | null;
+        };
+        /**
+         * Dataset
+         * @description Which data a panel shows, by kind: the rows themselves are never in the spec.
+         */
+        Dataset: {
+            /** Board */
+            board?: string | null;
+            /** Courseid */
+            courseId?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "grades" | "profile" | "ranking";
         };
         /** DeadlineOut */
         DeadlineOut: {
@@ -2150,6 +2336,8 @@ export interface components {
         };
         /** GradeOut */
         GradeOut: {
+            /** Courseid */
+            courseId?: string | null;
             /** Coursetitle */
             courseTitle: string | null;
             /** Gradedat */
@@ -2159,12 +2347,61 @@ export interface components {
             provenance: components["schemas"]["Provenance"];
             /** Scale */
             scale: string | null;
+            /** Scalemax */
+            scaleMax?: number | null;
             /** Title */
             title: string | null;
             /** Value */
             value: string;
+            /** Valuenum */
+            valueNum?: number | null;
             /** Weight */
             weight: number | null;
+        };
+        /**
+         * GradePointOut
+         * @description One grade as the source gave it; `value_num`/`scale_max` only when both were plain.
+         */
+        GradePointOut: {
+            /** Course */
+            course: string | null;
+            /** Courseid */
+            courseId: string | null;
+            /** Gradedat */
+            gradedAt: string | null;
+            /** Id */
+            id: string;
+            /** Scale */
+            scale: string | null;
+            /** Scalemax */
+            scaleMax: number | null;
+            /** Title */
+            title: string | null;
+            /** Value */
+            value: string;
+            /** Valuenum */
+            valueNum: number | null;
+        };
+        /**
+         * GradesData
+         * @description `total` counts every grade of the dataset; `points` are the newest ones within the view's
+         *     limit (a chart: only numeric ones, at most `MAX_CHART_SERIES` scales); `latest`/`best` are
+         *     taken from the whole dataset.
+         */
+        GradesData: {
+            best: components["schemas"]["GradePointOut"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "grades";
+            latest: components["schemas"]["GradePointOut"] | null;
+            /** Numeric */
+            numeric: number;
+            /** Points */
+            points: components["schemas"]["GradePointOut"][];
+            /** Total */
+            total: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2218,6 +2455,68 @@ export interface components {
         JobRef: {
             /** Jobid */
             jobId: string;
+        };
+        /** KpiSpec */
+        KpiSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "kpi";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["KpiView"];
+        };
+        /**
+         * KpiView
+         * @description Tiles: how many grades, the latest one, the best one of the most common scale.
+         */
+        KpiView: {
+            /** Metrics */
+            metrics?: ("count" | "latest" | "best")[];
+        };
+        /** ListSpec */
+        ListSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "list";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["ListView"];
+        };
+        /** ListView */
+        ListView: {
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -2342,6 +2641,77 @@ export interface components {
             openUrl: string | null;
             /** Sourceurl */
             sourceUrl: string | null;
+        };
+        /** PanelOut */
+        PanelOut: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Data */
+            data: (components["schemas"]["GradesData"] | components["schemas"]["ProfileData"] | components["schemas"]["RankingData"]) | null;
+            /** Hiddeninall */
+            hiddenInAll: boolean;
+            /** Id */
+            id: string;
+            /** Key */
+            key: string;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "system" | "agent";
+            /** Position */
+            position: number;
+            /** Sourceid */
+            sourceId: string | null;
+            space: components["schemas"]["PanelSpaceOut"];
+            /** Spec */
+            spec: components["schemas"]["KpiSpec"] | components["schemas"]["ChartSpec"] | components["schemas"]["TableSpec"] | components["schemas"]["RankingSpec"] | components["schemas"]["ProfileSpec"] | components["schemas"]["ListSpec"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "proposed" | "active" | "dismissed";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "kpi" | "chart" | "table" | "ranking" | "profile" | "list";
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+            /** Visible */
+            visible: boolean;
+        };
+        /**
+         * PanelPatch
+         * @description The student's switches; omitted fields stay as they are.
+         */
+        PanelPatch: {
+            /** Hiddeninall */
+            hiddenInAll?: boolean | null;
+            /** Position */
+            position?: number | null;
+            /** Visible */
+            visible?: boolean | null;
+        };
+        /**
+         * PanelSpaceOut
+         * @description The university a panel belongs to: enough to group panels in the all-universities mode.
+         */
+        PanelSpaceOut: {
+            /** Accenthue */
+            accentHue: number;
+            /** Id */
+            id: string;
+            /** Shorttitle */
+            shortTitle: string;
+            /** Title */
+            title: string;
         };
         /** PendingRef */
         PendingRef: {
@@ -2604,6 +2974,77 @@ export interface components {
             /** Version */
             version?: number | null;
         };
+        /** ProfileData */
+        ProfileData: {
+            /** Fields */
+            fields: components["schemas"]["ProfileFieldData"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "profile";
+            /** Total */
+            total: number;
+        };
+        /** ProfileFieldData */
+        ProfileFieldData: {
+            /** Field */
+            field: string;
+            /** Group */
+            group: string | null;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * ProfileFieldOut
+         * @description One field of the student's card exactly as the source printed it.
+         */
+        ProfileFieldOut: {
+            /** Field */
+            field: string;
+            /** Group */
+            group: string | null;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            provenance: components["schemas"]["Provenance"];
+            /** Value */
+            value: string;
+        };
+        /** ProfileSpec */
+        ProfileSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "profile";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["ProfileView"];
+        };
+        /**
+         * ProfileView
+         * @description Field keys in the order to show; empty means every field the source gave.
+         */
+        ProfileView: {
+            /** Fields */
+            fields?: string[];
+        };
         /**
          * Provenance
          * @description Where a record was read and when. Two provenance paths coexist while v3 and v4 share the
@@ -2651,6 +3092,106 @@ export interface components {
             blockId?: string | null;
             /** Text */
             text: string;
+        };
+        /**
+         * RankingData
+         * @description The top of one board plus the student's own row when it is lower; `total` counts the rows
+         *     the board has, `participants` is the size the source reported.
+         */
+        RankingData: {
+            /** Board */
+            board: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "ranking";
+            /** Participants */
+            participants: number | null;
+            /** Period */
+            period: string | null;
+            /** Rows */
+            rows: components["schemas"]["RankingRowData"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * RankingEntryOut
+         * @description One place on a rating board; `score` is the source's text, `score_num` its plain number.
+         */
+        RankingEntryOut: {
+            /** Board */
+            board: string;
+            /** Id */
+            id: string;
+            /** Isme */
+            isMe: boolean;
+            /** Label */
+            label: string;
+            /** Period */
+            period: string | null;
+            /** Position */
+            position: number;
+            provenance: components["schemas"]["Provenance"];
+            /** Score */
+            score: string | null;
+            /** Scorenum */
+            scoreNum: number | null;
+            /** Total */
+            total: number | null;
+        };
+        /** RankingRowData */
+        RankingRowData: {
+            /** Isme */
+            isMe: boolean;
+            /** Label */
+            label: string;
+            /** Period */
+            period: string | null;
+            /** Position */
+            position: number;
+            /** Score */
+            score: string | null;
+            /** Scorenum */
+            scoreNum: number | null;
+            /** Total */
+            total: number | null;
+        };
+        /** RankingSpec */
+        RankingSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "ranking";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["RankingView"];
+        };
+        /** RankingView */
+        RankingView: {
+            /**
+             * Highlightme
+             * @default true
+             */
+            highlightMe: boolean;
+            /**
+             * Top
+             * @default 10
+             */
+            top: number;
         };
         /**
          * ReadIn
@@ -2858,7 +3399,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news" | "documents";
+            kind: "courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news" | "documents" | "profile" | "ranking";
         };
         /**
          * SourceCreateIn
@@ -3114,6 +3655,39 @@ export interface components {
             sourceId: string;
             /** Status */
             status: string;
+        };
+        /** TableSpec */
+        TableSpec: {
+            dataset: components["schemas"]["Dataset"];
+            /**
+             * Icon
+             * @enum {string}
+             */
+            icon: "grade" | "course" | "person" | "user" | "university" | "schedule" | "deadline" | "table" | "number" | "group" | "teacher" | "today" | "news" | "document" | "chart" | "trophy" | "star" | "idCard" | "trend";
+            /** Title */
+            title: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "table";
+            /**
+             * V
+             * @default 1
+             * @constant
+             */
+            v: 1;
+            view?: components["schemas"]["TableView"];
+        };
+        /** TableView */
+        TableView: {
+            /** Columns */
+            columns?: ("title" | "course" | "value" | "scale" | "date")[];
+            /**
+             * Limit
+             * @default 20
+             */
+            limit: number;
         };
         /** ThreadCreate */
         ThreadCreate: {
@@ -4916,6 +5490,135 @@ export interface operations {
             };
         };
     };
+    list_panels_api_v1_panels_get: {
+        parameters: {
+            query?: {
+                space_id?: string | null;
+                status?: "active" | "proposed";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_panel_api_v1_panels__panel_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                panel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PanelPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_panel_api_v1_panels__panel_id__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                panel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_panel_api_v1_panels__panel_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                panel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     people_api_v1_people_get: {
         parameters: {
             query?: {
@@ -4934,6 +5637,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PersonOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    profile_api_v1_profile_get: {
+        parameters: {
+            query?: {
+                space_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFieldOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ranking_api_v1_ranking_get: {
+        parameters: {
+            query?: {
+                space_id?: string | null;
+                board?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RankingEntryOut"][];
                 };
             };
             /** @description Validation Error */

@@ -838,6 +838,100 @@
         "title": "CanaryIn",
         "type": "object"
       },
+      "ChartSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "chart",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/ChartView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "ChartSpec",
+        "type": "object"
+      },
+      "ChartView": {
+        "additionalProperties": false,
+        "description": "Individual grades over time or by course, in the source's own scale: no averages.",
+        "properties": {
+          "limit": {
+            "default": 24,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "variant": {
+            "default": "line",
+            "enum": [
+              "bar",
+              "line"
+            ],
+            "title": "Variant",
+            "type": "string"
+          },
+          "x": {
+            "default": "date",
+            "enum": [
+              "date",
+              "course"
+            ],
+            "title": "X",
+            "type": "string"
+          }
+        },
+        "title": "ChartView",
+        "type": "object"
+      },
       "ConnectionCreate": {
         "properties": {
           "kind": {
@@ -1264,6 +1358,51 @@
           "provenance"
         ],
         "title": "CourseOut",
+        "type": "object"
+      },
+      "Dataset": {
+        "additionalProperties": false,
+        "description": "Which data a panel shows, by kind: the rows themselves are never in the spec.",
+        "properties": {
+          "board": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Board"
+          },
+          "courseId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Courseid"
+          },
+          "kind": {
+            "enum": [
+              "grades",
+              "profile",
+              "ranking"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "Dataset",
         "type": "object"
       },
       "DeadlineOut": {
@@ -1814,6 +1953,17 @@
       },
       "GradeOut": {
         "properties": {
+          "courseId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Courseid"
+          },
           "courseTitle": {
             "anyOf": [
               {
@@ -1855,6 +2005,17 @@
             ],
             "title": "Scale"
           },
+          "scaleMax": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scalemax"
+          },
           "title": {
             "anyOf": [
               {
@@ -1869,6 +2030,17 @@
           "value": {
             "title": "Value",
             "type": "string"
+          },
+          "valueNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuenum"
           },
           "weight": {
             "anyOf": [
@@ -1893,6 +2065,165 @@
           "provenance"
         ],
         "title": "GradeOut",
+        "type": "object"
+      },
+      "GradePointOut": {
+        "description": "One grade as the source gave it; `value_num`/`scale_max` only when both were plain.",
+        "properties": {
+          "course": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Course"
+          },
+          "courseId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Courseid"
+          },
+          "gradedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gradedat"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale"
+          },
+          "scaleMax": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scalemax"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "valueNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuenum"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "course",
+          "courseId",
+          "value",
+          "scale",
+          "valueNum",
+          "scaleMax",
+          "gradedAt"
+        ],
+        "title": "GradePointOut",
+        "type": "object"
+      },
+      "GradesData": {
+        "description": "`total` counts every grade of the dataset; `points` are the newest ones within the view's\nlimit (a chart: only numeric ones, at most `MAX_CHART_SERIES` scales); `latest`/`best` are\ntaken from the whole dataset.",
+        "properties": {
+          "best": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GradePointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "const": "grades",
+            "default": "grades",
+            "title": "Kind",
+            "type": "string"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GradePointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numeric": {
+            "title": "Numeric",
+            "type": "integer"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/GradePointOut"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "numeric",
+          "points",
+          "latest",
+          "best"
+        ],
+        "title": "GradesData",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -2049,6 +2380,163 @@
           "jobId"
         ],
         "title": "JobRef",
+        "type": "object"
+      },
+      "KpiSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "kpi",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/KpiView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "KpiSpec",
+        "type": "object"
+      },
+      "KpiView": {
+        "additionalProperties": false,
+        "description": "Tiles: how many grades, the latest one, the best one of the most common scale.",
+        "properties": {
+          "metrics": {
+            "items": {
+              "enum": [
+                "count",
+                "latest",
+                "best"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Metrics",
+            "type": "array"
+          }
+        },
+        "title": "KpiView",
+        "type": "object"
+      },
+      "ListSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "list",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/ListView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "ListSpec",
+        "type": "object"
+      },
+      "ListView": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 10,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "ListView",
         "type": "object"
       },
       "LoginRequest": {
@@ -2362,6 +2850,236 @@
           "openUrl"
         ],
         "title": "NormalizedRecordOut",
+        "type": "object"
+      },
+      "PanelOut": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "grades": "#/components/schemas/GradesData",
+                    "profile": "#/components/schemas/ProfileData",
+                    "ranking": "#/components/schemas/RankingData"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/GradesData"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ProfileData"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RankingData"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "hiddenInAll": {
+            "title": "Hiddeninall",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "system",
+              "agent"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
+          },
+          "space": {
+            "$ref": "#/components/schemas/PanelSpaceOut"
+          },
+          "spec": {
+            "discriminator": {
+              "mapping": {
+                "chart": "#/components/schemas/ChartSpec",
+                "kpi": "#/components/schemas/KpiSpec",
+                "list": "#/components/schemas/ListSpec",
+                "profile": "#/components/schemas/ProfileSpec",
+                "ranking": "#/components/schemas/RankingSpec",
+                "table": "#/components/schemas/TableSpec"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KpiSpec"
+              },
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "$ref": "#/components/schemas/TableSpec"
+              },
+              {
+                "$ref": "#/components/schemas/RankingSpec"
+              },
+              {
+                "$ref": "#/components/schemas/ProfileSpec"
+              },
+              {
+                "$ref": "#/components/schemas/ListSpec"
+              }
+            ],
+            "title": "Spec"
+          },
+          "status": {
+            "enum": [
+              "proposed",
+              "active",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "kpi",
+              "chart",
+              "table",
+              "ranking",
+              "profile",
+              "list"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "title": "Updatedat",
+            "type": "string"
+          },
+          "visible": {
+            "title": "Visible",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "type",
+          "spec",
+          "status",
+          "visible",
+          "hiddenInAll",
+          "position",
+          "origin",
+          "sourceId",
+          "createdAt",
+          "updatedAt",
+          "space",
+          "data"
+        ],
+        "title": "PanelOut",
+        "type": "object"
+      },
+      "PanelPatch": {
+        "additionalProperties": false,
+        "description": "The student's switches; omitted fields stay as they are.",
+        "properties": {
+          "hiddenInAll": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hiddeninall"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "visible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible"
+          }
+        },
+        "title": "PanelPatch",
+        "type": "object"
+      },
+      "PanelSpaceOut": {
+        "description": "The university a panel belongs to: enough to group panels in the all-universities mode.",
+        "properties": {
+          "accentHue": {
+            "title": "Accenthue",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "shortTitle": {
+            "title": "Shorttitle",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "shortTitle",
+          "accentHue"
+        ],
+        "title": "PanelSpaceOut",
         "type": "object"
       },
       "PendingRef": {
@@ -3031,6 +3749,192 @@
         "title": "ProbeIn",
         "type": "object"
       },
+      "ProfileData": {
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileFieldData"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kind": {
+            "const": "profile",
+            "default": "profile",
+            "title": "Kind",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "fields"
+        ],
+        "title": "ProfileData",
+        "type": "object"
+      },
+      "ProfileFieldData": {
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "label",
+          "value",
+          "group"
+        ],
+        "title": "ProfileFieldData",
+        "type": "object"
+      },
+      "ProfileFieldOut": {
+        "description": "One field of the student's card exactly as the source printed it.",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "field",
+          "label",
+          "value",
+          "group",
+          "provenance"
+        ],
+        "title": "ProfileFieldOut",
+        "type": "object"
+      },
+      "ProfileSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "profile",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/ProfileView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "ProfileSpec",
+        "type": "object"
+      },
+      "ProfileView": {
+        "additionalProperties": false,
+        "description": "Field keys in the order to show; empty means every field the source gave.",
+        "properties": {
+          "fields": {
+            "items": {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Fields",
+            "type": "array"
+          }
+        },
+        "title": "ProfileView",
+        "type": "object"
+      },
       "Provenance": {
         "description": "Where a record was read and when. Two provenance paths coexist while v3 and v4 share the\ndomain tables: a v3 row names its `connectionId`, a v4 row its `sourceId` (docs/v4/03 §6.1).\nBoth are null-capable for that reason; a response always has at least one of them.",
         "properties": {
@@ -3144,6 +4048,300 @@
           "text"
         ],
         "title": "QuoteIn",
+        "type": "object"
+      },
+      "RankingData": {
+        "description": "The top of one board plus the student's own row when it is lower; `total` counts the rows\nthe board has, `participants` is the size the source reported.",
+        "properties": {
+          "board": {
+            "title": "Board",
+            "type": "string"
+          },
+          "kind": {
+            "const": "ranking",
+            "default": "ranking",
+            "title": "Kind",
+            "type": "string"
+          },
+          "participants": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participants"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RankingRowData"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "board",
+          "total",
+          "participants",
+          "period",
+          "rows"
+        ],
+        "title": "RankingData",
+        "type": "object"
+      },
+      "RankingEntryOut": {
+        "description": "One place on a rating board; `score` is the source's text, `score_num` its plain number.",
+        "properties": {
+          "board": {
+            "title": "Board",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "isMe": {
+            "title": "Isme",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "scoreNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorenum"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "id",
+          "board",
+          "position",
+          "label",
+          "score",
+          "scoreNum",
+          "isMe",
+          "total",
+          "period",
+          "provenance"
+        ],
+        "title": "RankingEntryOut",
+        "type": "object"
+      },
+      "RankingRowData": {
+        "properties": {
+          "isMe": {
+            "title": "Isme",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "scoreNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorenum"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "position",
+          "label",
+          "score",
+          "scoreNum",
+          "isMe",
+          "total",
+          "period"
+        ],
+        "title": "RankingRowData",
+        "type": "object"
+      },
+      "RankingSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "ranking",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/RankingView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "RankingSpec",
+        "type": "object"
+      },
+      "RankingView": {
+        "additionalProperties": false,
+        "properties": {
+          "highlightMe": {
+            "default": true,
+            "title": "Highlightme",
+            "type": "boolean"
+          },
+          "top": {
+            "default": 10,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "RankingView",
         "type": "object"
       },
       "ReadIn": {
@@ -3756,7 +4954,9 @@
               "people",
               "locations",
               "news",
-              "documents"
+              "documents",
+              "profile",
+              "ranking"
             ],
             "title": "Kind",
             "type": "string"
@@ -4576,6 +5776,96 @@
           "status"
         ],
         "title": "SyncQueuedOut",
+        "type": "object"
+      },
+      "TableSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          },
+          "icon": {
+            "enum": [
+              "grade",
+              "course",
+              "person",
+              "user",
+              "university",
+              "schedule",
+              "deadline",
+              "table",
+              "number",
+              "group",
+              "teacher",
+              "today",
+              "news",
+              "document",
+              "chart",
+              "trophy",
+              "star",
+              "idCard",
+              "trend"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "const": "table",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "default": 1,
+            "title": "V",
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/TableView"
+          }
+        },
+        "required": [
+          "title",
+          "icon",
+          "dataset",
+          "type"
+        ],
+        "title": "TableSpec",
+        "type": "object"
+      },
+      "TableView": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "enum": [
+                "title",
+                "course",
+                "value",
+                "scale",
+                "date"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Columns",
+            "type": "array"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "TableView",
         "type": "object"
       },
       "ThreadCreate": {
@@ -7333,6 +8623,213 @@
         ]
       }
     },
+    "/api/v1/panels": {
+      "get": {
+        "description": "The panels of one university (or of all), in display order, with their resolved data.\n\nActive panels also include the ones the student switched off (`visible: false`, `data: null`),\nso the screen can offer the switch. The system panels a university's data deserves are made\nhere on first read if the sync has not made them yet.",
+        "operationId": "list_panels_api_v1_panels_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Space Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "enum": [
+                "active",
+                "proposed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PanelOut"
+                  },
+                  "title": "Response List Panels Api V1 Panels Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Panels",
+        "tags": [
+          "panels"
+        ]
+      }
+    },
+    "/api/v1/panels/{panel_id}": {
+      "patch": {
+        "description": "The student's switches: `visible`, `hiddenInAll`, `position`.",
+        "operationId": "patch_panel_api_v1_panels__panel_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "panel_id",
+            "required": true,
+            "schema": {
+              "title": "Panel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Panel",
+        "tags": [
+          "panels"
+        ]
+      }
+    },
+    "/api/v1/panels/{panel_id}/accept": {
+      "post": {
+        "description": "Accept a panel the agent proposed (or bring back a dismissed one): it becomes active and\nvisible.",
+        "operationId": "accept_panel_api_v1_panels__panel_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "panel_id",
+            "required": true,
+            "schema": {
+              "title": "Panel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Panel",
+        "tags": [
+          "panels"
+        ]
+      }
+    },
+    "/api/v1/panels/{panel_id}/dismiss": {
+      "post": {
+        "description": "Refuse a panel: it disappears and the agent does not propose the same key again.",
+        "operationId": "dismiss_panel_api_v1_panels__panel_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "panel_id",
+            "required": true,
+            "schema": {
+              "title": "Panel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Panel",
+        "tags": [
+          "panels"
+        ]
+      }
+    },
     "/api/v1/people": {
       "get": {
         "operationId": "people_api_v1_people_get",
@@ -7381,6 +8878,130 @@
           }
         },
         "summary": "People",
+        "tags": [
+          "domain"
+        ]
+      }
+    },
+    "/api/v1/profile": {
+      "get": {
+        "description": "The fields of the student's card that the university's sources show.",
+        "operationId": "profile_api_v1_profile_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Space Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileFieldOut"
+                  },
+                  "title": "Response Profile Api V1 Profile Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Profile",
+        "tags": [
+          "domain"
+        ]
+      }
+    },
+    "/api/v1/ranking": {
+      "get": {
+        "description": "Places of the rating boards (all of them, or one `board`).",
+        "operationId": "ranking_api_v1_ranking_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Space Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "board",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Board"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RankingEntryOut"
+                  },
+                  "title": "Response Ranking Api V1 Ranking Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ranking",
         "tags": [
           "domain"
         ]
