@@ -4,6 +4,6 @@ import { requireSession } from "@/app/session";
 
 /** Защищённая часть приложения: пять вкладок внутри каркаса. */
 export const Route = createFileRoute("/_app")({
-  beforeLoad: ({ context }) => requireSession(context.queryClient),
+  beforeLoad: ({ context, location }) => requireSession(context.queryClient, location.href),
   component: AppShell,
 });

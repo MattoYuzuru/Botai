@@ -4981,6 +4981,169 @@
         "title": "SectionOut",
         "type": "object"
       },
+      "ShareOut": {
+        "description": "The read-only link of a thread: `/shared/<share_id>` in the app.",
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "shareId": {
+            "title": "Shareid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shareId",
+          "createdAt"
+        ],
+        "title": "ShareOut",
+        "type": "object"
+      },
+      "SharedAttachment": {
+        "description": "A file of a shared message: only its name and kind; the file itself stays its owner's.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "image",
+              "document",
+              "audio",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "mime",
+          "size",
+          "kind"
+        ],
+        "title": "SharedAttachment",
+        "type": "object"
+      },
+      "SharedMessage": {
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/SharedAttachment"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "markdown": {
+            "title": "Markdown",
+            "type": "string"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "agent"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "markdown",
+          "quote",
+          "attachments",
+          "createdAt"
+        ],
+        "title": "SharedMessage",
+        "type": "object"
+      },
+      "SharedThreadOut": {
+        "description": "A thread as another BotAI user sees it by link: the conversation's words and file names only;\nno reasoning steps, tasks, questions, sources or contents of files.",
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "ownerName": {
+            "title": "Ownername",
+            "type": "string"
+          },
+          "shareId": {
+            "title": "Shareid",
+            "type": "string"
+          },
+          "sharedAt": {
+            "format": "date-time",
+            "title": "Sharedat",
+            "type": "string"
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threadid"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shareId",
+          "title",
+          "ownerName",
+          "mine",
+          "threadId",
+          "sharedAt",
+          "messages"
+        ],
+        "title": "SharedThreadOut",
+        "type": "object"
+      },
       "SourceCreateIn": {
         "description": "POST /sources: exactly one way to name the source's identity, plus its kinds.",
         "properties": {
@@ -7644,6 +7807,132 @@
         ]
       }
     },
+    "/api/v1/chat/threads/{thread_id}/share": {
+      "delete": {
+        "description": "Closes the link: it stops opening, and sharing again makes a new one.",
+        "operationId": "unshare_thread_api_v1_chat_threads__thread_id__share_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unshare Thread",
+        "tags": [
+          "agent"
+        ]
+      },
+      "get": {
+        "description": "The thread's read-only link, or `null` when it is not shared.",
+        "operationId": "get_thread_share_api_v1_chat_threads__thread_id__share_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ShareOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Thread Share Api V1 Chat Threads  Thread Id  Share Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Thread Share",
+        "tags": [
+          "agent"
+        ]
+      },
+      "put": {
+        "description": "Opens a read-only link for other BotAI users; a shared thread keeps its link.",
+        "operationId": "share_thread_api_v1_chat_threads__thread_id__share_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Share Thread",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/chat/threads/{thread_id}/suggestion": {
       "post": {
         "operationId": "next_message_suggestion_api_v1_chat_threads__thread_id__suggestion_post",
@@ -9090,6 +9379,49 @@
         "summary": "Schedule",
         "tags": [
           "domain"
+        ]
+      }
+    },
+    "/api/v1/shared/chats/{share_id}": {
+      "get": {
+        "description": "A shared thread for any signed-in user: words and file names only, read-only.",
+        "operationId": "read_shared_thread_api_v1_shared_chats__share_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "share_id",
+            "required": true,
+            "schema": {
+              "title": "Share Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedThreadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Shared Thread",
+        "tags": [
+          "agent"
         ]
       }
     },

@@ -15,6 +15,8 @@ export const chatKeys = {
   messages: (threadId: string) => ["chat", "threads", threadId, "messages"] as const,
   context: (threadId: string) => ["chat", "threads", threadId, "context"] as const,
   runtime: (threadId: string) => ["chat", "threads", threadId, "runtime"] as const,
+  share: (threadId: string) => ["chat", "threads", threadId, "share"] as const,
+  shared: (shareId: string) => ["chat", "shared", shareId] as const,
   suggestion: (ownerId: string, threadId: string, afterMessageId: string) =>
     ["chat", "suggestion", ownerId, threadId, afterMessageId] as const,
 };

@@ -161,3 +161,41 @@ class MemoryNoteOut(ApiModel):
 class ApproveIn(ApiModel):
     fields: dict[str, str]  # final values after the user's edits
     fields_hash: str  # sha256 of canonical fields the user saw
+
+
+class ShareOut(ApiModel):
+    """The read-only link of a thread: `/shared/<share_id>` in the app."""
+
+    share_id: str
+    created_at: datetime
+
+
+class SharedAttachment(ApiModel):
+    """A file of a shared message: only its name and kind; the file itself stays its owner's."""
+
+    name: str
+    mime: str
+    size: int
+    kind: Literal["image", "document", "audio", "other"]
+
+
+class SharedMessage(ApiModel):
+    id: str
+    role: Literal["user", "agent"]
+    markdown: str  # the message's text blocks, joined; "" when it has only files
+    quote: str | None  # what the message answers, if it says so
+    attachments: list[SharedAttachment]
+    created_at: datetime
+
+
+class SharedThreadOut(ApiModel):
+    """A thread as another BotAI user sees it by link: the conversation's words and file names only;
+    no reasoning steps, tasks, questions, sources or contents of files."""
+
+    share_id: str
+    title: str
+    owner_name: str
+    mine: bool  # the viewer is the owner: the app can offer to open the thread itself
+    thread_id: str | None  # only for the owner
+    shared_at: datetime
+    messages: list[SharedMessage]

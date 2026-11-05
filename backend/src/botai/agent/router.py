@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from botai.agent import actions, conversations, notes, suggestions, threads
+from botai.agent import actions, conversations, notes, shares, suggestions, threads
 from botai.agent.context_meter import build_context
 from botai.agent.schemas import (
     ApproveIn,
@@ -15,6 +15,8 @@ from botai.agent.schemas import (
     MessageIn,
     MessageOut,
     ReadIn,
+    SharedThreadOut,
+    ShareOut,
     SuggestionIn,
     SuggestionOut,
     ThreadCreate,
@@ -119,6 +121,30 @@ async def thread_context(
 ) -> ContextOut:
     thread = await owned_thread(session, user.id, thread_id)
     return await build_context(session, services, user.id, thread)
+
+
+@router.get("/chat/threads/{thread_id}/share", response_model=ShareOut | None)
+async def get_thread_share(thread_id: str, user: AuthUser, session: DbSession) -> ShareOut | None:
+    """The thread's read-only link, or `null` when it is not shared."""
+    return await shares.get_share(session, user.id, thread_id)
+
+
+@router.put("/chat/threads/{thread_id}/share", response_model=ShareOut)
+async def share_thread(thread_id: str, user: AuthUser, session: DbSession) -> ShareOut:
+    """Opens a read-only link for other BotAI users; a shared thread keeps its link."""
+    return await shares.share_thread(session, user.id, thread_id)
+
+
+@router.delete("/chat/threads/{thread_id}/share", status_code=204)
+async def unshare_thread(thread_id: str, user: AuthUser, session: DbSession) -> None:
+    """Closes the link: it stops opening, and sharing again makes a new one."""
+    await shares.unshare_thread(session, user.id, thread_id)
+
+
+@router.get("/shared/chats/{share_id}", response_model=SharedThreadOut)
+async def read_shared_thread(share_id: str, user: AuthUser, session: DbSession) -> SharedThreadOut:
+    """A shared thread for any signed-in user: words and file names only, read-only."""
+    return await shares.shared_thread(session, user.id, share_id)
 
 
 @router.get("/me/memory", response_model=list[MemoryNoteOut])

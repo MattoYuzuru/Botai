@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 /**
  * Верхняя полоса чата на всю ширину области. Слева название треда и подпись «Чат», справа фиксированные
- * «Источники», «Чаты», «Новый чат» (как «Поделиться» и меню в ChatGPT) — на одной линии со знаком рейла. На телефоне
+ * «Поделиться», «Источники», «Чаты», «Новый чат» (как в ChatGPT) — на одной линии со знаком рейла. На телефоне
  * та же полоса компактнее: те же действия иконками.
  */
 export function ChatTopBar({
@@ -13,6 +13,7 @@ export function ChatTopBar({
   onSources,
   onThreads,
   onNew,
+  onShare,
 }: {
   title: string;
   /** Шкала контекста агента: кнопка слева от действий. */
@@ -22,6 +23,8 @@ export function ChatTopBar({
   onSources: () => void;
   onThreads: () => void;
   onNew: () => void;
+  /** «Поделиться» — только у сохранённого чата: у нового ещё нечего показывать. */
+  onShare?: () => void;
 }) {
   const wide = useMediaQuery("(min-width: 64rem)");
   const action = (label: string, icon: IconName, onClick: () => void, dot = false) =>
@@ -53,12 +56,14 @@ export function ChatTopBar({
       data-chat-topbar=""
       className="flex min-h-topbar flex-wrap items-center gap-x-3 gap-y-1 px-safe-4 py-1 xs:px-safe-5 lg:px-6"
     >
-      <div className="flex min-w-0 flex-1 basis-32 flex-col justify-center">
+      <div className="flex min-w-0 flex-1 basis-24 flex-col justify-center lg:basis-32">
         <h1 className="truncate type-title text-fg">{title}</h1>
         <p className="truncate type-caption text-fg-muted">Чат</p>
       </div>
-      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
+      {/* На телефоне пять кнопок встают в одну строку с названием: без зазоров, у каждой и так зона 44 px. */}
+      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end lg:gap-1">
         {context}
+        {onShare && action("Поделиться", "share", onShare)}
         {action("Источники", "connection", onSources)}
         {action("Чаты", "chat", onThreads, othersNeedYou)}
         {action("Новый чат", "plus", onNew)}

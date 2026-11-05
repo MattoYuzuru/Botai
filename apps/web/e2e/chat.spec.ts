@@ -484,10 +484,10 @@ test.describe("ответ агента", () => {
   test("готовый текст для ручной отправки остаётся в ленте после ответа", async ({ page }) => {
     await openChat(page, "/chat?thread=new&pace=0");
     await ask(page, "Подай заявку вручную");
-    await expect(page.getByRole("button", { name: "Скопировать" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Скопировать", exact: true })).toBeVisible();
     await expect(page.getByText(/Форма на сайте вуза не позволяет/)).toBeVisible();
     await expect(composer(page)).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Скопировать" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Скопировать", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: /Открыть сайт вуза/ })).toHaveAttribute("target", "_blank");
   });
 

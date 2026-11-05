@@ -47,6 +47,7 @@ export function AgentBlockView({ block, ctx }: { block: ParsedBlock; ctx: BlockC
         confidence: ctx.confidence?.(block.markdown),
         citationGroups: block.sources ? ctx.groupSources?.(block.sources) : undefined,
         resolveLink: ctx.resolveLink,
+        copyText: block.markdown,
       };
       // Лента чата передаёт `typewriter` (живой блок печатается), остальные поверхности — нет и рисуют сразу.
       // Уверенность и источники считаются от полного текста блока: при печати они не скачут.
