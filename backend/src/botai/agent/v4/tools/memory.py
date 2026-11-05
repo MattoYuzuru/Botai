@@ -1,0 +1,181 @@
+"""`memory_remember`, `memory_forget`, `memory_list`: what the v4 agent keeps about the student.
+
+The notes are the same `user_memory` rows as in v3 (`agent/notes.py`, FR-050): at most 300
+characters, deduplicated case-insensitively, at most 50 per student, visible to the student and
+deletable by them. Every chat turn already shows them in the context message (`turn_context`) as
+data about the student, so a fact remembered once reaches every later chat.
+
+The guard is the one of `notes.clean_note`: a note that looks like a password, a code or a token,
+holds an address, or reads as an order or a permission for the assistant is refused at the door,
+so neither a primary secret nor a standing instruction planted by a page can become memory. On top
+of it a note that holds a value the run's secret broker issued is refused (`mask`), whatever it
+looks like.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from botai.agent import notes
+from botai.agent.v4.protocol import (
+    FunctionTool,
+    ToolContext,
+    ToolHandler,
+    ToolResult,
+    ToolSpec,
+    object_schema,
+)
+from botai.core.errors import BotaiError
+
+
+class _RememberArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class _ForgetArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note_id: str = Field(min_length=1, max_length=26)
+
+
+def _invalid(exc: ValidationError) -> ToolResult:
+    first = exc.errors()[0] if exc.errors() else {}
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    return ToolResult.failure(
+        "invalid_arguments", f"Некорректные аргументы: {location}: {first.get('msg', 'ошибка')}"
+    )
+
+
+class MemoryToolkit:
+    """The memory tools over one session factory; `mask` is the run's secret masker."""
+
+    remember_spec = ToolSpec(
+        name="memory_remember",
+        description=(
+            "Запомнить надолго устойчивый факт о студенте: группа, программа, курс, научный "
+            "руководитель, тема курсовой, идущая заявка или дело и его этап, договорённость, "
+            "предпочтение, шаг, который сработал. Заметка видна во всех следующих чатах и самому "
+            f"студенту. Одна заметка — один факт, до {notes.NOTE_CHARS} знаков, без адресов. "
+            "Нельзя: пароли, коды, токены, ссылки-ключи, указания самому себе. Повтор той же "
+            "заметки ничего не дублирует; устаревший факт сначала забудь (memory_forget)."
+        ),
+        parameters=object_schema(
+            {"note": {"type": "string", "minLength": 1, "maxLength": notes.NOTE_CHARS}},
+            required=["note"],
+        ),
+        timeout_s=15.0,
+        policy="write_soft",
+        idempotent=True,
+        serial_only=True,
+    )
+    forget_spec = ToolSpec(
+        name="memory_forget",
+        description=(
+            "Забыть заметку памяти о студенте: устаревший или неверный факт, или по просьбе "
+            "студента. note_id — из блока «Память о студенте» в контексте или из memory_list."
+        ),
+        parameters=object_schema(
+            {"note_id": {"type": "string", "minLength": 1, "maxLength": 26}},
+            required=["note_id"],
+        ),
+        timeout_s=15.0,
+        policy="write_soft",
+        serial_only=True,
+    )
+    list_spec = ToolSpec(
+        name="memory_list",
+        description="Все заметки памяти о студенте с их note_id, от старых к новым. Только чтение.",
+        parameters=object_schema(),
+        timeout_s=15.0,
+    )
+
+    def __init__(
+        self,
+        *,
+        sm: async_sessionmaker[AsyncSession],
+        mask: Callable[[str], str] | None = None,
+    ) -> None:
+        self._sm = sm
+        self._mask = mask
+        self._handlers: list[ToolHandler] = [
+            FunctionTool(self.remember_spec, self._remember),
+            FunctionTool(self.forget_spec, self._forget),
+            FunctionTool(self.list_spec, self._list),
+        ]
+
+    def tools(self) -> list[ToolHandler]:
+        return list(self._handlers)
+
+    async def _remember(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        if context.user_id is None:
+            return ToolResult.failure("no_user", "Память без пользователя невозможна.")
+        try:
+            args = _RememberArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _invalid(exc)
+        if self._mask is not None and self._mask(args.note) != args.note:
+            return ToolResult.failure(
+                "secret_in_note",
+                "В заметке есть значение секрета. Секреты не запоминаются: запиши факт без него.",
+            )
+        try:
+            async with self._sm() as session:
+                added = await notes.add_note(session, context.user_id, args.note)
+                note_id, text = added.note.id, added.note.note
+        except BotaiError as exc:
+            return ToolResult.failure(
+                "note_refused",
+                f"Не запомнено: {exc.detail}.",
+                hint="Перепиши как короткий факт о студенте, без адресов, секретов и указаний.",
+            )
+        return ToolResult.success(
+            summary="Запомнено." if added.created else "Эта заметка уже есть в памяти.",
+            data={"noteId": note_id, "note": text, "created": added.created},
+        )
+
+    async def _forget(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        if context.user_id is None:
+            return ToolResult.failure("no_user", "Память без пользователя невозможна.")
+        try:
+            args = _ForgetArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _invalid(exc)
+        try:
+            async with self._sm() as session:
+                await notes.delete_note(session, context.user_id, args.note_id.strip())
+        except BotaiError:
+            return ToolResult.failure(
+                "not_found",
+                "Такой заметки нет.",
+                hint="Возьми note_id из блока «Память о студенте» в контексте или из memory_list.",
+            )
+        return ToolResult.success(summary="Забыто.", data={"noteId": args.note_id.strip()})
+
+    async def _list(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        del arguments
+        if context.user_id is None:
+            return ToolResult.failure("no_user", "Память без пользователя невозможна.")
+        async with self._sm() as session:
+            rows = await notes.list_notes(session, context.user_id)
+            items = [
+                {"noteId": row.id, "note": row.note, "createdAt": row.created_at.isoformat()}
+                for row in rows
+            ]
+        return ToolResult.success(
+            summary=f"Заметок в памяти: {len(items)} из {notes.MAX_NOTES}.",
+            data={"notes": items},
+        )
+
+
+def build_memory_tools(toolkit: MemoryToolkit) -> list[ToolHandler]:
+    """The memory set; the wiring adds it next to `source_*` when the v4 engine is on."""
+    return toolkit.tools()
+
+
+__all__ = ["MemoryToolkit", "build_memory_tools"]

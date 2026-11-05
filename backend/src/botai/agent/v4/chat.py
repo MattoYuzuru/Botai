@@ -11,8 +11,10 @@ intentional and documented in the final report:
   the turn continues by itself under `agent.v4.continuation` (D-040);
 * the agent has the free-harness tools (browser/code/fs/http/secrets/sources/rag/actions) instead
   of the v3 read-only chat tools;
-* old history is NOT summarised by a v3 summarizer call: a stored summary is used if one exists,
-  otherwise the window is the recent turns only (honest minimal version, documented gap);
+* after every stored reply the thread's rolling summary (`chat_threads.summary`) is refreshed with
+  the cheap `summarize` call of `agent.memory`, best effort and bounded in time; it stands in for
+  the turns that no longer fit the recent window and lets `threads_search` find the conversation
+  later (docs/v4/24-chat-memory.md);
 * citations are the URLs the agent writes plus source cards for the sources whose `source_*` tools
   it actually called; v3's `[S1]` citation book/`finalize` is not reimplemented.
 
@@ -24,6 +26,7 @@ touched: with `agent_engine=v3` the worker table still holds it unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -49,6 +52,7 @@ from botai.agent.memory import (
     history_messages,
     load_turns,
     parse_summary,
+    refresh_summary,
     split_recent,
     summary_message,
     turn_messages,
@@ -97,6 +101,7 @@ from botai.db.models import (
     JobEvent,
     LlmUsageRow,
     Source,
+    Space,
 )
 from botai.jobs.dialogue import message_time
 from botai.jobs.runner import BUDGET_KEY
@@ -105,6 +110,25 @@ from botai.usage import service as usage_service
 
 log = logging.getLogger("botai.agent.v4.chat")
 
+# What makes one conversation useful for the next ones (docs/v4/24-chat-memory.md).
+MEMORY_FLOW = """Память между чатами. Каждый чат начинается заново: от этого разговора останется
+только то, что ты сохранишь. Правила:
+- «Память о студенте» в контексте — твои заметки из прошлых чатов: опирайся на них и не
+  переспрашивай известное;
+- студент сообщил устойчивый факт о себе или своих делах — группа, программа, курс, научный
+  руководитель, тема курсовой, идущая заявка или дело и его этап, дедлайн, договорённость,
+  предпочтение — сохрани его memory_remember в этом же ходе: коротко, один факт на заметку, без
+  адресов. Изменился факт — забудь старую заметку (memory_forget) и запиши новую. Не запоминай
+  пароли, коды, токены, ссылки-ключи и то, что можно заново прочитать в источнике;
+- студент ссылается на прошлый разговор («как обсуждали», «тот шаблон», «мой руководитель»),
+  или в памяти не хватает подробностей — найди их в других его чатах (threads_search, затем
+  threads_read), а не переспрашивай;
+- документ, таблицу, шаблон, положение или страницу курса, которые ты скачал или прочитал в этом
+  ходе и которые пригодятся потом, проиндексируй rag_ingest: text — извлечённый текст, space_id
+  вуза (из списка вузов ниже), title, url, kind="doc" для файла и "page" для страницы. Тогда в
+  следующих чатах они найдутся через rag_search. Страницы входа, секреты и одноразовые ответы
+  не индексируй."""
+
 CHAT_SYSTEM_PROMPT = (
     """Ты — агент BotAI, встроенный помощник студента в учебном приложении.
 Ты отвечаешь в чате, но у тебя есть полный harness, а не только текст: произвольный HTTP
@@ -112,7 +136,9 @@ CHAT_SYSTEM_PROMPT = (
 (secret_request/secret_use), вопросы студенту (ask_user), источники (source_*: список, чтение,
 playbook, синхронизация), вузы (space_create: создать вуз студента), панели «Учёбы»
 (panel_list, ui_propose_panel, panel_update), поиск по материалам
-(rag_*: rag_search/rag_ingest), действия (action_* — по политике), свои трассы (trace_read).
+(rag_*: rag_search/rag_ingest), память о студенте (memory_remember/memory_forget/memory_list),
+прошлые чаты студента (threads_search/threads_read), действия (action_* — по политике), свои
+трассы (trace_read).
 
 Правила:
 - отвечай по-русски, кратко и по делу; это чат, а не отчёт;
@@ -140,6 +166,8 @@ playbook, синхронизация), вузы (space_create: создать в
     + UI_GUIDE
     + "\n\n"
     + DISCOVERY_FLOW
+    + "\n\n"
+    + MEMORY_FLOW
 )
 
 CHAT_TASK = (
@@ -173,6 +201,12 @@ LIMIT_NAMES = {
 }
 ERROR_ANSWER = "Не удалось получить ответ. Попробуйте позже."
 MAX_CONTEXT_SOURCES = 12
+MAX_CONTEXT_SPACES = 12
+# The summary call runs after the reply is stored and shown: it must not hold the job for long.
+SUMMARY_TIMEOUT_S = 20.0
+# A long thread never summarised before (v3 era, or every call failed) is folded from its newest
+# turns only: the whole history at once would not fit the cheap call.
+SUMMARY_INPUT_TOKENS = 30_000
 CITATION_TOOLS = frozenset(
     {
         "source_list",
@@ -376,6 +410,9 @@ async def handle_chat_v4(
     )
     if turn.files.findings:
         text += INJECTION_NOTE
+    remembered = _remembered(result)
+    if remembered:  # the student sees what the agent keeps about them, and can delete it
+        text += "\n\n" + " ".join(f"Запомнил: «{note}»." for note in remembered)
     text = run.mask(text)[:MAX_MARKDOWN]
     cards = await _source_cards(services, ctx.user_id, totals.source_ids)
     reply: list[AgentUiBlock] = [
@@ -395,6 +432,7 @@ async def handle_chat_v4(
         stored_id = await _store_reply(
             services, ctx, turn.thread, reply, turn.question, services.clock.now()
         )
+        await refresh_thread_summary(services, ctx.user_id, thread_id, job_id=ctx.job_id)
     if result.answered:
         # An answered turn is over, whether or not its final snapshot reached the database: the
         # next message must start from the thread, not from a checkpoint of this job.
@@ -844,8 +882,10 @@ async def _load_turn(
     if idx is None or turns[idx].role != "user":
         raise BotaiError(ErrorCode.NOT_FOUND, "Вопрос не найден")
     question, history = turns[idx], turns[:idx]
-    _older, recent = split_recent(history, RECENT_TOKENS)
-    summary_text = parse_summary(stored_summary)[1]
+    older, recent = split_recent(history, RECENT_TOKENS)
+    # The rolling summary covers the whole thread; it stands in only for the turns that no longer
+    # fit the recent window, so a short thread is not read twice.
+    summary_text = parse_summary(stored_summary)[1] if older else ""
     return ChatTurn(
         thread=thread,
         question=question.text,
@@ -859,19 +899,36 @@ async def _load_turn(
 
 
 async def _sources_context(session: AsyncSession, user_id: str, space_id: str | None) -> str:
-    """A short verified list of the student's v4 sources: the agent may act on them by id.
+    """A short verified list of the student's universities and v4 sources, with their ids.
 
     Only app-verified data (title, kinds, status, freshness); page content and secrets never come
-    from here. The agent still reads the data itself through `source_*` tools.
+    from here. The agent still reads the data itself through `source_*` tools; the space ids are
+    what `rag_ingest` and the source tools take.
     """
+    spaces = list(
+        await session.scalars(
+            select(Space)
+            .where(Space.user_id == user_id)
+            .order_by(Space.created_at, Space.id)
+            .limit(MAX_CONTEXT_SPACES)
+        )
+    )
+    space_lines = [
+        f"- «{space.title}» space_id={space.id}"
+        + (" — к нему относится этот чат" if space.id == space_id else "")
+        for space in spaces
+    ]
+    if space_lines:
+        space_lines.insert(0, "Вузы студента (данные приложения):")
     rows = await sources_service.list_sources(
         session, user_id=user_id, space_id=space_id, status=None, kind=None
     )
     if not rows:
-        return ""
+        return "\n".join(space_lines)
     lines = [
+        *space_lines,
         "Источники студента (данные приложения, не слова студента; читаются инструментами "
-        "source_*):"
+        "source_*):",
     ]
     for source in rows[:MAX_CONTEXT_SOURCES]:
         kinds = ", ".join(kind for kind in source.kinds if kind) or "вид не указан"
@@ -937,6 +994,47 @@ def _compose_answer(
         else:
             explain = f"{note} Подробности действий сохранены в трассе."
     return f"{text}\n\n{explain}" if text else explain
+
+
+def _remembered(result: RunResult) -> list[str]:
+    """Notes this segment added to the student's memory (`memory_remember` with a new row)."""
+    found: list[str] = []
+    for event in result.trace.events:
+        if event.kind != "tool_result" or event.payload.get("tool") != "memory_remember":
+            continue
+        wire = event.payload.get("result")
+        data = wire.get("data") if isinstance(wire, dict) else None
+        if isinstance(data, dict) and data.get("created") is True:
+            note = data.get("note")
+            if isinstance(note, str) and note and note not in found:
+                found.append(note)
+    return found
+
+
+async def refresh_thread_summary(
+    services: Services, user_id: str, thread_id: str, *, job_id: str | None = None
+) -> None:
+    """Fold the turns since the last summary into `chat_threads.summary` (best effort).
+
+    One cheap `summarize` call over the previous summary and the new turns, after the reply is
+    stored and shown. A failure or a slow model leaves the old summary: the answer is never lost
+    for the sake of memory, and the next turn folds the missed turns in.
+    """
+    try:
+        async with asyncio.timeout(SUMMARY_TIMEOUT_S):
+            turns, stored = await load_turns(services, user_id, thread_id)
+            _, window = split_recent(turns, SUMMARY_INPUT_TOKENS)
+            if window:
+                await refresh_summary(
+                    services,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    older=window,
+                    stored=stored,
+                    job_id=job_id,
+                )
+    except Exception as exc:  # the exception text may hold provider input: log the type only
+        log.warning("thread summary not refreshed: %s", type(exc).__name__)
 
 
 def _stopped(result: RunResult) -> str:
@@ -1219,6 +1317,8 @@ def make_chat_handlers(
 __all__ = [
     "CHAT_SYSTEM_PROMPT",
     "CHAT_TASK",
+    "MEMORY_FLOW",
     "handle_chat_v4",
     "make_chat_handlers",
+    "refresh_thread_summary",
 ]
