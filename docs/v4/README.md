@@ -118,6 +118,8 @@ Claude Code, ChatGPT-агент) и удобнее их, потому что ж�
 | [20-connection-reliability.md](20-connection-reliability.md) | Схема импорта для агента, сессии, ошибки нормализации, прогресс и прочтение чата |
 | [21-calendar-import-and-schedule.md](21-calendar-import-and-schedule.md) | Защищённые ссылки календарей, повторная синхронизация, компактные карточки и группы пересечений |
 | [22-self-expanding.md](22-self-expanding.md) | Саморасширяющаяся «Учёба»: персональные панели (D-039) и continuity агента — чекпоинт и авто-продолжение (D-040) |
+| [24-chat-copy-and-share.md](24-chat-copy-and-share.md) | Копирование сообщений и ссылка «Поделиться чатом» (только чтение, для пользователей BotAI) |
+| [25-mcp-bridge.md](25-mcp-bridge.md) | Предложение: MCP-мост для внешних агентов (Claude Code, Codex, Claude.ai) — не реализовано |
 | [_evidence/](_evidence/) | Сырые свидетельства: production, бенчмарк, трассы (только санитизированные) |
 | [_input/](_input/) | Входные документы пивота (анализ ограничений, заметки владельца) |
 

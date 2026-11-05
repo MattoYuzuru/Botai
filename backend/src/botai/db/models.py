@@ -652,6 +652,20 @@ class ChatThread(Base):
     )
 
 
+class ChatShare(Base):
+    """A read-only link to one thread for other BotAI users (`/shared/<id>`). The id is a random
+    token, not a ULID: whoever has the link and an account sees the thread as it is now. Closing
+    the link deletes the row; sharing again makes a new token, so an old link stays dead."""
+
+    __tablename__ = "chat_shares"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("chat_threads.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    user_id: Mapped[str] = _user_fk()
+    created_at: Mapped[datetime] = ts_now()
+
+
 class AgentChoice(Base):
     """The buttons the application itself put under an answer of the agent before it changes a setting
     that the agent proposed (the primary source of a university, switching a source off): each button

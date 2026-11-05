@@ -760,3 +760,28 @@ describe("UnreadDot", () => {
     expect(dot).toHaveClass("size-2", "bg-accent", "rounded-full");
   });
 });
+
+describe("ChatMessage: «Скопировать»", () => {
+  it("копирует исходный markdown ответа и на время показывает «Скопировано»", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ChatMessage role="agent" markdown="**Итог:** форма №2" copyText="**Итог:** форма №2" at={0} />);
+    await userEvent.click(screen.getByRole("button", { name: "Скопировать ответ" }));
+    expect(writeText).toHaveBeenCalledWith("**Итог:** форма №2");
+    expect(screen.getByRole("button", { name: "Скопировано" })).toBeInTheDocument();
+  });
+
+  it("у человека — «Скопировать сообщение»; пока сообщение уходит или печатается, кнопки нет", () => {
+    const { rerender } = render(<ChatMessage role="user" markdown="привет" copyText="привет" />);
+    expect(screen.getByRole("button", { name: "Скопировать сообщение" })).toBeInTheDocument();
+    rerender(<ChatMessage role="user" markdown="привет" copyText="привет" status="sending" />);
+    expect(screen.queryByRole("button", { name: /Скопировать/ })).toBeNull();
+    rerender(<ChatMessage role="agent" markdown="пи" copyText="пишу" status="streaming" />);
+    expect(screen.queryByRole("button", { name: /Скопировать/ })).toBeNull();
+  });
+
+  it("без copyText кнопки нет", () => {
+    render(<ChatMessage role="agent" markdown="текст" />);
+    expect(screen.queryByRole("button", { name: /Скопировать/ })).toBeNull();
+  });
+});

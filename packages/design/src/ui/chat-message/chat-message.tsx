@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import { copyText as writeClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { DEFAULT_TIME_ZONE, formatTime } from "../../lib/format";
 import { attachmentIcon, attachmentKindLabel, type ViewerAttachment } from "../attachments";
@@ -6,6 +7,7 @@ import { Badge } from "../badge/badge";
 import { type CitationGroup, CitationGroups } from "../citation-groups/citation-groups";
 import { formatBytes } from "../file-picker/file-picker";
 import { Icon } from "../icon";
+import { IconButton } from "../icon-button/icon-button";
 import { type LinkResolver, SafeMarkdown } from "../markdown/safe-markdown";
 
 export type MessageStatus = "sending" | "sent" | "queued" | "streaming";
@@ -40,7 +42,50 @@ export interface ChatMessageProps {
   resolveLink?: LinkResolver;
   /** Действия под сообщением (бизнес-кнопки блока). */
   actions?: ReactNode;
+  /**
+   * Текст для «Скопировать» в строке времени. Кнопка проявляется при наведении на сообщение или фокусе, на касании
+   * видна всегда; пока сообщение уходит или печатается, её нет.
+   */
+  copyText?: string;
   className?: string;
+}
+
+/** «Скопировать»: после успеха на две секунды галочка и «Скопировано» (и для скринридера), сбой — «Не скопировано». */
+function CopyAction({ text, role }: { text: string; role: ChatMessageProps["role"] }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = setTimeout(() => setState("idle"), 2_000);
+    return () => clearTimeout(timer);
+  }, [state]);
+  const label =
+    state === "copied"
+      ? "Скопировано"
+      : state === "failed"
+        ? "Не скопировано: выделите текст вручную"
+        : role === "user"
+          ? "Скопировать сообщение"
+          : "Скопировать ответ";
+  return (
+    <>
+      <IconButton
+        icon={state === "copied" ? "check" : "copy"}
+        label={label}
+        size="sm"
+        tooltip
+        data-message-copy=""
+        onClick={async () => setState((await writeClipboard(text)) ? "copied" : "failed")}
+        className={cn(
+          "-my-2 text-fg-subtle transition-opacity duration-fast ease-soft",
+          state === "idle" &&
+            "opacity-0 focus-visible:opacity-100 group-hover/message:opacity-100 group-focus-within/message:opacity-100 pointer-coarse:opacity-100",
+        )}
+      />
+      <span className="sr-only" aria-live="polite">
+        {state === "copied" ? "Скопировано" : state === "failed" ? "Не скопировано" : ""}
+      </span>
+    </>
+  );
 }
 
 function AttachmentList({
@@ -131,6 +176,7 @@ export function ChatMessage({
   onOpenAttachment,
   resolveLink,
   actions,
+  copyText,
   className,
 }: ChatMessageProps) {
   const isUser = role === "user";
@@ -149,7 +195,7 @@ export function ChatMessage({
       data-status={status}
       aria-busy={status === "streaming" || undefined}
       className={cn(
-        "flex animate-message-in flex-col gap-2",
+        "group/message flex animate-message-in flex-col gap-2",
         isUser ? "items-end" : "items-start",
         className,
       )}
@@ -203,7 +249,12 @@ export function ChatMessage({
           {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
         </div>
       )}
-      <div className="flex items-center gap-2 px-1 type-caption text-fg-subtle">
+      <div
+        className={cn(
+          "flex items-center gap-2 px-1 type-caption text-fg-subtle",
+          isUser && "flex-row-reverse",
+        )}
+      >
         {status === "queued" && (
           <span className="inline-flex items-center gap-1">
             <Icon name="offline" size={16} />
@@ -214,6 +265,7 @@ export function ChatMessage({
         {at !== undefined && status !== "queued" && status !== "sending" && (
           <time dateTime={new Date(at).toISOString()}>{formatTime(at, timeZone)}</time>
         )}
+        {copyText && status === "sent" && <CopyAction text={copyText} role={role} />}
       </div>
     </article>
   );

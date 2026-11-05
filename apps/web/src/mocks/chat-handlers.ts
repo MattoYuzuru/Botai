@@ -159,6 +159,8 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
   const save = () => saveState(db, persist);
   const iso = (ms = db.now()) => new Date(ms).toISOString();
   const find = (threadId: string) => state().threads.find((item) => item.id === threadId);
+  // Ссылки «Поделиться» стенда: только в памяти, мок всегда показывает чат его владельцу.
+  const shares = new Map<string, { shareId: string; createdAt: string }>();
   /** Вопрос треда про календарь (как на сервере): один раз, пока он последнее слово треда. */
   const offerCalendar = (threadId: string) => {
     const now = iso();
@@ -401,6 +403,73 @@ export function createChatHandlers(db: MockDb, options: ChatHandlerOptions = {})
       const id = String(params.threadId);
       if (!find(id)) return problem(404, "not_found", "Чат не найден");
       return HttpResponse.json(state().messages[id] ?? []);
+    }),
+
+    http.get("*/api/v1/chat/threads/:threadId/share", async ({ params }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      return HttpResponse.json(shares.get(id) ?? null);
+    }),
+
+    http.put("*/api/v1/chat/threads/:threadId/share", async ({ params }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      const share = shares.get(id) ?? { shareId: `share-${ulid().toLowerCase()}`, createdAt: iso() };
+      shares.set(id, share);
+      return HttpResponse.json(share);
+    }),
+
+    http.delete("*/api/v1/chat/threads/:threadId/share", async ({ params }) => {
+      await wait();
+      if (!user()) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const id = String(params.threadId);
+      if (!find(id)) return problem(404, "not_found", "Чат не найден");
+      shares.delete(id);
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.get("*/api/v1/shared/chats/:shareId", async ({ params }) => {
+      await wait();
+      const viewer = user();
+      if (!viewer) return problem(401, "unauthorized", "Нужно войти в BotAI");
+      const entry = [...shares].find(([, share]) => share.shareId === params.shareId);
+      const thread = entry ? find(entry[0]) : undefined;
+      if (!entry || !thread)
+        return problem(404, "not_found", "Ссылка недействительна: чат удалён или владелец закрыл доступ");
+      const messages = (state().messages[thread.id] ?? []).flatMap((message) => {
+        const blocks = message.blocks as Array<Record<string, unknown>>;
+        const markdown = blocks
+          .filter((block) => block.type === "text" && typeof block.markdown === "string")
+          .map((block) => block.markdown as string)
+          .join("\n\n");
+        const attachments = blocks
+          .filter((block) => block.type === "attachment")
+          .map((block) => ({ name: block.name, mime: block.mime, size: block.size, kind: block.kind }));
+        if (!markdown && attachments.length === 0) return [];
+        return [
+          {
+            id: message.id,
+            role: message.role,
+            markdown,
+            quote: null,
+            attachments,
+            createdAt: message.createdAt,
+          },
+        ];
+      });
+      return HttpResponse.json({
+        shareId: entry[1].shareId,
+        title: thread.title,
+        ownerName: viewer.displayName,
+        mine: true,
+        threadId: thread.id,
+        sharedAt: entry[1].createdAt,
+        messages,
+      });
     }),
 
     http.post("*/api/v1/chat/threads/:threadId/suggestion", async ({ params, request }) => {

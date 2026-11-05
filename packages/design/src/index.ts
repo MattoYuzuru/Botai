@@ -1,6 +1,7 @@
 /** BotAI design system: tokens, UI kit and the Varya mascot. Owner: W4 (docs/design/styleguide.md). */
 export * from "./lib/accents";
 export * from "./lib/audio-levels";
+export { copyText } from "./lib/clipboard";
 export { cn } from "./lib/cn";
 export * from "./lib/color";
 export { resolveColorToken } from "./lib/dom-color";

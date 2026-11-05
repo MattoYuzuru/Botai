@@ -13,6 +13,9 @@ const base = "/api/v1/chat/threads";
 const thread = (id: string) => `${base}/${encodeURIComponent(id)}`;
 
 export type ChatSuggestion = components["schemas"]["SuggestionOut"];
+export type ChatShare = components["schemas"]["ShareOut"];
+export type SharedThread = components["schemas"]["SharedThreadOut"];
+export type SharedMessage = components["schemas"]["SharedMessage"];
 
 /** Эндпоинты чата агент-хаба v3 (§3.2). Один агент на тред: ни `purpose`, ни отдельного разговора подключения. */
 export const chatApi = {
@@ -33,4 +36,14 @@ export const chatApi = {
     v3<ThreadRuntime>("GET", `${thread(id)}/runtime`, { signal, cache: "no-store" }),
   suggestion: (id: string, afterMessageId: string, signal?: AbortSignal) =>
     v3<ChatSuggestion>("POST", `${thread(id)}/suggestion`, { body: { afterMessageId }, signal }),
+  /** Ссылка «только чтение» для других пользователей BotAI; `null` — чат не расшарен. */
+  share: (id: string, signal?: AbortSignal) =>
+    v3<ChatShare | null>("GET", `${thread(id)}/share`, { signal, cache: "no-store" }),
+  openShare: (id: string) => v3<ChatShare>("PUT", `${thread(id)}/share`),
+  closeShare: (id: string) => v3<void>("DELETE", `${thread(id)}/share`),
+  shared: (shareId: string, signal?: AbortSignal) =>
+    v3<SharedThread>("GET", `/api/v1/shared/chats/${encodeURIComponent(shareId)}`, {
+      signal,
+      cache: "no-store",
+    }),
 };

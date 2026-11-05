@@ -40,6 +40,7 @@ import { isCalendarLink, isSecretInChat } from "./outbox";
 import { chatKeys, messagesQuery, runtimeQuery, threadsQuery } from "./queries";
 import type { MessageQuote } from "./quote";
 import { outbox, useOutbox } from "./runtime";
+import { SharePanel } from "./share-panel";
 import { SourcesPanel } from "./sources-panel";
 import { buildSuggestions } from "./suggestions";
 import { ThreadsPanel } from "./threads-panel";
@@ -77,6 +78,7 @@ export function ChatScreen() {
   const links = useChatLinks();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   // Какой чат открыт: явный `?thread=`, иначе последний; `?draft=` без чата — новый.
   const newRequested =
@@ -494,6 +496,7 @@ export function ChatScreen() {
             onSources={() => setSourcesOpen(true)}
             onThreads={() => setHistoryOpen(true)}
             onNew={startNewChat}
+            onShare={activeId ? () => setShareOpen(true) : undefined}
           />
         }
         floating={
@@ -585,6 +588,7 @@ export function ChatScreen() {
         }}
       />
       <SourcesPanel open={sourcesOpen} onOpenChange={setSourcesOpen} nowMs={nowMs} />
+      {activeId && <SharePanel threadId={activeId} open={shareOpen} onOpenChange={setShareOpen} />}
       <AttachmentViewerHost known={known} />
     </ChatDropZone>
   );

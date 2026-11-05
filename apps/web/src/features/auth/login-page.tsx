@@ -8,7 +8,7 @@ import { queryKeys } from "@/api/queries";
 import { AuthLayout } from "./auth-layout";
 
 /** Вход в BotAI. Ошибка — что не так и что делать; сеть недоступна — сказано словами, кнопки повтора нет. */
-export function LoginPage() {
+export function LoginPage({ next }: { next?: string } = {}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [error, setError] = useState<unknown>(null);
@@ -18,7 +18,9 @@ export function LoginPage() {
     onSuccess: async (me) => {
       queryClient.setQueryData(queryKeys.me, me);
       await queryClient.invalidateQueries({ queryKey: queryKeys.spaces });
-      await navigate({ to: "/" });
+      // Пришёл по ссылке на чат: туда и возвращаемся (адрес проверен в маршруте — только `/shared/…`).
+      if (next) await navigate({ href: next });
+      else await navigate({ to: "/" });
     },
     onError: setError,
   });

@@ -285,6 +285,7 @@ function TurnView({
           timeZone={timeZone}
           status={turn.status}
           resolveLink={base.resolveLink}
+          copyText={turn.text || undefined}
         />
       );
     case "thinking":

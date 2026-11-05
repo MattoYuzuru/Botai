@@ -507,6 +507,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/threads/{thread_id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Thread Share
+         * @description The thread's read-only link, or `null` when it is not shared.
+         */
+        get: operations["get_thread_share_api_v1_chat_threads__thread_id__share_get"];
+        /**
+         * Share Thread
+         * @description Opens a read-only link for other BotAI users; a shared thread keeps its link.
+         */
+        put: operations["share_thread_api_v1_chat_threads__thread_id__share_put"];
+        post?: never;
+        /**
+         * Unshare Thread
+         * @description Closes the link: it stops opening, and sharing again makes a new one.
+         */
+        delete: operations["unshare_thread_api_v1_chat_threads__thread_id__share_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/threads/{thread_id}/suggestion": {
         parameters: {
             query?: never;
@@ -1065,6 +1093,26 @@ export interface paths {
          *     A datetime without an offset is read as UTC.
          */
         get: operations["schedule_api_v1_schedule_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shared/chats/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Shared Thread
+         * @description A shared thread for any signed-in user: words and file names only, read-only.
+         */
+        get: operations["read_shared_thread_api_v1_shared_chats__share_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3404,6 +3452,81 @@ export interface components {
             kind: "courses" | "scheduleEvents" | "deadlines" | "assignments" | "grades" | "people" | "locations" | "news" | "documents" | "profile" | "ranking";
         };
         /**
+         * ShareOut
+         * @description The read-only link of a thread: `/shared/<share_id>` in the app.
+         */
+        ShareOut: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Shareid */
+            shareId: string;
+        };
+        /**
+         * SharedAttachment
+         * @description A file of a shared message: only its name and kind; the file itself stays its owner's.
+         */
+        SharedAttachment: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "document" | "audio" | "other";
+            /** Mime */
+            mime: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+        };
+        /** SharedMessage */
+        SharedMessage: {
+            /** Attachments */
+            attachments: components["schemas"]["SharedAttachment"][];
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Id */
+            id: string;
+            /** Markdown */
+            markdown: string;
+            /** Quote */
+            quote: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "agent";
+        };
+        /**
+         * SharedThreadOut
+         * @description A thread as another BotAI user sees it by link: the conversation's words and file names only;
+         *     no reasoning steps, tasks, questions, sources or contents of files.
+         */
+        SharedThreadOut: {
+            /** Messages */
+            messages: components["schemas"]["SharedMessage"][];
+            /** Mine */
+            mine: boolean;
+            /** Ownername */
+            ownerName: string;
+            /** Shareid */
+            shareId: string;
+            /**
+             * Sharedat
+             * Format: date-time
+             */
+            sharedAt: string;
+            /** Threadid */
+            threadId: string | null;
+            /** Title */
+            title: string;
+        };
+        /**
          * SourceCreateIn
          * @description POST /sources: exactly one way to name the source's identity, plus its kinds.
          */
@@ -4772,6 +4895,97 @@ export interface operations {
             };
         };
     };
+    get_thread_share_api_v1_chat_threads__thread_id__share_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareOut"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    share_thread_api_v1_chat_threads__thread_id__share_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unshare_thread_api_v1_chat_threads__thread_id__share_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     next_message_suggestion_api_v1_chat_threads__thread_id__suggestion_post: {
         parameters: {
             query?: never;
@@ -5735,6 +5949,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScheduleEventOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_shared_thread_api_v1_shared_chats__share_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SharedThreadOut"];
                 };
             };
             /** @description Validation Error */

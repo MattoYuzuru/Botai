@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 /**
  * Верхняя полоса чата на всю ширину области. Слева название треда и подпись «Чат», справа фиксированные
- * «Источники», «Чаты», «Новый чат» (как «Поделиться» и меню в ChatGPT) — на одной линии со знаком рейла. На телефоне
+ * «Поделиться», «Источники», «Чаты», «Новый чат» (как в ChatGPT) — на одной линии со знаком рейла. На телефоне
  * та же полоса компактнее: те же действия иконками.
  */
 export function ChatTopBar({
@@ -13,6 +13,7 @@ export function ChatTopBar({
   onSources,
   onThreads,
   onNew,
+  onShare,
 }: {
   title: string;
   /** Шкала контекста агента: кнопка слева от действий. */
@@ -22,6 +23,8 @@ export function ChatTopBar({
   onSources: () => void;
   onThreads: () => void;
   onNew: () => void;
+  /** «Поделиться» — только у сохранённого чата: у нового ещё нечего показывать. */
+  onShare?: () => void;
 }) {
   const wide = useMediaQuery("(min-width: 64rem)");
   const action = (label: string, icon: IconName, onClick: () => void, dot = false) =>
@@ -59,6 +62,7 @@ export function ChatTopBar({
       </div>
       <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
         {context}
+        {onShare && action("Поделиться", "share", onShare)}
         {action("Источники", "connection", onSources)}
         {action("Чаты", "chat", onThreads, othersNeedYou)}
         {action("Новый чат", "plus", onNew)}
