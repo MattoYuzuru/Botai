@@ -90,7 +90,8 @@ describe("/styleguide", () => {
         within(screen.getByTestId(panel)).getByRole("heading", { level: 2, name: "Чат и агент" }),
       ).toBeInTheDocument();
     }
-  });
+    // Полная галерея рисуется дважды: в CI это 19–30 с, общий предел 30 с ей мал.
+  }, 90_000);
 
   it("выбор темы, акцента, зума и спокойного движения применяется к странице", async () => {
     const { container } = render(<StyleguidePage />);
