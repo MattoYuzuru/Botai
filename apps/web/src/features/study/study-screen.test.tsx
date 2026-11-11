@@ -46,7 +46,7 @@ const titles = (list: HTMLElement) =>
 
 describe("«Учёба»: пространства и динамические разделы", () => {
   it("у каждого вуза свои разделы в фиксированном порядке, только с данными", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await waitFor(() => expect(within(hse).getAllByRole("link").length).toBeGreaterThan(1));
     expect(titles(within(hse).getByRole("list", { name: /Разделы/ }))).toEqual([
@@ -68,7 +68,7 @@ describe("«Учёба»: пространства и динамические �
   });
 
   it("счётчики берутся из ответа сервера, а «Документов и вложений» в разделах нет", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     const courses = await within(hse).findByRole("link", { name: /Предметы/ });
     expect(courses).toHaveTextContent("4");
@@ -77,13 +77,13 @@ describe("«Учёба»: пространства и динамические �
 
   it("выбранный в переключателе вуз оставляет на экране только его панель", async () => {
     useActiveSpaceStore.setState({ id: cuId() });
-    renderApp("/study");
+    renderApp("/study?view=sources");
     await panel(/^Центральный университет/);
     expect(screen.queryByRole("region", { name: /^Высшая школа экономики/ })).toBeNull();
   });
 
   it("профиль и настройки остаются внизу экрана: тема, спокойное движение, выход", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     expect(await screen.findByRole("radio", { name: "Тёмная" })).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /Спокойное движение/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выйти из BotAI" })).toBeInTheDocument();
@@ -91,14 +91,14 @@ describe("«Учёба»: пространства и динамические �
 
   it("нет вузов — приглашение подключить; настройки по-прежнему доступны", async () => {
     useScenario("empty");
-    renderApp("/study");
+    renderApp("/study?view=sources");
     expect(await screen.findByText("Вузов пока нет")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выйти из BotAI" })).toBeInTheDocument();
   });
 
   it("вуз подключён, данных нет: источники на месте, разделы не рисуются пустыми", async () => {
     useScenario("connected", "quiet");
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     expect(await within(hse).findByText(/Данных пока нет/)).toBeInTheDocument();
     expect(within(hse).queryByRole("list", { name: /Разделы/ })).toBeNull();
@@ -107,7 +107,7 @@ describe("«Учёба»: пространства и динамические �
 
   it("нужен повторный вход: у источника статус словами, действие ведёт в чат", async () => {
     useScenario("reauth");
-    renderApp("/study");
+    renderApp("/study?view=sources");
     await waitFor(() => expect(screenState("study")).toBe("reauth"));
     const cu = await panel(/^Центральный университет/);
     const list = await within(cu).findByRole("list", { name: /Источники/ });
@@ -118,7 +118,7 @@ describe("«Учёба»: пространства и динамические �
   });
 
   it("раздел открывается по ссылке из панели: адрес несёт вид и вуз", async () => {
-    const { router } = renderApp("/study");
+    const { router } = renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await userEvent.click(await within(hse).findByRole("link", { name: /Оценки/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/study/grades"));
@@ -152,18 +152,15 @@ describe("«Учёба»: экраны разделов", () => {
     ).toBeInTheDocument();
   });
 
-  it("«Оценки»: плитки по предметам, значения как у источника, без пересчёта и процентов", async () => {
-    renderApp(`/study/grades?space=${hseId()}`);
-    const group = await screen.findByRole("region", { name: "Математический анализ" });
-    expect(within(group).getByText("8")).toBeInTheDocument();
-    expect(within(group).getByText("10 баллов")).toBeInTheDocument();
-    expect(within(group).getByText("вес 0,2")).toBeInTheDocument();
-    const credit = await screen.findByRole("button", { name: /зачтено/ });
-    expect(credit).toBeInTheDocument();
-    expect(document.body.textContent).not.toMatch(/\d\s*%/);
-    await userEvent.click(screen.getByRole("button", { name: /Контрольная №2/ }));
-    const sheet = await screen.findByRole("dialog", { name: "Контрольная №2" });
-    expect(within(sheet).getByText("Вес")).toBeInTheDocument();
+  it("«Оценки» (`/study/grades`, ярлык PWA) открывают «Успеваемость» и выбирают вуз из адреса", async () => {
+    const { router } = renderApp(`/study/grades?space=${hseId()}`);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/study"));
+    expect(router.state.location.search).toEqual({ view: "grades" });
+    expect(await screen.findByRole("heading", { level: 2, name: "Предметы" })).toBeInTheDocument();
+    expect(useActiveSpaceStore.getState().id).toBe(hseId());
+    // Только ВШЭ: предметов ЦУ на экране нет.
+    expect(await screen.findByRole("button", { name: /^Математический анализ\./ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Продуктовый менеджмент\./ })).toBeNull();
   });
 
   it("«Преподаватели»: роль и почта; «Написать» — только для настоящего адреса", async () => {

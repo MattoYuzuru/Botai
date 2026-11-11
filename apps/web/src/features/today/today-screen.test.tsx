@@ -134,7 +134,10 @@ describe("«Сегодня»: пары и сроки", () => {
 
   it("карточка срока: срок, назначенный преподавателем, объяснён, условие — по ссылке на источник", async () => {
     renderApp("/");
-    await userEvent.click(await screen.findByRole("button", { name: /Лабораторная: алгоритмы сортировки/ }));
+    const nearest = await screen.findByRole("region", { name: "Ближайшие сроки" });
+    await userEvent.click(
+      await within(nearest).findByRole("button", { name: /Лабораторная: алгоритмы сортировки/ }),
+    );
     const sheet = await screen.findByRole("dialog", { name: "Лабораторная: алгоритмы сортировки" });
     expect(within(sheet).getByText("Срок по плану курса")).toBeInTheDocument();
     expect(within(sheet).getByRole("link", { name: /Открыть задание/ })).toBeInTheDocument();
@@ -447,5 +450,28 @@ describe("«Сегодня»: состояния данных", () => {
     await screen.findByRole("heading", { level: 1, name: "Сегодня" });
     await waitFor(() => expect(screenState()).toBe("loading"));
     expect(screen.queryByRole("button", { name: /Повторить|Обновить|Загрузить/ })).toBeNull();
+  });
+});
+
+describe("«Сегодня»: «Новое» за три дня (D-044, D-046)", () => {
+  it("после сроков: новые оценки и статусы, оценка открывает лист предмета", async () => {
+    renderApp("/");
+    const updates = await screen.findByRole("region", { name: "Новое" });
+    expect(within(updates).getByText("за три дня")).toBeInTheDocument();
+    const grade = within(updates).getByRole("button", { name: /Контрольная №2/ });
+    expect(grade).toHaveTextContent("8 из 10");
+    // «Новое» идёт после «Ближайших сроков»: «Пары» остаются на первом экране телефона.
+    const nearest = screen.getByRole("region", { name: "Ближайшие сроки" });
+    expect(nearest.compareDocumentPosition(updates) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(grade);
+    const sheet = await screen.findByRole("dialog", { name: "Математический анализ" });
+    expect(sheet.querySelector("[data-focused]")).toHaveTextContent("Контрольная №2");
+  });
+
+  it("нет изменений — блока нет", async () => {
+    useScenario("connected", "quiet");
+    renderApp("/");
+    await screen.findByRole("region", { name: "Ближайшие сроки" });
+    expect(screen.queryByRole("region", { name: "Новое" })).toBeNull();
   });
 });

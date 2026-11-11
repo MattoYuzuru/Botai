@@ -284,7 +284,7 @@ describe("чат на весь экран: шапка, история, исто�
     expect(row).toHaveAttribute("aria-expanded", "false");
     await user.click(row);
     const internal = within(sources).getByRole("link", { name: /Открыть подключение в «Учёбе»/ });
-    expect(internal).toHaveAttribute("href", "/study");
+    expect(internal).toHaveAttribute("href", "/study?view=sources");
     expect(internal).not.toHaveAttribute("target");
     // Внешняя страница — в новой вкладке.
     expect(within(sources).getByRole("link", { name: /Расписание на сайте вуза/ })).toHaveAttribute(
@@ -632,7 +632,7 @@ describe("ответ агента: таблицы, курсив, ссылки, �
     const { user } = await openNewChat();
     await ask(user, "Какие правила сдачи курсовых?");
     const link = await screen.findByRole("link", { name: /Открыть документ/ }, wait);
-    expect(link).toHaveAttribute("href", "/study");
+    expect(link).toHaveAttribute("href", "/study?view=sources");
   });
 
   it("«Не знаю: …» помечено «Не уверен», источника нет и он не имитируется", async () => {

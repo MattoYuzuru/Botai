@@ -200,4 +200,20 @@ test.describe("«Сегодня»", () => {
       await expectFitsWidth(page, width, `«Сегодня» ${width}`);
     }
   });
+
+  test("«Новое» за три дня: после сроков, «Пары» на первом экране телефона, оценка открывает лист предмета", async ({
+    page,
+  }) => {
+    await open(page, "/", "connected");
+    const updates = page.getByRole("region", { name: "Новое" });
+    await expect(updates.getByRole("button", { name: /Контрольная №2/ })).toContainText("8 из 10");
+    const classes = await page.getByRole("region", { name: "Пары", exact: true }).boundingBox();
+    expect(classes?.y ?? 9999).toBeLessThan(page.viewportSize()?.height ?? 0);
+    const deadlines = await page.getByRole("region", { name: "Ближайшие сроки" }).boundingBox();
+    const fresh = await updates.boundingBox();
+    expect(fresh?.y ?? 0).toBeGreaterThan((deadlines?.y ?? 0) + (deadlines?.height ?? 0) - 1);
+    await updates.getByRole("button", { name: /Контрольная №2/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Математический анализ" });
+    await expect(sheet.locator("[data-focused]")).toContainText("Контрольная №2");
+  });
 });

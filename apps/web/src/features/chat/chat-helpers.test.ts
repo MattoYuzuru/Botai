@@ -16,12 +16,12 @@ describe("внутренние ссылки агента", () => {
     expect(internalIcon(thread as never)).toBe("chat");
     const doc = parseInternalLink("botai://documents/01JMKCDB000");
     expect(doc).toEqual({ kind: "document", id: "01JMKCDB000" });
-    expect(internalHref(doc as never)).toBe("/study");
+    expect(internalHref(doc as never)).toBe("/study?view=sources");
     expect(internalLabel(doc as never)).toContain("документ");
     expect(internalIcon(doc as never)).toBe("document");
     const conn = parseInternalLink("botai://connections/abc_DEF-1");
     expect(conn).toEqual({ kind: "connection", id: "abc_DEF-1" });
-    expect(internalHref(conn as never)).toBe("/study");
+    expect(internalHref(conn as never)).toBe("/study?view=sources");
     expect(internalIcon(conn as never)).toBe("connection");
     const file = parseInternalLink("botai://attachments/A1");
     expect(file).toEqual({ kind: "attachment", id: "A1" });
@@ -49,8 +49,8 @@ describe("внутренние ссылки агента", () => {
 
   it("адрес тред — /chat?thread=, остальные — «Учёба»; лишнее в идентификаторе не пролезает в адрес", () => {
     expect(internalHref({ kind: "thread", id: "a-b_c" })).toBe("/chat?thread=a-b_c");
-    expect(internalHref({ kind: "document", id: "a-b_c" })).toBe("/study");
-    expect(internalHref({ kind: "connection", id: "x y/z" })).toBe("/study");
+    expect(internalHref({ kind: "document", id: "a-b_c" })).toBe("/study?view=sources");
+    expect(internalHref({ kind: "connection", id: "x y/z" })).toBe("/study?view=sources");
   });
 });
 

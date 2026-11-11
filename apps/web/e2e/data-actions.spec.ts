@@ -9,7 +9,7 @@ const journal = (page: import("@playwright/test").Page) =>
 /** Автономия и журнал действий (docs/v4/19-actions.md): настройка режимов и решение по ask. */
 test.describe("действия агента", () => {
   test("автономия в карточке источника: настройка режима и сброс к умолчанию", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await page
       .getByRole("region", { name: /^Высшая школа экономики/ })
       .getByRole("button", { name: /^Личный кабинет:/ })

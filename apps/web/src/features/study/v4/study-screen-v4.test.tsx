@@ -48,7 +48,7 @@ function overrideSources(handler: (request: Request) => Response | Promise<Respo
 
 describe("«Учёба» по умолчанию: v4-источники без флага", () => {
   it("вузы, их источники из нового API, документы вуза и действия — без лишних разделов", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     expect(await screen.findByRole("heading", { level: 1, name: "Учёба" })).toBeInTheDocument();
 
     const hse = await panel(/^Высшая школа экономики/);
@@ -76,7 +76,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
   });
 
   it("несколько источников расписания: роль основного и дополнительного подписана", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     const list = await within(hse).findByRole("list", { name: "Источники: ВШЭ" });
     await waitFor(() => expect(within(list).getByText("Основное расписание")).toBeInTheDocument());
@@ -93,7 +93,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
 
   it("у вуза нет источников: честное пустое состояние и «Добавить источник»", async () => {
     overrideSources(() => HttpResponse.json([]));
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     expect(await within(hse).findByText(/У вуза пока нет источников/)).toBeInTheDocument();
     expect(within(hse).getByText("Источников пока нет")).toBeInTheDocument();
@@ -102,7 +102,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
 
   it("v4-API выключен (404): бесшовный откат на прежние подключения", async () => {
     current.server.use(http.get("*/api/v1/sources", () => problem(404, "not_found", "v4 выключен")));
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await waitFor(() => expect(hse).toHaveAttribute("data-source-mode", "connections"));
     const list = await within(hse).findByRole("list", { name: "Источники: ВШЭ" });
@@ -113,7 +113,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
 
   it("настоящая ошибка 5xx видна, а не прячется за старыми данными", async () => {
     overrideSources(() => problem(500, "internal_error", "Попробуйте позже"));
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     expect(await within(hse).findByText(/Не удалось загрузить источники/)).toBeInTheDocument();
     expect(within(hse).queryByRole("list", { name: "Источники: ВШЭ" })).toBeNull();
@@ -123,7 +123,7 @@ describe("«Учёба» по умолчанию: v4-источники без �
 describe("карточка источника", () => {
   it("что это, что читает, описание чтения, ревизии, прочитанное и история запусков", async () => {
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -171,7 +171,7 @@ describe("карточка источника", () => {
 
   it("«Перечитать»: запрос к API и честный итог прогона", async () => {
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -194,7 +194,7 @@ describe("карточка источника", () => {
     broken.status = "error";
     broken.lastError = { code: "recipe_drift", detail: "Сайт вуза изменил разметку." };
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -210,7 +210,7 @@ describe("карточка источника", () => {
 
   it("«Выключить источник» просит подтверждения, «Включить» возвращает его в работу", async () => {
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -237,7 +237,7 @@ describe("карточка источника", () => {
       ),
     );
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -252,7 +252,7 @@ describe("карточка источника", () => {
 
   it("«Удалить источник»: опасное подтверждение, удаление и обновление списка", async () => {
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     const sources = await within(hse).findByRole("list", { name: "Источники: ВШЭ" });
     expect(within(sources).getAllByRole("listitem")).toHaveLength(2);
@@ -284,7 +284,7 @@ describe("карточка источника", () => {
       ),
     );
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Личный кабинет:/ }));
     const card = await screen.findByRole("dialog", { name: "Личный кабинет" });
@@ -299,7 +299,7 @@ describe("карточка источника", () => {
 
   it("«Сделать основным для расписания» меняет порядок источников вида", async () => {
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const hse = await panel(/^Высшая школа экономики/);
     await user.click(await within(hse).findByRole("button", { name: /^Расписание \(календарь\):/ }));
     const card = await screen.findByRole("dialog", { name: "Расписание (календарь)" });
@@ -316,7 +316,7 @@ describe("карточка источника", () => {
   it("источник в прежней модели: карточка честно говорит, что это fallback", async () => {
     current.server.use(http.get("*/api/v1/sources", () => problem(404, "not_found", "v4 выключен")));
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const cu = await panel(/^Центральный университет/);
     await user.click(await within(cu).findByRole("button", { name: /^LMS:/ }));
     const card = await screen.findByRole("dialog", { name: "LMS" });
@@ -331,7 +331,7 @@ describe("карточка источника", () => {
     lms.status = "needs_reauth";
     lms.lastError = { code: "source_auth_required", detail: "Нужно снова войти." };
     const user = userEvent.setup();
-    renderApp("/study");
+    renderApp("/study?view=sources");
     const cu = await panel(/^Центральный университет/);
     await user.click(await within(cu).findByRole("button", { name: /^LMS:/ }));
     const card = await screen.findByRole("dialog", { name: "LMS" });
@@ -344,7 +344,7 @@ describe("карточка источника", () => {
 
 describe("«Мои материалы»", () => {
   it("фильтруются из директории вузов", () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     // Вымышленное пространство без вуза могло бы прийти от сервера до миграции: интерфейс его не рисует.
     expect(screen.queryByText("Мои материалы")).toBeNull();
   });

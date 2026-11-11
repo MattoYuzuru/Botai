@@ -75,7 +75,17 @@ function PanelGrid({
  * его панели сеткой; «Все вузы» — группы по вузам со знаком и акцентом, панели с `hiddenInAll` не показываются.
  * Нет панелей — блока нет (честнее пустой рамки: данных у вуза может ещё не быть).
  */
-export function PanelsSection({ scope }: { scope: Scope }) {
+export function PanelsSection({
+  scope,
+  title = SECTION_TITLE,
+}: {
+  scope: Scope;
+  /**
+   * Заголовок блока. Внутри «Успеваемости» (D-046) раздел уже так называется — там блок подписан «Панели»,
+   * чтобы на экране не было двух «Успеваемостей».
+   */
+  title?: string;
+}) {
   const me = useQuery(meQuery);
   const userId = me.data?.user.id ?? "anonymous";
   const collapsed = useCollapsedPanels(userId);
@@ -95,12 +105,7 @@ export function PanelsSection({ scope }: { scope: Scope }) {
 
   if (loading) {
     return (
-      <section
-        aria-label="Успеваемость"
-        aria-busy="true"
-        data-panels="loading"
-        className="flex flex-col gap-3"
-      >
+      <section aria-label={title} aria-busy="true" data-panels="loading" className="flex flex-col gap-3">
         <Skeleton width="40%" className="h-6" />
         <Skeleton className="h-28 rounded-lg" />
       </section>
@@ -139,8 +144,8 @@ export function PanelsSection({ scope }: { scope: Scope }) {
       className="flex min-w-0 flex-col gap-3"
     >
       <div className="flex items-center justify-between gap-2 px-1">
-        <h2 id="study-panels-heading" className="type-title text-fg">
-          {SECTION_TITLE}
+        <h2 id="study-panels-heading" className="type-heading text-fg">
+          {title}
         </h2>
         {configurable.length > 0 && (
           <Button variant="ghost" leadingIcon="settings" onClick={() => setSettingsOpen(true)}>

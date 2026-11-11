@@ -43,7 +43,7 @@ describe("«Задания»: группы и срочность", () => {
     renderApp("/tasks");
     await waitFor(() => expect(screenState()).toBe("ok"));
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Просрочено2", "Сегодня1", "На неделе2", "Позже2", "Без срока1", "Сдано2"]);
+    expect(headings).toEqual(["Просрочено2", "Сегодня1", "На неделе2", "Позже2", "Без срока1", "Сдано5"]);
   });
 
   it("срочность по порогам: «Просрочено» без укоров, «Осталось 5 ч», «Скоро · 2 д», спокойные — без метки", async () => {
@@ -79,7 +79,7 @@ describe("«Задания»: группы и срочность", () => {
     renderApp("/tasks");
     const done = await group("Сдано");
     expect(within(done).queryByText("Домашнее задание №3: пределы")).toBeNull();
-    const toggle = within(done).getByRole("button", { name: /Показать 2\sзадания/ });
+    const toggle = within(done).getByRole("button", { name: /Показать 5\sзаданий/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(toggle);
     expect(within(done).getByText("Домашнее задание №3: пределы")).toBeInTheDocument();
@@ -105,7 +105,8 @@ describe("«Задания»: группы и срочность", () => {
     const week = await group("На неделе");
     await userEvent.click(within(week).getByRole("button", { name: /Лабораторная: алгоритмы сортировки/ }));
     const sheet = await screen.findByRole("dialog", { name: "Лабораторная: алгоритмы сортировки" });
-    expect(within(sheet).getByText("Нужно сдать")).toBeInTheDocument();
+    // Статус — словами источника (D-043), а не нашим «Нужно сдать».
+    expect(within(sheet).getAllByText("На доработке").length).toBeGreaterThan(0);
     expect(within(sheet).getAllByText("Алгоритмы и структуры данных").length).toBeGreaterThan(0);
     expect(within(sheet).getByText("Срок по плану курса")).toBeInTheDocument();
     expect(within(sheet).getByText(/Получено/)).toBeInTheDocument();
@@ -122,6 +123,98 @@ describe("«Задания»: группы и срочность", () => {
     const sheet = await screen.findByRole("dialog", { name: "Прочитать главы 3–4" });
     expect(within(sheet).getByText("Срок не указан")).toBeInTheDocument();
     expect(within(sheet).queryByText(/Срок по плану курса/)).toBeNull();
+  });
+});
+
+describe("«Задания»: статус источника, балл и отметка студента (D-043, D-045)", () => {
+  it("строка: слова источника вместо «Сдано», откуда статус и балл проверенной работы", async () => {
+    renderApp("/tasks");
+    const week = await group("На неделе");
+    expect(within(week).getByText("На доработке")).toBeInTheDocument();
+    const done = await group("Сдано");
+    await userEvent.click(within(done).getByRole("button", { name: /Показать/ }));
+    const ruled = within(done).getByRole("button", { name: /Домашнее задание №3: пределы/ });
+    expect(ruled).toHaveTextContent("Решение прикреплено");
+    expect(ruled).toHaveTextContent("по вашему правилу");
+    const marked = within(done).getByRole("button", { name: /Конспект лекции 5/ });
+    expect(marked).toHaveTextContent("отмечено вами");
+    const graded = within(done).getByRole("button", { name: /Тест по теории вероятностей/ });
+    expect(graded).toHaveTextContent("10 из 10");
+    expect(graded).toHaveTextContent("Проверено");
+  });
+
+  it("карточка проверенного задания: балл из максимума и ссылка на оценку", async () => {
+    renderApp("/tasks");
+    const done = await group("Сдано");
+    await userEvent.click(within(done).getByRole("button", { name: /Показать/ }));
+    await userEvent.click(within(done).getByRole("button", { name: /Кейс по метрикам продукта/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Кейс по метрикам продукта" });
+    expect(within(sheet).getByRole("region", { name: "Оценка за задание" })).toHaveTextContent("78 из 100");
+    expect(within(sheet).getByRole("link", { name: /Открыть оценку в источнике/ })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/\/grade$/),
+    );
+    // Проверенное источником в работу не возвращают.
+    expect(within(sheet).queryByRole("button", { name: "Вернуть в работу" })).toBeNull();
+  });
+
+  it("«Отметить сданным»: сразу в «Сдано» с пометкой, на сервере — отметка студента", async () => {
+    renderApp("/tasks");
+    const week = await group("На неделе");
+    await userEvent.click(within(week).getByRole("button", { name: /Эссе по продуктовой стратегии/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Эссе по продуктовой стратегии" });
+    await userEvent.click(within(sheet).getByRole("button", { name: "Отметить сданным" }));
+    expect(await screen.findByText("Задание отмечено сданным")).toBeInTheDocument();
+    await waitFor(() => expect(current.db.deadlineMarks["dl-2"]).toBe("submitted"));
+    await waitFor(() =>
+      expect(within(sheet).getByRole("button", { name: "Вернуть в работу" })).toBeInTheDocument(),
+    );
+    expect(within(sheet).getAllByText(/отмечено вами/).length).toBeGreaterThan(0);
+    // «Снять мою отметку» возвращает статус источника.
+    await userEvent.click(within(sheet).getByRole("button", { name: "Снять мою отметку" }));
+    await waitFor(() => expect(current.db.deadlineMarks["dl-2"]).toBeUndefined());
+    await waitFor(() =>
+      expect(within(sheet).getByRole("button", { name: "Отметить сданным" })).toBeInTheDocument(),
+    );
+  });
+
+  it("сервер отказал: отметка откатывается и говорит тостом", async () => {
+    current.server.use(
+      http.patch("*/api/v1/deadlines/:id", () =>
+        HttpResponse.json(
+          { type: "about:blank", title: "boom", status: 500, code: "internal_error", detail: "Сбой" },
+          { status: 500, headers: { "content-type": "application/problem+json" } },
+        ),
+      ),
+    );
+    renderApp("/tasks");
+    const week = await group("На неделе");
+    await userEvent.click(within(week).getByRole("button", { name: /Эссе по продуктовой стратегии/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Эссе по продуктовой стратегии" });
+    await userEvent.click(within(sheet).getByRole("button", { name: "Отметить сданным" }));
+    expect(await screen.findByText("Не удалось отметить задание")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(sheet).getByRole("button", { name: "Отметить сданным" })).toBeInTheDocument(),
+    );
+    expect(current.db.deadlineMarks["dl-2"]).toBeUndefined();
+  });
+
+  it("задание без своей страницы открывает страницу источника", async () => {
+    const original = seedDeadlines(current.db);
+    current.server.use(
+      http.get("*/api/v1/deadlines", () =>
+        HttpResponse.json(original.map((row) => (row.id === "dl-2" ? { ...row, url: null } : row))),
+      ),
+    );
+    renderApp("/tasks");
+    const week = await group("На неделе");
+    await userEvent.click(within(week).getByRole("button", { name: /Эссе по продуктовой стратегии/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Эссе по продуктовой стратегии" });
+    expect(within(sheet).getByRole("link", { name: /Открыть задание/ })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/^https:\/\/my\.fakeuni\.test\//),
+    );
+    expect(within(sheet).getByText(/откроется страница источника/)).toBeInTheDocument();
   });
 });
 

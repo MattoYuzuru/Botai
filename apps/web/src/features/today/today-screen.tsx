@@ -20,11 +20,20 @@ import { resolveDataState, scheduleListState } from "@/features/data/data-state"
 import { addDays } from "@/features/data/dates";
 import { scheduleQuery, todayQuery } from "@/features/data/queries";
 import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/features/data/source-notices";
+import type { StudyUpdate } from "@/features/data/types";
 import { useSpaceDirectory } from "@/features/data/use-space-directory";
 import { EventSheet } from "@/features/schedule/event-sheet";
 import { sortEvents, toScheduleItem } from "@/features/schedule/events";
+import { UpdateSheets, UpdatesSection } from "@/features/study/performance/updates";
 import { DeadlineSheet } from "@/features/tasks/deadline-sheet";
-import { type DeadlineView, sortByDue, toDeadlineView } from "@/features/tasks/deadlines";
+import {
+  type DeadlineView,
+  deadlineRowStatus,
+  deadlineScore,
+  deadlineStatus,
+  sortByDue,
+  toDeadlineView,
+} from "@/features/tasks/deadlines";
 import { ConnectPrompt } from "./connect-prompt";
 import { UpcomingClasses, type UpcomingStatus, upcomingDay, upcomingFreshness } from "./upcoming-classes";
 
@@ -46,6 +55,7 @@ export function TodayScreen() {
   const today = useQuery({ ...todayQuery(), enabled: directory.loaded && !directory.none });
   const [eventId, setEventId] = useState<string | null>(null);
   const [deadlineId, setDeadlineId] = useState<string | null>(null);
+  const [openUpdate, setOpenUpdate] = useState<StudyUpdate | null>(null);
 
   const fetched = today.data;
   const events = useMemo(() => sortEvents(fetched?.data.events ?? []), [fetched]);
@@ -185,55 +195,69 @@ export function TodayScreen() {
             )}
           </div>
 
-          <section aria-labelledby="today-deadlines" className="flex flex-col gap-3">
-            <h2 id="today-deadlines" className="px-1 type-heading text-fg">
-              Ближайшие сроки
-            </h2>
-            {state === "loading" ? (
-              <DeadlinesSkeleton />
-            ) : deadlines.length === 0 ? (
-              <EmptyState
-                icon="deadline"
-                size="sm"
-                layout="inline"
-                as="h3"
-                title="Ближайших сроков нет"
-                description={
-                  state === "ok" || state === "empty"
-                    ? "Когда в источниках появятся задания со сроком, три ближайших будут здесь."
-                    : "В этих данных сроков нет. Они могут быть неполными."
-                }
-              />
-            ) : (
-              <Card padding="sm" className="flex flex-col">
-                <ul className="flex flex-col">
-                  {deadlines.map((view) => (
-                    <li key={view.deadline.id}>
-                      <DeadlineItem
-                        title={view.deadline.title}
-                        courseTitle={view.deadline.courseTitle}
-                        dueAt={view.dueMs}
-                        urgency={view.urgency}
-                        done={view.done}
-                        spaceId={view.deadline.provenance.spaceId}
-                        spaceTitle={directory.byId.get(view.deadline.provenance.spaceId)?.shortTitle}
-                        showSpace
-                        nowMs={nowMs}
-                        timeZone={timeZone}
-                        onOpen={() => setDeadlineId(view.deadline.id)}
-                      />
-                    </li>
-                  ))}
-                </ul>
-                <Button variant="ghost" asChild className="self-start">
-                  <Link to="/tasks">
-                    Все задания
-                    <Icon name="chevron-right" size={20} />
-                  </Link>
-                </Button>
-              </Card>
-            )}
-          </section>
+          <div className="flex min-w-0 flex-col gap-6">
+            <section aria-labelledby="today-deadlines" className="flex flex-col gap-3">
+              <h2 id="today-deadlines" className="px-1 type-heading text-fg">
+                Ближайшие сроки
+              </h2>
+              {state === "loading" ? (
+                <DeadlinesSkeleton />
+              ) : deadlines.length === 0 ? (
+                <EmptyState
+                  icon="deadline"
+                  size="sm"
+                  layout="inline"
+                  as="h3"
+                  title="Ближайших сроков нет"
+                  description={
+                    state === "ok" || state === "empty"
+                      ? "Когда в источниках появятся задания со сроком, три ближайших будут здесь."
+                      : "В этих данных сроков нет. Они могут быть неполными."
+                  }
+                />
+              ) : (
+                <Card padding="sm" className="flex flex-col">
+                  <ul className="flex flex-col">
+                    {deadlines.map((view) => (
+                      <li key={view.deadline.id}>
+                        <DeadlineItem
+                          title={view.deadline.title}
+                          courseTitle={view.deadline.courseTitle}
+                          dueAt={view.dueMs}
+                          urgency={view.urgency}
+                          done={view.done}
+                          spaceId={view.deadline.provenance.spaceId}
+                          spaceTitle={directory.byId.get(view.deadline.provenance.spaceId)?.shortTitle}
+                          showSpace
+                          nowMs={nowMs}
+                          timeZone={timeZone}
+                          statusText={deadlineRowStatus(view)}
+                          statusNote={deadlineStatus(view.deadline).note}
+                          score={deadlineScore(view.deadline)}
+                          onOpen={() => setDeadlineId(view.deadline.id)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                  <Button variant="ghost" asChild className="self-start">
+                    <Link to="/tasks">
+                      Все задания
+                      <Icon name="chevron-right" size={20} />
+                    </Link>
+                  </Button>
+                </Card>
+              )}
+            </section>
+            {/* «Новое» — после сроков: на телефоне не сдвигает «Пары» с первого экрана, на ноутбуке — под сроками. */}
+            <UpdatesSection
+              updates={fetched?.data.updates ?? []}
+              spaces={directory.byId}
+              nowMs={nowMs}
+              showSpace={directory.spaces.length > 1}
+              caption="за три дня"
+              onOpen={setOpenUpdate}
+            />
+          </div>
         </div>
       </div>
 
@@ -249,6 +273,13 @@ export function TodayScreen() {
         spaces={directory.byId}
         nowMs={nowMs}
         onClose={() => setDeadlineId(null)}
+      />
+      <UpdateSheets
+        update={openUpdate}
+        spaceId={undefined}
+        spaces={directory.byId}
+        nowMs={nowMs}
+        onClose={() => setOpenUpdate(null)}
       />
     </Screen>
   );

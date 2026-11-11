@@ -147,8 +147,9 @@ function numbers(value: string, scale: string | null): { valueNum: number | null
 }
 
 function gradePoints(db: MockDb, spaceId: string): Point[] {
+  // Панели «Оценки» строятся по оценкам за работы: накопленное, итоги и сводные показатели — свои блоки (D-043).
   return seedGrades(db)
-    .filter((grade) => grade.provenance.spaceId === spaceId)
+    .filter((grade) => grade.provenance.spaceId === spaceId && (grade.layer ?? "item") === "item")
     .map((grade) => ({
       id: grade.id,
       title: grade.title,

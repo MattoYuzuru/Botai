@@ -18,6 +18,15 @@ export interface DeadlineItemProps {
   timeZone?: string;
   /** Показывать метку вуза (на сводном экране «Все вузы» — да). */
   showSpace?: boolean;
+  /**
+   * Статус словами источника («Решение прикреплено», «На доработке»). У сданного заменяет «Сдано», у остального
+   * стоит рядом со сроком. Без него — прежние слова.
+   */
+  statusText?: string | null;
+  /** Откуда статус, если не из источника: «отмечено вами», «по вашему правилу». */
+  statusNote?: string | null;
+  /** Балл проверенной работы, как дал источник: «8 из 10». Нейтральная метка справа. */
+  score?: string | null;
   onOpen?: () => void;
   className?: string;
 }
@@ -38,6 +47,9 @@ export function DeadlineItem({
   nowMs,
   timeZone = DEFAULT_TIME_ZONE,
   showSpace = false,
+  statusText,
+  statusNote,
+  score,
   onOpen,
   className,
 }: DeadlineItemProps) {
@@ -74,10 +86,24 @@ export function DeadlineItem({
         </span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 type-caption text-fg-muted">
           {courseTitle && <span className="min-w-0 truncate">{courseTitle}</span>}
-          <span>{done ? "Сдано" : label.due}</span>
+          <span>{done ? statusText?.trim() || "Сдано" : label.due}</span>
+          {!done && statusText?.trim() && <span>{statusText.trim()}</span>}
+          {statusNote && (
+            <span className="inline-flex items-center gap-1" data-status-note="">
+              <Icon name="edit" size={16} />
+              {statusNote}
+            </span>
+          )}
           {showSpace && spaceTitle && <Badge tone="neutral">{spaceTitle}</Badge>}
         </span>
       </span>
+      {score && (
+        <span className="shrink-0" data-score="">
+          <Badge tone="neutral" icon="grade" data-numeric="">
+            {score}
+          </Badge>
+        </span>
+      )}
       {!done && label.badge && (
         <span className="shrink-0">
           {urgency === "urgent" && (

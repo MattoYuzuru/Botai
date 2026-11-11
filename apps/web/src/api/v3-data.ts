@@ -42,10 +42,36 @@ export type Grade = Widen<Schemas["GradeOut"]>;
 export type Person = Widen<Schemas["PersonOut"]>;
 export type NewsItem = Widen<Schemas["NewsOut"]>;
 
-export type Today = Omit<Schemas["TodayOut"], "events" | "deadlines"> & {
+export type Today = Omit<Schemas["TodayOut"], "events" | "deadlines" | "updates"> & {
   events: ScheduleEvent[];
   deadlines: Deadline[];
+  /** «Новое» за три дня, не больше пяти записей (D-044 §5.5). */
+  updates: StudyUpdate[];
 };
+
+/** Слой оценки (D-043): за работу, накопленная, итог в ведомости/зачётке, сводный показатель. */
+export type GradeLayer = NonNullable<Schemas["GradeOut"]["layer"]>;
+
+/** Оценка, присоединённая к заданию: значение и шкала источника. */
+export type DeadlineGrade = Schemas["DeadlineGradeOut"];
+
+/** Откуда итоговое состояние задания: отметка студента, его правило статусов или сам источник (D-045). */
+export type DeadlineStateSource = Schemas["DeadlineOut"]["stateSource"];
+
+/** Отметка студента на задании (`PATCH /deadlines/{id}`); `null` снимает отметку. */
+export type DeadlineUserState = Schemas["DeadlinePatchIn"]["userState"];
+
+/** Запись «Новое» (`GET /updates`, `today.updates`): новая оценка или смена статуса задания. */
+export type StudyUpdate = Always<
+  Widen<Schemas["UpdateOut"]>,
+  "value" | "scale" | "valueNum" | "scaleMax" | "layer" | "state" | "stateText"
+>;
+
+/** Правило статусов (`GET /status-rules`): подпись источника → состояние. */
+export type StatusRule = Schemas["StatusRuleOut"];
+
+/** Запись памяти агента: заметка (данные) или правило студента (указание агенту), D-045. */
+export type MemoryItem = Schemas["MemoryNoteOut"];
 
 /** «НИУ ВШЭ»: `shortTitle` — короткое имя вуза для чипов и подписей. */
 export type Space = Schemas["SpaceOut"];

@@ -23,6 +23,7 @@ function deadline(
     dueAt: at(dueInHours ?? undefined),
     effectiveDueAt: at(effectiveInHours),
     state,
+    stateSource: "source",
     courseTitle: null,
     url: null,
     provenance: provenanceFixture({ fetchedAt: at(-1) as string }),

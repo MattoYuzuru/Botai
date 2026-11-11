@@ -38,7 +38,7 @@ export function internalHref(link: InternalLink): string {
       return `/chat?thread=${encodeURIComponent(link.id)}`;
     case "document":
     case "connection":
-      return "/study";
+      return "/study?view=sources";
     case "attachment":
       return attachmentContentUrl(link.id);
   }

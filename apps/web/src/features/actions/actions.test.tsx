@@ -41,7 +41,7 @@ const hseId = () => (current.db.spaces[0] as { id: string }).id;
 
 async function openSourceCard() {
   const user = userEvent.setup();
-  renderApp("/study");
+  renderApp("/study?view=sources");
   const panel = await screen.findByRole("region", { name: /^Высшая школа экономики/ });
   await user.click(await within(panel).findByRole("button", { name: /^Личный кабинет:/ }));
   return { user, card: await screen.findByRole("dialog", { name: "Личный кабинет" }) };
@@ -114,7 +114,7 @@ describe("автономия в карточке источника", () => {
   });
 
   it("общие настройки автономии есть на экране «Учёба» внизу", async () => {
-    renderApp("/study");
+    renderApp("/study?view=sources");
     expect(await screen.findByRole("region", { name: "Автономия" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Открыть журнал действий" })).toHaveAttribute("href", "/actions");
   });

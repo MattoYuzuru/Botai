@@ -17,11 +17,12 @@ async function pickUniversity(page: Page, current: RegExp, next: RegExp) {
  * Идёт на телефоне (390 px) и ноутбуке (1280 px): раскладка разная, правила доступности общие.
  */
 test.describe("«Учёба»: панели успеваемости", () => {
-  test("блок над вузами: группы по вузам, показатели, график, рейтинг, профиль; без горизонтальной прокрутки", async ({
+  test("блок «Панели» в «Успеваемости»: группы по вузам, показатели, график, рейтинг, профиль; без горизонтальной прокрутки", async ({
     page,
   }) => {
     await open(page, "/study", "connected");
-    await expect(page.getByRole("heading", { level: 2, name: "Успеваемость" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Панели" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Успеваемость" })).toHaveCount(0);
     await expect(panels(page)).toBeVisible();
 
     const groups = panels(page).getByRole("group", {
@@ -33,11 +34,11 @@ test.describe("«Учёба»: панели успеваемости", () => {
     await expect(hse.getByText("Шкала источника: 10 баллов").first()).toBeVisible();
     await expect(hse.getByText("Вы: 12 из 140")).toBeVisible();
     await expect(hse.getByText("Анна Тестова")).toBeVisible();
-    // Блок идёт выше карточек вузов и источников.
+    // Панели — под собственными блоками успеваемости (предметы, «Новое», зачётка), источников в этом разделе нет.
     const panelsTop = (await panels(page).boundingBox())?.y ?? 0;
-    const sourcesTop =
-      (await page.getByRole("region", { name: /^Высшая школа экономики/ }).boundingBox())?.y ?? 0;
-    expect(panelsTop).toBeLessThan(sourcesTop);
+    const coursesTop = (await page.getByRole("region", { name: "Предметы" }).boundingBox())?.y ?? 0;
+    expect(panelsTop).toBeGreaterThan(coursesTop);
+    await expect(page.getByRole("region", { name: /^Высшая школа экономики/ })).toHaveCount(0);
 
     const width = page.viewportSize()?.width ?? 0;
     await expectFitsWidth(page, width, "панели «Успеваемости»");
@@ -149,12 +150,12 @@ test.describe("«Учёба»: панели успеваемости", () => {
 
   test("нет панелей — блока нет, «Учёба» работает; сбой — спокойная строка", async ({ page }) => {
     await open(page, "/study?panels=none", "connected");
-    await expect(page.getByRole("region", { name: /^Высшая школа экономики/ })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Успеваемость" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Предметы" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Панели" })).toHaveCount(0);
 
     await open(page, "/study?panels=fail", "connected");
     await expect(page.getByText(/Панели успеваемости не загрузились/)).toBeVisible();
-    await expect(page.getByRole("region", { name: /^Высшая школа экономики/ })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Предметы" })).toBeVisible();
   });
 
   test("панель неизвестного типа скрыта, остальные работают", async ({ page }) => {

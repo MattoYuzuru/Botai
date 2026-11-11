@@ -58,6 +58,11 @@ export {
   formatTokens,
 } from "./context-meter/context-meter";
 export {
+  CourseGradeCard,
+  type CourseGradeCardProps,
+  type CourseGradeHeadline,
+} from "./course-grade-card/course-grade-card";
+export {
   DataTable,
   type DataTableColumn,
   type DataTableProps,
@@ -163,6 +168,13 @@ export {
   type ScheduleGridProps,
 } from "./schedule/schedule-grid";
 export { ScheduleWeek, type ScheduleWeekProps, type WeekDay } from "./schedule/schedule-week";
+export {
+  ScoreBar,
+  type ScoreBarProps,
+  ScoreStrip,
+  type ScoreStripItem,
+  type ScoreStripProps,
+} from "./score/score";
 export { ScreenHeader, type ScreenHeaderProps } from "./screen-header/screen-header";
 export { ScrollArea, type ScrollAreaProps } from "./scroll-area/scroll-area";
 export { SecretField, type SecretFieldProps, type SecretKind } from "./secret-field/secret-field";
@@ -220,6 +232,7 @@ export {
   type UniversitySpaceSwitcherProps,
 } from "./university-space-switcher/university-space-switcher";
 export { UnreadDot, type UnreadDotProps } from "./unread-dot/unread-dot";
+export { UpdateRow, type UpdateRowProps } from "./update-row/update-row";
 export { VoiceEqualizer, type VoiceEqualizerProps } from "./voice-equalizer/voice-equalizer";
 export { WaitCard, type WaitCardProps } from "./wait-card/wait-card";
 export { Wordmark, type WordmarkProps } from "./wordmark/wordmark";

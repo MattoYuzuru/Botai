@@ -86,7 +86,7 @@ describe("внутренние ссылки агента", () => {
     const navigate = vi.spyOn(router, "navigate");
 
     const resolved = links().resolveInternal("botai://documents/01JDOC");
-    expect(resolved?.href).toBe("/study");
+    expect(resolved?.href).toBe("/study?view=sources");
 
     act(() => resolved?.onOpen?.());
 

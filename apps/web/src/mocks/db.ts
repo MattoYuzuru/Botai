@@ -4,6 +4,7 @@
  */
 import type { components } from "@/api/schema.gen";
 import type { Connection, Space } from "@/api/types";
+import type { DeadlineUserState, MemoryItem, StatusRule } from "@/api/v3-data";
 import type { JobVariant } from "./connect-script";
 import type { JobSim } from "./job-sim";
 import { seedPanelWorld } from "./panels-seed";
@@ -91,6 +92,12 @@ export interface MockDb {
   /** Панели «Успеваемости» (D-039): конфиги; данные собираются при запросе. */
   panels: MockPanel[];
   universities: S["UniversityOut"][];
+  /** Отметки студента на заданиях (`PATCH /deadlines/{id}`, D-045): сильнее статуса источника. */
+  deadlineMarks: Record<string, Exclude<DeadlineUserState, null>>;
+  /** Правила статусов студента (`/status-rules`). */
+  statusRules: StatusRule[];
+  /** Память агента (`/me/memory`): заметки и правила студента. */
+  memory: MemoryItem[];
   /** Задания подключения (живут только в памяти вкладки). */
   sims: Map<string, JobSim>;
   /** Какой сценарий подключения проигрывать (`?job=wrong-password`). */
@@ -195,6 +202,9 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
     actionsLog: [],
     sourceRuns: [],
     panels: [],
+    deadlineMarks: {},
+    statusRules: [],
+    memory: [],
     universities: seedUniversities(),
     sims: new Map(),
     jobVariant: "basic",
@@ -228,7 +238,53 @@ export function createDb(scenario: Scenario = "fresh", now: () => number = Date.
   seedSourceWorld(db, scenario, iso);
   seedActionWorld(db, iso);
   seedPanelWorld(db, iso);
+  seedCorrections(db, iso);
   return db;
+}
+
+/**
+ * Поправки студента (D-045): правило статуса «Решение прикреплено» → сдано у кабинета ВШЭ, отметка «сдал» на
+ * задании без статуса в источнике, правила и заметки памяти агента. Тексты синтетические.
+ */
+function seedCorrections(db: MockDb, iso: (minutesAgo: number) => string): void {
+  db.statusRules = [
+    {
+      id: "rule-hse-attached",
+      sourceId: "src-hse-portal",
+      sourceTitle: "Личный кабинет",
+      label: "Решение прикреплено",
+      state: "submitted",
+      createdAt: iso(60 * 24 * 2),
+    },
+  ];
+  // «Конспект лекции 5» (ЦУ) — источник статуса не знает, студент отметил «сдал».
+  db.deadlineMarks = { "dl-12": "submitted" };
+  db.memory = [
+    {
+      id: "mem-rule-1",
+      kind: "rule",
+      note: "Про оценки сначала смотри LMS ЦУ, потом личный кабинет ВШЭ",
+      createdAt: iso(60 * 24 * 3),
+    },
+    {
+      id: "mem-rule-2",
+      kind: "rule",
+      note: "Сроки заданий называй по московскому времени",
+      createdAt: iso(60 * 24 * 6),
+    },
+    {
+      id: "mem-note-1",
+      kind: "note",
+      note: "Учится на 3 курсе, группа ПМ-3",
+      createdAt: iso(60 * 24 * 10),
+    },
+    {
+      id: "mem-note-2",
+      kind: "note",
+      note: "Курсовую пишет по теории вероятностей",
+      createdAt: iso(60 * 24 * 14),
+    },
+  ];
 }
 
 /**
@@ -618,6 +674,9 @@ export function restoreDb(now: () => number = Date.now): MockDb | null {
       actionsLog: parsed.actionsLog ?? [],
       sourceRuns: parsed.sourceRuns ?? [],
       panels: parsed.panels ?? [],
+      deadlineMarks: parsed.deadlineMarks ?? {},
+      statusRules: parsed.statusRules ?? [],
+      memory: parsed.memory ?? [],
       playbooks: parsed.playbooks ?? {},
       playbookVersions: parsed.playbookVersions ?? {},
       artifacts: parsed.artifacts ?? [],
