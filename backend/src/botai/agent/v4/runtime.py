@@ -54,6 +54,7 @@ from botai.agent.v4.traces import (
 from botai.core.errors import BotaiError
 from botai.core.ids import new_id
 from botai.core.llm import (
+    Effort,
     LlmMessage,
     LlmRequest,
     LlmResponse,
@@ -199,6 +200,27 @@ class RunTask(BaseModel):
     workspace: str = "."
     user_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Adaptive reasoning effort (D-044): while the run has called only `light_tools`, each model
+    # call asks for `light_effort`; the first call of any other tool switches the rest of the run
+    # (and a resumed run whose conversation already has one) to the purpose profile's effort.
+    # `light_effort=None` keeps the profile's effort throughout (the default, every non-chat job).
+    light_effort: Effort | None = None
+    light_tools: frozenset[str] = frozenset()
+
+
+def heavy_calls(messages: Sequence[LlmMessage], light_tools: frozenset[str]) -> bool:
+    """Whether the conversation already called a tool outside the light set (a resumed run)."""
+    return any(
+        call.name not in light_tools
+        for message in messages
+        if message.role == "assistant"
+        for call in message.tool_calls or ()
+    )
+
+
+def request_effort(task: RunTask, escalated: bool) -> Effort | None:
+    """The effort of the next model call: the light one until escalated, else the profile's."""
+    return task.light_effort if task.light_effort is not None and not escalated else None
 
 
 class RunResult(BaseModel):
@@ -515,6 +537,7 @@ class AgentRuntime:
         # twice, or the model would see the same request as two separate asks.
         if not _carries_task(task.messages, task.task):
             convo.append(LlmMessage(role="user", content=task.task))
+        escalated = heavy_calls(task.messages, task.light_tools)
         context = ToolContext(
             run_id=task.run_id,
             task=task.task,
@@ -650,6 +673,7 @@ class AgentRuntime:
                             },
                         )
 
+                effort = request_effort(task, escalated)
                 request = LlmRequest(
                     purpose=task.purpose,
                     tier=task.tier,
@@ -659,6 +683,7 @@ class AgentRuntime:
                     json_schema=task.json_schema,
                     max_tokens=task.max_tokens,
                     temperature=task.temperature,
+                    effort=effort,
                 )
                 call_started = self._monotonic()
                 try:
@@ -699,9 +724,17 @@ class AgentRuntime:
                     "model_call",
                     step=steps,
                     duration_ms=call_ms,
-                    payload=_model_payload(response, call_cost, self._mask),
+                    payload={
+                        **_model_payload(response, call_cost, self._mask),
+                        # What this call asked for: the light effort, or the profile's own.
+                        "effort": effort or "profile",
+                    },
                 )
                 if response.tool_calls:
+                    if task.light_effort is not None and any(
+                        call.name not in task.light_tools for call in response.tool_calls
+                    ):
+                        escalated = True
                     convo.append(
                         LlmMessage(
                             role="assistant",

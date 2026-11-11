@@ -7,7 +7,9 @@ wrong and how to fix the playbook. Codes (docs/v4/27-study-hub-grades-fastpath.m
 * `generic_links` — at least 3 records of a kind of entities and all of them lead to one page;
 * `unknown_states` — at least 30 % of the deadlines have the state `unknown`;
 * `grades_without_numbers` — grades with a numeric value but no top of the scale;
-* `no_item_grades` — tasks with a maximum score are graded, but no grade of a work is written.
+* `no_item_grades` — tasks with a maximum score are graded, but no grade of a work is written;
+* `courses_missing` — records name a `courseId` that no `courses` record of the run (nor a course
+  already stored for the source) has: the subject has no title and nothing can be grouped by it.
 """
 
 from __future__ import annotations
@@ -197,9 +199,48 @@ def no_item_grades(records: Sequence[CheckedRecord]) -> RunWarning | None:
     )
 
 
+COURSE_REFERRING_KINDS: tuple[str, ...] = ("grades", "deadlines", "assignments", "schedule")
+
+
+def referenced_courses(records: Sequence[CheckedRecord]) -> set[str]:
+    """The `courseId` values the records of other kinds name, minus those of this run's courses."""
+    named = {
+        str(course_id)
+        for kind in COURSE_REFERRING_KINDS
+        for record in _of(records, kind)
+        if (course_id := record.fields.get("course_external_id"))
+    }
+    return named - {record.external_id for record in _of(records, "courses")}
+
+
+def courses_missing(
+    records: Sequence[CheckedRecord], stored: frozenset[str] = frozenset()
+) -> RunWarning | None:
+    missing = sorted(referenced_courses(records) - stored)
+    if not missing:
+        return None
+    return RunWarning(
+        code="courses_missing",
+        message=(
+            f"Записи ссылаются на {len(missing)} courseId, для которых нет записи courses: у "
+            "предметов не будет названия, и оценки и задания нельзя сгруппировать. Для каждого "
+            "упомянутого курса пиши запись courses с external_id, равным этому courseId, title "
+            "(название предмета) и url страницы курса."
+        ),
+        kinds=["courses"],
+        examples=missing[:MAX_EXAMPLES],
+    )
+
+
 CHECKS = (generic_links, unknown_states, grades_without_numbers, no_item_grades)
 
 
-def run_warnings(records: Sequence[CheckedRecord]) -> list[RunWarning]:
-    """Every warning the records of one run deserve, in the order of the codes."""
-    return [warning for check in CHECKS if (warning := check(records)) is not None]
+def run_warnings(
+    records: Sequence[CheckedRecord], *, stored_courses: frozenset[str] = frozenset()
+) -> list[RunWarning]:
+    """Every warning the records of one run deserve, in the order of the codes. `stored_courses`
+    are the course ids the source already has in the domain (they need no new record)."""
+    found = [warning for check in CHECKS if (warning := check(records)) is not None]
+    if (warning := courses_missing(records, stored_courses)) is not None:
+        found.append(warning)
+    return found

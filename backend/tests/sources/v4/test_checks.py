@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from botai.sources.v4.checks import (
+    courses_missing,
     generic_links,
     grades_without_numbers,
     no_item_grades,
@@ -113,3 +114,28 @@ def test_run_warnings_are_ordered_by_code_and_empty_for_clean_records() -> None:
     assert run_warnings(clean) == []
     messy = [rec("deadlines", str(i), state="unknown", url=LIST) for i in range(3)]
     assert [w.code for w in run_warnings(messy)] == ["generic_links", "unknown_states"]
+
+
+def test_courses_missing_names_the_ids_without_a_course_record() -> None:
+    records = [
+        rec("grades", "g1", value="зачтено", course_external_id="1136"),
+        rec("deadlines", "d1", state="open", course_external_id="1136"),
+        rec("schedule", "s1", course_external_id="2200"),
+        rec("assignments", "a1", course_external_id="77"),
+        rec("courses", "77", title="Алгебра"),
+        rec("news", "n1", course_external_id="999"),  # not a kind that groups by course
+        rec("grades", "g2", value="зачтено"),  # no course at all: nothing to say
+    ]
+    warning = courses_missing(records)
+    assert warning is not None
+    assert (warning.code, warning.kinds, warning.examples) == (
+        "courses_missing",
+        ["courses"],
+        ["1136", "2200"],
+    )
+    assert "external_id" in warning.message
+    # a course the source already stored needs no new record
+    assert courses_missing(records, frozenset({"1136", "2200"})) is None
+    assert [w.code for w in run_warnings(records, stored_courses=frozenset({"2200"}))] == [
+        "courses_missing"
+    ]

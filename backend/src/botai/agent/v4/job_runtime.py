@@ -45,7 +45,7 @@ from botai.core.dialogue import DialogueContext
 from botai.core.errors import BotaiError, ErrorCode
 from botai.core.ids import new_id
 from botai.core.jobs import JobCancelled, JobContext
-from botai.core.llm import LlmMessage, Purpose, Tier
+from botai.core.llm import Effort, LlmMessage, Purpose, Tier
 from botai.core.services import Services
 
 MAX_ANSWER_CHARS = 8000
@@ -161,6 +161,8 @@ async def run_v4_job(
     checkpoint_sink: CheckpointSink | None = None,
     workspace_run_id: str | None = None,
     student_text: str | None = None,
+    light_effort: Effort | None = None,
+    light_tools: frozenset[str] = frozenset(),
 ) -> JobRun:
     """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`.
 
@@ -211,6 +213,8 @@ async def run_v4_job(
                 workspace=str(wiring.workspace.root),
                 user_id=ctx.user_id,
                 metadata={"job_id": ctx.job_id, **(metadata or {})},
+                light_effort=light_effort,
+                light_tools=light_tools,
             ),
             wiring.provider,
             tools,

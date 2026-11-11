@@ -20,7 +20,7 @@ from botai.domain import overrides
 from botai.sources.v4 import service as v4_service
 from tests.auth.support import Sm
 from tests.domain.helpers import T0, World, add, at
-from tests.domain.test_read_path_v4 import v4_deadline, v4_grade
+from tests.domain.test_read_path_v4 import v4_course, v4_deadline, v4_grade
 
 pytestmark = pytest.mark.db
 
@@ -443,3 +443,46 @@ async def test_updates_are_recent_changes_of_live_sources_newest_first(
     assert (await w.client.get("/api/v1/updates", params={"days": 0})).status_code == 422
     today = await _get(w.client, "/api/v1/today")
     assert [u["title"] for u in today["updates"]] == ["Контрольная", "ДЗ 3"]
+
+
+async def test_a_course_of_another_source_of_the_same_university_names_the_subject(
+    world: World, tx_sessionmaker: Sm
+) -> None:
+    w = world
+    lms = await _v4_source(tx_sessionmaker, w.user_id, w.space_a, title="LMS")
+    portal = await _v4_source(
+        tx_sessionmaker, w.user_id, w.space_a, title="Портал", url="https://fakeuni.test/portal"
+    )
+    archive = await _v4_source(
+        tx_sessionmaker, w.user_id, w.space_a, title="Архив", url="https://fakeuni.test/archive"
+    )
+    elsewhere = await _v4_source(
+        tx_sessionmaker, w.user_id, w.space_b, title="Другой вуз", url="https://other.test/app"
+    )
+    await add(
+        tx_sessionmaker,
+        # «1136»: only the portal has it — the LMS rows borrow its title
+        v4_course(w.user_id, portal, "Матанализ", ext="1136"),
+        # «2200»: two other sources have it — ambiguous, nothing is guessed
+        v4_course(w.user_id, portal, "Алгебра", ext="2200"),
+        v4_course(w.user_id, archive, "Алгебра (старая)", ext="2200"),
+        # «3300»: the LMS has its own, which wins over the portal's
+        v4_course(w.user_id, lms, "Базы данных", ext="3300"),
+        v4_course(w.user_id, portal, "БД (портал)", ext="3300"),
+        # «4400»: only another university has it
+        v4_course(w.user_id, elsewhere, "Чужой предмет", ext="4400"),
+        v4_grade(w.user_id, lms, "8", title="ДЗ 1", course_external_id="1136"),
+        v4_grade(w.user_id, lms, "7", title="ДЗ 2", course_external_id="2200"),
+        v4_grade(w.user_id, lms, "6", title="ДЗ 3", course_external_id="3300"),
+        v4_grade(w.user_id, lms, "5", title="ДЗ 4", course_external_id="4400"),
+        v4_deadline(w.user_id, lms, at(12, day=30), title="Курсовая", course_external_id="1136"),
+    )
+    grades = {g["title"]: g for g in await _get(w.client, "/api/v1/grades")}
+    assert {title: g["courseTitle"] for title, g in grades.items()} == {
+        "ДЗ 1": "Матанализ",
+        "ДЗ 2": None,
+        "ДЗ 3": "Базы данных",
+        "ДЗ 4": None,
+    }
+    assert grades["ДЗ 1"]["courseId"] is not None
+    assert (await _deadlines(w.client))["Курсовая"]["courseTitle"] == "Матанализ"

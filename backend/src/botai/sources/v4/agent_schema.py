@@ -36,6 +36,8 @@ GUIDES: dict[str, list[str]] = {
         "затирает первую оценку (свой external_id).",
         "Сводные показатели (GPA, средний балл, кредит-рейтинг) — layer: summary, только как дал "
         "источник, с period.",
+        "Оценки слоёв current и final всегда несут courseId. title итога курса может повторять "
+        "название предмета, но группирует оценки courseId: для него нужна запись courses.",
     ],
     "task_status": [
         "stateText пиши всегда: подпись статуса с сайта как есть («Решение прикреплено», «На "
@@ -60,8 +62,8 @@ GUIDES: dict[str, list[str]] = {
     "warnings": [
         "Отчёт probe/canary/sync содержит warnings — подсказки, не ошибки: generic_links (у всех "
         "записей одна ссылка), unknown_states (≥ 30 % дедлайнов unknown), grades_without_numbers "
-        "(числовые оценки без max), no_item_grades (оценённые задания без оценок за работу). "
-        "Исправь playbook и проверь снова.",
+        "(числовые оценки без max), no_item_grades (оценённые задания без оценок за работу), "
+        "courses_missing (courseId без записи courses). Исправь playbook и проверь снова.",
     ],
 }
 
@@ -90,6 +92,7 @@ def source_schema() -> dict[str, Any]:
             "grades: value — как напечатал источник; max — верх шкалы числом, если дан отдельно; layer, period, assignmentId, url, comment — см. guides.grades. Пустое значение не пиши строкой «None»: пропусти запись. Средние не считай.",
             "deadlines: stateText (подпись с сайта) всегда, state (open|submitted|graded|missed) — только если уверен; см. guides.task_status.",
             "url каждой записи — страница этой сущности, не список: guides.links.",
+            "Каждый courseId, который пишут grades, deadlines, assignments или schedule, должен быть записью courses с тем же external_id, title (название предмета) и url страницы курса: иначе у предмета нет названия (предупреждение courses_missing).",
             "profile: одно поле карточки студента на запись: fields {field (ключ), label (подпись), value (строка как в источнике), group?}. Пароли и токены не сохраняются.",
             "ranking: одно место рейтинга на запись: fields {board (название списка), position (место, целое ≥ 1), label (имя или номер), score (текст как в источнике), scoreNum? (число), isMe? (true для своей строки), total? (всего в списке), period?}. Чужих людей храни минимально: имя и балл.",
             "schedule: startsAt + endsAt (или durationMinutes); даты — ISO datetime с timezone.",

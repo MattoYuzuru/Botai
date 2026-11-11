@@ -27,7 +27,7 @@ from sqlalchemy import update
 from botai.agent.v4 import factory
 from botai.agent.v4.chat import CORRECTION_FLOW, FAST_ANSWERS, make_chat_handlers
 from botai.core.llm import LlmRequest, LlmResponse
-from botai.db.models import Grade, Source
+from botai.db.models import Deadline, Grade, Source
 from botai.sources.v4 import playbooks
 from botai.sources.v4 import service as sources_service
 from botai.sources.v4.schemas import SourcePatch
@@ -276,3 +276,62 @@ async def test_a_failed_refresh_still_answers_from_the_saved_data(
     assert source["ageMinutes"] == 120
     assert result["data"]["grades"]["items"][0]["title"] == "ДЗ 7"
     assert "обновить не удалось" in result["summary"]
+
+
+async def test_a_question_the_digest_answers_takes_one_step_and_no_tool(
+    env: Env, tmp_path: Path, launches: Launches
+) -> None:
+    client, user, thread, space = await _student(env, with_space=True)
+    assert space is not None
+    source_id = await _source(env, user, space, playbook=False, synced_ago=timedelta(minutes=3))
+    async with env.sm() as session:
+        session.add(
+            Deadline(
+                user_id=user,
+                source_id=source_id,
+                external_id="hw-8",
+                source_url=f"{BASE}/api",
+                fetched_at=NOW,
+                seen_at=NOW,
+                title="ДЗ 8 по алгебре",
+                due_at=NOW + timedelta(days=2),
+                state="open",
+                state_text="Не начато",
+            )
+        )
+        await session.commit()
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        assert "«ДЗ 8 по алгебре» до 29.10 15:00 — open «Не начато»" in _text(request)
+        return answer("ДЗ 8 по алгебре — до 29.10 15:00, ещё не начато.")
+
+    provider = FlowProvider(respond)
+    sent = await _post(client, thread, "Когда сдавать ДЗ 8?")
+    env.start(_worker(env, provider, tmp_path))
+    job = await env.wait_for(sent.json()["jobId"], {"done"}, within=30)
+
+    assert job.result is not None
+    assert job.result["stopped"] == "answer"
+    assert job.result["tools"] == []
+    assert job.result["steps"] == 1
+    assert launches.count == 0
+    (request,) = provider.requests
+    assert request.effort == "low", "a chat turn starts light (BOTAI_AGENT_CHAT_LIGHT_EFFORT)"
+    # The digest is data in the context message, not part of the stable system prompt.
+    assert "Сводка учёбы (данные приложения" not in request.messages[0].content
+    assert "Если ответ есть в сводке — отвечай сразу" in _text(request)
+
+
+async def test_the_light_effort_can_be_switched_off(env: Env, tmp_path: Path) -> None:
+    env.settings.agent_chat_light_effort = ""
+    client, _user, thread, _space = await _student(env)
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        del request
+        return answer("Привет!")
+
+    provider = FlowProvider(respond)
+    sent = await _post(client, thread, "Привет")
+    env.start(_worker(env, provider, tmp_path))
+    await env.wait_for(sent.json()["jobId"], {"done"}, within=30)
+    assert [request.effort for request in provider.requests] == [None]

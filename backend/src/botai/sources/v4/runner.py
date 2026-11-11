@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.v4.executor import (
@@ -46,7 +47,7 @@ from botai.browser.session import bearer_expired
 from botai.core.browser import auth_origin
 from botai.core.clock import Clock, SystemClock
 from botai.core.errors import BotaiError, ErrorCode
-from botai.db.models import PlaybookVersion, Source, Space
+from botai.db.models import Course, PlaybookVersion, Source, Space
 from botai.settings import get_settings
 from botai.sources import extract
 from botai.sources.normalize import coerce_fields
@@ -54,7 +55,7 @@ from botai.sources.v4 import artifacts, domain, identity, playbooks, service, st
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import schedule as sync_schedule
-from botai.sources.v4.checks import RunWarning, run_warnings
+from botai.sources.v4.checks import RunWarning, referenced_courses, run_warnings
 from botai.sources.v4.secrets import CALENDAR_URL_SLOT, calendar_link, calendar_secret_values
 from botai.sources.vocab import ALL_REQUIRED, ALL_VOCAB, DomainKind
 
@@ -699,7 +700,10 @@ class SourceRunner:
             notes=[*notes, *browser_run.outcome.notes, *parsed.notes],
             persisted=False,
             discovered_endpoints=discovered,
-            warnings=run_warnings(parsed.records),
+            warnings=run_warnings(
+                parsed.records,
+                stored_courses=await self._stored_courses(source.id, parsed.records),
+            ),
         )
         if persist and run in ("sync", "repair"):
             report = await self._persist(
@@ -1650,6 +1654,23 @@ class SourceRunner:
             close()
 
     # --- persistence and reporting -------------------------------------------------------------
+
+    async def _stored_courses(
+        self, source_id: str, records: Sequence[NormalizedRecord]
+    ) -> frozenset[str]:
+        """Of the course ids the records name and do not bring, those the source already stored
+        (one indexed query, only when something is missing)."""
+        wanted = referenced_courses(records)
+        if not wanted:
+            return frozenset()
+        found = await self._session.scalars(
+            select(Course.external_id).where(
+                Course.user_id == self._user_id,
+                Course.source_id == source_id,
+                Course.external_id.in_(sorted(wanted)),
+            )
+        )
+        return frozenset(found)
 
     def _sync_interval(self) -> float:
         """The configured interval between planned syncs (seconds), read lazily from settings."""

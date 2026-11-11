@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     agent_checkpoint_every_seconds: float = Field(
         default=20.0, ge=0, le=3600, validation_alias="BOTAI_AGENT_CHECKPOINT_EVERY_SECONDS"
     )
+    # Adaptive reasoning effort of a chat turn (D-044): the turn starts at this effort and switches
+    # to the `LLM_PROFILE_AGENT` effort at the first tool outside the light set (study_data,
+    # memory, …). Empty: the profile's effort throughout (the behaviour before D-044).
+    agent_chat_light_effort: Literal["", "low", "high", "max"] = Field(
+        default="low", validation_alias="BOTAI_AGENT_CHAT_LIGHT_EFFORT"
+    )
     # A stopped turn is resumed by the student's next message only while its checkpoint is this fresh.
     agent_resume_window_hours: float = Field(
         default=24.0, gt=0, le=24 * 30, validation_alias="BOTAI_AGENT_RESUME_WINDOW_HOURS"

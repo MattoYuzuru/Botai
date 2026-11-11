@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from botai.core.clock import SystemClock
-from botai.db.models import Deadline, Grade
+from botai.db.models import Course, Deadline, Grade
 from botai.domain import overrides, repo
 from botai.sources.v4 import playbooks, service
 from botai.sources.v4.runner import SourceRunner
@@ -132,8 +132,10 @@ async def test_item_grades_statuses_corrections_and_updates(
     report = await _sync(sm, account, source_id, fakeuni_transport, fakeuni_cookies)
 
     # the run tells the agent what is still wrong: the course total has a number but no scale
-    assert [w.code for w in report.warnings] == ["grades_without_numbers"]
+    assert [w.code for w in report.warnings] == ["grades_without_numbers", "courses_missing"]
     assert report.warnings[0].examples == ["Баллы за курс: 2", "Баллы за курс: 9"]
+    # the grades and tasks name courses the playbook never wrote: no subject has a title
+    assert report.warnings[1].examples == ["4101", "4102"]
     assert "warnings" in report.model_dump(mode="json")
 
     async with sm() as session:
@@ -209,8 +211,24 @@ async def test_item_grades_statuses_corrections_and_updates(
     for task in lms.STATE.tasks:
         if task["id"] == 9003:
             task.update(state="evaluated", stateLabel="Принято", score=7.0)
+    # the courses are stored meanwhile (say, by an earlier version of the playbook)
+    async with sm() as session:
+        for course_id, title in (("4101", "Линейная алгебра"), ("4102", "Основы баз данных")):
+            session.add(
+                Course(
+                    user_id=account.user_id,
+                    source_id=source_id,
+                    external_id=course_id,
+                    source_url=f"{BASE}/api",
+                    fetched_at=SystemClock().now(),
+                    seen_at=SystemClock().now(),
+                    title=title,
+                )
+            )
+        await session.commit()
     second = await _sync(sm, account, source_id, fakeuni_transport, fakeuni_cookies)
     assert second.domain["grades"]["inserted"] == 1
+    assert "courses_missing" not in {w.code for w in second.warnings}
     async with sm() as session:
         changed = {
             d.external_id: d.changed_at
@@ -235,7 +253,7 @@ async def test_item_grades_statuses_corrections_and_updates(
     assert ("deadline", "Контрольная 1") in by_kind
     grade_update = next(u for u in updates if u.kind == "grade" and u.title == "Контрольная 1")
     assert (grade_update.value, grade_update.scale_max, grade_update.layer) == ("7", 10.0, "item")
-    assert grade_update.course_title is None  # no course rows in this playbook
+    assert grade_update.course_title == "Линейная алгебра"
     assert [u.changed_at for u in updates] == sorted((u.changed_at for u in updates), reverse=True)
     assert {u.id for u in today.updates} <= {u.id for u in updates}
     assert today.updates

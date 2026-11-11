@@ -168,8 +168,11 @@ async def _course_refs(
     session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Any]
 ) -> dict[tuple[str, str], tuple[str, str]]:
     """`(id, title)` of the courses the given rows refer to, looked up by the row's own
-    provenance: a v3 row resolves against its connection's courses, a v4 row against its source's
-    (one query)."""
+    provenance: a v3 row resolves against its connection's courses, a v4 row against its source's.
+    When the row's own source has no such course, a course with the same external id from another
+    live source of the same university is used — but only when exactly one exists (an LMS and the
+    portal of one university often share course ids; two candidates are ambiguous and give
+    nothing). One query either way."""
     wanted = {row.course_external_id for row in rows if row.course_external_id}
     if not wanted:
         return {}
@@ -183,10 +186,22 @@ async def _course_refs(
         )
     )
     out: dict[tuple[str, str], tuple[str, str]] = {}
+    in_space: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for course_id, connection_id, source_id, external_id, title in found.all():
         key = source_id if source_id is not None and source_id in live.sources else connection_id
-        if key is not None:
-            out[(key, external_id)] = (course_id, title)
+        if key is None:
+            continue
+        out[(key, external_id)] = (course_id, title)
+        if (owner := live.get(key)) is not None:
+            in_space.setdefault((owner.space_id, external_id), []).append((course_id, title))
+    for row in rows:
+        external_id = row.course_external_id
+        if not external_id:
+            continue
+        source = live.resolve(row)
+        candidates = in_space.get((source.space_id, external_id), [])
+        if (source.id, external_id) not in out and len(candidates) == 1:
+            out[(source.id, external_id)] = candidates[0]
     return out
 
 

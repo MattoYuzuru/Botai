@@ -21,32 +21,44 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.agent.env import data_text
-from botai.db.models import Grade, Source, Space
+from botai.db.models import Source, Space
 from botai.domain import repo
 from botai.domain.sources import HIDDEN_V4
 
 log = logging.getLogger(__name__)
 
 DEFAULT_TZ = "Europe/Moscow"
-DIGEST_CHARS = 1800
-DIGEST_DEADLINES = 6
+DIGEST_CHARS = 4500
+DIGEST_OPEN = 12  # not-done tasks, nearest first
+DIGEST_DONE = 5  # recently done tasks
+DIGEST_GRADES = 20  # latest grades
 DIGEST_UPDATES = 6
 UPDATES_DAYS = 7
-OVERDUE_DAYS = 2  # a task overdue longer than this leaves «ближайшие сроки» (study_data has it)
+OVERDUE_DAYS = 14  # a task overdue longer than this leaves the digest (study_data has it)
 MAX_DIGEST_SPACES = 6
 MAX_DIGEST_SOURCES = 8
-TITLE_CHARS = 70
+TITLE_CHARS = 60
+COURSE_CHARS = 24
 DONE_STATES = frozenset({"submitted", "graded"})
 LAYER_ORDER = ("item", "current", "final", "summary", "")
+EVENT_KINDS_RU = {
+    "lecture": "лекция",
+    "seminar": "семинар",
+    "lab": "лабораторная",
+    "exam": "экзамен",
+    "consultation": "консультация",
+}
+WEEKDAYS_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+HEAD_RULE = "Если ответ есть в сводке — отвечай сразу, без инструментов; за остальным — study_data."
 CUT_LINE = "  …сводка сокращена: подробности — study_data."
 
 
@@ -203,33 +215,70 @@ def local_moment(value: Any, zone: ZoneInfo) -> str:
     return aware(moment).astimezone(zone).strftime("%d.%m %H:%M")
 
 
+def _short_course(item: Mapping[str, Any]) -> str:
+    course = item.get("courseTitle")
+    return f" ({safe(course, COURSE_CHARS)})" if course else ""
+
+
+def grade_value(value: Any, scale: Any, top: Any) -> str:
+    """«8 из 10» when the source gave the top of the scale as a number, else its own text."""
+    text = safe(value, 20)
+    if isinstance(top, int | float) and not isinstance(top, bool) and top:
+        return f"{text} из {top:g}"
+    return text + (f" ({safe(scale, 25)})" if scale else "")
+
+
 def _deadline_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
     due = local_moment(item.get("effectiveDueAt") or item.get("dueAt"), zone)
-    course = item.get("courseTitle")
     state = str(item.get("state") or "unknown")
     words = item.get("stateText")
-    head = f"«{safe(item.get('title'))}»" + (f" ({safe(course, 40)})" if course else "")
-    status = state + (f" «{safe(words, 40)}»" if words else "")
-    return f"{head}" + (f" до {due}" if due else "") + f" — {status}"
+    line = f"«{safe(item.get('title'))}»{_short_course(item)}" + (f" до {due}" if due else "")
+    line += f" — {state}" + (f" «{safe(words, 40)}»" if words else "")
+    grade = item.get("grade")
+    if isinstance(grade, Mapping):
+        line += ", балл " + grade_value(
+            grade.get("value"),  # pyright: ignore[reportUnknownMemberType]
+            grade.get("scale"),  # pyright: ignore[reportUnknownMemberType]
+            grade.get("scaleMax"),  # pyright: ignore[reportUnknownMemberType]
+        )
+    return line
 
 
-def _grade_value(item: Mapping[str, Any]) -> str:
-    value = safe(item.get("value"), 20)
-    top = item.get("scaleMax") or item.get("max")
-    scale = item.get("scale")
-    if isinstance(top, int | float) and not isinstance(top, bool):
-        return f"{value}/{top:g}"
-    return value + (f" ({safe(scale, 25)})" if scale else "")
+def _grade_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
+    course = item.get("courseTitle")
+    head = f"{safe(course, COURSE_CHARS)} — " if course else ""
+    value = grade_value(item.get("value"), item.get("scale"), item.get("scaleMax"))
+    line = f"{head}«{safe(item.get('title') or 'оценка')}»: {value}"
+    layer = item.get("layer")
+    if layer and layer != "item":
+        line += f", {layer}"
+    when = local_moment(item.get("gradedAt"), zone)
+    return line + (f", {when[:5]}" if when else "")
+
+
+def _event_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
+    start = local_moment(item.get("startsAt"), zone)[-5:]
+    end = local_moment(item.get("endsAt"), zone)[-5:]
+    kind = item.get("kindText") or EVENT_KINDS_RU.get(str(item.get("kind")))
+    line = f"{start}–{end} «{safe(item.get('title'))}»"
+    if kind:
+        line += f" {safe(kind, 20)}"
+    place = item.get("location") or item.get("address")
+    if place:
+        line += f", {safe(place, 30)}"
+    if item.get("format") == "online":
+        line += ", онлайн"
+    return line
 
 
 def update_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
     """One recent change: a new/changed grade or a task whose state changed."""
     when = local_moment(item.get("changedAt"), zone)
-    course = item.get("courseTitle")
-    title = f"«{safe(item.get('title'), 60)}»" + (f" ({safe(course, 40)})" if course else "")
+    title = f"«{safe(item.get('title'))}»{_short_course(item)}"
     kind = str(item.get("kind") or item.get("type") or "")
     if kind.startswith("grade") or ("value" in item and "state" not in item):
-        text = f"оценка {title}: {_grade_value(item)}"
+        value = grade_value(item.get("value"), item.get("scale"), item.get("scaleMax"))
+        text = f"оценка {title}: {value}"
     else:
         state = str(item.get("state") or "?")
         words = item.get("stateText")
@@ -237,46 +286,133 @@ def update_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
     return text + (f", {when}" if when else "")
 
 
-def _due_soon(item: Mapping[str, Any], now: datetime) -> bool:
-    """A dated task due from `OVERDUE_DAYS` ago on: long-overdue rows are noise in a digest."""
-    raw = item.get("effectiveDueAt") or item.get("dueAt")
-    if not isinstance(raw, str):
-        return False
+def _moment(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
     try:
-        due = aware(datetime.fromisoformat(raw))
+        return aware(datetime.fromisoformat(value))
     except ValueError:
-        return False
-    return due >= now - timedelta(days=OVERDUE_DAYS)
+        return None
 
 
-async def _grade_layers(session: AsyncSession, user_id: str) -> dict[str, dict[str, int]]:
-    """Grades per university and layer, over the live v4 sources (one aggregate query)."""
-    rows = (
-        await session.execute(
-            select(Source.space_id, Grade.layer, func.count())
-            .join(Source, Source.id == Grade.source_id)
-            .where(
-                Grade.user_id == user_id,
-                Source.user_id == user_id,
-                Source.status.not_in(sorted(HIDDEN_V4)),
-            )
-            .group_by(Source.space_id, Grade.layer)
-        )
-    ).all()
-    out: dict[str, dict[str, int]] = {}
-    for space_id, layer, count in rows:
-        bucket = out.setdefault(space_id, {})
-        key = layer or ""
-        bucket[key] = bucket.get(key, 0) + int(count)
-    return out
+def _due(item: Mapping[str, Any]) -> datetime | None:
+    return _moment(item.get("effectiveDueAt") or item.get("dueAt"))
 
 
-def _layers_line(counts: Mapping[str, int]) -> str:
+def _graded(item: Mapping[str, Any]) -> datetime:
+    provenance = item.get("provenance")
+    fetched = (
+        provenance.get("fetchedAt")  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    for value in (item.get("gradedAt"), item.get("changedAt"), fetched):
+        moment = _moment(value)
+        if moment is not None:
+            return moment
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _open_tasks(items: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """Not-done tasks, nearest first (recently overdue included), undated ones last."""
+    oldest = now - timedelta(days=OVERDUE_DAYS)
+    dated = [
+        (due, str(i.get("id")), i)
+        for i in items
+        if str(i.get("state")) not in DONE_STATES and (due := _due(i)) is not None and due >= oldest
+    ]
+    undated = [i for i in items if str(i.get("state")) not in DONE_STATES and _due(i) is None]
+    return [i for _, _, i in sorted(dated, key=lambda t: (t[0], t[1]))] + undated
+
+
+def _done_tasks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    done = [i for i in items if str(i.get("state")) in DONE_STATES]
+    floor = datetime.min.replace(tzinfo=UTC)
+    return sorted(
+        done,
+        key=lambda i: (_moment(i.get("changedAt")) or _due(i) or floor, str(i.get("id"))),
+        reverse=True,
+    )
+
+
+def _layers_line(grades: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for item in grades:
+        key = str(item.get("layer") or "")
+        counts[key] = counts.get(key, 0) + 1
     parts = [f"{layer or 'без слоя'} {counts[layer]}" for layer in LAYER_ORDER if counts.get(layer)]
     parts.extend(
         f"{layer} {count}" for layer, count in sorted(counts.items()) if layer not in LAYER_ORDER
     )
     return ", ".join(parts)
+
+
+def _day(moment: datetime) -> str:
+    return f"{WEEKDAYS_SHORT[moment.weekday()]} {moment.strftime('%d.%m')}"
+
+
+# Sections of one university, in display order; `FILL_ORDER` is who gets the budget first.
+SECTIONS = ("open", "today", "tomorrow", "grades", "layers", "done", "updates")
+FILL_ORDER = ("open", "today", "tomorrow", "grades", "updates", "done", "layers")
+ITEM = "   · "
+
+
+async def _space_sections(
+    session: AsyncSession,
+    user_id: str,
+    space: SpaceRef,
+    *,
+    now: datetime,
+    deadlines: list[dict[str, Any]],
+    grades: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Header + item lines of each section of one university (empty sections are absent)."""
+    zone = space.zone
+    out: dict[str, list[str]] = {}
+    mine = [i for i in deadlines if space_of(i) == space.id]
+    open_tasks = _open_tasks(mine, now)[:DIGEST_OPEN]
+    if open_tasks:
+        out["open"] = ["  не сдано (ближайшие):"] + [
+            ITEM + _deadline_line(i, zone) for i in open_tasks
+        ]
+    done = _done_tasks(mine)[:DIGEST_DONE]
+    if done:
+        out["done"] = ["  сдано недавно:"] + [ITEM + _deadline_line(i, zone) for i in done]
+    today = datetime.combine(now.astimezone(zone).date(), time(), tzinfo=zone)
+    events = [
+        dumped(e)
+        for e in await repo.list_events(
+            session, user_id, start=today, end=today + timedelta(days=2), space_id=space.id, now=now
+        )
+    ]
+    for name, day in (("today", today), ("tomorrow", today + timedelta(days=1))):
+        that_day = [
+            e
+            for e in events
+            if (start := _moment(e.get("startsAt"))) is not None
+            and day <= start.astimezone(zone) < day + timedelta(days=1)
+        ]
+        label = "сегодня" if name == "today" else "завтра"
+        if that_day:
+            out[name] = [f"  пары {label} ({_day(day)}):"] + [
+                ITEM + _event_line(e, zone) for e in that_day
+            ]
+        else:
+            out[name] = [f"  пары {label} ({_day(day)}): нет"]
+    own_grades = [g for g in grades if space_of(g) == space.id]
+    latest = sorted(own_grades, key=lambda g: (_graded(g), str(g.get("id"))), reverse=True)
+    if latest:
+        out["grades"] = ["  оценки (последние):"] + [
+            ITEM + _grade_line(g, zone) for g in latest[:DIGEST_GRADES]
+        ]
+        out["layers"] = ["  оценок по слоям: " + _layers_line(own_grades)]
+    recent = [i for i in updates if space_of(i) == space.id][:DIGEST_UPDATES]
+    if recent:
+        out["updates"] = [f"  новое за {UPDATES_DAYS} дн:"] + [
+            ITEM + update_line(i, zone) for i in recent
+        ]
+    return out
 
 
 async def study_digest(
@@ -289,8 +425,9 @@ async def study_digest(
 ) -> str:
     """The per-university digest of the turn context; empty when the student has no university.
 
-    `space_id` is the chat's university: it goes first. Everything is the application's data;
-    nothing here comes from page text the student did not see in the app.
+    `space_id` is the chat's university: it goes first. Sources (with their ids) always come
+    first; then, while the budget lasts, the sections in `FILL_ORDER`, each university in turn.
+    A section whose first item does not fit is left out and the digest says it was cut.
     """
     now = aware(now)
     spaces = await spaces_of(session, user_id)
@@ -301,8 +438,9 @@ async def study_digest(
     freshness = await source_freshness(session, user_id, now=now, spaces=spaces)
     deadlines = [
         dumped(item)
-        for item in await repo.list_deadlines(session, user_id, include_done=False, now=now)
+        for item in await repo.list_deadlines(session, user_id, include_done=True, now=now)
     ]
+    grades = [dumped(item) for item in await repo.list_grades(session, user_id, now=now)]
     updates = [
         dumped(item)
         for item in await repo.list_updates(
@@ -312,14 +450,13 @@ async def study_digest(
             limit=DIGEST_UPDATES * len(spaces),
         )
     ]
-    layers = await _grade_layers(session, user_id)
-
     head = (
         "Сводка учёбы (данные приложения, не слова студента; полные записи, фильтры и ссылки — "
-        f"study_data). Сейчас {now.astimezone(spaces[0].zone).strftime('%d.%m %H:%M')}."
+        f"study_data). Сейчас {now.astimezone(spaces[0].zone).strftime('%d.%m %H:%M')}.\n"
+        + HEAD_RULE
     )
     essential: dict[str, list[str]] = {}
-    details: dict[str, list[str]] = {}
+    sections: dict[str, dict[str, list[str]]] = {}
     for space in spaces:
         mine = [source for source in freshness if source.space_id == space.id]
         lines = [
@@ -336,49 +473,49 @@ async def study_digest(
         if len(mine) > MAX_DIGEST_SOURCES:
             lines.append("  …остальные источники: source_list.")
         essential[space.id] = lines
-
-        extra: list[str] = []
-        soon = [
-            item
-            for item in deadlines
-            if space_of(item) == space.id
-            and str(item.get("state")) not in DONE_STATES
-            and _due_soon(item, now)
-        ][:DIGEST_DEADLINES]
-        if soon:
-            extra.append(
-                "  ближайшие сроки: " + "; ".join(_deadline_line(i, space.zone) for i in soon)
-            )
-        recent = [item for item in updates if space_of(item) == space.id][:DIGEST_UPDATES]
-        if recent:
-            extra.append(
-                f"  новое за {UPDATES_DAYS} дн: "
-                + "; ".join(update_line(i, space.zone) for i in recent)
-            )
-        counts = layers.get(space.id)
-        if counts:
-            extra.append("  оценок по слоям: " + _layers_line(counts))
-        details[space.id] = extra
+        sections[space.id] = await _space_sections(
+            session,
+            user_id,
+            space,
+            now=now,
+            deadlines=deadlines,
+            grades=grades,
+            updates=updates,
+        )
 
     budget = limit - len(head) - len(CUT_LINE) - 2  # room for the «сокращена» line
-    kept: dict[str, list[str]] = {}
+    kept: dict[str, list[str]] = {space.id: [] for space in spaces}
     for space in spaces:  # sources first: the ids are what every tool takes
         for line in essential[space.id]:
             if len(line) + 1 > budget:
                 break
-            kept.setdefault(space.id, []).append(line)
+            kept[space.id].append(line)
             budget -= len(line) + 1
+    chosen: dict[str, dict[str, list[str]]] = {space.id: {} for space in spaces}
     cut = False
-    for space in spaces:
-        for line in details[space.id]:
-            if len(line) + 1 > budget:
+    for name in FILL_ORDER:
+        for space in spaces:
+            lines = sections[space.id].get(name)
+            if not lines:
+                continue
+            first = len(lines[0]) + 1 + (len(lines[1]) + 1 if len(lines) > 1 else 0)
+            if first > budget:
                 cut = True
                 continue
-            kept.setdefault(space.id, []).append(line)
-            budget -= len(line) + 1
+            taken = lines[:2] if len(lines) > 1 else lines[:1]
+            budget -= first
+            for line in lines[2:]:
+                if len(line) + 1 > budget:
+                    cut = True
+                    break
+                taken.append(line)
+                budget -= len(line) + 1
+            chosen[space.id][name] = taken
     out = [head]
     for space in spaces:
-        out.extend(kept.get(space.id, []))
+        out.extend(kept[space.id])
+        for name in SECTIONS:
+            out.extend(chosen[space.id].get(name, []))
     if cut:
         out.append(CUT_LINE)
     return "\n".join(out)

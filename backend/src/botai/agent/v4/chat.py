@@ -130,8 +130,10 @@ MEMORY_FLOW = """Память между чатами. Каждый чат на�
 
 # Answer from what BotAI already holds before going to the site (D-044, docs/v4/27 §5).
 FAST_ANSWERS = """Быстрые ответы. Оценки, задания и статусы, расписание, предметы, профиль, рейтинг
-и изменения уже лежат в BotAI; «Сводка учёбы» в контексте перечисляет вузы и источники с id.
-- Хватает сводки — отвечай без инструментов. Иначе ОДИН вызов study_data; вопрос
+и изменения уже лежат в BotAI. «Сводка учёбы» в контексте: источники с id и свежестью, несданные
+и недавно сданные задания, последние оценки, пары сегодня и завтра, изменения недели.
+- Запись есть в сводке — отвечай сразу, без инструментов. Иначе ОДИН вызов study_data со всеми
+  нужными kinds и фильтрами (второй study_data в ходе — признак ошибки); вопрос
   «уже/сейчас/появилось/поставили ли» — тот же один вызов с refresh=true. Не вызывай
   source_list, threads_search, rag_search ради того, что покрывают сводка и study_data.
 - Говори, когда данные обновлены («по данным на 14:05»). refresh не ok (failed/timeout/
@@ -228,6 +230,25 @@ SUMMARY_TIMEOUT_S = 20.0
 # A long thread never summarised before (v3 era, or every call failed) is folded from its newest
 # turns only: the whole history at once would not fit the cheap call.
 SUMMARY_INPUT_TOKENS = 30_000
+# Tools that answer a question without real work: while a chat turn calls only these, the model
+# thinks at `BOTAI_AGENT_CHAT_LIGHT_EFFORT` (D-044); any other tool switches the rest of the turn,
+# resumed segments included, to the `LLM_PROFILE_AGENT` effort.
+LIGHT_TOOLS = frozenset(
+    {
+        "study_data",
+        "study_status_rule",
+        "study_mark_task",
+        "memory_remember",
+        "memory_forget",
+        "memory_list",
+        "threads_search",
+        "threads_read",
+        "rag_search",
+        "panel_list",
+        "source_list",
+        "ask_user",
+    }
+)
 CITATION_TOOLS = frozenset(
     {
         "source_list",
@@ -387,6 +408,9 @@ async def handle_chat_v4(
             workspace_run_id=plan.chain_id,
             # The evidence a rule needs: the student's own words of this turn (not tool output).
             student_text=turn.question,
+            # D-044: a light effort until the turn needs real work (the first heavy tool).
+            light_effort=settings.agent_chat_light_effort or None,
+            light_tools=LIGHT_TOOLS,
         )
         decision = await _decide(services, ctx, store, plan, run.result, sink)
     elapsed = int(time.monotonic() - started)
@@ -1353,6 +1377,7 @@ __all__ = [
     "CHAT_TASK",
     "CORRECTION_FLOW",
     "FAST_ANSWERS",
+    "LIGHT_TOOLS",
     "MEMORY_FLOW",
     "handle_chat_v4",
     "make_chat_handlers",

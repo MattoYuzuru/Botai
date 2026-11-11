@@ -19,7 +19,7 @@ from sqlalchemy import select, text, update
 
 from botai.agent.v4 import study_context
 from botai.agent.v4.protocol import ToolContext, ToolHandler, ToolResult, validate_arguments
-from botai.agent.v4.study_context import CUT_LINE, DIGEST_CHARS, safe_study_digest, study_digest
+from botai.agent.v4.study_context import safe_study_digest
 from botai.agent.v4.tools.study import StudyToolkit, build_study_tools
 from botai.core.clock import FrozenClock
 from botai.db.models import Course, Deadline, Grade, ScheduleEvent, Source
@@ -369,63 +369,7 @@ async def test_marking_a_task_overrides_the_source_until_cleared(
     assert foreign.error.code == "not_found"
 
 
-# --- the digest ---------------------------------------------------------------------------------
-
-
-async def test_the_digest_shows_sources_deadlines_changes_and_layers(
-    tx_sessionmaker: Sm, seeded: Seeded
-) -> None:
-    async with tx_sessionmaker() as session:
-        digest = await study_digest(
-            session, seeded.account.user_id, now=NOW, space_id=seeded.account.space_id
-        )
-
-    assert len(digest) <= DIGEST_CHARS
-    assert f"space_id={seeded.account.space_id} — к нему относится этот чат" in digest
-    assert (
-        f"источник «ЛК» (site, grades) — active, обновлено 20 мин назад; source_id={seeded.source_id}"
-        in digest
-    )
-    assert "ближайшие сроки: «ДЗ 8» (Алгебра) до 14.11 12:00 — open «Не начато»" in digest
-    assert "«ДЗ 6»" not in digest.split("ближайшие сроки:")[1].split("\n")[0], (
-        "done work is not due"
-    )
-    assert "ДЗ 0 просрочено" not in digest, "a long-overdue task is not «ближайший»"
-    assert "новое за 7 дн: оценка «ДЗ 7» (Алгебра): 8/10" in digest
-    assert "оценок по слоям: item 2, current 1" in digest
-    assert FOREIGN_VALUE not in digest
-    assert "Чужое ДЗ" not in digest
-
-
-async def test_the_digest_is_capped_and_says_so(tx_sessionmaker: Sm, seeded: Seeded) -> None:
-    async with tx_sessionmaker() as session:
-        for index in range(40):
-            session.add(
-                Deadline(
-                    title=f"Очень длинное название задания номер {index} " + "x" * 60,
-                    due_at=NOW + timedelta(hours=index + 1),
-                    state="open",
-                    state_text="В работе",
-                    **_row(seeded.account.user_id, seeded.source_id, f"bulk-{index}"),
-                )
-            )
-        for index in range(12):
-            await make_source(
-                tx_sessionmaker,
-                user_id=seeded.account.user_id,
-                space_id=seeded.account.space_id,
-                title=f"Источник {index} " + "y" * 50,
-                url=f"{BASE}/extra/{index}",
-            )
-        await session.commit()
-    async with tx_sessionmaker() as session:
-        digest = await study_digest(session, seeded.account.user_id, now=NOW)
-    assert len(digest) <= DIGEST_CHARS
-    assert digest.endswith(CUT_LINE)
-    assert f"source_id={seeded.source_id}" in digest, "the ids come before the details"
-    async with tx_sessionmaker() as session:
-        again = await study_digest(session, seeded.account.user_id, now=NOW)
-    assert again == digest, "deterministic"
+# --- the digest (content and cap: test_study_digest.py) ----------------------------------------
 
 
 async def test_a_failing_read_skips_the_digest_without_breaking_the_session(
