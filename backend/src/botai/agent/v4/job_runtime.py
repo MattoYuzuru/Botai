@@ -160,6 +160,7 @@ async def run_v4_job(
     limits: RunLimits | None = None,
     checkpoint_sink: CheckpointSink | None = None,
     workspace_run_id: str | None = None,
+    student_text: str | None = None,
 ) -> JobRun:
     """Build the wiring, run the task and close everything; a config refusal is a `BotaiError`.
 
@@ -184,6 +185,7 @@ async def run_v4_job(
                 artifact_root=artifact_root,
                 source_cookies=source_cookies,
                 workspace_run_id=workspace_run_id,
+                student_text=student_text,
             )
         except AgentWiringError as exc:
             # A configuration refusal (prod local-executor, missing sources DB, broken RAG) is not a

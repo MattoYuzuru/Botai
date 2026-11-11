@@ -157,7 +157,7 @@ async def patch_deadline(
 ) -> DeadlineOut:
     """The student's mark on one task (`open`, `submitted`, `graded`); null clears it."""
     now = clock.now()
-    await overrides.set_user_state(session, user.id, deadline_id, body.user_state, now=now)
+    await overrides.set_user_state(session, user.id, deadline_id, body.user_state)
     out = await repo.get_deadline(session, user.id, deadline_id, now=now)
     await session.commit()
     return out

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from botai.ops.chat_probe import ProbeResult, _answer_text, _line, _parser
 
 
@@ -43,3 +45,42 @@ def test_the_parser_takes_repeated_questions_and_defaults() -> None:
     assert args.timeout == 900.0
     assert args.json is False
     assert args.space is None
+
+
+async def test_an_interrupted_probe_still_cancels_its_job(monkeypatch: Any) -> None:
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    from botai.ops import chat_probe
+
+    cancelled: list[str] = []
+
+    class Session:
+        async def scalar(self, statement: Any) -> Any:
+            del statement
+            raise asyncio.CancelledError  # Ctrl-C while polling
+
+    @contextlib.asynccontextmanager
+    async def db() -> Any:
+        yield Session()
+
+    async def create_thread(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return SimpleNamespace(id="thread-1")
+
+    async def post_message(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return SimpleNamespace(job_id="job-1")
+
+    async def cancel(services: Any, user_id: str, job_id: str) -> None:
+        del services, user_id
+        cancelled.append(job_id)
+
+    monkeypatch.setattr(chat_probe, "create_thread", create_thread)
+    monkeypatch.setattr(chat_probe, "post_message", post_message)
+    monkeypatch.setattr(chat_probe, "_cancel", cancel)
+    services: Any = SimpleNamespace(db=db)
+    with contextlib.suppress(asyncio.CancelledError):
+        await chat_probe.probe(services, "U1", "вопрос", wait_seconds=5)
+    assert cancelled == ["job-1"]

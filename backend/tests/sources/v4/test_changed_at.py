@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from botai.db.models import Deadline, Grade, Source
+from botai.domain import overrides
 from botai.sources.v4 import domain, service
 from botai.sources.v4.runner import NormalizedRecord
 from tests.auth.support import Sm
@@ -93,3 +94,52 @@ async def test_changed_at_marks_news_only(tx_sessionmaker: Sm, account: Account)
     # an unchanged re-read touches nothing
     await _write(sm, account, source.id, third, now=t3 + timedelta(hours=3), synced_before=True)
     assert (await _changed(sm, Deadline, source.id))["d-state"] == t3
+
+
+async def test_rules_keep_the_source_state_and_are_never_news(
+    tx_sessionmaker: Sm, account: Account
+) -> None:
+    sm = tx_sessionmaker
+    async with sm() as session:
+        source = await service.create_source(
+            session,
+            user_id=account.user_id,
+            space_id=account.space_id,
+            title="ЛК",
+            entry_url="https://fakeuni.test/learn",
+            kinds=["site", "deadlines"],
+        )
+        await session.commit()
+    tasks = [d("a", "submitted", "Отправлено"), d("b", "open", "Задано")]
+    await _write(sm, account, source.id, tasks, now=T1, synced_before=False)
+
+    async def rows() -> dict[str, tuple[str, str | None, datetime | None]]:
+        async with sm() as session:
+            found = await session.scalars(select(Deadline).where(Deadline.source_id == source.id))
+            return {r.external_id: (r.state, r.source_state, r.changed_at) for r in found}
+
+    assert await rows() == {"a": ("submitted", "submitted", None), "b": ("open", "open", None)}
+
+    # the student's rule changes the stored state at once, without news
+    async with sm() as session:
+        rule = await overrides.set_status_rule(
+            session, account.user_id, source_id=source.id, label="Отправлено", state="open"
+        )
+        await session.commit()
+    assert (await rows())["a"] == ("open", "submitted", None)
+    # the next sync says the same: the rule is applied again and nothing is news
+    await _write(sm, account, source.id, tasks, now=T2, synced_before=True)
+    assert (await rows())["a"] == ("open", "submitted", None)
+
+    # the rule goes: the source's own state comes back, still without news
+    async with sm() as session:
+        await overrides.delete_status_rule(session, account.user_id, rule.id)
+        await session.commit()
+    assert (await rows())["a"] == ("submitted", "submitted", None)
+    await _write(sm, account, source.id, tasks, now=T2 + timedelta(hours=1), synced_before=True)
+    assert (await rows())["a"] == ("submitted", "submitted", None)
+
+    # the source itself changes the state: that is news
+    t3 = T2 + timedelta(hours=2)
+    await _write(sm, account, source.id, [d("a", "graded", "Принято")], now=t3, synced_before=True)
+    assert (await rows())["a"] == ("graded", "graded", t3)

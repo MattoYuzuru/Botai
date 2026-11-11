@@ -29,13 +29,37 @@ def test_generic_links_fire_when_every_entity_of_a_kind_leads_to_one_page() -> N
         ["deadlines"],
         [LIST],
     )
-    # the open_url of a declarative read counts when a record has no url of its own
-    assert generic_links([rec("grades", str(i), open_url=LIST) for i in range(3)]) is not None
+    assert "оставь url пустым" in warning.message
+    # a task without a url of its own falls back to the read's page: a list on every task
+    assert generic_links([rec("assignments", str(i), open_url=LIST) for i in range(3)]) is not None
     # two records are too few to tell; distinct links, no links or a kind without pages are fine
     assert generic_links(same[:2]) is None
     assert generic_links([rec("deadlines", str(i), url=f"{LIST}/{i}") for i in range(3)]) is None
     assert generic_links([rec("deadlines", str(i)) for i in range(3)]) is None
     assert generic_links([rec("news", str(i), url=LIST) for i in range(3)]) is None
+
+
+def test_classes_and_grades_count_only_their_own_url() -> None:
+    page = "https://uni.example/schedule"
+    # no page of their own: the read's open_url is not "a generic link" of classes or grades
+    assert generic_links([rec("schedule", str(i), open_url=page) for i in range(5)]) is None
+    assert generic_links([rec("grades", str(i), open_url=page) for i in range(5)]) is None
+    # but the same explicit url on every class is
+    warning = generic_links([rec("schedule", str(i), url=page) for i in range(3)])
+    assert warning is not None
+    assert warning.kinds == ["schedule"]
+    # records without a url do not make the rest look generic, nor count towards the three
+    mixed = [rec("grades", "a", url=page), rec("grades", "b"), rec("grades", "c")]
+    assert generic_links(mixed) is None
+
+
+def test_a_shared_link_that_names_a_record_is_its_page() -> None:
+    course = "https://uni.example/courses/4101"
+    tasks = [rec("deadlines", "4101", url=course), rec("deadlines", "x1", url=course)]
+    assert generic_links([*tasks, rec("deadlines", "x2", url=course)]) is None
+    # a short id that only looks like part of another token does not count
+    other = "https://uni.example/learn/tasks?page=12"
+    assert generic_links([rec("deadlines", s, url=other) for s in ("1", "2", "3")]) is not None
 
 
 def test_unknown_states_from_thirty_percent_with_the_words_met() -> None:

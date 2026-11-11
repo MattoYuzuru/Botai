@@ -297,10 +297,13 @@ def task_status(state: Any, state_text: Any) -> tuple[str, str | None]:
 
     `state` of the closed set is taken as it is; anything else is the source's own word and goes to
     `state_text` (unless the parser gave one), the state then read from the words by
-    `task_state`."""
+    `task_state`. `unknown` is no statement at all: it is read like a missing state."""
     text_ = _present(_text(state_text, 120))
-    if isinstance(state, str) and state.strip().casefold() in STATES:
-        return state.strip().casefold(), text_
+    canonical = state.strip().casefold() if isinstance(state, str) else None
+    if canonical == "unknown":
+        return (task_state(text_) if text_ is not None else "unknown"), text_
+    if canonical is not None and canonical in STATES:
+        return canonical, text_
     raw = _present(_text(state, 120)) if isinstance(state, str) else None
     derived = task_state(text_) if text_ is not None else "unknown"
     if derived == "unknown":

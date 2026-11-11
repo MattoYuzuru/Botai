@@ -26,7 +26,7 @@ Rules shared by every read (`docs/v4/03-sources-and-ux.md` §4, §6.1):
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -50,7 +50,7 @@ from botai.db.models import (
     ScheduleEvent,
     Space,
 )
-from botai.domain import overrides, sources
+from botai.domain import keys, overrides, sources
 from botai.domain.merge import NEARBY, SpacePlan, merge_events
 from botai.domain.schemas import (
     CourseOut,
@@ -128,19 +128,9 @@ def _choice(value: str | None, allowed: tuple[str, ...], default: str | None) ->
     return value if value in allowed else default
 
 
-def _aware(value: datetime) -> datetime:
-    """A naive datetime from a caller is taken as UTC."""
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
-
-
-def _moment(value: datetime | None) -> str:
-    """The comparable natural key of a moment: the same instant is the same string."""
-    return _aware(value).astimezone(UTC).isoformat() if value is not None else ""
-
-
-def _text_key(value: str | None) -> str:
-    """The comparable natural key of a human text: casefolded, ё as е, spacing collapsed."""
-    return " ".join((value or "").casefold().replace("ё", "е").split())
+_aware = keys.aware
+_moment = keys.moment
+_text_key = keys.text_key
 
 
 async def _require_space(session: AsyncSession, user_id: str, space_id: str | None) -> None:
@@ -448,11 +438,7 @@ async def list_events(
 
 
 def _deadline_key(row: Deadline, live: LiveSources) -> tuple[str, str, str]:
-    return (
-        live.resolve(row).space_id,
-        _text_key(row.title),
-        _moment(row.effective_due_at or row.due_at),
-    )
+    return keys.deadline_key(row, live.resolve(row).space_id)
 
 
 # The effective state of a task (D-045): the student's mark, else the stored state (the source's,
@@ -616,7 +602,8 @@ async def _deadline_outs(
 async def get_deadline(
     session: AsyncSession, user_id: str, deadline_id: str, *, now: datetime | None = None
 ) -> DeadlineOut:
-    """One task of a live source, in the API form; a foreign or hidden one is `not_found`."""
+    """One task of a live source, in the API form, with the same effective state as the list
+    (a mark on a copy of it in another source counts); a foreign or hidden one is `not_found`."""
     now = now or SystemClock().now()
     live = await sources.load(session, user_id, now=now)
     row = await session.scalar(
@@ -626,7 +613,27 @@ async def get_deadline(
     )
     if row is None:
         raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
-    return (await _deadline_outs(session, user_id, live, [row]))[0]
+    key = _deadline_key(row, live)
+    marked = await session.scalars(
+        select(Deadline).where(
+            Deadline.user_id == user_id,
+            live.filter_of(Deadline),
+            Deadline.user_state.is_not(None),
+            func.coalesce(Deadline.effective_due_at, Deadline.due_at).is_not_distinct_from(
+                row.effective_due_at or row.due_at
+            ),
+        )
+    )
+    mark = next(
+        (
+            copy.user_state
+            for copy in marked
+            if copy.user_state and _deadline_key(copy, live) == key
+        ),
+        None,
+    )
+    marks = {key: mark} if mark else {}
+    return (await _deadline_outs(session, user_id, live, [row], marks=marks))[0]
 
 
 async def list_deadlines(
@@ -1087,9 +1094,10 @@ async def list_updates(
     limit: int = 20,
     now: datetime | None = None,
 ) -> list[UpdateOut]:
-    """Grades that appeared or changed and tasks whose state changed since `since`, newest first:
-    the student's live sources only, one row per entity across the sources of a university (the
-    priority order decides, like every other read)."""
+    """Grades that appeared or changed and tasks whose state changed in the source since `since`,
+    newest first (`changed_at` means "the source changed it": a student's mark or status rule is
+    not an update). The student's live sources only, one row per entity across the sources of a
+    university (the priority order decides, like every other read)."""
     now = now or SystemClock().now()
     await _require_space(session, user_id, space_id)
     live = await sources.load(session, user_id, now=now, space_id=space_id)

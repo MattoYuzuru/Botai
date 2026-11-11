@@ -23,7 +23,7 @@ pytestmark = pytest.mark.db
 BACKEND = Path(__file__).resolve().parents[2]
 REVISION = "f7c2d8e4a5b6"
 GRADE_COLUMNS = {"layer", "period", "assignment_external_id", "url", "comment", "changed_at"}
-DEADLINE_COLUMNS = {"state_text", "user_state", "changed_at"}
+DEADLINE_COLUMNS = {"state_text", "source_state", "user_state", "changed_at"}
 
 INSERT_RULE = (
     "INSERT INTO status_rules (id,user_id,source_id,label,state) "
@@ -101,9 +101,9 @@ async def test_grades_layers_migration_round_trip(database_url: str) -> None:
             "SELECT value, scale, layer, period, assignment_external_id, url, comment, changed_at "
             "FROM grades WHERE id = 'old-grade'"
         ) == [("8", "10", None, None, None, None, None, None)]
-        assert await execute("SELECT state, state_text, user_state, changed_at FROM deadlines") == [
-            ("unknown", None, None, None)
-        ]
+        assert await execute(
+            "SELECT state, state_text, source_state, user_state, changed_at FROM deadlines"
+        ) == [("unknown", None, None, None, None)]
         assert await execute("SELECT note, kind FROM user_memory") == [("Группа", "note")]
         await execute(
             "INSERT INTO user_memory (id,user_id,note,kind) VALUES ('m-2','gl-user','R','rule')"

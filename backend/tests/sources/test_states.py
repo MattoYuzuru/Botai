@@ -21,9 +21,24 @@ from botai.sources.states import is_status, task_state
         # checked
         ("Принято", "graded"),
         ("Работа принята", "graded"),
+        ("Решение принято", "graded"),
         ("Оценка выставлена", "graded"),
+        ("Балл выставлен", "graded"),
         ("Оценено", "graded"),
         ("Проверено", "graded"),
+        ("Graded and returned", "graded"),  # Classroom returns graded work
+        ("Оценено и возвращено", "graded"),
+        # `выставлен…` and `принят…` without a grade or a work next to them say nothing
+        ("Задание выставлено", "unknown"),
+        ("Выставлен срок сдачи", "unknown"),
+        ("Принят к сведению", "unknown"),
+        ("Заявка принята", "unknown"),
+        ("RETURNED", "unknown"),
+        ("Возвращено", "unknown"),
+        # the student did the rework and handed it in again
+        ("Доработано", "submitted"),
+        ("Работа доработана и отправлена", "submitted"),
+        ("Отправлено после доработки", "submitted"),
         # still to do
         ("Задано", "open"),
         ("Задание выдано", "unknown"),  # `задание` is a noun, not `задано`
@@ -32,9 +47,11 @@ from botai.sources.states import is_status, task_state
         ("Не начато", "open"),
         ("notStarted", "open"),
         ("На доработке", "open"),
+        ("Требует доработки", "open"),
+        ("Отправлено на доработку", "open"),
         ("Возвращено на доработку", "open"),
         ("Проверено, нужна доработка", "open"),
-        ("Возвращено", "open"),
+        ("needs revision", "open"),
         ("Черновик", "open"),
         ("draft", "open"),
         ("rework", "open"),

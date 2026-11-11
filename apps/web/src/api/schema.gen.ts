@@ -3513,6 +3513,22 @@ export interface components {
             startedAt: string;
             /** Version */
             version: number | null;
+            /** Warnings */
+            warnings?: components["schemas"]["RunWarningOut"][];
+        };
+        /**
+         * RunWarningOut
+         * @description A hint about the records of a run (D-043 §3.5); never an error.
+         */
+        RunWarningOut: {
+            /** Code */
+            code: string;
+            /** Examples */
+            examples: string[];
+            /** Kinds */
+            kinds: string[];
+            /** Message */
+            message: string;
         };
         /** ScheduleEventOut */
         ScheduleEventOut: {

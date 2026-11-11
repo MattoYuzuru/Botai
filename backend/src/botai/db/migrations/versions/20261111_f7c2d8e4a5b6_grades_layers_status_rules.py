@@ -5,7 +5,8 @@ docs/v4/27-study-hub-grades-fastpath.md §3–§5. Additive only, safe on a live
 * `grades`: `layer`, `period`, `assignment_external_id`, `url`, `comment`, `changed_at` — all
   nullable, no default, so PostgreSQL adds them without rewriting the table. Existing rows stay
   NULL until their source syncs again; nothing is computed here.
-* `deadlines`: `state_text`, `user_state`, `changed_at` — nullable, same reasoning.
+* `deadlines`: `state_text`, `source_state` (the source's state before the student's rules),
+  `user_state`, `changed_at` — nullable, same reasoning.
 * `user_memory.kind` — `note` | `rule`, NOT NULL with a constant server default (a metadata-only
   change since PostgreSQL 11); every existing memory row becomes a `note`.
 * `status_rules` — new table: one rule per (user, source, normalized label); NULL `source_id`
@@ -39,6 +40,7 @@ GRADE_COLUMNS: tuple[tuple[str, sa.types.TypeEngine[object]], ...] = (
 )
 DEADLINE_COLUMNS: tuple[tuple[str, sa.types.TypeEngine[object]], ...] = (
     ("state_text", sa.String(length=120)),
+    ("source_state", sa.String(length=12)),
     ("user_state", sa.String(length=12)),
     ("changed_at", sa.DateTime(timezone=True)),
 )

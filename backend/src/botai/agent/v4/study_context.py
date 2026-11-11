@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from botai.agent.env import data_text
 from botai.db.models import Grade, Source, Space
 from botai.domain import repo
 from botai.domain.sources import HIDDEN_V4
@@ -64,6 +65,12 @@ def clip(text: Any, limit: int = TITLE_CHARS) -> str:
     """One line of data text: whitespace collapsed, cut with an ellipsis."""
     flat = " ".join(str(text or "").split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def safe(text: Any, limit: int = TITLE_CHARS) -> str:
+    """Page-derived text inside the digest: one line, cut, wrapper look-alikes and
+    instruction-like sentences neutralised (`env.data_text`, as in the turn context)."""
+    return data_text(" ".join(str(text or "").split()), limit)
 
 
 def age_text(minutes: int | None) -> str:
@@ -192,7 +199,7 @@ def local_moment(value: Any, zone: ZoneInfo) -> str:
     try:
         moment = datetime.fromisoformat(value)
     except ValueError:
-        return clip(value, 25)
+        return safe(value, 25)
     return aware(moment).astimezone(zone).strftime("%d.%m %H:%M")
 
 
@@ -201,32 +208,32 @@ def _deadline_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
     course = item.get("courseTitle")
     state = str(item.get("state") or "unknown")
     words = item.get("stateText")
-    head = f"«{clip(item.get('title'))}»" + (f" ({clip(course, 40)})" if course else "")
-    status = state + (f" «{clip(words, 40)}»" if words else "")
+    head = f"«{safe(item.get('title'))}»" + (f" ({safe(course, 40)})" if course else "")
+    status = state + (f" «{safe(words, 40)}»" if words else "")
     return f"{head}" + (f" до {due}" if due else "") + f" — {status}"
 
 
 def _grade_value(item: Mapping[str, Any]) -> str:
-    value = clip(item.get("value"), 20)
+    value = safe(item.get("value"), 20)
     top = item.get("scaleMax") or item.get("max")
     scale = item.get("scale")
     if isinstance(top, int | float) and not isinstance(top, bool):
         return f"{value}/{top:g}"
-    return value + (f" ({clip(scale, 25)})" if scale else "")
+    return value + (f" ({safe(scale, 25)})" if scale else "")
 
 
 def update_line(item: Mapping[str, Any], zone: ZoneInfo) -> str:
     """One recent change: a new/changed grade or a task whose state changed."""
     when = local_moment(item.get("changedAt"), zone)
     course = item.get("courseTitle")
-    title = f"«{clip(item.get('title'), 60)}»" + (f" ({clip(course, 40)})" if course else "")
+    title = f"«{safe(item.get('title'), 60)}»" + (f" ({safe(course, 40)})" if course else "")
     kind = str(item.get("kind") or item.get("type") or "")
     if kind.startswith("grade") or ("value" in item and "state" not in item):
         text = f"оценка {title}: {_grade_value(item)}"
     else:
         state = str(item.get("state") or "?")
         words = item.get("stateText")
-        text = f"статус {title}: {state}" + (f" «{clip(words, 40)}»" if words else "")
+        text = f"статус {title}: {state}" + (f" «{safe(words, 40)}»" if words else "")
     return text + (f", {when}" if when else "")
 
 
@@ -316,14 +323,14 @@ async def study_digest(
     for space in spaces:
         mine = [source for source in freshness if source.space_id == space.id]
         lines = [
-            f"- «{clip(space.title)}» space_id={space.id}"
+            f"- «{safe(space.title)}» space_id={space.id}"
             + (" — к нему относится этот чат" if space.id == space_id else "")
             + ("" if mine else ": источников пока нет")
         ]
         for source in mine[:MAX_DIGEST_SOURCES]:
             kinds = ", ".join(source.kinds) or "вид не указан"
             lines.append(
-                f"  источник «{clip(source.title, 60)}» ({kinds}) — {source.status}, "
+                f"  источник «{safe(source.title, 60)}» ({kinds}) — {source.status}, "
                 f"{age_text(source.age_minutes)}; source_id={source.id}"
             )
         if len(mine) > MAX_DIGEST_SOURCES:

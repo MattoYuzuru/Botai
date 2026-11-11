@@ -359,6 +359,10 @@ class Deadline(_Domain, Base):
     # The status in the source's own words («Решение прикреплено», «На проверке»), shown as is;
     # `state` is the closed vocabulary derived from it (or given by the parser, D-043).
     state_text: Mapped[str | None] = mapped_column(String(120))
+    # The state as the source gave it (or its words read by the vocabulary) at the last sync, before
+    # the student's status rules: `state` is the rule's state, else this one (D-045). NULL on rows
+    # written before it existed.
+    source_state: Mapped[str | None] = mapped_column(String(12))
     # The student's own mark on this task (open | submitted | graded), stronger than the source
     # and than a status rule until cleared (D-045). NULL: no mark.
     user_state: Mapped[str | None] = mapped_column(String(12))

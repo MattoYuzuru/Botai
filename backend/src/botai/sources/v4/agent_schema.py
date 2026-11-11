@@ -38,13 +38,13 @@ GUIDES: dict[str, list[str]] = {
         "источник, с period.",
     ],
     "task_status": [
-        "state — одно из open, submitted, graded, missed, unknown, только если знаешь наверняка. "
-        "stateText — подпись статуса с сайта как есть («Решение прикреплено», «На проверке»): "
-        "студент видит её.",
-        "Если в state не слово из набора, оно уходит в stateText, а состояние выводит словарь. "
-        "Не выдумывай перевод: лучше stateText и unknown, чем неверное состояние.",
+        "stateText пиши всегда: подпись статуса с сайта как есть («Решение прикреплено», «На "
+        "проверке»), студент видит её.",
+        "state (open, submitted, graded, missed) пиши, только когда уверен в значении — например, "
+        "API отдаёт машинный статус. Не уверен — не пиши state вовсе: состояние выведет словарь "
+        "из stateText. Не пиши state: unknown вместо пропуска.",
         "Для студента submitted и graded значат «от меня ничего не нужно»; «на доработке», "
-        "«возвращено», «черновик» — open; срок прошёл без сдачи — missed.",
+        "«требует доработки», «черновик» — open; срок прошёл без сдачи — missed.",
         "Связывай задание, дедлайн и оценку одним идентификатором: deadlines.assignmentId и "
         "grades.assignmentId — external_id задания.",
         "Если студент говорит, что статус значит другое, — это правило статуса (study_status_rule), "
@@ -88,7 +88,7 @@ def source_schema() -> dict[str, Any]:
             "Код читает reads/<name>.json (либо .html/.txt) и печатает один JSON-объект.",
             "records: [{kind, external_id, fields}]. fields использует camelCase, не колонки БД.",
             "grades: value — как напечатал источник; max — верх шкалы числом, если дан отдельно; layer, period, assignmentId, url, comment — см. guides.grades. Пустое значение не пиши строкой «None»: пропусти запись. Средние не считай.",
-            "deadlines: state (open|submitted|graded|missed|unknown) + stateText (подпись с сайта) — см. guides.task_status.",
+            "deadlines: stateText (подпись с сайта) всегда, state (open|submitted|graded|missed) — только если уверен; см. guides.task_status.",
             "url каждой записи — страница этой сущности, не список: guides.links.",
             "profile: одно поле карточки студента на запись: fields {field (ключ), label (подпись), value (строка как в источнике), group?}. Пароли и токены не сохраняются.",
             "ranking: одно место рейтинга на запись: fields {board (название списка), position (место, целое ≥ 1), label (имя или номер), score (текст как в источнике), scoreNum? (число), isMe? (true для своей строки), total? (всего в списке), period?}. Чужих людей храни минимально: имя и балл.",

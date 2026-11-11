@@ -74,8 +74,13 @@ def test_the_prompts_carry_the_fast_answers_corrections_and_parser_rules() -> No
     assert CORRECTION_FLOW in CHAT_SYSTEM_PROMPT
     fast = " ".join(FAST_ANSWERS.split())
     assert "ОДИН вызов study_data" in fast
-    assert "больше 15 минут назад — source_sync" in fast
+    assert "тот же один вызов с refresh=true" in fast
+    assert "сразу отвечай по сохранённым данным" in fast
+    assert "не чини источник, не ходи на сайт, не запускай код и не читай трассы" in fast
+    assert "Не вызывай source_list, threads_search, rag_search" in fast
+    assert "нужной записи нет и после успешного refresh" in fast
     assert "предложи расширить playbook" in fast
+    assert len(CHAT_SYSTEM_PROMPT) < 9_500, "every character is paid on every step"
     corrections = " ".join(CORRECTION_FLOW.split())
     for tool in ("study_mark_task", "study_status_rule", "source_update_playbook"):
         assert tool in corrections
@@ -88,5 +93,22 @@ def test_the_prompts_carry_the_fast_answers_corrections_and_parser_rules() -> No
     discovery = " ".join(DISCOVERY_FLOW.split())
     assert "guides в source_schema (grades, task_status, links)" in discovery
     assert "assignmentId" in discovery
-    assert "warnings" in discovery
+    assert "Подключаешь, расширяешь или чинишь источник — не заканчивай" in discovery
+    assert "При обычном вопросе о данных warnings не повод чинить" in discovery
     assert DISCOVERY_FLOW in CONNECT_SYSTEM_PROMPT
+
+
+def test_the_map_names_the_real_study_and_settings_labels() -> None:
+    flat = " ".join(UI_MAP.split())
+    for label in (
+        "«Успеваемость / Источники»",
+        "/study?view=grades",
+        "/study?view=sources",
+        "«Новое», «Предметы»",
+        "«Показатели», «Зачётка», «Панели»",
+        "«Открыть задание», «Отметить сданным», «Вернуть в работу», «Снять мою отметку»",
+        "«Что помнит агент»: «Правила для агента», «Правила статусов», «Заметки»",
+    ):
+        assert label in flat, label
+    # Links to connections and documents open the sources view of «Учёба».
+    assert "botai://connections/… и botai://documents/… открывают этот вид" in flat

@@ -202,7 +202,7 @@ async def test_grades_are_filtered_compact_linked_and_fresh(
 
     assert result.ok, result.error
     section = result.data["grades"]
-    assert section["count"] == 1
+    assert section["total"] == 1
     assert section["truncated"] is False
     (grade,) = section["items"]
     assert grade["title"] == "ДЗ 7"
@@ -264,7 +264,7 @@ async def test_limit_truncates_and_updates_list_recent_changes(
         tools, "study_data", {"kinds": ["grades", "updates"], "limit": 1}, seeded.account.user_id
     )
     assert result.ok, result.error
-    assert result.data["grades"]["count"] == 3
+    assert result.data["grades"]["total"] == 3
     assert len(result.data["grades"]["items"]) == 1
     assert result.data["grades"]["truncated"] is True
     updates = result.data["updates"]["items"]

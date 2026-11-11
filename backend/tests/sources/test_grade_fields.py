@@ -87,6 +87,8 @@ def test_format_number() -> None:
     [
         ("submitted", "Решение прикреплено", ("submitted", "Решение прикреплено")),
         (" Graded ", None, ("graded", None)),
+        ("unknown", "Сдано", ("submitted", "Сдано")),  # `unknown` says nothing: the words decide
+        ("unknown", None, ("unknown", None)),
         ("Отправлено", None, ("submitted", "Отправлено")),
         (None, "На проверке", ("submitted", "На проверке")),
         ("review", "Ждёт", ("submitted", "Ждёт")),  # words unknown: the machine word decides

@@ -70,15 +70,31 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
 
 `agent/v4/tools/study.py`, `agent/v4/study_context.py`:
 
-- `study_data(kinds, space_id?, course?, query?, from?, to?, state?, layer?, limit≤100)` читает
-  сохранённые записи через `domain.repo` (только живые источники, слияние, дедупликация, как на
-  экранах) — `grades`, `deadlines`, `schedule`, `courses`, `profile`, `ranking`, `updates` — и
-  отдаёт короткий JSON: нужные поля, ссылка на саму запись, `count`/`truncated`, плюс `sources`
-  со статусом и `ageMinutes` каждого источника. Только чтение, таймаут 10 с;
+- `study_data(kinds, space_id?, course?, query?, from?, to?, state?, layer?, limit≤100 (15),
+  refresh?, max_age_minutes? (15))` читает сохранённые записи через `domain.repo` (только живые
+  источники, слияние, дедупликация, как на экранах) — `grades`, `deadlines`, `schedule`,
+  `courses`, `profile`, `ranking`, `updates`. Ответ: сначала `now` и `sources` (статус и
+  `ageMinutes` каждого источника), затем по видам `{total, truncated, items}` — нужные поля и
+  ссылка на саму запись. Весь JSON держится в 16 000 знаков (`RESULT_BUDGET`): runtime режет
+  любой результат на `tool_result_chars` (20 000), поэтому инструмент сам пропорционально
+  урезает записи и честно ставит `truncated`, `total` остаётся полным. Только чтение;
+- `refresh=true` (`agent/v4/study_refresh.py`) — тот же детерминированный sync, что у
+  `source_sync` (`SourceToolkit.sync_source`), до чтения и в одном шаге модели. Кандидаты —
+  живые источники (в пределах `space_id`), которые дают запрошенные виды (по объявленным
+  `kinds` или по уже лежащим строкам). Синхронизированный меньше `max_age_minutes` назад —
+  `fresh`; без playbook или в `needs_reauth`/`needs_link`/`waiting_user` — `skipped`, не
+  пробуется; остальные — по три одновременно, каждый в своей сессии, под общим потолком 25 с
+  (не успевший — `timeout`, отменяется). У каждого источника в `sources[]`: `refresh`
+  (`ok|fresh|failed|timeout|skipped`), `refreshError` (код), `refreshReason` (словами:
+  «нужно войти в кабинет заново»), `changes` (вставлено/обновлено по видам), `warnings` (коды).
+  Неудачное обновление — не ошибка чтения: сохранённые данные приходят всегда. Таймаут
+  инструмента — 40 с;
 - `study_status_rule(set|list|delete)` и `study_mark_task(deadline_id, state|null)` — поправки
   студента над `domain.overrides`; ответ говорит, сколько заданий пересчитано и изменилось;
-- **сводка учёбы** (`study_digest`) идёт в системный промпт после стабильного префикса вместо
-  простого списка источников: по каждому вузу — источники с id, статусом и «обновлено N мин/ч
+- **сводка учёбы** (`study_digest`) идёт в контекстное сообщение хода (данные, после
+  стабильного префикса; системный промпт теперь полностью стабилен) вместо простого списка
+  источников; текст со страниц (названия, `stateText`, предметы, значения) проходит тот же
+  `env.data_text`, что и контекст хода: по каждому вузу — источники с id, статусом и «обновлено N мин/ч
   назад», до 6 ближайших несданных заданий, до 6 изменений за 7 дней, число оценок по слоям.
   Потолок 1800 знаков (сначала id источников, потом подробности, строка «сводка сокращена»),
   порядок детерминирован; сбой любого чтения — сводка пропускается (в лог только класс
@@ -236,7 +252,8 @@ uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run 
 | маскирование выводов инструментов и чекпоинта | `tests/agent/v4/test_runtime_masking.py` |
 | ленивый браузер: нет запуска без `browser_*`, сессия в первом контексте, очистка | `tests/agent/v4/test_lazy_browser.py` |
 | `study_*`, сводка учёбы (содержимое, потолок, сбой) | `tests/agent/v4/test_tools_study.py` |
-| чат: оценка одним `study_data` без браузера; устаревший источник → `source_sync` → `study_data` | `tests/jobs/test_agent_chat_study_v4.py` |
+| `study_data(refresh)`: ok/fresh/failed/timeout/skipped, бюджет результата, санитайз сводки | `tests/agent/v4/test_study_refresh.py` |
+| чат: оценка одним `study_data` без браузера; вопрос о свежести — один `study_data(refresh=true)`; неудачное обновление — ответ без других инструментов | `tests/jobs/test_agent_chat_study_v4.py` |
 | миграция upgrade/downgrade/upgrade | `tests/db/test_agent_traces_migration.py` |
 
 Живой L3 через этот путь прогонялся независимо (lane E): вход в ВШЭ по кредам из Keychain,

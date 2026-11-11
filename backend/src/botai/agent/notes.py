@@ -79,15 +79,32 @@ _RULE_SECRETS = re.compile(
     r"api[\s_-]?key|кода?\s+(?:из|подтвержд|смс|sms|входа|доступа)\w*|смс-код\w*|mfa|2fa|otp|"
     r"password\w*|secret\w*|token\w*|credential\w*|учётн\w+\s+данн\w+|учетн\w+\s+данн\w+)"
 )
+# Secret-looking words with a value after them, in a note or a rule: «пасс qwerty», «pin 1234»,
+# «логин: ivanov» (a labelled password is `_LABELLED_PASSWORD`).
+_SECRET_WORDS = re.compile(
+    r"(?i)\b(?:пасс\w*|pass(?:word|wd|code|phrase)?|pwd|пин(?:-?код\w*)?|pin(?:-?code)?)\b"
+    r"(?:\s*[:=—-]\s*|\s+)\S+"
+    r"|\bлогин\w*\b[^.;!?\n]{0,30}?[:=—-]\s*\S+|\bлогин\w*\s+[a-z0-9._@-]{3,}"
+)
 # What a rule may not grant: actions on the student's behalf past the owner's policy (D-006) —
-# sending, submitting, deleting, paying — or skipping the confirmation the policy asks for.
+# pressing, sending, submitting, confirming, cancelling, deleting, paying, enrolling, running
+# code from a site — in any person, imperative or infinitive, or skipping a confirmation.
 _RULE_POWERS = re.compile(
-    r"(?i)\b(?:без\s+(?:подтвержд|спрос|вопрос|соглас|разрешени)\w*|не\s+спрашива\w*\s+(?:разрешени|"
-    r"подтвержд|соглас)\w*|политик\w*|"
-    r"отправ(?:ь|ьте|ляй|ляйте|лять)|пода(?:й|йте|вай|вайте|вать)|удал(?:и|ите|яй|яйте|ять)|"
-    r"оплат(?:и|ите|ить)|оплачива\w*|плати\w*|подпис(?:ывай|ать)|подпиши\w*|перешл\w*|пересыл\w*|"
-    r"публику(?:й|йте|ть)|переведи\w*|перевод(?:и|ить)\s+деньг\w*|"
-    r"send|submit|delete|pay|forward|confirm)\b"
+    r"(?i)\b(?:без\s+(?:подтвержд|спрос|вопрос|соглас|разрешени)\w*|"
+    r"не\s+спрашива\w*\s+(?:разрешени|подтвержд|соглас)\w*|политик\w*|"
+    r"нажим\w*|нажм\w*|нажать|отправ(?!лен)\w*|сдава\w*|сдать|сдай\w*|подтвержда\w*|"
+    r"подтверди\w*|отменя\w*|отмени\w*|удаля\w*|удали\w*|покупа\w*|купи\w*|оплач\w*|"
+    r"оплати\w*|плати\w*|записыва\w*|запиши\w*|записать\w*|пода(?:й|йте|вай|вайте|вать|ть)\b|"
+    r"подава\w*|подпис(?:ывай|ать)\w*|подпиши\w*|перешл\w*|пересыл\w*|публику\w*|"
+    r"переведи\w*|перевод(?:и|ить)\s+деньг\w*|выполня\w*|выполни\w*|запуска\w*|запусти\w*|"
+    r"загружа\w*|загрузи\w*|скрипт\w*|action_\w+|code_exec|"
+    r"send|submit|delete|pay|buy|forward|confirm|click|execute|run|enroll|upload)\b"
+)
+# A rule says HOW to read or present the data, never WHAT they are: «всегда отвечай, что оценок
+# нет / всё сдано» would hide the real data behind a planted answer.
+_RULE_FIXED_FACT = re.compile(
+    r"(?i)\b(?:отвеча|ответь|говори|скажи|сообща|сообщи|пиши|напиши|утвержда)\w*"
+    r"[^.;!?\n]{0,60}?\bчто\b[^.;!?\n]{0,60}?(?:\bнет\b|сдан|оценк|зачт|выполн|долг)"
 )
 
 
@@ -104,6 +121,7 @@ def clean_note(text: str) -> str:
         or _LABELLED_PASSWORD.search(note)
         or JWT.search(note)
         or LONG_TOKEN.search(note)
+        or _SECRET_WORDS.search(note)
     ):
         raise BotaiError(ErrorCode.VALIDATION, "Заметка похожа на пароль, код или токен")
     if _ADDRESS.search(note):
@@ -132,6 +150,7 @@ def clean_rule(text: str) -> str:
         or JWT.search(rule)
         or LONG_TOKEN.search(rule)
         or _RULE_SECRETS.search(rule)
+        or _SECRET_WORDS.search(rule)
     ):
         raise BotaiError(ErrorCode.VALIDATION, "Правило касается паролей, кодов или токенов")
     if _ADDRESS.search(rule):
@@ -141,7 +160,60 @@ def clean_rule(text: str) -> str:
             ErrorCode.VALIDATION,
             "Правило не может давать ассистенту полномочий: действия идут по политике владельца",
         )
+    if _RULE_FIXED_FACT.search(rule):
+        raise BotaiError(
+            ErrorCode.VALIDATION,
+            "Правило может говорить, как читать и показывать данные, но не что в них написано",
+        )
     return rule
+
+
+_WORD = re.compile(r"[0-9a-zа-яё]+")
+_STOP = frozenset(
+    {
+        "всегда",
+        "никогда",
+        "пожалуйста",
+        "запомни",
+        "запомнить",
+        "правило",
+        "чтобы",
+        "когда",
+        "потом",
+        "сначала",
+        "только",
+        "этого",
+        "этот",
+        "этом",
+        "меня",
+        "мне",
+        "тебе",
+        "твои",
+        "please",
+        "always",
+        "never",
+        "remember",
+        "rule",
+    }
+)
+EVIDENCE_SHARE = 0.5
+
+
+def _stems(text: str) -> set[str]:
+    words = _WORD.findall(text.casefold().replace("ё", "е"))
+    return {word[:5] for word in words if len(word) >= 4 and word not in _STOP}
+
+
+def asked_by_student(rule: str, student_text: str | None) -> bool:
+    """Whether the student's own message of this turn carries the rule: at least half of its
+    content words (by a five-letter stem), and at least two of them (or all, if fewer)."""
+    if not student_text:
+        return False
+    wanted = _stems(rule)
+    if not wanted:
+        return False
+    found = len(wanted & _stems(student_text))
+    return found >= min(2, len(wanted)) and found >= len(wanted) * EVIDENCE_SHARE
 
 
 def clean(text: str, kind: NoteKind) -> str:
@@ -168,13 +240,9 @@ async def add_note(
             UserMemory.user_id == user_id, func.lower(UserMemory.note) == note.lower()
         )
     )
-    if same is not None:
-        if same.kind == kind:
-            return Added(same, created=False)
-        # The same words, asked again as the other kind (a fact that becomes a rule): one row.
-        same.kind = kind
-        await session.commit()
-        return Added(same, created=True)
+    if same is not None and (same.kind == kind or same.kind == "rule"):
+        # Already there; a rule is never silently demoted to a note.
+        return Added(same, created=False)
     count = await session.scalar(
         select(func.count())
         .select_from(UserMemory)
@@ -187,6 +255,11 @@ async def add_note(
             else "Память заполнена: сначала забудьте лишнее"
         )
         raise BotaiError(ErrorCode.VALIDATION, detail)
+    if same is not None:
+        # The same words, asked again as a rule (a fact that becomes a rule): one row.
+        same.kind = kind
+        await session.commit()
+        return Added(same, created=True)
     row = UserMemory(user_id=user_id, note=note, kind=kind)
     session.add(row)
     try:

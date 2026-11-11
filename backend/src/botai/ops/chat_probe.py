@@ -131,23 +131,33 @@ async def probe(
         )
     result = ProbeResult(question=question, thread_id=thread_id, job_id=accepted.job_id)
     waiting = False
-    while time.monotonic() - started < wait_seconds:
-        async with services.db() as session:
-            state = await session.scalar(select(Job.state).where(Job.id == result.job_id))
-        if state in DONE_STATES:
-            break
-        if state == "waiting_user":  # the agent asked the student: a probe has nobody to answer
-            waiting = True
-            break
-        await asyncio.sleep(POLL_SECONDS)
-    result.seconds = round(time.monotonic() - started, 1)
-    await _collect(services, result)
-    if result.state not in DONE_STATES:
-        # Leave nothing running or waiting in the account once the measure is taken.
-        async with services.db() as session:
-            await cancel_job(session, services.vault, services.clock, user_id, result.job_id)
-        result.state = "asked_user" if waiting else "timeout"
+    finished = False
+    try:
+        while time.monotonic() - started < wait_seconds:
+            async with services.db() as session:
+                state = await session.scalar(select(Job.state).where(Job.id == result.job_id))
+            if state in DONE_STATES:
+                break
+            if state == "waiting_user":  # the agent asked the student: nobody here to answer
+                waiting = True
+                break
+            await asyncio.sleep(POLL_SECONDS)
+        result.seconds = round(time.monotonic() - started, 1)
+        await _collect(services, result)
+        finished = result.state in DONE_STATES
+        if not finished:
+            result.state = "asked_user" if waiting else "timeout"
+    finally:
+        if not finished:
+            # Leave nothing running or waiting in the account once the measure is taken, also
+            # when the probe itself is interrupted (Ctrl-C, a lost connection).
+            await _cancel(services, user_id, result.job_id)
     return result
+
+
+async def _cancel(services: Services, user_id: str, job_id: str) -> None:
+    async with services.db() as session:
+        await cancel_job(session, services.vault, services.clock, user_id, job_id)
 
 
 def _parser() -> argparse.ArgumentParser:

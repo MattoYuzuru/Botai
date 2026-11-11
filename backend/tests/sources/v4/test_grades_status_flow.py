@@ -229,7 +229,7 @@ async def test_item_grades_statuses_corrections_and_updates(
     assert backlog == "open"  # the rule is applied on every sync, over the words
     assert changed["9003"] is not None  # submitted -> graded is news
     assert [changed[ext] for ext in ("9001", "9004", "9005")] == [None, None, None]
-    assert changed["9002"] is not None  # the student's own mark
+    assert changed["9002"] is None  # the student's own mark is not news from the source
     by_kind = {(u.kind, u.title) for u in updates}
     assert ("grade", "Контрольная 1") in by_kind
     assert ("deadline", "Контрольная 1") in by_kind

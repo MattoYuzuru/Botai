@@ -336,7 +336,9 @@ def build_panel_toolkit(
     return PanelToolkit(sm=db, clock=services.clock, mask=mask)
 
 
-def build_study_toolkit(services: Services) -> StudyToolkit:
+def build_study_toolkit(
+    services: Services, *, source_toolkit: SourceToolkit | None = None
+) -> StudyToolkit:
     """`study_data` and the student's corrections over the real DB (D-044, D-045).
 
     Required for the same reason as the source tools: without it the chat agent would go to the
@@ -348,11 +350,16 @@ def build_study_toolkit(services: Services) -> StudyToolkit:
             "Учёба v4 включена, но у сервисов нет фабрики сессий БД: study_* инструменты нельзя "
             "собрать (нужен services.db)."
         )
-    return StudyToolkit(sm=db, clock=services.clock)
+    # `study_data(refresh=true)` runs the very sync of `source_sync`: same runner, same writes.
+    sync = source_toolkit.sync_source if source_toolkit is not None else None
+    return StudyToolkit(sm=db, clock=services.clock, sync=sync)
 
 
 def build_memory_toolset(
-    services: Services, *, mask: Callable[[str], str] | None = None
+    services: Services,
+    *,
+    mask: Callable[[str], str] | None = None,
+    student_text: str | None = None,
 ) -> list[ToolHandler]:
     """`memory_*` (notes about the student) and `threads_*` (the student's other chats).
 
@@ -367,7 +374,7 @@ def build_memory_toolset(
             "инструменты нельзя собрать (нужен services.db)."
         )
     return [
-        *build_memory_tools(MemoryToolkit(sm=db, mask=mask)),
+        *build_memory_tools(MemoryToolkit(sm=db, mask=mask, student_text=student_text)),
         *build_thread_tools(ThreadToolkit(sm=db)),
     ]
 
@@ -459,6 +466,7 @@ async def build_agent_wiring(
     artifact_root: str | Path | None = None,
     source_cookies: Mapping[str, str] | None = None,
     workspace_run_id: str | None = None,
+    student_text: str | None = None,
 ) -> AgentWiring:
     """Assemble the runtime for one run. The caller owns `aclose` (handler does it in finally).
 
@@ -468,6 +476,9 @@ async def build_agent_wiring(
     The browser is lazy (D-044): with `with_browser` and no injected `control`, nothing is launched
     here; the first `browser_*` call (or a browser `secret_use`/`action_execute`) launches it with
     the saved agent session. An injected `control` is used at once, as before.
+
+    `student_text` is the student's own message of a chat turn: the evidence `memory_remember`
+    needs before it keeps a rule (none outside the chat).
 
     With `agent_engine=v4` the product tools are part of the run: `source_*` over the real source
     service/runner and `rag_*` over the real RAG service. A missing required collaborator (the DB
@@ -527,11 +538,13 @@ async def build_agent_wiring(
             broker=broker,
         )
         tools.extend(build_source_tools(source_toolkit))
-        tools.extend(build_study_tools(build_study_toolkit(services)))
+        tools.extend(
+            build_study_tools(build_study_toolkit(services, source_toolkit=source_toolkit))
+        )
         tools.extend(build_space_tools(build_space_toolkit(services)))
         tools.extend(build_panel_tools(build_panel_toolkit(services, mask=broker.mask)))
         tools.extend(build_rag_toolset(services))
-        tools.extend(build_memory_toolset(services, mask=broker.mask))
+        tools.extend(build_memory_toolset(services, mask=broker.mask, student_text=student_text))
         tools.extend(
             build_action_tools(
                 services=services,

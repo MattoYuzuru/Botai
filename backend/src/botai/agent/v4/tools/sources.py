@@ -194,7 +194,7 @@ def _compact_report(report: RunReport) -> dict[str, Any]:
     return data
 
 
-def _warnings(report: RunReport) -> list[dict[str, Any]]:
+def report_warnings(report: RunReport) -> list[dict[str, Any]]:
     """`warnings` of the report (D-043 §3.5): hints of the probe/canary/sync, never errors."""
     raw: Any = getattr(report, "warnings", None) or []
     out: list[dict[str, Any]] = []
@@ -212,10 +212,10 @@ def _report_summary(report: RunReport) -> str:
     parts = [head, counts or "записей нет"]
     if errors:
         parts.append(f"ошибки: {errors}")
-    warnings = _warnings(report)
+    warnings = report_warnings(report)
     if warnings:
         codes = ", ".join(str(item.get("code", "?")) for item in warnings[:6])
-        parts.append(f"предупреждения: {codes} — разбери их (warnings)")
+        parts.append(f"предупреждения: {codes} (подробно — warnings)")
     return "; ".join(parts)
 
 
@@ -461,13 +461,18 @@ class SourceToolkit:
         if isinstance(args, ToolResult):
             return args
         try:
-            async with self._sm() as session:
-                report = await self.runner(session, user_id).sync(
-                    args.source_id, version=args.version
-                )
+            report = await self.sync_source(user_id, args.source_id, version=args.version)
         except BotaiError as exc:
             return ToolResult.failure(exc.code.value, exc.detail)
         return _report_result(report, summary=_report_summary(report), compact=not args.records)
+
+    async def sync_source(
+        self, user_id: str, source_id: str, *, version: int | None = None
+    ) -> RunReport:
+        """The deterministic sync of one source in its own session (no model): what `source_sync`
+        runs and what `study_data(refresh=true)` reuses. The runner commits its own writes."""
+        async with self._sm() as session:
+            return await self.runner(session, user_id).sync(source_id, version=version)
 
     async def _repair(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         user_id = _user(context)
@@ -894,7 +899,7 @@ def _report_result(report: RunReport, *, summary: str, compact: bool = False) ->
     ]
     body = _compact_report(report) if compact else _report_data(report)
     body.pop("warnings", None)  # said once, on top
-    data: dict[str, Any] = {"warnings": _warnings(report), "report": body}
+    data: dict[str, Any] = {"warnings": report_warnings(report), "report": body}
     if not report.ok:
         return ToolResult.failure(
             report.errors[0].code if report.errors else "run_failed",

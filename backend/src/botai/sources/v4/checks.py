@@ -12,6 +12,7 @@ wrong and how to fix the playbook. Codes (docs/v4/27-study-hub-grades-fastpath.m
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
@@ -57,22 +58,50 @@ def _of(records: Sequence[CheckedRecord], kind: str) -> list[CheckedRecord]:
     return [record for record in records if record.kind == kind]
 
 
-def _link(record: CheckedRecord) -> str | None:
+# Kinds whose records always have a page in a learning system: a record without its own `url` falls
+# back to the read's `open_url`, and a task list on every task is exactly the mistake to flag. A
+# class or a grade often has no page of its own: only an explicit `url` field is compared there.
+OPEN_URL_KINDS = frozenset({"assignments", "deadlines"})
+
+
+def _own_url(record: CheckedRecord) -> str | None:
     url = record.fields.get("url")
-    return url if isinstance(url, str) and url else record.open_url or None
+    return url if isinstance(url, str) and url else None
+
+
+def _link(record: CheckedRecord) -> str | None:
+    own = _own_url(record)
+    if own is not None or record.kind not in OPEN_URL_KINDS:
+        return own
+    return record.open_url or None
+
+
+def _per_record(link: str, records: Sequence[CheckedRecord]) -> bool:
+    """A link that names one of the records (its id is a whole token of the address) is that
+    record's page, not a list."""
+    return any(
+        record.external_id
+        and re.search(rf"(?<![0-9A-Za-z]){re.escape(record.external_id)}(?![0-9A-Za-z])", link)
+        for record in records
+    )
 
 
 def generic_links(records: Sequence[CheckedRecord]) -> RunWarning | None:
     kinds: list[str] = []
     examples: list[str] = []
     for kind in LINK_KINDS:
-        found = _of(records, kind)
-        if len(found) < MIN_GENERIC_LINKS:
+        linked = [(record, _link(record)) for record in _of(records, kind)]
+        linked = [(record, link) for record, link in linked if link is not None]
+        if len(linked) < MIN_GENERIC_LINKS:
             continue
-        links = {_link(record) for record in found}
-        if len(links) == 1 and (link := next(iter(links))) is not None:
-            kinds.append(kind)
-            examples.append(link)
+        links = {link for _, link in linked}
+        if len(links) != 1:
+            continue
+        (link,) = links
+        if _per_record(link, [record for record, _ in linked]):
+            continue
+        kinds.append(kind)
+        examples.append(link)
     if not kinds:
         return None
     return RunWarning(
@@ -80,7 +109,8 @@ def generic_links(records: Sequence[CheckedRecord]) -> RunWarning | None:
         message=(
             "У всех записей этих видов одна и та же ссылка — она ведёт на список или главную, а не "
             "на саму сущность. Собери url каждой записи из идентификаторов ответа (курс, тема, "
-            "задание, пара, оценка) и проверь одну ссылку в браузере."
+            "задание, пара, оценка) и проверь одну ссылку в браузере. Если у сущности нет своей "
+            "страницы — оставь url пустым: не придумывай адрес."
         ),
         kinds=kinds,
         examples=examples[:MAX_EXAMPLES],

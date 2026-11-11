@@ -7,8 +7,10 @@ real tools:
 
 * the system prompt carries the fast-answer rules and the study digest; the grade question is
   answered with one `study_data` call, and no browser is launched although the turn has one;
-* a stale source is synced first (`source_sync`, deterministic playbook, compact report with its
-  warnings), then `study_data` returns the fresh rows with the source's new age.
+* a freshness question is the same single call with `refresh=true`: the deterministic sync runs
+  inside the tool and the fresh rows come back with the source's new age;
+* a refresh that fails (no session) still returns the saved data, flagged with a reason, and the
+  turn ends with the answer — no source repair, no site, no code.
 """
 
 from __future__ import annotations
@@ -177,7 +179,11 @@ async def test_a_grade_question_is_one_study_data_call_and_no_browser(
     assert "9 из 10" in reply.blocks[0]["markdown"]
 
 
-async def test_a_stale_source_is_synced_before_the_answer(
+def _tool_json(text: str) -> dict[str, Any]:
+    return json.loads(text[text.index("{") : text.rindex("}") + 1])
+
+
+async def test_a_freshness_question_is_one_study_data_call_with_refresh(
     env: Env, tmp_path: Path, launches: Launches, fakeuni_app: Any
 ) -> None:
     client, user, thread, space = await _student(env, with_space=True)
@@ -187,13 +193,10 @@ async def test_a_stale_source_is_synced_before_the_answer(
     SESSIONS.add(token)
 
     async def respond(request: LlmRequest) -> LlmResponse:
-        steps = _steps(request)
-        if steps == 0:
-            # The digest says how old the data are: older than 15 minutes means sync first.
+        if _steps(request) == 0:
+            # The digest says how old the data are; the refresh rides on the one read.
             assert "обновлено 2 ч назад" in _text(request)
-            return tool_response(call("source_sync", {"source_id": source_id}, "s1"))
-        if steps == 1:
-            return tool_response(call("study_data", {"kinds": ["grades"]}, "s2"))
+            return tool_response(call("study_data", {"kinds": ["grades"], "refresh": True}, "s1"))
         return answer("Обновил кабинет: новые оценки есть.")
 
     provider = FlowProvider(respond)
@@ -211,17 +214,65 @@ async def test_a_stale_source_is_synced_before_the_answer(
 
     assert job.result is not None
     assert job.result["stopped"] == "answer"
-    assert job.result["tools"] == ["source_sync", "study_data"]
+    assert job.result["tools"] == ["study_data"], "one call covers the refresh and the read"
+    assert job.result["steps"] == 2
     assert launches.count == 0
 
-    (sync_text,) = _tool_results(provider.requests[1])
-    sync = json.loads(sync_text[sync_text.index("{") : sync_text.rindex("}") + 1])
-    report = sync["data"]["report"] if "data" in sync else sync["report"]
-    assert report["ok"] is True
-    assert report["counts"]["grades"] > 0
-    assert isinstance(report["records"], int), "a chat sync returns counts, not the raw records"
-    assert "warnings" in (sync.get("data") or sync)
-
-    study_text = _tool_results(provider.requests[2])[-1]
+    (study_text,) = _tool_results(provider.requests[1])
+    study = _tool_json(study_text)["data"]
+    (source,) = study["sources"]
+    assert source["id"] == source_id
+    assert source["refresh"] == "ok"
+    assert source["ageMinutes"] == 0, "the source was just synced"
+    assert source["changes"]["grades"]["inserted"] > 0
     assert "Математический анализ" in study_text
-    assert '"ageMinutes": 0' in study_text, "the source was just synced"
+
+
+async def test_a_failed_refresh_still_answers_from_the_saved_data(
+    env: Env, tmp_path: Path, launches: Launches, fakeuni_app: Any
+) -> None:
+    client, user, thread, space = await _student(env, with_space=True)
+    assert space is not None
+    source_id = await _source(env, user, space, playbook=True, synced_ago=timedelta(hours=2))
+    async with env.sm() as session:
+        session.add(
+            Grade(
+                user_id=user,
+                source_id=source_id,
+                external_id="hw-7",
+                source_url=f"{BASE}/api",
+                fetched_at=NOW,
+                seen_at=NOW,
+                title="ДЗ 7",
+                value="9",
+                layer="item",
+            )
+        )
+        await session.commit()
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        if _steps(request) == 0:
+            return tool_response(call("study_data", {"kinds": ["grades"], "refresh": True}, "s1"))
+        return answer(
+            "По данным двухчасовой давности: за ДЗ 7 — 9. Обновить не вышло: войдите заново."
+        )
+
+    provider = FlowProvider(respond)
+    sent = await _post(client, thread, "Мне уже поставили за ДЗ 7?")
+    # No session cookie: the cabinet answers 401 and the deterministic sync fails.
+    env.start(_worker(env, provider, tmp_path, http_transport=httpx.ASGITransport(app=fakeuni_app)))
+    job = await env.wait_for(sent.json()["jobId"], {"done"}, within=30)
+
+    assert job.result is not None
+    assert job.result["stopped"] == "answer"
+    assert job.result["tools"] == ["study_data"], "no repair spree after a failed refresh"
+    assert launches.count == 0
+    (study_text,) = _tool_results(provider.requests[1])
+    result = _tool_json(study_text)
+    assert result["ok"] is True
+    (source,) = result["data"]["sources"]
+    assert source["refresh"] == "failed"
+    assert source["refreshReason"]
+    assert source["ageMinutes"] == 120
+    assert result["data"]["grades"]["items"][0]["title"] == "ДЗ 7"
+    assert "обновить не удалось" in result["summary"]

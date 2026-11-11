@@ -8,6 +8,11 @@ agent had no way to read what BotAI already holds and went to the university sit
   reads the screens use (live sources only, merged, deduplicated) — in one call, filtered and
   compacted for the model, together with the freshness of every source. Read-only, idempotent,
   no network, no model.
+* `refresh=true` first brings the sources of the requested kinds up to date with the same
+  deterministic sync as `source_sync` (`agent/v4/study_refresh.py`), under one cap, so «уже
+  поставили?» is one model step; a failed refresh still returns the saved data, flagged.
+* the result is bounded inside the tool (`RESULT_BUDGET`): the runtime cuts any tool result at
+  `tool_result_chars`, and a cut JSON is worse than fewer records honestly counted.
 * `study_status_rule` and `study_mark_task` are the student's deterministic corrections (D-045)
   over `domain.overrides`: «в этом источнике „Решение прикреплено“ значит сдано» and «ДЗ 9 я
   сдал». They change the data at once; the result says how many tasks changed.
@@ -18,6 +23,7 @@ Every call is scoped to the run's user: another student's rows never come back, 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
@@ -45,6 +51,14 @@ from botai.agent.v4.study_context import (
     spaces_of,
     zone_of,
 )
+from botai.agent.v4.study_refresh import (
+    DEFAULT_MAX_AGE_MINUTES,
+    REFRESH_CAP_S,
+    RefreshOutcome,
+    Syncer,
+    plan_refresh,
+    run_refresh,
+)
 from botai.core.clock import Clock, SystemClock
 from botai.core.errors import BotaiError
 from botai.db.models import STATUS_RULE_STATES, Deadline, StatusRule
@@ -63,14 +77,18 @@ STUDY_KINDS: tuple[StudyKind, ...] = (
 GRADE_LAYERS = ("item", "current", "final", "summary")
 DEADLINE_STATES = ("open", "submitted", "graded", "missed", "unknown")
 DONE_STATES = frozenset({"submitted", "graded"})
-DEFAULT_LIMIT = 30
+DEFAULT_LIMIT = 15
 MAX_LIMIT = 100
 SCHEDULE_DAYS = 7
 DONE_DAYS = 30
 UPDATES_DAYS = 7
 TEXT_CHARS = 160
 COMMENT_CHARS = 300
-MAX_RESULT_CHARS = 40_000
+MAX_RESULT_CHARS = 20_000
+# The JSON of the data stays under this, whatever the filters: the runtime's own cut is at
+# `RunLimits.tool_result_chars` (20 000) and the envelope needs room.
+RESULT_BUDGET = 16_000
+MAX_AGE_LIMIT = 7 * 24 * 60
 
 # The fields each kind keeps for the model (camelCase of the API read models), in this order.
 # `url` is the entity's own page; the provenance `openUrl` is used when the row has none.
@@ -144,6 +162,8 @@ class StudyDataArgs(_Args):
     state: Literal["open", "submitted", "graded", "missed", "unknown"] | None = None
     layer: Literal["item", "current", "final", "summary"] | None = None
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
+    refresh: bool = False
+    max_age_minutes: int = Field(default=DEFAULT_MAX_AGE_MINUTES, ge=0, le=MAX_AGE_LIMIT)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -266,7 +286,7 @@ def _compact(kind: str, item: Mapping[str, Any]) -> dict[str, Any]:
 
 def _section(kind: str, rows: list[dict[str, Any]], limit: int) -> dict[str, Any]:
     items = [_compact(kind, row) for row in rows[:limit]]
-    section: dict[str, Any] = {"count": len(rows), "truncated": len(rows) > limit}
+    section: dict[str, Any] = {"total": len(rows), "truncated": len(rows) > limit}
     # One source (or one university) for the whole section: said once, not on every record.
     for name in ("sourceId", "spaceId"):
         values = {item.get(name) for item in items}
@@ -276,6 +296,33 @@ def _section(kind: str, rows: list[dict[str, Any]], limit: int) -> dict[str, Any
                 item.pop(name, None)
     section["items"] = items
     return section
+
+
+def _size(data: Any) -> int:
+    return len(json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str))
+
+
+def fit_budget(data: dict[str, Any], kinds: list[str], budget: int = RESULT_BUDGET) -> None:
+    """Trim the items of every section proportionally until the whole JSON fits `budget`.
+
+    `total` stays the honest number of matches; a trimmed section says `truncated: true`.
+    """
+    for _ in range(12):
+        size = _size(data)
+        if size <= budget:
+            return
+        ratio = budget / size
+        trimmed = False
+        for kind in kinds:
+            items: list[Any] = data[kind]["items"]
+            if not items:
+                continue
+            keep = min(len(items) - 1, int(len(items) * ratio))
+            del items[max(keep, 0) :]
+            data[kind]["truncated"] = True
+            trimmed = True
+        if not trimmed:
+            return
 
 
 class StudyToolkit:
@@ -290,9 +337,12 @@ class StudyToolkit:
             "источника stateText, кто решил stateSource, оценка); schedule — пары (по умолчанию "
             "сегодня + 7 дней); courses, profile, ranking; updates — что изменилось (по умолчанию "
             "7 дней). Фильтры: course и query — подстрока предмета и названия, from/to — ISO "
-            "дата/время, state (задания), layer (оценки), limit на вид. В ответе sources: "
-            "статус и возраст каждого источника (ageMinutes) — по ним решай, нужен ли "
-            "source_sync. Задания по умолчанию: несданные + сданные за 30 дней."
+            "дата/время, state (задания), layer (оценки), limit на вид. Задания по умолчанию: "
+            "несданные + сданные за 30 дней. refresh=true — сначала обновить источники этих видов "
+            "старше max_age_minutes (по умолчанию 15) детерминированно, без модели, до ~25 с; в "
+            "sources у каждого: ageMinutes и refresh (ok/fresh/failed/timeout/skipped), "
+            "refreshReason словами. Сохранённые данные приходят всегда, даже если обновление "
+            "не удалось."
         ),
         parameters=object_schema(
             {
@@ -315,10 +365,17 @@ class StudyToolkit:
                     "maximum": MAX_LIMIT,
                     "default": DEFAULT_LIMIT,
                 },
+                "refresh": {"type": "boolean", "default": False},
+                "max_age_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_AGE_LIMIT,
+                    "default": DEFAULT_MAX_AGE_MINUTES,
+                },
             },
             required=["kinds"],
         ),
-        timeout_s=10.0,
+        timeout_s=REFRESH_CAP_S + 15.0,
         policy="read",
         idempotent=True,
         max_result_chars=MAX_RESULT_CHARS,
@@ -372,9 +429,18 @@ class StudyToolkit:
         serial_only=True,
     )
 
-    def __init__(self, *, sm: async_sessionmaker[AsyncSession], clock: Clock | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        sm: async_sessionmaker[AsyncSession],
+        clock: Clock | None = None,
+        sync: Syncer | None = None,
+        refresh_cap_s: float = REFRESH_CAP_S,
+    ) -> None:
         self._sm = sm
         self._clock = clock or SystemClock()
+        self._sync = sync
+        self._refresh_cap_s = refresh_cap_s
         self._handlers: list[ToolHandler] = [
             FunctionTool(self.data_spec, self._data),
             FunctionTool(self.status_rule_spec, self._status_rule),
@@ -394,16 +460,16 @@ class StudyToolkit:
             args = StudyDataArgs.model_validate(arguments)
         except ValidationError as exc:
             return _invalid(exc)
-        now = aware(self._clock.now())
         try:
+            refreshed = await self._refresh(user_id, args) if args.refresh else {}
+            if isinstance(refreshed, ToolResult):
+                return refreshed
+            # The clock is read after the refresh: the ages are those of the data returned.
+            now = aware(self._clock.now())
             async with self._sm() as session:
                 spaces = await spaces_of(session, user_id)
                 if args.space_id is not None and all(s.id != args.space_id for s in spaces):
-                    return ToolResult.failure(
-                        "not_found",
-                        "Такого вуза у студента нет.",
-                        hint="space_id — из сводки в контексте или space_create/source_list.",
-                    )
+                    return _no_space()
                 zone = _zone_for(spaces, args.space_id)
                 try:
                     start = parse_moment(args.from_, zone)
@@ -413,23 +479,51 @@ class StudyToolkit:
                         "invalid_arguments",
                         "from/to: нужна ISO-дата (2026-11-12) или дата-время (2026-11-12T10:00).",
                     )
-                data: dict[str, Any] = {}
-                for kind in args.kinds:
-                    rows = await self._read(session, user_id, kind, args, now, zone, start, end)
-                    data[kind] = _section(kind, rows, args.limit)
                 freshness = await source_freshness(
                     session, user_id, now=now, space_id=args.space_id, spaces=spaces
                 )
+                # `now` and `sources` first: whatever is trimmed, freshness reaches the model.
+                data: dict[str, Any] = {
+                    "now": now.astimezone(zone).isoformat(timespec="minutes"),
+                    "sources": [
+                        {**source.data(), **_refresh_data(refreshed.get(source.id))}
+                        for source in freshness
+                    ],
+                }
+                for kind in args.kinds:
+                    rows = await self._read(session, user_id, kind, args, now, zone, start, end)
+                    data[kind] = _section(kind, rows, args.limit)
         except BotaiError as exc:
             return ToolResult.failure(exc.code.value, exc.detail)
-        data["sources"] = [source.data() for source in freshness]
-        data["now"] = now.astimezone(zone).isoformat(timespec="minutes")
-        counts = ", ".join(f"{kind}: {data[kind]['count']}" for kind in args.kinds)
-        oldest = max((s.age_minutes for s in freshness if s.age_minutes is not None), default=None)
-        summary = f"Сохранённые данные — {counts}."
-        if oldest is not None:
-            summary += f" Старейший источник обновлён {oldest} мин назад."
-        return ToolResult.success(summary=summary, data=data)
+        fit_budget(data, list(args.kinds))
+        return ToolResult.success(summary=_data_summary(data, args.kinds, refreshed), data=data)
+
+    async def _refresh(
+        self, user_id: str, args: StudyDataArgs
+    ) -> dict[str, RefreshOutcome] | ToolResult:
+        """Sync the due sources of the requested kinds first (`study_refresh`); never fails the
+        read: a source that could not be refreshed is an outcome, not an error."""
+        now = aware(self._clock.now())
+        async with self._sm() as session:
+            spaces = await spaces_of(session, user_id)
+            if args.space_id is not None and all(s.id != args.space_id for s in spaces):
+                return _no_space()
+            decided, due = await plan_refresh(
+                session,
+                user_id,
+                kinds=args.kinds,
+                space_id=args.space_id,
+                now=now,
+                max_age_minutes=args.max_age_minutes,
+            )
+        if due and self._sync is None:
+            decided.update(
+                {source_id: RefreshOutcome("skipped", error="unavailable") for source_id in due}
+            )
+            return decided
+        if due and self._sync is not None:
+            decided.update(await run_refresh(self._sync, user_id, due, cap_s=self._refresh_cap_s))
+        return decided
 
     async def _read(
         self,
@@ -624,9 +718,7 @@ class StudyToolkit:
             return _invalid(exc)
         try:
             async with self._sm() as session:
-                row = await overrides.set_user_state(
-                    session, user_id, args.deadline_id, args.state, now=self._clock.now()
-                )
+                row = await overrides.set_user_state(session, user_id, args.deadline_id, args.state)
                 data = {
                     "deadlineId": row.id,
                     "title": clip(row.title, TEXT_CHARS),
@@ -647,6 +739,40 @@ class StudyToolkit:
             else f"Задание «{data['title']}» отмечено: {args.state}."
         )
         return ToolResult.success(summary=summary, data=data)
+
+
+def _no_space() -> ToolResult:
+    return ToolResult.failure(
+        "not_found",
+        "Такого вуза у студента нет.",
+        hint="space_id — из сводки в контексте.",
+    )
+
+
+def _refresh_data(outcome: RefreshOutcome | None) -> dict[str, Any]:
+    return outcome.data() if outcome is not None else {}
+
+
+def _data_summary(
+    data: Mapping[str, Any], kinds: list[StudyKind], refreshed: Mapping[str, RefreshOutcome]
+) -> str:
+    counts = ", ".join(
+        f"{kind}: {len(data[kind]['items'])} из {data[kind]['total']}" for kind in kinds
+    )
+    summary = f"Сохранённые данные — {counts}."
+    ages = [s["ageMinutes"] for s in data["sources"] if s.get("ageMinutes") is not None]
+    if ages:
+        summary += f" Старейший источник обновлён {max(ages)} мин назад."
+    if refreshed:
+        by_status: dict[str, int] = {}
+        for outcome in refreshed.values():
+            by_status[outcome.status] = by_status.get(outcome.status, 0) + 1
+        summary += " Обновление: " + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items()))
+        if any(o.status in ("failed", "timeout", "skipped") for o in refreshed.values()):
+            summary += " — ответь по сохранённым данным и скажи, что обновить не удалось."
+        else:
+            summary += "."
+    return summary
 
 
 def _zone_for(spaces: list[SpaceRef], space_id: str | None) -> ZoneInfo:

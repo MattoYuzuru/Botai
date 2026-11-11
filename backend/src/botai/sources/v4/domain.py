@@ -16,13 +16,15 @@ The v4 runner reads a playbook and coerces every record to the same column dicts
   skipped, not silently dropped;
 * after the rows of `grades`, `profile` or `ranking` are written, the system panels of the
   university are ensured (`panels.service.ensure_default_panels`, idempotent, D-039);
-* the student's status rules decide the `state` of a deadline whose `state_text` they name, over
-  the parser's state (`domain.overrides`, D-045); the student's own mark (`user_state`) is never
-  written here;
-* `changed_at` of a grade or a deadline (the "Новое" feed, docs/v4/27 §5.5) is set to `now` when a
-  row appears after the source's first successful sync — and after the first sync that brought
-  this kind at all, so a playbook that learns to read grades does not flood the feed with history —
-  and when a grade's value or a deadline's state changes. Nothing else touches it.
+* a deadline keeps the parser's state as `source_state`; the student's status rules decide its
+  `state` when they name its `state_text` (`domain.overrides`, D-045); the student's own mark
+  (`user_state`) is never written here;
+* `changed_at` of a grade or a deadline (the "Новое" feed, docs/v4/27 §5.5) means "the source
+  changed it": set to `now` when a row appears after the source's first successful sync — and
+  after the first sync that brought this kind at all, so a playbook that learns to read grades does
+  not flood the feed with history — and when a grade's value or a deadline's stored state (the
+  source's, through the rules) changes. A rule's recompute or a mark never sets it, and the sync
+  after a recompute finds the same stored state, so it is no news either.
 
 Writers of one source are serialized by an advisory transaction lock, so two concurrent syncs of
 one source cannot insert the same natural key twice.
@@ -258,15 +260,12 @@ async def _apply_status_rules(
     source_id: str,
     rows: dict[str, tuple[DomainRecord, Mapping[str, Any]]],
 ) -> dict[str, tuple[DomainRecord, Mapping[str, Any]]]:
-    """The deadlines with the student's status rules applied: a rule beats the parser's state."""
+    """The deadlines with the student's status rules applied: the parser's state is kept as
+    `source_state`, a rule (when one names the status text) decides `state` over it."""
     rules = await overrides.rules_of(session, user_id, source_ids=[source_id])
-    if not rules:
-        return rows
     out: dict[str, tuple[DomainRecord, Mapping[str, Any]]] = {}
     for external_id, (record, fields) in rows.items():
-        state = overrides.rule_state(rules, source_id, fields.get("state_text"))
-        out[external_id] = (
-            record,
-            fields if state is None or state == fields.get("state") else {**fields, "state": state},
-        )
+        parsed = fields.get("state")
+        ruled = overrides.rule_state(rules, source_id, fields.get("state_text")) if rules else None
+        out[external_id] = (record, {**fields, "source_state": parsed, "state": ruled or parsed})
     return out

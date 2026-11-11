@@ -4942,6 +4942,13 @@
               }
             ],
             "title": "Version"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/RunWarningOut"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -4965,6 +4972,41 @@
           "discoveredEndpoints"
         ],
         "title": "RunReportOut",
+        "type": "object"
+      },
+      "RunWarningOut": {
+        "description": "A hint about the records of a run (D-043 §3.5); never an error.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "kinds",
+          "examples"
+        ],
+        "title": "RunWarningOut",
         "type": "object"
       },
       "ScheduleEventOut": {

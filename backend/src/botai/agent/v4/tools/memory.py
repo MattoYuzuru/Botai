@@ -115,9 +115,12 @@ class MemoryToolkit:
         *,
         sm: async_sessionmaker[AsyncSession],
         mask: Callable[[str], str] | None = None,
+        student_text: str | None = None,
     ) -> None:
         self._sm = sm
         self._mask = mask
+        # The student's own message of this turn (chat only): the evidence a rule needs.
+        self._student_text = student_text
         self._handlers: list[ToolHandler] = [
             FunctionTool(self.remember_spec, self._remember),
             FunctionTool(self.forget_spec, self._forget),
@@ -139,10 +142,14 @@ class MemoryToolkit:
                 "secret_in_note",
                 "В заметке есть значение секрета. Секреты не запоминаются: запиши факт без него.",
             )
+        if args.kind == "rule":
+            refused = self._rule_refusal(args.note, context)
+            if refused is not None:
+                return refused
         try:
             async with self._sm() as session:
                 added = await notes.add_note(session, context.user_id, args.note, kind=args.kind)
-                note_id, text = added.note.id, added.note.note
+                note_id, text, kind = added.note.id, added.note.note, added.note.kind
         except BotaiError as exc:
             return ToolResult.failure(
                 "note_refused",
@@ -156,8 +163,25 @@ class MemoryToolkit:
             )
         return ToolResult.success(
             summary="Запомнено." if added.created else "Это уже есть в памяти.",
-            data={"noteId": note_id, "note": text, "kind": args.kind, "created": added.created},
+            data={"noteId": note_id, "note": text, "kind": kind, "created": added.created},
         )
+
+    def _rule_refusal(self, rule: str, context: ToolContext) -> ToolResult | None:
+        """A rule is a standing instruction: only a chat turn may write it, and only when the
+        student's own message of this turn says it (a page or a tool result cannot plant one)."""
+        if context.metadata.get("kind") != "chat":
+            return ToolResult.failure(
+                "note_refused",
+                "Не запомнено: правило студента пишется только в чате.",
+                hint="Правило сохраняется только по прямой просьбе студента в чате.",
+            )
+        if not notes.asked_by_student(rule, self._student_text):
+            return ToolResult.failure(
+                "note_refused",
+                "Не запомнено: в сообщении студента этого правила нет.",
+                hint="Правило сохраняется только по прямой просьбе студента; спроси его.",
+            )
+        return None
 
     async def _forget(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         if context.user_id is None:

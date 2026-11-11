@@ -79,7 +79,7 @@ async def test_the_student_marks_a_task_and_clears_the_mark(
     assert response.status_code == 200, response.text
     body = response.json()
     assert (body["state"], body["stateSource"]) == ("submitted", "student")
-    assert body["changedAt"] == "2026-10-27T12:00:00Z"
+    assert body["changedAt"] is None  # the student's own move is not news from the source
     assert "ДЗ 1" not in await _deadlines(w.client)  # done for the student: off the list
     assert (await _deadlines(w.client, done=True))["ДЗ 1"]["stateSource"] == "student"
 
@@ -114,6 +114,129 @@ async def test_a_mark_on_one_copy_decides_the_task_in_every_source(
     kept = (await _deadlines(w.client, done=True))["Курсовая"]
     assert kept["provenance"]["sourceId"] == primary  # the primary's row is shown
     assert (kept["state"], kept["stateSource"]) == ("submitted", "student")
+
+
+async def test_marking_one_copy_writes_the_mark_on_every_copy(
+    world: World, tx_sessionmaker: Sm
+) -> None:
+    w = world
+    primary = await _v4_source(tx_sessionmaker, w.user_id, w.space_a, title="ЛК")
+    other = await _v4_source(
+        tx_sessionmaker, w.user_id, w.space_a, title="Календарь", url="https://fakeuni.test/cal"
+    )
+    elsewhere = await _v4_source(
+        tx_sessionmaker, w.user_id, w.space_b, title="Другой вуз", url="https://other.test/app"
+    )
+    async with tx_sessionmaker() as session:
+        session.add(
+            SourcePriority(space_id=w.space_a, kind="deadlines", source_ids=[primary, other])
+        )
+        await session.commit()
+    shown = v4_deadline(w.user_id, primary, at(12, day=30), title="Курсовая работа")
+    copy = v4_deadline(w.user_id, other, at(12, day=30), title="  курсовая   РАБОТА ")
+    foreign_space = v4_deadline(w.user_id, elsewhere, at(12, day=30), title="Курсовая работа")
+    later = v4_deadline(w.user_id, other, at(13, day=30), title="Курсовая работа")
+    await add(tx_sessionmaker, shown, copy, foreign_space, later)
+
+    # the student marks the copy the list does not show; the shown one answers the same
+    response = await w.client.patch(f"/api/v1/deadlines/{copy.id}", json={"userState": "graded"})
+    assert response.status_code == 200, response.text
+    assert (response.json()["state"], response.json()["stateSource"]) == ("graded", "student")
+    async with tx_sessionmaker() as session:
+        marks = {
+            row_id: mark
+            for row_id, mark in await session.execute(select(Deadline.id, Deadline.user_state))
+        }
+    assert marks[shown.id] == marks[copy.id] == "graded"
+    assert marks[foreign_space.id] is None  # another university: another task
+    assert marks[later.id] is None  # another due moment: another task
+    listed = {
+        d["id"]: d
+        for d in await _get(w.client, "/api/v1/deadlines", include_done="true", space_id=w.space_a)
+    }
+    assert copy.id not in listed  # the dedupe keeps the primary's row
+    assert (listed[shown.id]["state"], listed[later.id]["state"]) == ("graded", "open")
+
+    cleared = await w.client.patch(f"/api/v1/deadlines/{shown.id}", json={"userState": None})
+    assert cleared.json()["stateSource"] == "source"
+    async with tx_sessionmaker() as session:
+        left = await session.scalars(
+            select(Deadline.user_state).where(Deadline.user_state.is_not(None))
+        )
+        assert list(left) == []
+
+
+async def test_a_rule_is_upserted_and_its_removal_restores_the_source_state(
+    world: World, tx_sessionmaker: Sm
+) -> None:
+    w = world
+    source = await _v4_source(tx_sessionmaker, w.user_id, w.space_a)
+    sure = v4_deadline(
+        w.user_id,
+        source,
+        at(12, day=29),
+        title="A",
+        state="graded",
+        source_state="graded",
+        state_text="Проверено куратором",
+    )
+    wordless = v4_deadline(
+        w.user_id,
+        source,
+        at(12, day=30),
+        title="B",
+        state="unknown",
+        state_text="Проверено куратором",
+    )
+    await add(tx_sessionmaker, sure, wordless)
+    async with tx_sessionmaker() as session:
+        first = await overrides.set_status_rule(
+            session, w.user_id, source_id=source, label="Проверено куратором", state="open"
+        )
+        second = await overrides.set_status_rule(
+            session, w.user_id, source_id=source, label="проверено  куратором", state="submitted"
+        )
+        everywhere = await overrides.set_status_rule(
+            session, w.user_id, source_id=None, label="Проверено куратором", state="open"
+        )
+        again = await overrides.set_status_rule(
+            session, w.user_id, source_id=None, label="Проверено куратором", state="graded"
+        )
+        await session.commit()
+    assert first.id == second.id
+    assert second.state == "submitted"
+    assert everywhere.id == again.id
+    async with tx_sessionmaker() as session:
+        assert len(await overrides.list_status_rules(session, w.user_id)) == 2
+        result = await session.execute(select(Deadline.title, Deadline.state))
+        states = {title: state for title, state in result}
+        assert states == {"A": "submitted", "B": "submitted"}
+        await overrides.delete_status_rule(session, w.user_id, second.id)
+        await overrides.delete_status_rule(session, w.user_id, again.id)
+        await session.commit()
+    async with tx_sessionmaker() as session:
+        rows = {r.title: r for r in await session.scalars(select(Deadline))}
+    # the parser was sure: its state comes back; no stored state: the words are read again
+    assert rows["A"].state == "graded"
+    assert rows["B"].state == "graded"  # «Проверено …» reads as graded
+    assert rows["A"].changed_at is None
+    assert rows["B"].changed_at is None
+
+
+async def test_a_rule_leaves_a_row_without_words_or_source_state_alone(
+    world: World, tx_sessionmaker: Sm
+) -> None:
+    w = world
+    source = await _v4_source(tx_sessionmaker, w.user_id, w.space_a)
+    row = v4_deadline(w.user_id, source, at(12, day=29), title="A", state="open")
+    await add(tx_sessionmaker, row)
+    async with tx_sessionmaker() as session:
+        rule = await overrides.set_status_rule(
+            session, w.user_id, source_id=source, label="open", state="graded"
+        )
+        await overrides.delete_status_rule(session, w.user_id, rule.id)
+        await session.commit()
+        assert await session.scalar(select(Deadline.state).where(Deadline.id == row.id)) == "open"
 
 
 async def test_status_rules_recompute_the_stored_tasks_at_once(
