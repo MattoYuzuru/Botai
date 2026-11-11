@@ -5,7 +5,8 @@
  *
  * Для проверки состояний данных адрес принимает `?data=`: `quiet` (вузы подключены, данных нет), `freeday` (сегодня
  * пар нет, на следующие дни они есть),
- * `repairing`, `waiting`, `error` — состояние одного из подключений. Значение запоминается на вкладку.
+ * `repairing`, `waiting`, `error` — состояние одного из подключений, `legacy` — оценки в форме старых playbook'ов
+ * (без слоёв и предметов, D-043). Значение запоминается на вкладку.
  */
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
@@ -20,6 +21,7 @@ import {
   seedDocuments,
   seedEvents,
   seedGrades,
+  seedLegacyGrades,
   seedNews,
   seedPeople,
   seedSourceOf,
@@ -39,8 +41,8 @@ export interface DataHandlerOptions {
   variant?: DataVariant | null;
 }
 
-export type DataVariant = "quiet" | "freeday" | "repairing" | "waiting" | "error";
-const VARIANTS: readonly DataVariant[] = ["quiet", "freeday", "repairing", "waiting", "error"];
+export type DataVariant = "quiet" | "freeday" | "repairing" | "waiting" | "error" | "legacy";
+const VARIANTS: readonly DataVariant[] = ["quiet", "freeday", "repairing", "waiting", "error", "legacy"];
 const STORAGE_KEY = "botai.mock.data";
 
 function readVariant(): DataVariant | null {
@@ -117,6 +119,8 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
   const variant = options.variant === undefined ? readVariant() : options.variant;
   applyVariant(db, variant);
   const quiet = variant === "quiet";
+  /** `legacy`: оценки в форме старых playbook'ов — без слоёв и предметов (`seedLegacyGrades`). */
+  const grades = () => (variant === "legacy" ? seedLegacyGrades(db) : seedGrades(db));
   /** `freeday`: у сегодняшнего дня пар нет ни в «Сегодня», ни в расписании; остальные дни как обычно. */
   const free = (event: { startsAt: string }) =>
     variant !== "freeday" ||
@@ -223,7 +227,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       // «Новое» на «Сегодня»: три дня, не больше пяти записей (D-044 §5.5).
       const updates = quiet
         ? []
-        : seedUpdates(db, 3)
+        : seedUpdates(db, 3, grades())
             .filter((u) => liveProvenance(u.provenance, live))
             .slice(0, 5);
       const body: S["TodayOut"] & { updates: StudyUpdate[] } = {
@@ -305,7 +309,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 7) || 7, 1), 30);
       const live = new Set(db.connections.filter((c) => c.status !== "disabled").map((c) => c.id));
       return HttpResponse.json(
-        seedUpdates(db, days)
+        seedUpdates(db, days, grades())
           .filter((u) => liveProvenance(u.provenance, live))
           .filter((u) => !spaceId || u.provenance.spaceId === spaceId),
       );
@@ -344,7 +348,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
     }),
 
     listHandler("*/api/v1/courses", () => seedCourses(db)),
-    listHandler("*/api/v1/grades", () => seedGrades(db)),
+    listHandler("*/api/v1/grades", grades),
     listHandler("*/api/v1/people", () => seedPeople(db)),
     listHandler("*/api/v1/news", () => seedNews(db)),
 
@@ -364,7 +368,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         ["courses", mine(seedCourses(db))],
         ["scheduleEvents", events.length],
         ["deadlines", deadlines],
-        ["grades", mine(seedGrades(db))],
+        ["grades", mine(grades())],
         ["people", mine(seedPeople(db))],
         ["locations", rooms.size],
         ["news", mine(seedNews(db))],

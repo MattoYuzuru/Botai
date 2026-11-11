@@ -847,6 +847,156 @@ const GRADES: readonly GradeTemplate[] = [
   },
 ];
 
+/**
+ * Оценки «как у всех сегодня» (вариант `?data=legacy`): старые playbook'и слоёв не знают. Синтетика по форме
+ * production, без чьих-либо данных.
+ *
+ * - A: оценка за курс — слоя нет, `courseTitle` нет (`courseId` есть, но предмета с ним нет), название курса в `title`,
+ *   значение «9,41» или «2», в `scale` — подпись, а не шкала («оценка LMS», «баллы за курс»), чисел нет, даты нет.
+ *   Две записи одного курса с разными значениями — обычное дело.
+ * - B: работа с баллом без предмета: «ДЗ 3. …», «19» «из 20», `valueNum`/`scaleMax`, слоя нет.
+ * - Первый вуз — только A; второй — A и B, плюс работы без числа («зачтено») с `assignmentId`.
+ */
+interface LegacyTemplate {
+  title: string;
+  value: string;
+  scale: string | null;
+  source: SeedSource;
+  courseId?: string;
+  numbers?: { valueNum: number; scaleMax: number };
+  assignmentId?: string;
+  daysAgo?: number;
+}
+
+const LEGACY_GRADES: readonly LegacyTemplate[] = [
+  {
+    title: "Алгоритмы и структуры данных 1 (2025/2026 модули: 2,3)",
+    value: "9,41",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-1",
+  },
+  {
+    title: "Безопасность жизнедеятельности (2025/2026 модули: 1,2)",
+    value: "5",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-2",
+  },
+  {
+    title: "Безопасность жизнедеятельности (2025/2026 модули: 1,2)",
+    value: "5,44",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-3",
+  },
+  {
+    title: "История России (2025/2026 модули: 1,2,3,4)",
+    value: "0,00",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-4",
+  },
+  {
+    title: "История России (2025/2026 модули: 1,2,3,4)",
+    value: "2,37",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-5",
+  },
+  {
+    title: "Курсовой проект, 2 курс 26-27 уч. г.",
+    value: "2,00",
+    scale: "оценка LMS",
+    source: "hse",
+    courseId: "lms-6",
+  },
+  {
+    title: "(Курс) Гибкие методологии разработки",
+    value: "0",
+    scale: "баллы за курс",
+    source: "cu",
+    courseId: "c-1",
+  },
+  {
+    title: "(Курс) Методы и системы обработки больших данных",
+    value: "2",
+    scale: "баллы за курс",
+    source: "cu",
+    courseId: "c-2",
+  },
+  {
+    title: "ДЗ 3. Линейная регрессия и регуляризация",
+    value: "19",
+    scale: "из 20",
+    source: "cu",
+    numbers: { valueNum: 19, scaleMax: 20 },
+    daysAgo: 4,
+  },
+  {
+    title: "ДЗ 4. Деревья решений",
+    value: "17",
+    scale: "из 20",
+    source: "cu",
+    numbers: { valueNum: 17, scaleMax: 20 },
+    daysAgo: 2,
+  },
+  {
+    title: "Семинар 5: устный опрос",
+    value: "зачтено",
+    scale: "зачёт",
+    source: "cu",
+    assignmentId: "a-5",
+    daysAgo: 6,
+  },
+  {
+    title: "Семинар 6: устный опрос",
+    value: "зачтено",
+    scale: "зачёт",
+    source: "cu",
+    assignmentId: "a-6",
+    daysAgo: 5,
+  },
+  {
+    title: "Семинар 7: устный опрос",
+    value: "не зачтено",
+    scale: "зачёт",
+    source: "cu",
+    assignmentId: "a-7",
+    daysAgo: 3,
+  },
+];
+
+export function seedLegacyGrades(db: MockDb): Grade[] {
+  return LEGACY_GRADES.flatMap((grade, index) => {
+    const prov = provenance(db, grade.source, "portal", "/grades");
+    if (!prov) return [];
+    const at =
+      grade.daysAgo === undefined ? null : new Date(db.now() - grade.daysAgo * 24 * HOUR).toISOString();
+    return [
+      {
+        id: `legacy-${index}`,
+        title: grade.title,
+        value: grade.value,
+        scale: grade.scale,
+        weight: null,
+        courseTitle: null,
+        courseId: grade.courseId ?? null,
+        gradedAt: at,
+        valueNum: grade.numbers?.valueNum ?? null,
+        scaleMax: grade.numbers?.scaleMax ?? null,
+        layer: null,
+        period: null,
+        assignmentId: grade.assignmentId ?? null,
+        comment: null,
+        url: null,
+        changedAt: at,
+        provenance: prov,
+      },
+    ];
+  });
+}
+
 /** Число и максимум, если источник дал их однозначно: явный `max` или «10 баллов». Иначе — ничего. */
 function gradeNumbers(template: GradeTemplate): { valueNum: number | null; scaleMax: number | null } {
   const valueNum = Number(template.value.replace(",", "."));
@@ -1020,11 +1170,11 @@ const DAY = 24 * HOUR;
  * «Новое» (D-044 §5.5) из тех же сидов: оценки и задания, у которых `changedAt` попал в окно `days`, свежие первыми.
  * Форма — `StudyUpdate` (контракт потока A).
  */
-export function seedUpdates(db: MockDb, days: number): StudyUpdate[] {
+export function seedUpdates(db: MockDb, days: number, allGrades: Grade[] = seedGrades(db)): StudyUpdate[] {
   const since = db.now() - days * DAY;
   const fresh = (at: string | null | undefined): at is string =>
     Boolean(at) && Date.parse(at as string) >= since;
-  const grades = seedGrades(db)
+  const grades = allGrades
     .filter((grade) => fresh(grade.changedAt))
     .map(
       (grade): StudyUpdate => ({

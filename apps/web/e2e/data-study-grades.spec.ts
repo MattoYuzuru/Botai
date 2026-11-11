@@ -118,4 +118,37 @@ test.describe("«Учёба»: успеваемость", () => {
     await page.getByRole("alertdialog").getByRole("button", { name: "Удалить" }).click();
     await expect(memory.getByRole("region", { name: "Правила статусов" })).toHaveCount(0);
   });
+
+  test("старые записи без слоёв (форма production): карточки курсов, подпись не шкала, без горизонтальной прокрутки", async ({
+    page,
+  }) => {
+    await open(page, "/study?data=legacy", "connected");
+    const obzh = card(page, "Безопасность жизнедеятельности \\(2025\\/2026 модули: 1,2\\)");
+    await expect(obzh).toBeVisible();
+    await expect(obzh.locator("[data-headline-meta]")).toHaveText("Результат · оценка LMS · ещё 1");
+    await expect(obzh).not.toContainText("Проверено");
+    await expect(card(page, "Без предмета")).toContainText("Проверено: 5 работ");
+    // Подпись «оценка LMS» не переносится по словам: одна строка.
+    const meta = await obzh.locator("[data-headline-meta]").boundingBox();
+    expect(meta?.height ?? 99).toBeLessThan(24);
+    // Полоса работ «Без предмета» не выходит за карточку.
+    const box = await card(page, "Без предмета").boundingBox();
+    const strip = await card(page, "Без предмета").locator("[data-score-strip]").boundingBox();
+    expect((strip?.x ?? 0) + (strip?.width ?? 0)).toBeLessThanOrEqual((box?.x ?? 0) + (box?.width ?? 0));
+    await expectFitsWidth(page, page.viewportSize()?.width ?? 0, "успеваемость legacy");
+    if (!wide(page)) {
+      for (const width of [390, 320]) {
+        await page.setViewportSize({ width, height: 800 });
+        await expectFitsWidth(page, width, `успеваемость legacy ${width}`);
+      }
+      // Телефон: панели свёрнуты, настройки доступны.
+      await expect(page.getByRole("button", { name: /Показать панели/ })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      await expect(page.getByRole("button", { name: "Настроить" })).toBeVisible();
+    } else {
+      await expect(page.getByRole("button", { name: /Показать панели/ })).toHaveCount(0);
+    }
+  });
 });

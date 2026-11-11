@@ -13,6 +13,24 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
+/**
+ * Панели — ноутбучной шириной: на телефоне «Успеваемость» сворачивает их под кнопку (это проверяет
+ * `performance-view.test.tsx`), здесь проверяются сами панели.
+ */
+function emulateLaptop() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query.includes("min-width: 1024px"),
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }));
+}
+
+beforeEach(emulateLaptop);
 beforeEach(() => {
   current.server.close();
   current = createDataServer("connected");
@@ -23,6 +41,7 @@ afterEach(() => {
   window.localStorage.clear();
   useActiveSpaceStore.setState({ id: "all" });
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 afterAll(() => {
   current.server.close();

@@ -1,4 +1,4 @@
-import { AccentScope, Banner, Button, MonogramBadge, Skeleton } from "@botai/design";
+import { AccentScope, Banner, Button, Icon, MonogramBadge, Skeleton } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { isApiError } from "@/api/errors";
@@ -78,8 +78,17 @@ function PanelGrid({
 export function PanelsSection({
   scope,
   title = SECTION_TITLE,
+  folded = false,
+  onFoldedChange,
 }: {
   scope: Scope;
+  /**
+   * Панели свёрнуты: видны заголовок, «Настроить» и «Показать панели». На телефоне «Успеваемость» сворачивает их,
+   * когда выше уже есть «Предметы»: те же оценки не идут по экрану второй и третьей лентой.
+   */
+  folded?: boolean;
+  /** Есть — под заголовком кнопка «Показать панели» / «Скрыть панели». */
+  onFoldedChange?: (folded: boolean) => void;
   /**
    * Заголовок блока. Внутри «Успеваемости» (D-046) раздел уже так называется — там блок подписан «Панели»,
    * чтобы на экране не было двух «Успеваемостей».
@@ -121,6 +130,9 @@ export function PanelsSection({
   }
   if (error || (configurable.length === 0 && suggestions.length === 0)) return null;
 
+  // Сворачивать есть что — панели или предложения агента; иначе кнопки нет и прятать нечего.
+  const foldable = Boolean(onFoldedChange) && shown.length + suggestions.length > 0;
+  const isFolded = foldable && folded;
   const shownGroups = groupBySpace(shown);
   const suggestionGroups = groupBySpace(suggestions);
   const spacesInOrder = scope.spaces.flatMap((space) => {
@@ -154,11 +166,24 @@ export function PanelsSection({
         )}
       </div>
 
+      {foldable && (
+        <Button
+          variant="secondary"
+          className="w-full"
+          aria-expanded={!isFolded}
+          aria-controls="study-panels-body"
+          onClick={() => onFoldedChange?.(!isFolded)}
+        >
+          {isFolded ? `Показать панели (${shown.length + suggestions.length})` : "Скрыть панели"}
+          <Icon name={isFolded ? "chevron-down" : "chevron-up"} size={20} />
+        </Button>
+      )}
+
       {shown.length === 0 && configurable.length > 0 && (
         <p className="px-1 type-ui text-fg-muted">Все панели выключены. Включить их можно в настройках.</p>
       )}
 
-      <div className="flex flex-col gap-6">
+      <div id="study-panels-body" hidden={isFolded} className="flex flex-col gap-6">
         {spacesInOrder.map(({ space, panels, proposals }) => (
           <AccentScope key={space.id} hue={space.accentHue}>
             <div

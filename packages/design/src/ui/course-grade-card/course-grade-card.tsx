@@ -8,8 +8,15 @@ export interface CourseGradeHeadline {
   label: string;
   /** Значение, как его дал источник: «7,4», «зачтено». */
   value: string;
-  /** Шкала рядом: «из 10» или слово шкалы источника. */
+  /** Шкала рядом со значением — только «из 10», когда шкала известна числом. */
   suffix?: string | null;
+  /**
+   * Подпись источника, которая не шкала («оценка Smart LMS», «баллы за курс», «зачёт»): приглушённо в строке подписи,
+   * одной строкой с многоточием — ширину колонки она не задаёт.
+   */
+  caption?: string | null;
+  /** Сколько ещё записей того же вида у предмета: «ещё 1» (все — в листе предмета). */
+  more?: number;
   /** Период источника: «Осень 2026», «2 модуль». */
   period?: string | null;
   /** Доля этой записи `valueNum / scaleMax` — полоса под значением; `null` — полосы нет. */
@@ -48,8 +55,13 @@ export function CourseGradeCard({
   className,
 }: CourseGradeCardProps) {
   const spokenHeadline = headline
-    ? `${headline.label}${headline.period ? ` (${headline.period})` : ""}: ${headline.value}${headline.suffix ? ` ${headline.suffix}` : ""}`
+    ? `${headline.label}${headline.period ? ` (${headline.period})` : ""}: ${headline.value}${headline.suffix ? ` ${headline.suffix}` : ""}${headline.caption ? `, ${headline.caption}` : ""}${headline.more ? `; ещё ${headline.more}` : ""}`
     : null;
+  const headlineMeta = headline
+    ? [headline.label, headline.period, headline.caption, headline.more ? `ещё ${headline.more}` : null]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
   const body = (
     <>
       <span className="flex min-w-0 items-start gap-2">
@@ -67,9 +79,9 @@ export function CourseGradeCard({
       {(headline || strip.length > 0) && (
         <span className="mt-auto flex min-w-0 items-end justify-between gap-4">
           {headline ? (
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="flex flex-wrap items-baseline gap-x-1.5">
-                <span className="break-words type-title text-fg" data-numeric="">
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                <span className="min-w-0 break-words type-title text-fg" data-numeric="">
                   {headline.value}
                 </span>
                 {headline.suffix && (
@@ -78,9 +90,8 @@ export function CourseGradeCard({
                   </span>
                 )}
               </span>
-              <span className="type-caption text-fg-subtle">
-                {headline.label}
-                {headline.period ? ` · ${headline.period}` : ""}
+              <span className="min-w-0 truncate type-caption text-fg-subtle" data-headline-meta="">
+                {headlineMeta}
               </span>
             </span>
           ) : (
@@ -92,7 +103,9 @@ export function CourseGradeCard({
               label="Последние работы"
               decorative
               size="md"
-              className="shrink-0 justify-end"
+              maxChips={1}
+              // Полоса не шире половины строки и обрезается внутри: значение и подпись слева всегда видны.
+              className="max-w-[55%] shrink justify-end"
             />
           )}
         </span>

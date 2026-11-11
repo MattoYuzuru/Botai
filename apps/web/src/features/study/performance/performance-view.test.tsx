@@ -24,6 +24,7 @@ beforeEach(() => useServer());
 afterEach(() => {
   current.server.resetHandlers();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   useActiveSpaceStore.setState({ id: "all" });
 });
 afterAll(() => {
@@ -58,7 +59,7 @@ describe("«Учёба» → «Успеваемость» (D-046)", () => {
     expect(math).toHaveAccessibleName(/Накоплено \(1 модуль\): 7,6 из 10/);
     expect(math).toHaveTextContent("Проверено: 4 работы");
     expect(await card("Теория вероятностей")).toHaveAccessibleName(
-      /Итог \(1 модуль 2026\/27\): зачтено зачёт/,
+      /Итог \(1 модуль 2026\/27\): зачтено, зачёт/,
     );
     // Предмет только с работами показывает последнюю оценку, а не выдуманный итог.
     expect(await card("Дискретная математика")).toHaveAccessibleName(/Последняя оценка: 7 из 10/);
@@ -147,6 +148,44 @@ describe("«Учёба» → «Успеваемость» (D-046)", () => {
     renderApp("/study");
     expect(await card("Продуктовый менеджмент")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Математический анализ\./ })).toBeNull();
+  });
+});
+
+describe("«Успеваемость»: старые записи без слоёв (форма production)", () => {
+  it("каждая оценка за курс — своя карточка «Результат»; подпись — не шкала; «Без предмета» — только работы", async () => {
+    useServer("legacy");
+    renderApp("/study");
+    const obzh = await card("Безопасность жизнедеятельности \\(2025\\/2026 модули: 1,2\\)");
+    expect(obzh).toHaveAccessibleName(/Результат: 5, оценка LMS; ещё 1/);
+    expect(obzh).not.toHaveTextContent("Проверено");
+    expect(obzh.querySelector("[data-score-strip]")).toBeNull();
+    expect(obzh.querySelector("[data-headline-meta]")).toHaveTextContent("Результат · оценка LMS · ещё 1");
+    const none = await card("Без предмета");
+    expect(none).toHaveTextContent("Проверено: 5 работ");
+    expect(none).toHaveAccessibleName(/Последняя оценка: 17 из 20/);
+    // Чипов без числа не больше одного, остальные свёрнуты в «+N».
+    expect(none.querySelector("[data-score-more]")).toHaveTextContent("+2");
+
+    await userEvent.click(obzh);
+    const sheet = await screen.findByRole("dialog", { name: /^Безопасность жизнедеятельности/ });
+    const results = within(sheet).getByRole("region", { name: "Результат" });
+    expect(
+      within(results)
+        .getAllByRole("listitem")
+        .map((row) => row.textContent),
+    ).toEqual([expect.stringContaining("5"), expect.stringContaining("5,44")]);
+    expect(results).toHaveTextContent("оценка LMS");
+  });
+
+  it("на телефоне при непустых «Предметах» панели свёрнуты под «Показать панели», «Настроить» доступно", async () => {
+    renderApp("/study");
+    const toggle = await screen.findByRole("button", { name: /Показать панели/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Настроить" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Рейтинг потока" })).toBeNull();
+    await userEvent.click(toggle);
+    expect(await screen.findAllByRole("heading", { name: "Рейтинг потока" })).not.toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Скрыть панели" })).toHaveAttribute("aria-expanded", "true");
   });
 });
 

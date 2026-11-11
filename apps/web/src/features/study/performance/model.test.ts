@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseScaleMax } from "@/features/data/scores";
 import type { Grade, StudyUpdate } from "@/features/data/types";
 import { provenanceFixture } from "@/test/data-fixtures";
 import {
@@ -10,6 +11,7 @@ import {
   headlineOf,
   layerOf,
   NO_COURSE,
+  placementOf,
   scoreLabel,
   scoreText,
   sortUpdates,
@@ -40,12 +42,45 @@ function grade(patch: Partial<Grade> & { id: string }): Grade {
 describe("значение и шкала словами", () => {
   it("число с максимумом — «8 из 10»; десятичная запятая остаётся как у источника", () => {
     expect(scoreLabel({ value: "8", scale: "10 баллов", scaleMax: 10 })).toBe("8 из 10");
-    expect(scoreText({ value: "7,5", scale: null, scaleMax: 10 })).toEqual({ value: "7,5", suffix: "из 10" });
+    expect(scoreText({ value: "7,5", scale: null, scaleMax: 10 })).toEqual({
+      value: "7,5",
+      suffix: "из 10",
+      caption: null,
+    });
     expect(scoreLabel({ value: "4,6", scale: null, scaleMax: 5 })).toBe("4,6 из 5");
   });
 
-  it("без максимума — шкала источника; слово без шкалы — как есть; уже «8 из 10» не дополняется", () => {
-    expect(scoreLabel({ value: "86", scale: "100 баллов", scaleMax: null })).toBe("86 · 100 баллов");
+  it("шкала словами читается как шкала: «из 20», «/ 10», «100 баллов», «5-балльная»", () => {
+    expect(parseScaleMax("из 20")).toBe(20);
+    expect(parseScaleMax("/ 10")).toBe(10);
+    expect(parseScaleMax("100 баллов")).toBe(100);
+    expect(parseScaleMax("5-балльная шкала")).toBe(5);
+    expect(parseScaleMax("баллы за курс")).toBeNull();
+    expect(parseScaleMax("оценка Smart LMS")).toBeNull();
+    expect(scoreLabel({ value: "86", scale: "100 баллов", scaleMax: null })).toBe("86 из 100");
+    expect(scoreText({ value: "19", scale: "из 20", scaleMax: 20 })).toEqual({
+      value: "19",
+      suffix: "из 20",
+      caption: null,
+    });
+  });
+
+  it("подпись, которая не шкала, — отдельно, без «из N»; в одну строку её кладёт компонент", () => {
+    expect(scoreText({ value: "10,01", scale: "оценка Smart LMS", scaleMax: null })).toEqual({
+      value: "10,01",
+      suffix: null,
+      caption: "оценка Smart LMS",
+    });
+    expect(scoreText({ value: "2", scale: "баллы за курс" })).toEqual({
+      value: "2",
+      suffix: null,
+      caption: "баллы за курс",
+    });
+    // Метка в тесных местах — только значение.
+    expect(scoreLabel({ value: "2", scale: "баллы за курс" })).toBe("2");
+  });
+
+  it("слово без шкалы — как есть; уже «8 из 10» не дополняется", () => {
     expect(scoreLabel({ value: "зачтено", scale: null, scaleMax: null })).toBe("зачтено");
     expect(scoreLabel({ value: "зачтено", scale: "зачтено" })).toBe("зачтено");
     expect(scoreLabel({ value: "8 из 10", scale: null, scaleMax: 10 })).toBe("8 из 10");
@@ -142,6 +177,66 @@ describe("предметы по слоям", () => {
       fill: null,
       text: "зачтено",
     });
+  });
+});
+
+describe("старые записи без слоёв и предметов (форма production)", () => {
+  const legacy = (patch: Partial<Grade> & { id: string }): Grade =>
+    grade({
+      courseTitle: null,
+      layer: null,
+      scale: "оценка Smart LMS",
+      valueNum: null,
+      scaleMax: null,
+      gradedAt: null,
+      courseId: `c-${patch.id}`,
+      ...patch,
+    });
+  const rows = [
+    legacy({ id: "alg", title: "Алгоритмы 1 (2024/2025 модули: 2,3)", value: "10,01" }),
+    legacy({ id: "obzh-1", title: "Безопасность жизнедеятельности", value: "5" }),
+    legacy({ id: "obzh-2", title: "Безопасность  жизнедеятельности ", value: "5,44" }),
+    legacy({ id: "hw3", title: "ДЗ 3. Регрессия", value: "19", scale: "из 20", valueNum: 19, scaleMax: 20 }),
+    legacy({ id: "sem", title: "Семинар 5", value: "зачтено", scale: "зачёт", assignmentId: "a-5" }),
+    legacy({
+      id: "other",
+      title: "Алгоритмы 1 (2024/2025 модули: 2,3)",
+      provenance: provenanceFixture({ spaceId: "cu" }),
+    }),
+  ];
+
+  it("оценка за курс без предмета и слоя — карточка курса по своему названию, роль «Результат»", () => {
+    expect(placementOf(rows[0] as Grade)).toMatchObject({
+      title: "Алгоритмы 1 (2024/2025 модули: 2,3)",
+      role: "result",
+    });
+    // Работа с баллом из максимума и работа с заданием — в «Без предмета».
+    expect(placementOf(rows[3] as Grade)).toMatchObject({ title: null, role: "item" });
+    expect(placementOf(rows[4] as Grade)).toMatchObject({ title: null, role: "item" });
+    // Слой назван — итог или накопленное курса, даже с числами.
+    expect(
+      placementOf(legacy({ id: "f", title: "Физика", layer: "final", valueNum: 8, scaleMax: 10 })),
+    ).toMatchObject({ title: "Физика", role: "final" });
+  });
+
+  it("одинаковые названия одного вуза — одна карточка; «Проверено» считает только работы", () => {
+    const courses = groupCourses(rows);
+    const obzh = courses.find((course) => course.title === "Безопасность жизнедеятельности");
+    expect(obzh?.results.map((g) => g.id).sort()).toEqual(["obzh-1", "obzh-2"]);
+    expect(obzh?.items).toHaveLength(0);
+    expect(headlineOf(obzh as never)).toMatchObject({ label: "Результат", more: 1 });
+    // Одноимённый курс другого вуза — своя карточка.
+    expect(courses.filter((course) => course.title?.startsWith("Алгоритмы 1"))).toHaveLength(2);
+    const none = courses.find((course) => course.title === null);
+    expect(none?.items.map((g) => g.id).sort()).toEqual(["hw3", "sem"]);
+    expect(none?.results).toHaveLength(0);
+    // Карточки курсов без работ — тоже текущая учёба.
+    expect(activeCourses(courses)).toHaveLength(courses.length);
+  });
+
+  it("у карточки результата курса нет полосы: в ней нет работ", () => {
+    const [alg] = groupCourses([rows[0] as Grade]);
+    expect(stripOf(alg?.items ?? [])).toEqual([]);
   });
 });
 

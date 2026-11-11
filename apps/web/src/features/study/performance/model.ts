@@ -45,14 +45,73 @@ export interface CourseGrades {
   current: Grade[];
   /** Итоги по предмету (ведомость, зачётка), свежие первыми. */
   finals: Grade[];
+  /**
+   * Результаты курса неизвестного слоя (старые playbook'и: оценка за курс без предмета и без слоя, название
+   * курса — в `title`), свежие первыми. Это не работы: в «Проверено» не входят и полосы не дают.
+   */
+  results: Grade[];
   /** Самое свежее время среди записей предмета. */
   latestAt: number;
 }
 
-export function courseKey(grade: Pick<Grade, "courseId" | "courseTitle" | "provenance">): string {
-  const title = grade.courseTitle?.trim();
-  return `${grade.provenance.spaceId}:${grade.courseId ?? (title ? `t:${title.toLowerCase()}` : "none")}`;
+/** Роль записи в карточке предмета. */
+export type GradeRole = "item" | "current" | "final" | "result";
+
+export interface Placement {
+  key: string;
+  title: string | null;
+  role: GradeRole;
 }
+
+const norm = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase();
+
+/**
+ * Куда записи встать в «Предметах» — одно правило для карточек, листа и зачётки:
+ *
+ * 1. Есть `courseTitle` — предмет (по `courseId`, иначе по названию); роль — по слою, `null` — работа.
+ * 2. Нет `courseTitle`, слой `current`/`final` — это результат курса: карточка называется `title` записи.
+ * 3. Нет `courseTitle`, слой не указан, нет `assignmentId` и нет пары «число + максимум» — тоже результат курса
+ *    (так старые playbook'и пишут оценку за курс: «Алгоритмы … — 10,01, оценка Smart LMS»), роль «Результат».
+ *    Записи с одинаковым `title` одного вуза — одна карточка.
+ * 4. Остальное без предмета (работа с баллом из максимума или с заданием) — одна карточка «Без предмета» на вуз.
+ */
+export function placementOf(
+  grade: Pick<
+    Grade,
+    "courseId" | "courseTitle" | "title" | "layer" | "assignmentId" | "valueNum" | "scaleMax" | "provenance"
+  >,
+): Placement {
+  const space = grade.provenance.spaceId;
+  const course = grade.courseTitle?.trim();
+  const layer = grade.layer ?? null;
+  if (course) {
+    return {
+      key: `${space}:${grade.courseId ?? `t:${norm(course)}`}`,
+      title: course,
+      role: layer === "final" || layer === "current" ? layer : "item",
+    };
+  }
+  const title = grade.title?.trim() || null;
+  const courseLevel =
+    layer === "final" ||
+    layer === "current" ||
+    (layer === null && !grade.assignmentId?.trim() && fillOf(grade) === null);
+  if (courseLevel && title) {
+    return {
+      key: `${space}:r:${norm(title)}`,
+      title,
+      role: layer === "final" || layer === "current" ? layer : "result",
+    };
+  }
+  return {
+    key: `${space}:none`,
+    title: null,
+    role: courseLevel ? (layer === "final" || layer === "current" ? layer : "result") : "item",
+  };
+}
+
+/** Ключ предмета записи (то же правило, что у карточек): зачётка и «Новое» открывают тот же лист. */
+export const courseKey = (grade: Parameters<typeof placementOf>[0]): string => placementOf(grade).key;
 
 /**
  * Предметы со всеми слоями оценок. Сводные показатели (`summary`) к предмету не относятся и сюда не входят.
@@ -61,23 +120,29 @@ export function courseKey(grade: Pick<Grade, "courseId" | "courseTitle" | "prove
 export function groupCourses(grades: readonly Grade[]): CourseGrades[] {
   const byKey = new Map<string, CourseGrades>();
   for (const grade of grades) {
-    const layer = layerOf(grade);
-    if (layer === "summary") continue;
-    const key = courseKey(grade);
-    let course = byKey.get(key);
+    if (grade.layer === "summary") continue;
+    const place = placementOf(grade);
+    let course = byKey.get(place.key);
     if (!course) {
       course = {
-        key,
-        title: grade.courseTitle?.trim() || null,
+        key: place.key,
+        title: place.title,
         spaceId: grade.provenance.spaceId,
         items: [],
         current: [],
         finals: [],
+        results: [],
         latestAt: Number.NEGATIVE_INFINITY,
       };
-      byKey.set(key, course);
+      byKey.set(place.key, course);
     }
-    (layer === "final" ? course.finals : layer === "current" ? course.current : course.items).push(grade);
+    const bucket = {
+      item: course.items,
+      current: course.current,
+      final: course.finals,
+      result: course.results,
+    }[place.role];
+    bucket.push(grade);
     course.latestAt = Math.max(course.latestAt, gradeTime(grade));
   }
   const courses = [...byKey.values()].map((course) => ({
@@ -85,6 +150,7 @@ export function groupCourses(grades: readonly Grade[]): CourseGrades[] {
     items: course.items.sort(newestFirst),
     current: course.current.sort(newestFirst),
     finals: course.finals.sort(newestFirst),
+    results: course.results.sort(newestFirst),
   }));
   return courses.sort((a, b) => {
     if ((a.title === null) !== (b.title === null)) return a.title === null ? 1 : -1;
@@ -97,29 +163,41 @@ export function groupCourses(grades: readonly Grade[]): CourseGrades[] {
 }
 
 /**
- * Карточки предметов текущей учёбы: предметы с работами или накопленным. Предмет только с итогом — это зачётка
- * прошлых периодов, он живёт в блоке «Зачётка», а не отдельной карточкой.
+ * Карточки предметов текущей учёбы: предметы с работами, накопленным или результатом курса. Предмет только с итогом —
+ * это зачётка прошлых периодов, он живёт в блоке «Зачётка», а не отдельной карточкой.
  */
 export const activeCourses = (courses: readonly CourseGrades[]): CourseGrades[] =>
-  courses.filter((course) => course.items.length > 0 || course.current.length > 0);
+  courses.filter(
+    (course) => course.items.length > 0 || course.current.length > 0 || course.results.length > 0,
+  );
 
 export interface Headline {
-  /** «Итог» — итог источника; «Накоплено» — текущий результат; «Последняя оценка» — свежая работа. */
-  label: "Итог" | "Накоплено" | "Последняя оценка";
+  /**
+   * «Итог» — итог источника; «Накоплено» — текущий результат; «Результат» — оценка за курс, слой которой источник
+   * не назвал; «Последняя оценка» — свежая работа.
+   */
+  label: "Итог" | "Накоплено" | "Результат" | "Последняя оценка";
   grade: Grade;
+  /** Сколько ещё записей того же вида у предмета (две строки одного курса): «ещё 1». */
+  more: number;
 }
 
 /**
- * Главный результат предмета — как его дал источник: свежий итог, иначе накопленное, иначе последняя работа.
- * Ничего не складывается и не усредняется.
+ * Главный результат предмета — как его дал источник: свежий итог, иначе накопленное, иначе результат курса, иначе
+ * последняя работа. Ничего не складывается и не усредняется.
  */
 export function headlineOf(course: CourseGrades): Headline | null {
-  const [final] = course.finals;
-  if (final) return { label: "Итог", grade: final };
-  const [current] = course.current;
-  if (current) return { label: "Накоплено", grade: current };
+  const groups = [
+    ["Итог", course.finals],
+    ["Накоплено", course.current],
+    ["Результат", course.results],
+  ] as const;
+  for (const [label, rows] of groups) {
+    const [first] = rows;
+    if (first) return { label, grade: first, more: rows.length - 1 };
+  }
   const [latest] = course.items;
-  return latest ? { label: "Последняя оценка", grade: latest } : null;
+  return latest ? { label: "Последняя оценка", grade: latest, more: 0 } : null;
 }
 
 export interface StripItem {

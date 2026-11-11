@@ -49,7 +49,38 @@ describe("ScoreStrip", () => {
   });
 });
 
+describe("ScoreStrip: чипы без числа не распирают полосу", () => {
+  it("видны самые свежие `maxChips`, остальные — «+N»; скринридер слышит все", () => {
+    const chips = Array.from({ length: 5 }, (_, index) => ({
+      id: String(index),
+      fill: null,
+      text: `зачтено ${index}`,
+      title: `Семинар ${index}`,
+    }));
+    const { container } = render(<ScoreStrip items={chips} label="Работы" maxChips={1} />);
+    expect(container.querySelector("[data-score-more]")).toHaveTextContent("+4");
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    expect(screen.getByText("Семинар 0: зачтено 0")).toHaveClass("sr-only");
+    expect(container.querySelector("[data-score-strip]")).toHaveClass("overflow-hidden", "min-w-0");
+  });
+});
+
 describe("CourseGradeCard", () => {
+  it("подпись, которая не шкала, и «ещё N» — в одной строке подписи с многоточием, не рядом со значением", () => {
+    render(
+      <CourseGradeCard
+        title="История России (2024/2025 модули: 1,2,3,4)"
+        headline={{ label: "Результат", value: "2,37", caption: "оценка Smart LMS", more: 1 }}
+        onOpen={() => undefined}
+      />,
+    );
+    const button = screen.getByRole("button", { name: /Результат: 2,37, оценка Smart LMS; ещё 1/ });
+    const meta = button.querySelector("[data-headline-meta]");
+    expect(meta).toHaveTextContent("Результат · оценка Smart LMS · ещё 1");
+    expect(meta).toHaveClass("truncate");
+    expect(button.querySelector("[data-score-strip]")).toBeNull();
+  });
+
   it("кнопка с именем из названия, результата источника и подписи; нажатие открывает", async () => {
     const onOpen = vi.fn();
     render(

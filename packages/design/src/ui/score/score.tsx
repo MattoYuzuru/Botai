@@ -48,35 +48,66 @@ export interface ScoreStripProps {
   decorative?: boolean;
   /** `sm` — столбики 24 px (строка), `md` — 32 px (карточка предмета). */
   size?: "sm" | "md";
+  /**
+   * Сколько чипов без числа видно: самые свежие. Остальные сворачиваются в «+N» (скринридер слышит все). Чипы
+   * широкие, поэтому их число ограничено: полоса не выходит за карточку.
+   */
+  maxChips?: number;
   className?: string;
 }
 
 /**
  * Полоса последних оценок предмета: маленький столбик на каждую работу, высота — доля этой записи. Оценка без
  * числа (зачёт, буква) — нейтральный чип со словом источника. Столбики не сравнивают разные шкалы: каждый — своя
- * пара чисел. Для скринридера это список «Контрольная №2: 8 из 10».
+ * пара чисел. Для скринридера это список «Контрольная №2: 8 из 10». Полоса никогда не шире своего места:
+ * чипов без числа не больше `maxChips` (остальные — «+N»), лишнее обрезается внутри (`min-w-0`, `overflow-hidden`).
  */
-export function ScoreStrip({ items, label, decorative = false, size = "sm", className }: ScoreStripProps) {
+export function ScoreStrip({
+  items,
+  label,
+  decorative = false,
+  size = "sm",
+  maxChips = 2,
+  className,
+}: ScoreStripProps) {
   if (items.length === 0) return null;
   const Root = decorative ? "span" : "ul";
   const Item = decorative ? "span" : "li";
+  const chips = items.filter((item) => item.fill === null).map((item) => item.id);
+  const folded = new Set(chips.slice(0, Math.max(0, chips.length - Math.max(0, maxChips))));
   return (
     <Root
       {...(decorative ? { "aria-hidden": true } : { "aria-label": label })}
       data-score-strip=""
-      className={cn("flex min-w-0 items-end gap-1", className)}
+      className={cn("flex min-w-0 items-end gap-1 overflow-hidden", className)}
     >
+      {folded.size > 0 && (
+        <span
+          aria-hidden="true"
+          data-score-more=""
+          className="inline-flex h-6 shrink-0 items-center rounded-sm bg-pressed px-1.5 type-caption text-fg-muted"
+        >
+          +{folded.size}
+        </span>
+      )}
       {items.map((item) => {
         const spoken = item.title ? `${item.title}: ${item.text}` : item.text;
+        if (folded.has(item.id)) {
+          return decorative ? null : (
+            <li key={item.id} className="sr-only">
+              {spoken}
+            </li>
+          );
+        }
         return (
-          <Item key={item.id} className="flex shrink-0 items-end" data-fill={item.fill ?? undefined}>
+          <Item key={item.id} className="flex min-w-0 shrink-0 items-end" data-fill={item.fill ?? undefined}>
             {!decorative && <span className="sr-only">{spoken}</span>}
             {item.fill === null ? (
               <span
                 aria-hidden="true"
-                className="inline-flex h-6 max-w-24 items-center truncate rounded-sm bg-pressed px-1.5 type-caption text-fg-muted"
+                className="inline-flex h-6 min-w-0 max-w-20 items-center rounded-sm bg-pressed px-1.5 type-caption text-fg-muted"
               >
-                {item.text}
+                <span className="min-w-0 truncate">{item.text}</span>
               </span>
             ) : (
               <span

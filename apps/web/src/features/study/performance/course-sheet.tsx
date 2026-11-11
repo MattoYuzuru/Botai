@@ -54,7 +54,7 @@ function CourseDetails({
   useEffect(() => {
     if (focusId) focused.current?.scrollIntoView({ block: "nearest" });
   }, [focusId]);
-  const all = [...course.finals, ...course.current, ...course.items];
+  const all = [...course.finals, ...course.current, ...course.results, ...course.items];
   const latest = all.reduce<Grade | null>(
     (best, grade) => (best === null || gradeTime(grade) > gradeTime(best) ? grade : best),
     null,
@@ -62,7 +62,7 @@ function CourseDetails({
   const connection = latest
     ? space?.connections.find((row) => row.id === latest.provenance.connectionId)
     : undefined;
-  const rowProps = { space, nowMs, focusId, focusedRef: focused };
+  const rowProps = { space, nowMs, focusId, focusedRef: focused, courseTitle: course.title };
 
   return (
     <div className="flex flex-col gap-5 pb-2">
@@ -80,6 +80,21 @@ function CourseDetails({
           note="Текущий результат по предмету — так его считает источник."
         >
           {course.current.map((grade) => (
+            <GradeEntry key={grade.id} grade={grade} {...rowProps} headline />
+          ))}
+        </GradeGroup>
+      )}
+      {course.results.length > 0 && (
+        <GradeGroup
+          title="Результат"
+          id="course-results"
+          note={
+            course.results.length > 1
+              ? "Оценки за курс, как их дал источник. Какая из них итоговая, источник не сказал."
+              : "Оценка за курс, как её дал источник; итог это или накопленное, источник не сказал."
+          }
+        >
+          {course.results.map((grade) => (
             <GradeEntry key={grade.id} grade={grade} {...rowProps} headline />
           ))}
         </GradeGroup>
@@ -143,7 +158,10 @@ function GradeEntry({
   focusId,
   focusedRef,
   headline = false,
+  courseTitle,
 }: {
+  /** Название карточки: строка не повторяет его своим заголовком. */
+  courseTitle: string | null;
   grade: Grade;
   space: SpaceInfo | undefined;
   nowMs: number;
@@ -151,14 +169,15 @@ function GradeEntry({
   focusedRef: RefObject<HTMLLIElement | null>;
   headline?: boolean;
 }) {
-  const { value, suffix } = scoreText(grade);
+  const { value, suffix, caption } = scoreText(grade);
   const fill = fillOf(grade);
   const connection = space?.connections.find((row) => row.id === grade.provenance.connectionId);
   const href = safeHttpUrl(grade.url)?.href ?? openUrlOf(grade.provenance, connection);
   const when = grade.gradedAt ? Date.parse(grade.gradedAt) : null;
   const weight = weightLabel(grade.weight);
   const isFocused = focusId === grade.id;
-  const title = headline ? (grade.period ?? grade.title) : (grade.title ?? "Работа");
+  const ownTitle = grade.title?.trim() && grade.title.trim() !== courseTitle ? grade.title.trim() : null;
+  const title = headline ? (grade.period ?? ownTitle) : (grade.title ?? "Работа");
   return (
     <li
       ref={isFocused ? focusedRef : undefined}
@@ -174,10 +193,11 @@ function GradeEntry({
               <time dateTime={grade.gradedAt ?? undefined}>{formatDay(when, nowMs, space?.timeZone)}</time>
             )}
             {weight && <span>{weight}</span>}
+            {caption && <span className="min-w-0 max-w-full truncate">{caption}</span>}
             {isFocused && <Badge tone="accent">Новое</Badge>}
           </p>
         </div>
-        <p className="flex shrink-0 flex-wrap items-baseline justify-end gap-x-1 text-right">
+        <p className="flex max-w-[50%] shrink-0 flex-wrap items-baseline justify-end gap-x-1 break-words text-right">
           <span className={headline ? "type-title text-fg" : "type-subheading text-fg"} data-numeric="">
             {value}
           </span>

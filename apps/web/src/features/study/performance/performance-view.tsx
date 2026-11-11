@@ -10,6 +10,7 @@ import {
   Skeleton,
   StatGrid,
   StatTile,
+  useMediaQuery,
 } from "@botai/design";
 import { Link } from "@tanstack/react-router";
 import { useId, useMemo, useState } from "react";
@@ -70,6 +71,8 @@ export function PerformanceView({
 }: PerformanceViewProps) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [openUpdate, setOpenUpdate] = useState<StudyUpdate | null>(null);
+  const [panelsOpen, setPanelsOpen] = usePanelsOpen();
+  const wide = useMediaQuery("(min-width: 1024px)");
   const courses = useMemo(() => groupCourses(grades), [grades]);
   const cards = useMemo(() => activeCourses(courses), [courses]);
   const zachetka = useMemo(() => zachetkaOf(grades), [grades]);
@@ -77,6 +80,7 @@ export function PerformanceView({
   const showSpace = scope.isAll && directory.spaces.length > 1;
   const opened = courses.find((course) => course.key === openKey) ?? null;
   const empty = !loading && grades.length === 0 && updates.length === 0;
+  const foldable = !wide && cards.length > 0;
   const single = scope.isAll ? undefined : scope.spaces[0]?.title;
 
   return (
@@ -139,7 +143,14 @@ export function PerformanceView({
         </div>
       )}
 
-      <PanelsSection scope={scope} title="Панели" />
+      <PanelsSection
+        scope={scope}
+        title="Панели"
+        // Телефон: при непустых «Предметах» панели свёрнуты — системные «Последние оценки» и «Оценок» показывают
+        // те же записи; ноутбук — развёрнуты, места хватает.
+        folded={foldable && !panelsOpen}
+        onFoldedChange={foldable ? (folded) => setPanelsOpen(!folded) : undefined}
+      />
 
       <CourseSheet course={opened} spaces={directory.byId} nowMs={nowMs} onClose={() => setOpenKey(null)} />
       <UpdateSheets
@@ -151,6 +162,31 @@ export function PerformanceView({
       />
     </div>
   );
+}
+
+const PANELS_OPEN_KEY = "botai.study.panels.open";
+
+/**
+ * Раскрыл ли человек панели на телефоне: выбор помнится на вкладку (смена вуза и перезагрузка его не сбрасывают),
+ * по умолчанию — свёрнуты.
+ */
+function usePanelsOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try {
+      return window.sessionStorage.getItem(PANELS_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const update = (next: boolean) => {
+    setOpen(next);
+    try {
+      window.sessionStorage.setItem(PANELS_OPEN_KEY, next ? "1" : "0");
+    } catch {
+      /* хранилище недоступно: выбор живёт до перезагрузки */
+    }
+  };
+  return [open, update];
 }
 
 function CoursesBlock({
@@ -192,15 +228,16 @@ function CoursesBlock({
                         label: headline.label,
                         value: text.value,
                         suffix: text.suffix,
+                        caption: text.caption,
+                        more: headline.more,
                         period: headline.label === "Последняя оценка" ? null : headline.grade.period,
                         fill: headline.label === "Последняя оценка" ? null : fillOf(headline.grade),
                       }
                     : null
                 }
+                // Считаются только работы: результаты курса и итоги — не работы; нет работ — подписи нет.
                 caption={
-                  course.items.length > 0
-                    ? `Проверено: ${countRu(course.items.length, WORKS)}`
-                    : "Работ с оценкой пока нет"
+                  course.items.length > 0 ? `Проверено: ${countRu(course.items.length, WORKS)}` : undefined
                 }
                 strip={stripOf(course.items)}
                 badge={showSpace && space ? <Badge tone="neutral">{space.shortTitle}</Badge> : undefined}
@@ -304,7 +341,11 @@ function ZachetkaBlock({
                   <li key={grade.id}>
                     <ListRow
                       title={grade.courseTitle ?? grade.title ?? NO_COURSE}
-                      trailing={<span className="type-subheading text-fg">{scoreLabel(grade)}</span>}
+                      trailing={
+                        <span className="block max-w-40 truncate type-subheading text-fg">
+                          {scoreLabel(grade)}
+                        </span>
+                      }
                       onOpen={() => onOpen(grade)}
                     />
                   </li>
