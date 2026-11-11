@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 /**
  * e2e идут против dev-сервера Vite на моках (VITE_MOCKS=1): бэкенд не нужен. В CI тот же job `web`
- * должен поставить браузер (`playwright install --with-deps chromium`) — версия Playwright закреплена
+ * должен поставить и проверить запуск браузера (`playwright install chromium`) — версия закреплена
  * в package.json (1.63.0), потому что другой Chromium в окружении разработки недоступен.
  */
 const PORT = Number(process.env.E2E_PORT ?? 5199);

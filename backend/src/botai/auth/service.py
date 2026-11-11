@@ -1,4 +1,4 @@
-"""Invite-only registration and cookie sessions (FR-001, security.md).
+"""Open registration and cookie sessions (D-041).
 
 Invite codes and session tokens are shown once; the database keeps only their sha256. Every
 function takes the caller's `AsyncSession` and commits itself, so a failed step leaves nothing
@@ -43,22 +43,23 @@ async def create_invite(
 async def register(
     session: AsyncSession,
     *,
-    invite_code: str,
+    invite_code: str | None = None,
     email: str,
     display_name: str,
     password: str,
     now: datetime,
 ) -> User:
-    code_hash = security.token_hash(invite_code.strip())
-    # Invite first: without a valid one nothing else about the pool (e.g. which e-mails are
-    # registered) is revealed.
-    invite_id = await session.scalar(
-        select(Invite.id).where(
-            Invite.code_hash == code_hash, Invite.used_by.is_(None), Invite.expires_at > now
+    # Optional compatibility path for existing clients and the account broker.
+    invite_id = None
+    if invite_code is not None:
+        code_hash = security.token_hash(invite_code.strip())
+        invite_id = await session.scalar(
+            select(Invite.id).where(
+                Invite.code_hash == code_hash, Invite.used_by.is_(None), Invite.expires_at > now
+            )
         )
-    )
-    if invite_id is None:
-        raise BotaiError(ErrorCode.FORBIDDEN, _INVALID_INVITE)
+        if invite_id is None:
+            raise BotaiError(ErrorCode.FORBIDDEN, _INVALID_INVITE)
 
     user = User(
         email=normalize_email(email),
@@ -73,16 +74,17 @@ async def register(
         await session.rollback()
         raise BotaiError(ErrorCode.CONFLICT, "Эта почта уже зарегистрирована") from None
 
-    # Single use under concurrency: the second UPDATE waits for the first and then matches no row.
-    redeemed = await session.execute(
-        update(Invite)
-        .where(Invite.id == invite_id, Invite.used_by.is_(None), Invite.expires_at > now)
-        .values(used_by=user.id)
-        .returning(Invite.id)
-    )
-    if redeemed.first() is None:
-        await session.rollback()
-        raise BotaiError(ErrorCode.FORBIDDEN, _INVALID_INVITE)
+    if invite_id is not None:
+        # Single use under concurrency: the second UPDATE waits, then matches no row.
+        redeemed = await session.execute(
+            update(Invite)
+            .where(Invite.id == invite_id, Invite.used_by.is_(None), Invite.expires_at > now)
+            .values(used_by=user.id)
+            .returning(Invite.id)
+        )
+        if redeemed.first() is None:
+            await session.rollback()
+            raise BotaiError(ErrorCode.FORBIDDEN, _INVALID_INVITE)
     await session.commit()
     return user
 
@@ -128,7 +130,7 @@ async def close_session(session: AsyncSession, token: str) -> None:
 async def bootstrap_owner(
     session: AsyncSession, *, email: str, display_name: str, password: str
 ) -> User:
-    """First user of the pool. Refuses to run twice: further people join by invite."""
+    """Creates the owner once. Self-registration never grants owner permissions."""
     if await session.scalar(select(User.id).where(User.is_owner.is_(True)).limit(1)):
         raise BotaiError(ErrorCode.CONFLICT, "Владелец уже создан")
     user = User(

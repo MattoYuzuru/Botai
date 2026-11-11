@@ -4474,10 +4474,17 @@
             "type": "string"
           },
           "inviteCode": {
-            "maxLength": 64,
-            "minLength": 6,
-            "title": "Invitecode",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invitecode"
           },
           "password": {
             "format": "password",
@@ -4489,7 +4496,6 @@
           }
         },
         "required": [
-          "inviteCode",
           "email",
           "displayName",
           "password"

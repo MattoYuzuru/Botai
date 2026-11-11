@@ -1,10 +1,11 @@
-"""FR-001: registration only by invitation; the code is shown once and stored as sha256."""
+"""D-041: open registration; optional legacy invites remain single-use and hashed."""
 
 from __future__ import annotations
 
 from datetime import timedelta
 
 import httpx
+import pytest
 from sqlalchemy import select, text
 
 from botai.auth import security, service
@@ -15,6 +16,54 @@ from tests.auth.support import PASSWORD, Sm, issue_invite, make_user
 
 def _body(code: str, email: str = "ann@example.com", password: str = PASSWORD) -> dict[str, str]:
     return {"inviteCode": code, "email": email, "displayName": "Анна", "password": password}
+
+
+@pytest.mark.parametrize("with_null_invite", [False, True])
+async def test_registration_without_invite_creates_active_regular_user(
+    client: httpx.AsyncClient, tx_sessionmaker: Sm, with_null_invite: bool
+) -> None:
+    body: dict[str, str | bool | None] = {
+        "email": "Ann@Example.Com",
+        "displayName": "Анна",
+        "password": PASSWORD,
+        "isOwner": True,
+    }
+    if with_null_invite:
+        body["inviteCode"] = None
+    response = await client.post("/api/v1/auth/register", json=body)
+    assert response.status_code == 201
+    user = response.json()["user"]
+    assert user["email"] == "ann@example.com"
+    assert user["isOwner"] is False
+    assert (await client.get("/api/v1/me")).json()["user"]["id"] == user["id"]
+    assert (await client.post("/api/v1/auth/invites")).status_code == 403
+    async with tx_sessionmaker() as session:
+        stored = await session.get(User, user["id"])
+        assert stored is not None
+        assert not stored.disabled
+        assert not stored.is_owner
+        assert await session.scalar(select(Invite.id)) is None
+    await client.post("/api/v1/auth/logout")
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "ann@example.com", "password": PASSWORD}
+    )
+    assert login.status_code == 200
+
+
+async def test_open_registration_duplicate_email_conflicts(client: httpx.AsyncClient) -> None:
+    body = {"email": "Ann@Example.Com", "displayName": "Анна", "password": PASSWORD}
+    assert (await client.post("/api/v1/auth/register", json=body)).status_code == 201
+    body["email"] = "ann@example.com"
+    response = await client.post("/api/v1/auth/register", json=body)
+    assert response.status_code == 409
+
+
+async def test_open_registration_rejects_weak_password(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "ann@example.com", "displayName": "Анна", "password": "short"},
+    )
+    assert response.status_code == 422
 
 
 async def test_register_with_an_invite_creates_user_and_logs_in(
@@ -47,7 +96,7 @@ async def test_session_cookie_attributes(
     assert f"max-age={30 * 86400}" in cookie
 
 
-async def test_register_without_a_valid_invite_is_refused(
+async def test_register_with_an_explicit_invalid_invite_is_refused(
     client: httpx.AsyncClient, tx_sessionmaker: Sm
 ) -> None:
     r = await client.post("/api/v1/auth/register", json=_body("nonexistent-code-123"))

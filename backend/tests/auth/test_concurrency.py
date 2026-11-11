@@ -73,3 +73,25 @@ async def test_sessions_resolve_across_connections(
         user = await resolve_session(other, token, clock.now())
     assert user is not None
     assert user.id == uid
+
+
+async def test_open_registration_duplicate_email_race(
+    committed: async_sessionmaker[AsyncSession],
+) -> None:
+    async def attempt() -> str:
+        async with committed() as session:
+            try:
+                await service.register(
+                    session,
+                    email="open-race@example.com",
+                    display_name="R",
+                    password=PASSWORD,
+                    now=NOW,
+                )
+            except BotaiError as exc:
+                return exc.code.value
+            return "ok"
+
+    results = await asyncio.gather(*(attempt() for _ in range(6)))
+    assert results.count("ok") == 1, results
+    assert results.count("conflict") == 5, results

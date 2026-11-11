@@ -1,4 +1,4 @@
-"""Owner: W1. Invite-only registration, cookie sessions."""
+"""Owner: W1. Open registration, cookie sessions (D-041)."""
 
 from __future__ import annotations
 

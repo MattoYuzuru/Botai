@@ -8,7 +8,7 @@ from botai.core.api import ApiModel
 
 
 class RegisterRequest(ApiModel):
-    invite_code: str = Field(min_length=6, max_length=64)
+    invite_code: str | None = Field(default=None, min_length=6, max_length=64)
     email: EmailStr
     display_name: str = Field(min_length=1, max_length=120)
     password: SecretStr = Field(min_length=8, max_length=200)

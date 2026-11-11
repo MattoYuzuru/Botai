@@ -71,7 +71,16 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --frozen
       - name: Playwright Chromium
-        run: uv run --frozen playwright install --with-deps chromium
+        # Hosted runners already have Chromium's shared libraries. Avoid an unconditional apt
+        # update for optional system fonts; fail here if the actual browser cannot start.
+        run: |
+          uv run --frozen playwright install chromium
+          uv run --frozen python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              browser.close()
+          PY
       - name: Sandbox image for container-executor tests
         working-directory: .
         run: docker build -f ops/docker/sandbox.Dockerfile -t botai-sandbox:ci .
@@ -124,7 +133,14 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-1.63.0-${{ runner.os }}
-      - run: pnpm --filter @botai/web exec playwright install --with-deps chromium
+      - name: Playwright Chromium
+        run: |
+          pnpm --filter @botai/web exec playwright install chromium
+          pnpm --filter @botai/web exec node --input-type=module -e '
+            import { chromium } from "@playwright/test";
+            const browser = await chromium.launch();
+            await browser.close();
+          '
       - run: pnpm --filter @botai/web e2e
         env:
           CI: "true"
