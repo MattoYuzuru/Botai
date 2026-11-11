@@ -216,6 +216,9 @@ def _report_summary(report: RunReport) -> str:
     if warnings:
         codes = ", ".join(str(item.get("code", "?")) for item in warnings[:6])
         parts.append(f"предупреждения: {codes} (подробно — warnings)")
+    deleted = sum(counts.get("deleted", 0) for counts in report.domain.values())
+    if deleted:
+        parts.append(f"удалено записей прежних версий парсера: {deleted}")
     return "; ".join(parts)
 
 

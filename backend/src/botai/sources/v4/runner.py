@@ -1736,6 +1736,8 @@ class SourceRunner:
                 now=now,
                 revision=version_row.version if version_row else None,
                 synced_before=synced_before,
+                # a successful sync of a known version clears what another parser version left
+                sweep=version_row is not None,
             )
         site_map = {"browser_pages": [url for url in pages if url]} if pages else {}
         await state.upsert_source_state(

@@ -372,7 +372,7 @@ CI — зелёный (20 м 26 c), deploy — успех; отката не б�
 1. Проверка: образы тега `4acea6682718`, revision = полный SHA; `alembic_version=b4e8c1a7d920`,
    `vector 0.8.7`; api healthy; worker/proxy без ошибок; Caddy-лог жив.
 2. Настройки в api: `agent_engine=v4`, `agent_executor=container`, `rag_autoindex=true`,
-   `source_sync_interval_s=21600`.
+   `source_sync_interval_s=21600` (с 2026-11-12 — 10800).
 3. Миграция применилась (`sources.next_sync_at` + индекс). **Честно:** в production сейчас
    **0 v4-источников** (владелец ещё не создавал их после включения v4), поэтому фоновое
    планирование sync и RAG-автоиндексация проверены L1-тестами на fakeuni, а не живыми данными;

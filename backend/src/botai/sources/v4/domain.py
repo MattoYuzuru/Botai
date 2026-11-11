@@ -10,8 +10,13 @@ The v4 runner reads a playbook and coerces every record to the same column dicts
   `spec_revision`) and `seen_at`, the last sync that saw it;
 * rows of the v3 path (`connection_id` set, `source_id` NULL) are never selected, updated or
   deleted: this writer only touches rows whose `source_id` is its source;
-* a complete run does not delete rows it did not see (same policy as the v3 normalizer): their old
-  `seen_at` is the honest "last time this source had it";
+* a run does not delete rows of its own parser version that it did not see (reads are windowed:
+  an unseen row is not evidence of deletion; their old `seen_at` is the honest "last time this
+  source had it"). The exception is a parser change (`sweep`, a successful sync only): rows of a
+  kind this run wrote, left by ANOTHER playbook version (or by none, `spec_revision` NULL) and not
+  seen now, are leftovers of an old external-id scheme and are deleted — for a time-bound kind
+  (classes, tasks, news) only inside the span of dates this run read. A deleted task hands the
+  student's mark to its surviving copy (same dedupe key, `domain.keys`);
 * a kind without a domain table (`documents`, `messages`) stays in the run report and is counted as
   skipped, not silently dropped;
 * after the rows of `grades`, `profile` or `ranking` are written, the system panels of the
@@ -24,7 +29,9 @@ The v4 runner reads a playbook and coerces every record to the same column dicts
   after the first sync that brought this kind at all, so a playbook that learns to read grades does
   not flood the feed with history — and when a grade's value or a deadline's stored state (the
   source's, through the rules) changes. A rule's recompute or a mark never sets it, and the sync
-  after a recompute finds the same stored state, so it is no news either.
+  after a recompute finds the same stored state, so it is no news either. The first sync of a new
+  parser version (no stored row of the kind has its version) sets it for nothing of that kind: a
+  parser change is not news, and the rows it re-reads under new ids replace the swept ones.
 
 Writers of one source are serialized by an advisory transaction lock, so two concurrent syncs of
 one source cannot insert the same natural key twice.
@@ -35,14 +42,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.errors import BotaiError, ErrorCode
-from botai.db.models import Source
-from botai.domain import overrides
+from botai.db.models import Deadline, Source
+from botai.domain import keys, overrides
 from botai.panels import service as panels_service
 from botai.sources.normalize import ALL_MODELS, lock_connection
 from botai.sources.v4 import kinds as kinds_vocab
@@ -108,6 +115,7 @@ class DomainStats:
     updated: int = 0
     unchanged: int = 0
     skipped: int = 0
+    deleted: int = 0  # leftovers of another parser version (`sweep`)
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -115,6 +123,7 @@ class DomainStats:
             "updated": self.updated,
             "unchanged": self.unchanged,
             "skipped": self.skipped,
+            "deleted": self.deleted,
         }
 
 
@@ -152,9 +161,21 @@ def _has_material_change(existing: Any, row: Mapping[str, Any]) -> bool:
     )
 
 
-async def _has_rows(session: AsyncSession, model: type[Any], source_id: str) -> bool:
-    found = await session.scalar(select(model.id).where(model.source_id == source_id).limit(1))
-    return found is not None
+async def _has_rows(
+    session: AsyncSession, model: type[Any], source_id: str, *, revision: int | None = None
+) -> bool:
+    stmt = select(model.id).where(model.source_id == source_id)
+    if revision is not None:
+        stmt = stmt.where(model.spec_revision == revision)
+    return await session.scalar(stmt.limit(1)) is not None
+
+
+# The date a time-bound kind is read by: a sweep only looks inside the span this run read.
+_WINDOW_COLUMNS: dict[str, str] = {
+    "schedule": "starts_at",
+    "deadlines": "due_at",
+    "news": "published_at",
+}
 
 
 async def write_records(
@@ -166,13 +187,15 @@ async def write_records(
     now: datetime,
     revision: int | None = None,
     synced_before: bool | None = None,
+    sweep: bool = False,
 ) -> dict[str, dict[str, int]]:
     """Upsert the records of one sync into the domain; returns counts per v4 kind.
 
     The caller owns the transaction (the runner commits status/state/artifacts together with these
     rows). A record whose kind has no domain table is counted as skipped. `synced_before` says
     whether the source had a successful sync before this one (default: its `last_sync_at`, which
-    the runner reads before marking this sync).
+    the runner reads before marking this sync). `sweep` (a successful sync of playbook version
+    `revision`) deletes the rows another parser version left (see the module docstring).
     """
     if source.user_id != user_id:
         # The runner already resolved the source through the owner-scoped service; a mismatch here
@@ -189,6 +212,7 @@ async def write_records(
         by_kind.setdefault(record.kind, []).append(record)
     for kind_name in by_kind:
         stats[kind_name] = DomainStats()
+    written: dict[str, tuple[type[Any], dict[str, tuple[DomainRecord, Mapping[str, Any]]]]] = {}
     for kind_name, kind_records in by_kind.items():
         st = stats[kind_name]
         reading = kinds_vocab.reading_kind(kind_name)
@@ -204,12 +228,16 @@ async def write_records(
             rows[record.external_id] = (record, record.fields)
         if kind_name == "deadlines" and rows:
             rows = await _apply_status_rules(session, user_id, source.id, rows)
-        # a new row is news only once this source and this kind were read before
-        new_is_news = (
-            kind_name in _FEED_KINDS
-            and synced_before
-            and await _has_rows(session, model, source.id)
+        feed = kind_name in _FEED_KINDS
+        had_rows = feed and await _has_rows(session, model, source.id)
+        # the first sync of a new parser version re-reads old data, often under new ids: no news
+        parser_changed = (
+            had_rows
+            and revision is not None
+            and not await _has_rows(session, model, source.id, revision=revision)
         )
+        # a new row is news only once this source and this kind were read before
+        new_is_news = feed and synced_before and had_rows and not parser_changed
         existing = await _existing(session, model, source.id, list(rows))
         for external_id, (record, fields) in rows.items():
             source_url, open_url = _provenance_urls(source, record)
@@ -234,7 +262,7 @@ async def write_records(
                 continue
             material = kind_name == "schedule" and _has_material_change(row, fields)
             changed = [column for column, value in fields.items() if getattr(row, column) != value]
-            if _is_news(kind_name, row, fields, changed):
+            if not parser_changed and _is_news(kind_name, row, fields, changed):
                 row.changed_at = now
             for column in changed:
                 setattr(row, column, fields[column])
@@ -246,7 +274,19 @@ async def write_records(
                 st.updated += 1
             else:
                 st.unchanged += 1
+        if sweep and revision is not None and rows:
+            written[kind_name] = (model, rows)
     await session.flush()
+    for kind_name, (model, rows) in written.items():
+        stats[kind_name].deleted = await _sweep(
+            session,
+            user_id=user_id,
+            source=source,
+            kind=kind_name,
+            model=model,
+            rows=rows,
+            revision=cast("int", revision),  # `written` is filled only when it is set
+        )
     if _PANEL_KINDS & set(by_kind):
         await panels_service.ensure_default_panels(
             session, user_id=user_id, space_id=source.space_id
@@ -269,3 +309,67 @@ async def _apply_status_rules(
         ruled = overrides.rule_state(rules, source_id, fields.get("state_text")) if rules else None
         out[external_id] = (record, {**fields, "source_state": parsed, "state": ruled or parsed})
     return out
+
+
+async def _sweep(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    source: Source,
+    kind: str,
+    model: type[Any],
+    rows: Mapping[str, tuple[DomainRecord, Mapping[str, Any]]],
+    revision: int,
+) -> int:
+    """Delete the rows of one kind of this source that another parser version left and this run
+    did not see; returns how many. Only `source_id` rows are ever selected (v3 rows never)."""
+    conditions = [
+        model.user_id == user_id,
+        model.source_id == source.id,
+        or_(model.spec_revision.is_(None), model.spec_revision != revision),
+    ]
+    column = _WINDOW_COLUMNS.get(kind)
+    if column is not None:
+        dates = [fields[column] for _, fields in rows.values() if fields.get(column) is not None]
+        if not dates:
+            return 0
+        attr = getattr(model, column)
+        conditions.append(and_(attr >= min(dates), attr <= max(dates)))
+    seen = set(rows)
+    stale = [row for row in await session.scalars(select(model).where(*conditions))]
+    stale = [row for row in stale if row.external_id not in seen]
+    if not stale:
+        return 0
+    if kind == "deadlines":
+        await _carry_marks(session, user_id=user_id, source=source, stale=stale)
+    for row in stale:
+        await session.delete(row)
+    await session.flush()
+    return len(stale)
+
+
+async def _carry_marks(
+    session: AsyncSession, *, user_id: str, source: Source, stale: Sequence[Any]
+) -> None:
+    """Hand the student's mark of a task about to be swept to its surviving copy in the same
+    university (same dedupe key) when that copy has no mark of its own."""
+    marks = {
+        keys.deadline_key(row, source.space_id): row.user_state for row in stale if row.user_state
+    }
+    if not marks:
+        return
+    gone = {row.id for row in stale}
+    survivors = await session.scalars(
+        select(Deadline)
+        .join(Source, Source.id == Deadline.source_id)
+        .where(
+            Deadline.user_id == user_id,
+            Source.user_id == user_id,
+            Source.space_id == source.space_id,
+            Deadline.user_state.is_(None),
+        )
+    )
+    for row in survivors:
+        mark = marks.get(keys.deadline_key(row, source.space_id))
+        if mark is not None and row.id not in gone:
+            row.user_state = mark
