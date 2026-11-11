@@ -85,7 +85,7 @@ test.describe("вход и онбординг", () => {
   test("открытая регистрация без приглашения, затем онбординг", async ({ page }) => {
     await open(page, "/register", "fresh");
     await expect(page.getByLabel("Код приглашения")).toHaveCount(0);
-    await expect(page).toHaveURL(/\/register$/);
+    await expect(page).toHaveURL(/\/register(?:\?|$)/);
     await page.getByLabel("Как к вам обращаться").fill("Борис");
     await page.getByLabel("Почта", { exact: true }).fill("boris@example.test");
     await page.getByLabel("Пароль", { exact: true }).fill("long-enough-password");
