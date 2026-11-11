@@ -153,7 +153,7 @@ export function createHandlers(
     http.post("*/api/v1/auth/register", async ({ request }) => {
       await wait();
       const body = (await request.json()) as S["RegisterRequest"];
-      if (!db.invites.includes(body.inviteCode)) {
+      if (body.inviteCode != null && !db.invites.includes(body.inviteCode)) {
         return problem(403, "forbidden", "Приглашение недействительно, истекло или уже использовано");
       }
       const email = body.email.trim().toLowerCase();

@@ -10,7 +10,6 @@ import { AuthLayout } from "./auth-layout";
 const MIN_PASSWORD = 8;
 
 interface Values {
-  inviteCode: string;
   displayName: string;
   email: string;
   password: string;
@@ -21,7 +20,6 @@ type FieldErrors = Partial<Record<keyof Values, string>>;
 /** Проверка на клиенте: только то, что можно сказать человеку до запроса. Остальное проверяет сервер. */
 export function validateRegistration(values: Values): FieldErrors {
   const errors: FieldErrors = {};
-  if (values.inviteCode.trim().length < 6) errors.inviteCode = "Код приглашения — не меньше 6 знаков";
   if (!values.displayName.trim()) errors.displayName = "Как к вам обращаться?";
   if (!/^\S+@\S+\.\S+$/.test(values.email.trim()))
     errors.email = "Введите почту целиком, например name@example.ru";
@@ -29,8 +27,8 @@ export function validateRegistration(values: Values): FieldErrors {
   return errors;
 }
 
-/** Регистрация по приглашению. Код приглашения читается из адреса один раз и сразу убирается из истории. */
-export function RegisterPage({ initialInvite = "" }: { initialInvite?: string }) {
+/** Открытая регистрация: имя, почта и пароль BotAI, без приглашения или одобрения. */
+export function RegisterPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -44,7 +42,6 @@ export function RegisterPage({ initialInvite = "" }: { initialInvite?: string })
     },
     onError: (error) => {
       // Ответ сервера привязываем к полю, к которому он относится.
-      if (isApiError(error) && error.status === 403) return setErrors({ inviteCode: humanMessage(error) });
       if (isApiError(error) && error.status === 409) return setErrors({ email: humanMessage(error) });
       setFailure(error);
     },
@@ -54,7 +51,6 @@ export function RegisterPage({ initialInvite = "" }: { initialInvite?: string })
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const values: Values = {
-      inviteCode: String(form.get("inviteCode") ?? "").trim(),
       displayName: String(form.get("displayName") ?? "").trim(),
       email: String(form.get("email") ?? "").trim(),
       password: String(form.get("password") ?? ""),
@@ -68,7 +64,7 @@ export function RegisterPage({ initialInvite = "" }: { initialInvite?: string })
   return (
     <AuthLayout
       title="Регистрация"
-      lead="BotAI работает по приглашениям. Код вам передал тот, кто уже пользуется приложением."
+      lead="Создайте аккаунт, чтобы пользоваться BotAI. Приглашение не нужно."
       footer={
         <>
           Уже есть аккаунт?{" "}
@@ -91,16 +87,6 @@ export function RegisterPage({ initialInvite = "" }: { initialInvite?: string })
             {humanMessage(failure)}
           </Banner>
         )}
-        <Field label="Код приглашения" error={errors.inviteCode}>
-          <Input
-            name="inviteCode"
-            defaultValue={initialInvite}
-            autoComplete="off"
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </Field>
         <Field label="Как к вам обращаться" error={errors.displayName}>
           <Input name="displayName" autoComplete="name" />
         </Field>

@@ -3283,7 +3283,7 @@ export interface components {
              */
             email: string;
             /** Invitecode */
-            inviteCode: string;
+            inviteCode?: string | null;
             /**
              * Password
              * Format: password

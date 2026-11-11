@@ -82,11 +82,9 @@ test.describe("вход и онбординг", () => {
     await expect(page.getByText("Вузов пока нет")).toBeVisible();
   });
 
-  test("регистрация по приглашению: код берётся из адреса и убирается из истории, затем онбординг", async ({
-    page,
-  }) => {
-    await open(page, "/register?invite=BOTAI-DEMO", "fresh");
-    await expect(page.getByLabel("Код приглашения")).toHaveValue("BOTAI-DEMO");
+  test("открытая регистрация без приглашения, затем онбординг", async ({ page }) => {
+    await open(page, "/register", "fresh");
+    await expect(page.getByLabel("Код приглашения")).toHaveCount(0);
     await expect(page).toHaveURL(/\/register$/);
     await page.getByLabel("Как к вам обращаться").fill("Борис");
     await page.getByLabel("Почта", { exact: true }).fill("boris@example.test");

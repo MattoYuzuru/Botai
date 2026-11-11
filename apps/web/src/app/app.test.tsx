@@ -65,39 +65,39 @@ describe("вход и регистрация", () => {
   it("регистрация: проверка полей до запроса", async () => {
     renderApp("/register");
     await userEvent.click(await screen.findByRole("button", { name: "Создать аккаунт" }));
-    expect(await screen.findByText("Код приглашения — не меньше 6 знаков")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Код приглашения")).not.toBeInTheDocument();
     expect(screen.getByText("Как к вам обращаться?")).toBeInTheDocument();
     expect(screen.getByText(/Введите почту целиком/)).toBeInTheDocument();
     expect(screen.getByText("Пароль — не меньше 8 знаков")).toBeInTheDocument();
   });
 
-  it("регистрация: чужой код приглашения отклоняется у поля кода", async () => {
+  it("регистрация: занятая почта отклоняется у поля почты", async () => {
     renderApp("/register");
-    await userEvent.type(await screen.findByLabelText("Код приглашения"), "WRONG-CODE");
-    await userEvent.type(screen.getByLabelText("Как к вам обращаться"), "Борис");
-    await userEvent.type(screen.getByLabelText("Почта"), "boris@example.test");
+    await userEvent.type(await screen.findByLabelText("Как к вам обращаться"), "Борис");
+    await userEvent.type(screen.getByLabelText("Почта"), DEMO.email);
     await userEvent.type(screen.getByLabelText("Пароль"), "long-enough-password");
     await userEvent.click(screen.getByRole("button", { name: "Создать аккаунт" }));
-    expect(
-      await screen.findByText("Приглашение недействительно, истекло или уже использовано"),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Код приглашения")).toHaveAttribute("aria-invalid", "true");
+    expect(await screen.findByText("Эта почта уже зарегистрирована")).toBeInTheDocument();
+    expect(screen.getByLabelText("Почта")).toHaveAttribute("aria-invalid", "true");
   });
 
-  it("регистрация по приглашению ведёт в онбординг", async () => {
-    const { router } = renderApp("/register?invite=BOTAI-DEMO");
-    // Код подставлен из адреса и убран из истории.
-    expect(await screen.findByLabelText("Код приглашения")).toHaveValue("BOTAI-DEMO");
-    await waitFor(() => expect(router.state.location.search).toEqual({}));
-    await userEvent.type(screen.getByLabelText("Как к вам обращаться"), "Борис");
-    await userEvent.type(screen.getByLabelText("Почта"), "boris@example.test");
-    await userEvent.type(screen.getByLabelText("Пароль"), "long-enough-password");
-    await userEvent.click(screen.getByRole("button", { name: "Создать аккаунт" }));
-    expect(
-      await screen.findByRole("heading", { level: 1, name: /Расписание и сроки из всех ваших вузов/ }),
-    ).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe("/welcome");
-  });
+  it.each(["/register", "/register?invite=OLD-EXPIRED-CODE"])(
+    "открытая регистрация ведёт в онбординг: %s",
+    async (path) => {
+      const { router } = renderApp(path);
+      await screen.findByLabelText("Как к вам обращаться");
+      expect(screen.queryByLabelText("Код приглашения")).not.toBeInTheDocument();
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+      await userEvent.type(screen.getByLabelText("Как к вам обращаться"), "Борис");
+      await userEvent.type(screen.getByLabelText("Почта"), "boris@example.test");
+      await userEvent.type(screen.getByLabelText("Пароль"), "long-enough-password");
+      await userEvent.click(screen.getByRole("button", { name: "Создать аккаунт" }));
+      expect(
+        await screen.findByRole("heading", { level: 1, name: /Расписание и сроки из всех ваших вузов/ }),
+      ).toBeInTheDocument();
+      expect(router.state.location.pathname).toBe("/welcome");
+    },
+  );
 
   it("поле пароля имеет нативную семантику менеджера паролей и кегль 16 px", async () => {
     renderApp("/login");

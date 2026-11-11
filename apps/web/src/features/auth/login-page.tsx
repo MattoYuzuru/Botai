@@ -44,7 +44,7 @@ export function LoginPage({ next }: { next?: string } = {}) {
       lead="Войдите в BotAI, чтобы увидеть расписание и сроки из ваших вузов."
       footer={
         <>
-          Есть приглашение?{" "}
+          Нет аккаунта?{" "}
           <Link
             to="/register"
             className="inline-flex min-h-11 items-center text-accent-fg underline underline-offset-2"
