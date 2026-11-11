@@ -7,7 +7,8 @@ const usage = (page: import("@playwright/test").Page) =>
   page.getByRole("region", { name: "Расход и лимиты" });
 
 async function openUsage(page: import("@playwright/test").Page, query = "") {
-  await open(page, `/study${query}`, "connected");
+  // Настройки живут в разделе «Источники» (D-046).
+  await open(page, `/study?view=sources${query.replace("?", "&")}`, "connected");
   await page.getByRole("heading", { name: "Расход и лимиты" }).scrollIntoViewIfNeeded();
   return usage(page);
 }

@@ -156,6 +156,8 @@ test.describe("каркас", () => {
           expect(Math.abs((bounds.main?.width ?? 0) - (bounds.header?.width ?? 0))).toBeLessThanOrEqual(1);
           await expectNoHorizontalOverflow(page, `${path} ${width}`);
           if (path === "/study") {
+            // Настройки — в разделе «Источники» (D-046).
+            await page.getByRole("radio", { name: "Источники" }).click();
             expect((await page.locator('[aria-label="Тема"]').boundingBox())?.width ?? 0).toBeLessThanOrEqual(
               420,
             );
@@ -353,7 +355,7 @@ test.describe("настройки и выход", () => {
   test("тёмная тема выбирается в «Учёбе», переживает перезагрузку, спокойный режим ставит атрибут", async ({
     page,
   }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await page.getByRole("radio", { name: "Тёмная" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await page.reload();
@@ -365,7 +367,7 @@ test.describe("настройки и выход", () => {
   });
 
   test("выход возвращает на вход, прежние данные не остаются", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await page.getByRole("button", { name: "Выйти из BotAI" }).click();
     await expect(page).toHaveURL(/\/login$/);
     await page.goto("/study");
@@ -373,7 +375,7 @@ test.describe("настройки и выход", () => {
   });
 
   test("повторный вход после выхода работает", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await page.getByRole("button", { name: "Выйти из BotAI" }).click();
     await signIn(page);
     await expect(page.getByRole("heading", { level: 1, name: "Сегодня" })).toBeVisible();

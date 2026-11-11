@@ -3,7 +3,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { queryKeys } from "@/api/queries";
 import type { Deadline, ScheduleEvent, Today } from "@/api/types";
-import { asV3, type Course, type Grade, type NewsItem, type Person } from "@/api/v3-data";
+import { asV3, type Course, type Grade, type NewsItem, type Person, type StudyUpdate } from "@/api/v3-data";
 import { callMeta } from "./fetch";
 
 /**
@@ -36,6 +36,7 @@ export const dataKeys = {
   people: (spaceId: string | undefined) => ["people", spaceId ?? ALL_SPACES_ID] as const,
   news: (spaceId: string | undefined) => ["news", spaceId ?? ALL_SPACES_ID] as const,
   documents: (spaceId: string) => ["spaces", spaceId, "documents"] as const,
+  updates: (spaceId: string | undefined) => ["updates", spaceId ?? ALL_SPACES_ID] as const,
   job: (jobId: string) => ["jobs", jobId] as const,
 };
 
@@ -133,5 +134,23 @@ export const documentsQuery = (spaceId: string) =>
     queryKey: dataKeys.documents(spaceId),
     queryFn: () =>
       callMeta(api.GET("/api/v1/spaces/{space_id}/documents", { params: { path: { space_id: spaceId } } })),
+    ...live,
+  });
+
+/** Сколько дней «Нового» показывает «Учёба» (на «Сегодня» — три дня из `today.updates`). */
+export const UPDATES_DAYS = 7;
+
+/** «Новое»: оценки и смены статуса заданий за неделю, свежие первыми (D-044 §5.5). */
+export const updatesQuery = (spaceId: string | undefined) =>
+  queryOptions({
+    queryKey: dataKeys.updates(spaceId),
+    queryFn: () =>
+      callMeta(
+        asV3<StudyUpdate[]>(
+          api.GET("/api/v1/updates", {
+            params: { query: { space_id: spaceParam(spaceId), days: UPDATES_DAYS } },
+          }),
+        ),
+      ),
     ...live,
   });

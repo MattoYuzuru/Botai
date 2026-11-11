@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     agent_checkpoint_every_seconds: float = Field(
         default=20.0, ge=0, le=3600, validation_alias="BOTAI_AGENT_CHECKPOINT_EVERY_SECONDS"
     )
+    # Adaptive reasoning effort of a chat turn (D-044): the turn starts at this effort and switches
+    # to the `LLM_PROFILE_AGENT` effort at the first tool outside the light set (study_data,
+    # memory, …). Empty: the profile's effort throughout (the behaviour before D-044).
+    agent_chat_light_effort: Literal["", "low", "high", "max"] = Field(
+        default="low", validation_alias="BOTAI_AGENT_CHAT_LIGHT_EFFORT"
+    )
     # A stopped turn is resumed by the student's next message only while its checkpoint is this fresh.
     agent_resume_window_hours: float = Field(
         default=24.0, gt=0, le=24 * 30, validation_alias="BOTAI_AGENT_RESUME_WINDOW_HOURS"
@@ -170,10 +176,11 @@ class Settings(BaseSettings):
         validation_alias="BOTAI_SOURCE_ARTIFACTS_DIR",
     )
     # Planned sync of a v4 source after a successful run (phase 3.3): the worker scheduler enqueues
-    # a SYNC when `source.next_sync_at` is due. The minimum is 5 minutes: a shorter automatic loop
-    # would hammer a university site, and a person can always sync manually.
+    # a SYNC when `source.next_sync_at` is due. Default 3 h (D-044: a sync runs no model, $0). The
+    # minimum is 5 minutes: a shorter automatic loop would hammer a university site, and a person
+    # can always sync manually.
     source_sync_interval_s: int = Field(
-        default=21600, ge=300, validation_alias="BOTAI_SOURCE_SYNC_INTERVAL_S"
+        default=10800, ge=300, validation_alias="BOTAI_SOURCE_SYNC_INTERVAL_S"
     )
     # RAG (phase 2.5, D-011): index a source's fresh artifacts right after a successful sync/connect
     # run. The RAG path itself stays gated by BOTAI_RAG_ENABLED; this switch only turns the post-run

@@ -112,6 +112,24 @@ code/state и значения, похожие на токен (≥24 симво
   студента и места в рейтинге, таблицы `profile_fields` и `ranking_entries`; словарь v3-рецептов
   их не знает. У оценок есть числовые `value_num`/`scale_max`, когда источник напечатал число и
   шкалу однозначно. Подробности и панели — [23-panels-backend.md](23-panels-backend.md).
+- **Поля только v4** (D-043, [27](27-study-hub-grades-fastpath.md) §3, `vocab.V4_EXTRA_FIELDS`;
+  словарь v3-рецептов не меняется): у `grades` — `layer` (`item | current | final | summary`,
+  иное → NULL), `max` (верх шкалы числом → `scale_max`; пустой `scale` становится «из N»;
+  расходится со шкалой текстом — чисел нет), `period`, `assignmentId`
+  (→ `assignment_external_id`), `url`, `comment` (≤ 2000); у `deadlines` — `stateText`
+  (→ `state_text`): `state` из пяти слов набора берётся как есть, иное уходит в `state_text`, а
+  состояние выводит словарь `sources/states.py`.
+- **Состояние задания для студента** (D-045): `deadlines.user_state` (отметка студента; пишется
+  на все копии задания — строки с тем же ключом дедупликации: вуз, название, срок) → правило
+  `status_rules` → состояние источника. `deadlines.source_state` хранит состояние источника до
+  правил; `state` = правило или `source_state`. Установка и удаление правила пересчитывают строки
+  под тем же advisory-lock, что и запись sync; без `source_state` и `state_text` строка не
+  меняется.
+- **`changed_at`** у `grades`/`deadlines` значит «изменил источник» и ставится только в
+  `sources/v4/domain.py`: новая строка после первой успешной синхронизации источника (и первой,
+  принёсшей этот вид), смена значения оценки или хранимого состояния задания. Лучшее прочтение тех
+  же данных — не новость: впервые найденное число оценки или впервые сохранённые слова статуса.
+  Правило и отметка студента `changed_at` не трогают.
 - **Статусы:** `draft`, `probing`, `learning`, `waiting_user`, `active`, `syncing`, `stale`,
   `needs_reauth`, `needs_link`, `error`, `disabled`, `archived` (03 §6.2).
 - **Доверие:** `high`, `normal`, `low`. **Языки playbook:** `declarative`, `python`, `js`.

@@ -418,7 +418,8 @@ async def test_memory_api_lists_and_clears(api: Api) -> None:
     async with api.client() as client:
         listed = (await client.get("/api/v1/me/memory")).json()
         assert [n["note"] for n in listed] == ["Группа БПМ-231", "Любит таблицы"]
-        assert set(listed[0]) == {"id", "note", "createdAt"}
+        assert set(listed[0]) == {"id", "note", "createdAt", "kind"}
+        assert listed[0]["kind"] == "note"
         assert (await client.delete(f"/api/v1/me/memory/{theirs.id}")).status_code == 404
         assert (await client.delete(f"/api/v1/me/memory/{mine.id}")).status_code == 204
         assert [n["note"] for n in (await client.get("/api/v1/me/memory")).json()] == [

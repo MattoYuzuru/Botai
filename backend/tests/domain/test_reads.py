@@ -306,6 +306,7 @@ async def test_today_for_a_user_without_spaces(
         "events": [],
         "deadlines": [],
         "attention": [],
+        "updates": [],
     }
 
 

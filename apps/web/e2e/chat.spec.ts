@@ -398,7 +398,7 @@ test.describe("ответ агента", () => {
       "_blank",
     );
     await sources.getByRole("link", { name: /Открыть подключение в «Учёбе»/ }).click();
-    await expect(page).toHaveURL(/\/study$/);
+    await expect(page).toHaveURL(/\/study\?view=sources$/);
   });
 
   test("шкала контекста: плоская полоса в шапке, шит с сегментами и источниками", async ({ page }) => {

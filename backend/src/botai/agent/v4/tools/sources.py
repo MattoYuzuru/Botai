@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from botai.agent.v4.executor import Executor
+from botai.agent.v4.lazy_browser import LazyBrowser
 from botai.agent.v4.protocol import (
     FunctionTool,
     ToolArtifact,
@@ -93,6 +94,7 @@ class ProbeArgs(_Args):
 class SyncArgs(_Args):
     source_id: str
     version: int | None = Field(default=None, ge=1)
+    records: bool = False
 
 
 class RepairArgs(_Args):
@@ -154,6 +156,55 @@ def _report_data(report: RunReport) -> dict[str, Any]:
     return report.model_dump(mode="json")
 
 
+# What a compact sync report keeps: enough to judge the sync (counts, what reached the domain,
+# errors, warnings), without the raw records the model rarely needs after a plain sync.
+COMPACT_REPORT_FIELDS = (
+    "source_id",
+    "run",
+    "version",
+    "ok",
+    "source_status",
+    "started_at",
+    "finished_at",
+    "counts",
+    "domain",
+    "errors",
+    "warnings",
+    "notes",
+    "records_truncated",
+)
+MAX_COMPACT_NOTES = 10
+
+
+def _compact_report(report: RunReport) -> dict[str, Any]:
+    full = report.model_dump(mode="json")
+    data = {name: full[name] for name in COMPACT_REPORT_FIELDS if name in full}
+    data["notes"] = list(data.get("notes") or [])[:MAX_COMPACT_NOTES]
+    data["reads"] = [
+        {
+            key: read[key]
+            for key in ("name", "ok", "status", "items_valid", "items_invalid", "error")
+            if key in read
+        }
+        for read in full.get("reads", [])[:20]
+        if isinstance(read, dict)
+    ]
+    data["records"] = len(full.get("records") or [])
+    data["recordsHint"] = "записи не показаны: source_sync(records=true) или study_data"
+    return data
+
+
+def report_warnings(report: RunReport) -> list[dict[str, Any]]:
+    """`warnings` of the report (D-043 §3.5): hints of the probe/canary/sync, never errors."""
+    raw: Any = getattr(report, "warnings", None) or []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        data = item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+        if isinstance(data, dict):
+            out.append(cast(dict[str, Any], data))
+    return out
+
+
 def _report_summary(report: RunReport) -> str:
     counts = ", ".join(f"{name}: {count}" for name, count in sorted(report.counts.items()))
     errors = "; ".join(error.code for error in report.errors)
@@ -161,6 +212,10 @@ def _report_summary(report: RunReport) -> str:
     parts = [head, counts or "записей нет"]
     if errors:
         parts.append(f"ошибки: {errors}")
+    warnings = report_warnings(report)
+    if warnings:
+        codes = ", ".join(str(item.get("code", "?")) for item in warnings[:6])
+        parts.append(f"предупреждения: {codes} (подробно — warnings)")
     return "; ".join(parts)
 
 
@@ -180,7 +235,7 @@ class SourceToolkit:
         secret_reader: SecretReader | None = None,
         session_reader: SessionReader | None = None,
         browser_factory: BrowserFactory | None = None,
-        browser_control: BrowserControl | None = None,
+        browser_control: BrowserControl | LazyBrowser | None = None,
         vault: Vault | None = None,
         broker: SecretBroker | None = None,
     ) -> None:
@@ -245,13 +300,16 @@ class SourceToolkit:
             return args
         if self._browser_control is None or self._vault is None:
             return ToolResult.failure("browser_unavailable", "У хода нет браузера или Vault")
+        control = await self._session_browser(args.action)
+        if isinstance(control, ToolResult):
+            return control
         try:
             async with self._sm() as session:
                 source = await service.get_source(
                     session, user_id=user_id, source_id=args.source_id
                 )
                 if args.action == "save":
-                    state = await capture_browser_session(self._browser_control)
+                    state = await capture_browser_session(control)
                     await self._vault.put(
                         user_id,
                         source.id,
@@ -271,9 +329,7 @@ class SourceToolkit:
                         return ToolResult.failure(
                             "source_auth_required", "У источника нет сохранённой браузерной сессии"
                         )
-                    await self._browser_control.new_context(
-                        storage_state=browser_storage_state(state)
-                    )
+                    await control.new_context(storage_state=browser_storage_state(state))
         except BotaiError as exc:
             return ToolResult.failure(exc.code.value, exc.detail)
         return ToolResult.success(
@@ -282,6 +338,31 @@ class SourceToolkit:
             else "Сессия загружена в браузер",
             data={"source_id": args.source_id, "action": args.action},
         )
+
+    async def _session_browser(self, action: str) -> BrowserControl | ToolResult:
+        """The browser for `source_session`: a lazy one is launched only to load a session.
+
+        Saving from a browser this run never opened would store an empty (or only restored)
+        session over the source's working one, so it is refused instead.
+        """
+        browser = self._browser_control
+        if not isinstance(browser, LazyBrowser):
+            assert browser is not None
+            return browser
+        if browser.control is not None:
+            return browser.control
+        if action == "save":
+            return ToolResult.failure(
+                "browser_not_started",
+                "Браузер в этом ходе не открывался: сохранять нечего. Сначала войди через "
+                "browser_*, затем action=save.",
+            )
+        try:
+            return await browser.get()
+        except Exception as exc:  # the text may hold a path or URL: the type only
+            return ToolResult.failure(
+                "browser_unavailable", f"Браузер не запустился ({type(exc).__name__})"
+            )
 
     async def _list(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         user_id = _user(context)
@@ -380,13 +461,18 @@ class SourceToolkit:
         if isinstance(args, ToolResult):
             return args
         try:
-            async with self._sm() as session:
-                report = await self.runner(session, user_id).sync(
-                    args.source_id, version=args.version
-                )
+            report = await self.sync_source(user_id, args.source_id, version=args.version)
         except BotaiError as exc:
             return ToolResult.failure(exc.code.value, exc.detail)
-        return _report_result(report, summary=_report_summary(report))
+        return _report_result(report, summary=_report_summary(report), compact=not args.records)
+
+    async def sync_source(
+        self, user_id: str, source_id: str, *, version: int | None = None
+    ) -> RunReport:
+        """The deterministic sync of one source in its own session (no model): what `source_sync`
+        runs and what `study_data(refresh=true)` reuses. The runner commits its own writes."""
+        async with self._sm() as session:
+            return await self.runner(session, user_id).sync(source_id, version=version)
 
     async def _repair(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         user_id = _user(context)
@@ -680,14 +766,16 @@ class SourceToolkit:
     sync_spec = ToolSpec(
         name="source_sync",
         description=(
-            "Синхронизировать источник: выполнить активную (или указанную) версию playbook, "
-            "сохранить артефакты/состояние и обновить статус. Возвращает честный отчёт: записи по "
-            "видам, ошибки, что прочитано."
+            "Синхронизировать источник: выполнить активную (или указанную) версию playbook без "
+            "модели (секунды), сохранить данные в BotAI и обновить статус. Отчёт: записи по видам, "
+            "что добавлено/обновлено (domain), ошибки и warnings — их нужно разобрать. Сами записи "
+            "только при records=true; прочитать сохранённое — study_data."
         ),
         parameters=object_schema(
             {
                 "source_id": {"type": "string"},
                 "version": {"type": ["integer", "null"], "minimum": 1},
+                "records": {"type": "boolean", "default": False},
             },
             required=["source_id"],
         ),
@@ -803,18 +891,20 @@ def _tool_artifact(artifact_id: str | None, *, kind: str) -> ToolArtifact:
     return ToolArtifact(id=artifact_id or "", kind=kind)
 
 
-def _report_result(report: RunReport, *, summary: str) -> ToolResult:
+def _report_result(report: RunReport, *, summary: str, compact: bool = False) -> ToolResult:
+    """The report as tool data; `warnings` is always on top so the model sees and acts on it."""
     tool_artifacts = [
         _tool_artifact(artifact_id, kind="source_artifact")
         for artifact_id in report.artifact_ids[:20]
     ]
+    body = _compact_report(report) if compact else _report_data(report)
+    body.pop("warnings", None)  # said once, on top
+    data: dict[str, Any] = {"warnings": report_warnings(report), "report": body}
     if not report.ok:
         return ToolResult.failure(
             report.errors[0].code if report.errors else "run_failed",
             summary,
-            data={"report": _report_data(report)},
+            data=data,
             retryable=any(error.retryable for error in report.errors),
         )
-    return ToolResult.success(
-        summary=summary, data={"report": _report_data(report)}, artifacts=tool_artifacts
-    )
+    return ToolResult.success(summary=summary, data=data, artifacts=tool_artifacts)

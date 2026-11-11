@@ -1,6 +1,18 @@
 import type { components } from "@/api/schema.gen";
 
-export type { Course, Grade, NewsItem, Person } from "@/api/v3-data";
+export type {
+  Course,
+  DeadlineGrade,
+  DeadlineStateSource,
+  DeadlineUserState,
+  Grade,
+  GradeLayer,
+  MemoryItem,
+  NewsItem,
+  Person,
+  StatusRule,
+  StudyUpdate,
+} from "@/api/v3-data";
 
 type Schemas = components["schemas"];
 

@@ -1,0 +1,86 @@
+"""The pure parts of the chat speed probe (`botai.ops.chat_probe`): text, line, arguments."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from botai.ops.chat_probe import ProbeResult, _answer_text, _line, _parser
+
+
+def test_the_answer_text_joins_only_text_blocks_and_collapses_spaces() -> None:
+    blocks = [
+        {"type": "thinking", "stage": "Думаю"},
+        {"type": "text", "markdown": "Да,  за ДЗ 7\n— 9 из 10."},
+        {"type": "text", "markdown": "Обновлено в 14:05."},
+    ]
+    assert _answer_text(blocks) == "Да, за ДЗ 7 — 9 из 10. Обновлено в 14:05."
+
+
+def test_the_line_names_the_counters_tools_and_answer() -> None:
+    result = ProbeResult(
+        question="Мне поставили оценку за ДЗ 7?",
+        thread_id="t",
+        job_id="j",
+        state="done",
+        seconds=3.4,
+        steps=2,
+        llm_seconds=2.9,
+        tool_seconds=0.1,
+        cost_usd=0.0012,
+        tools=["study_data"],
+        answer="Да: 9 из 10.",
+    )
+    line = _line(result)
+    assert "3.4 с" in line
+    assert "шагов   2" in line
+    assert "$0.0012" in line
+    assert "инструменты: study_data" in line
+    assert line.rstrip().endswith("ответ: Да: 9 из 10.")
+    assert "инструменты: нет" in _line(ProbeResult(question="q", thread_id="t", job_id="j"))
+
+
+def test_the_parser_takes_repeated_questions_and_defaults() -> None:
+    args = _parser().parse_args(["--user", "U1", "--question", "а?", "--question", "б?"])
+    assert args.question == ["а?", "б?"]
+    assert args.timeout == 900.0
+    assert args.json is False
+    assert args.space is None
+
+
+async def test_an_interrupted_probe_still_cancels_its_job(monkeypatch: Any) -> None:
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    from botai.ops import chat_probe
+
+    cancelled: list[str] = []
+
+    class Session:
+        async def scalar(self, statement: Any) -> Any:
+            del statement
+            raise asyncio.CancelledError  # Ctrl-C while polling
+
+    @contextlib.asynccontextmanager
+    async def db() -> Any:
+        yield Session()
+
+    async def create_thread(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return SimpleNamespace(id="thread-1")
+
+    async def post_message(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return SimpleNamespace(job_id="job-1")
+
+    async def cancel(services: Any, user_id: str, job_id: str) -> None:
+        del services, user_id
+        cancelled.append(job_id)
+
+    monkeypatch.setattr(chat_probe, "create_thread", create_thread)
+    monkeypatch.setattr(chat_probe, "post_message", post_message)
+    monkeypatch.setattr(chat_probe, "_cancel", cancel)
+    services: Any = SimpleNamespace(db=db)
+    with contextlib.suppress(asyncio.CancelledError):
+        await chat_probe.probe(services, "U1", "вопрос", wait_seconds=5)
+    assert cancelled == ["job-1"]

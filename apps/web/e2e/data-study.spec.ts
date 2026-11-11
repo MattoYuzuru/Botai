@@ -7,7 +7,7 @@ const state = (page: Page, screen: string) => page.locator(`[data-screen=${scree
 
 test.describe("«Учёба»: разделы", () => {
   test("у каждого вуза свои разделы в фиксированном порядке; настройки внизу", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     const sections = hse.getByRole("list", { name: /^Разделы/ }).getByRole("link");
     await expect(sections).toHaveCount(5);
@@ -25,7 +25,7 @@ test.describe("«Учёба»: разделы", () => {
   });
 
   test("«Добавить источник» ведёт в чат с готовой просьбой; отдельных мастеров нет", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     await expect(page.locator('a[href^="/connect"]')).toHaveCount(0);
     await expect(page.locator('a[href^="/study/connections"]')).toHaveCount(0);
@@ -34,24 +34,27 @@ test.describe("«Учёба»: разделы", () => {
     expect(new URL(page.url()).searchParams.get("draft")).toContain("Высшая школа экономики");
   });
 
-  test("раздел открывается из панели, «Назад» возвращает на «Учёбу»", async ({ page }) => {
-    await open(page, "/study", "connected");
+  test("«Оценки» вуза из раздела ведут в «Успеваемость» этого вуза; «назад» возвращает к источникам", async ({
+    page,
+  }) => {
+    await open(page, "/study?view=sources", "connected");
     await page
       .getByRole("region", { name: /^Высшая школа экономики/ })
       .getByRole("list", { name: /^Разделы/ })
       .getByRole("link", { name: /Оценки/ })
       .click();
-    await expect(page).toHaveURL(/\/study\/grades\?space=/);
-    await expect(page.getByRole("heading", { level: 1, name: "Оценки" })).toBeVisible();
-    await expect(
-      page.getByRole("region", { name: "Математический анализ" }).getByText("8", { exact: true }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Назад", exact: true }).click();
-    await expect(page).toHaveURL(/\/study(\?[^/]*)?$/);
+    await expect(page).toHaveURL(/\/study\?view=grades$/);
+    await expect(page.getByRole("radio", { name: "Успеваемость" })).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("button", { name: /^Математический анализ\./ })).toBeVisible();
+    // Выбран вуз из ссылки: предметов ЦУ нет.
+    await expect(page.getByRole("button", { name: /^Продуктовый менеджмент\./ })).toHaveCount(0);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/study\?view=sources/);
+    await expect(page.getByRole("region", { name: /^Высшая школа экономики/ })).toBeVisible();
   });
 
   test("системный жест «назад» работает на экране раздела", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await page
       .getByRole("link", { name: /Предметы/ })
       .first()
@@ -61,14 +64,14 @@ test.describe("«Учёба»: разделы", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Учёба" })).toBeVisible();
   });
 
-  test("оценки плитками: на 390 px в одну колонку, на 430 px и шире — в две", async ({ page }) => {
+  test("карточки предметов: телефон — одна колонка, от 768 px — две", async ({ page }) => {
     await open(page, "/study/grades", "connected");
-    const tiles = page.getByRole("region", { name: "Алгоритмы и структуры данных" }).getByRole("listitem");
-    await expect(tiles).toHaveCount(2);
-    for (const width of [390, 430]) {
+    const cards = page.locator("[data-part=courses] [data-course-card]");
+    await expect(cards.first()).toBeVisible();
+    for (const width of [390, 800]) {
       await page.setViewportSize({ width, height: 800 });
-      const tops = await tiles.evaluateAll((nodes) =>
-        nodes.map((node) => Math.round(node.getBoundingClientRect().top)),
+      const tops = await cards.evaluateAll((nodes) =>
+        nodes.slice(0, 2).map((node) => Math.round(node.getBoundingClientRect().top)),
       );
       if (width === 390) expect(tops[1], "одна колонка").toBeGreaterThan(tops[0] ?? 0);
       else expect(tops[1], "две колонки").toBe(tops[0]);
@@ -99,7 +102,7 @@ test.describe("«Учёба»: разделы", () => {
   });
 
   test("нужен вход: у источника статус словами, действие ведёт в чат", async ({ page }) => {
-    await open(page, "/study", "reauth");
+    await open(page, "/study?view=sources", "reauth");
     const cu = page.getByRole("region", { name: /^Центральный университет/ });
     const sources = cu.getByRole("list", { name: "Источники: ЦУ" });
     await expect(sources.getByText("Нужен вход", { exact: true })).toBeVisible();
@@ -118,7 +121,7 @@ test.describe("«Учёба»: разделы", () => {
   });
 
   test("зоны нажатия, кегль и отсутствие горизонтальной прокрутки на 320/390/430", async ({ page }) => {
-    for (const path of ["/study", "/study/courses", "/study/grades", "/study/people"]) {
+    for (const path of ["/study", "/study?view=sources", "/study/courses", "/study/people"]) {
       await open(page, path, "connected");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       await expect(page.locator("[aria-busy=true]")).toHaveCount(0);
@@ -128,7 +131,7 @@ test.describe("«Учёба»: разделы", () => {
     if ((page.viewportSize()?.width ?? 0) >= 1024) return;
     for (const width of [320, 390, 430]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const path of ["/study", "/study/grades"]) {
+      for (const path of ["/study", "/study?view=sources"]) {
         await open(page, path, "connected");
         await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
         await expect(page.locator("[aria-busy=true]")).toHaveCount(0);

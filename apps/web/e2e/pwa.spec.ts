@@ -57,7 +57,7 @@ test("манифест и иконки отдаются; приложение у
   expect(registration.active).toBe("activated");
 });
 
-test("favicon декодируется, а портрет maskable непрозрачный и целиком внутри безопасного круга", async ({
+test("favicon декодируется, maskable непрозрачный, а глаза, клюв и гребень целиком внутри безопасного круга", async ({
   page,
 }) => {
   await page.goto("/");
@@ -84,7 +84,15 @@ test("favicon декодируется, а портрет maskable непроз�
     const manifest = await (await fetch("/manifest.webmanifest")).json();
     const mask = manifest.icons.find((icon: { purpose?: string }) => icon.purpose === "maskable");
     const bitmap = await pixels(mask.src, 512);
-    const background = bitmap.slice(0, 4);
+    // v4: фон — градиент, туловище уходит за нижний край (оно вне круга по замыслу).
+    // Безопасная зона относится к главному: глаза (кремовые), клюв (золотой), гребень (чернильный).
+    const near = (r: number, g: number, b: number, color: number[]) =>
+      Math.abs(r - color[0]) + Math.abs(g - color[1]) + Math.abs(b - color[2]) < 12;
+    const features = [
+      [255, 249, 233],
+      [244, 190, 96],
+      [20, 44, 83],
+    ];
     let ink = 0;
     let outside = 0;
     let transparent = 0;
@@ -92,7 +100,8 @@ test("favicon декодируется, а портрет maskable непроз�
       for (let x = 0; x < 512; x++) {
         const offset = (y * 512 + x) * 4;
         if (bitmap[offset + 3] !== 255) transparent++;
-        if (bitmap.slice(offset, offset + 4).every((channel, i) => channel === background[i])) continue;
+        const [r, g, b] = [bitmap[offset], bitmap[offset + 1], bitmap[offset + 2]];
+        if (!features.some((color) => near(r, g, b, color))) continue;
         ink++;
         if (Math.hypot(x + 0.5 - 256, y + 0.5 - 256) > 512 * 0.4) outside++;
       }
@@ -109,7 +118,7 @@ test("favicon декодируется, а портрет maskable непроз�
   expect(icons.tinyMatches).toBe(true);
   expect(icons.faviconCornerAlpha).toBe(0);
   expect(icons.faviconInk).toBeGreaterThan(60);
-  expect(icons.ink).toBeGreaterThan(30_000);
+  expect(icons.ink).toBeGreaterThan(15_000);
   expect(icons.outside).toBe(0);
   expect(icons.transparent).toBe(0);
 });

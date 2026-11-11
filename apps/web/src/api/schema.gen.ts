@@ -757,6 +757,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/deadlines/{deadline_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Deadline
+         * @description The student's mark on one task (`open`, `submitted`, `graded`); null clears it.
+         */
+        patch: operations["patch_deadline_api_v1_deadlines__deadline_id__patch"];
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}": {
         parameters: {
             query?: never;
@@ -1647,6 +1667,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/status-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Status Rules
+         * @description The student's status rules, newest first.
+         */
+        get: operations["list_status_rules_api_v1_status_rules_get"];
+        put?: never;
+        /**
+         * Create Status Rule
+         * @description Create (or replace) the rule for a status of one source, or of every source; the stored
+         *     tasks with that status are recomputed at once.
+         */
+        post: operations["create_status_rule_api_v1_status_rules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/status-rules/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Status Rule
+         * @description Remove a rule; its tasks fall back to another rule or to the source's words.
+         */
+        delete: operations["delete_status_rule_api_v1_status_rules__rule_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/today": {
         parameters: {
             query?: never;
@@ -1676,6 +1741,26 @@ export interface paths {
          * @description Learned registry plus name-only suggestions; searching does not create integrations.
          */
         get: operations["search_universities_api_v1_universities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/updates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Updates
+         * @description Grades that appeared or changed and tasks whose state changed in the last `days`.
+         */
+        get: operations["updates_api_v1_updates_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2188,8 +2273,26 @@ export interface components {
              */
             kind: "grades" | "profile" | "ranking";
         };
+        /**
+         * DeadlineGradeOut
+         * @description The grade of a task: the latest grade of the same source for this task (D-043).
+         */
+        DeadlineGradeOut: {
+            /** Scale */
+            scale: string | null;
+            /** Scalemax */
+            scaleMax: number | null;
+            /** Url */
+            url: string | null;
+            /** Value */
+            value: string;
+            /** Valuenum */
+            valueNum: number | null;
+        };
         /** DeadlineOut */
         DeadlineOut: {
+            /** Changedat */
+            changedAt?: string | null;
             /** Coursetitle */
             courseTitle: string | null;
             /** Description */
@@ -2198,6 +2301,7 @@ export interface components {
             dueAt: string | null;
             /** Effectivedueat */
             effectiveDueAt: string | null;
+            grade?: components["schemas"]["DeadlineGradeOut"] | null;
             /** Id */
             id: string;
             provenance: components["schemas"]["Provenance"];
@@ -2206,10 +2310,26 @@ export interface components {
              * @enum {string}
              */
             state: "open" | "submitted" | "graded" | "missed" | "unknown";
+            /**
+             * Statesource
+             * @default source
+             * @enum {string}
+             */
+            stateSource: "student" | "rule" | "source";
+            /** Statetext */
+            stateText?: string | null;
             /** Title */
             title: string;
             /** Url */
             url: string | null;
+        };
+        /**
+         * DeadlinePatchIn
+         * @description The student's mark on one task; null clears it.
+         */
+        DeadlinePatchIn: {
+            /** Userstate */
+            userState: ("open" | "submitted" | "graded") | null;
         };
         /**
          * DecisionIn
@@ -2384,6 +2504,12 @@ export interface components {
         };
         /** GradeOut */
         GradeOut: {
+            /** Assignmentid */
+            assignmentId?: string | null;
+            /** Changedat */
+            changedAt?: string | null;
+            /** Comment */
+            comment?: string | null;
             /** Courseid */
             courseId?: string | null;
             /** Coursetitle */
@@ -2392,6 +2518,10 @@ export interface components {
             gradedAt: string | null;
             /** Id */
             id: string;
+            /** Layer */
+            layer?: ("item" | "current" | "final" | "summary") | null;
+            /** Period */
+            period?: string | null;
             provenance: components["schemas"]["Provenance"];
             /** Scale */
             scale: string | null;
@@ -2399,6 +2529,8 @@ export interface components {
             scaleMax?: number | null;
             /** Title */
             title: string | null;
+            /** Url */
+            url?: string | null;
             /** Value */
             value: string;
             /** Valuenum */
@@ -2419,6 +2551,8 @@ export interface components {
             gradedAt: string | null;
             /** Id */
             id: string;
+            /** Layer */
+            layer?: ("item" | "current" | "final" | "summary") | null;
             /** Scale */
             scale: string | null;
             /** Scalemax */
@@ -2433,8 +2567,9 @@ export interface components {
         /**
          * GradesData
          * @description `total` counts every grade of the dataset; `points` are the newest ones within the view's
-         *     limit (a chart: only numeric ones, at most `MAX_CHART_SERIES` scales); `latest`/`best` are
-         *     taken from the whole dataset.
+         *     limit (a chart: only numeric grades of works — layer `item` or unknown — of at most
+         *     `MAX_CHART_SERIES` scales); `latest` is taken from the whole dataset, `best` from the grades of
+         *     works only (a course total or a GPA is not "a best grade", D-043).
          */
         GradesData: {
             best: components["schemas"]["GradePointOut"] | null;
@@ -2610,6 +2745,12 @@ export interface components {
             createdAt: string;
             /** Id */
             id: string;
+            /**
+             * Kind
+             * @default note
+             * @enum {string}
+             */
+            kind: "note" | "rule";
             /** Note */
             note: string;
         };
@@ -3372,6 +3513,22 @@ export interface components {
             startedAt: string;
             /** Version */
             version: number | null;
+            /** Warnings */
+            warnings?: components["schemas"]["RunWarningOut"][];
+        };
+        /**
+         * RunWarningOut
+         * @description A hint about the records of a run (D-043 §3.5); never an error.
+         */
+        RunWarningOut: {
+            /** Code */
+            code: string;
+            /** Examples */
+            examples: string[];
+            /** Kinds */
+            kinds: string[];
+            /** Message */
+            message: string;
         };
         /** ScheduleEventOut */
         ScheduleEventOut: {
@@ -3748,6 +3905,42 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** StatusRuleIn */
+        StatusRuleIn: {
+            /** Label */
+            label: string;
+            /** Sourceid */
+            sourceId?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "submitted" | "graded" | "missed";
+        };
+        /**
+         * StatusRuleOut
+         * @description A rule of the student: the status `label` of a source (or of every source) means `state`.
+         */
+        StatusRuleOut: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Sourceid */
+            sourceId: string | null;
+            /** Sourcetitle */
+            sourceTitle: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "submitted" | "graded" | "missed";
+        };
         /** SuggestionIn */
         SuggestionIn: {
             /** Aftermessageid */
@@ -3881,6 +4074,8 @@ export interface components {
             deadlines: components["schemas"]["DeadlineOut"][];
             /** Events */
             events: components["schemas"]["ScheduleEventOut"][];
+            /** Updates */
+            updates?: components["schemas"]["UpdateOut"][];
         };
         /**
          * TranscriptOut
@@ -3906,6 +4101,47 @@ export interface components {
             thirdPartyWarning?: string | null;
             /** Title */
             title: string;
+        };
+        /**
+         * UpdateOut
+         * @description One recent change of the student's data: a grade that appeared or changed, a task whose
+         *     state changed (docs/v4/27 §5.5). Grade fields are set for `grade`, state fields for
+         *     `deadline`.
+         */
+        UpdateOut: {
+            /**
+             * Changedat
+             * Format: date-time
+             */
+            changedAt: string;
+            /** Coursetitle */
+            courseTitle: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "grade" | "deadline";
+            /** Layer */
+            layer?: ("item" | "current" | "final" | "summary") | null;
+            provenance: components["schemas"]["Provenance"];
+            /** Scale */
+            scale?: string | null;
+            /** Scalemax */
+            scaleMax?: number | null;
+            /** State */
+            state?: ("open" | "submitted" | "graded" | "missed" | "unknown") | null;
+            /** Statetext */
+            stateText?: string | null;
+            /** Title */
+            title: string | null;
+            /** Url */
+            url: string | null;
+            /** Value */
+            value?: string | null;
+            /** Valuenum */
+            valueNum?: number | null;
         };
         /** UsageDay */
         UsageDay: {
@@ -5383,6 +5619,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeadlineOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_deadline_api_v1_deadlines__deadline_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deadline_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeadlinePatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeadlineOut"];
                 };
             };
             /** @description Validation Error */
@@ -7144,6 +7415,88 @@ export interface operations {
             };
         };
     };
+    list_status_rules_api_v1_status_rules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusRuleOut"][];
+                };
+            };
+        };
+    };
+    create_status_rule_api_v1_status_rules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StatusRuleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusRuleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_status_rule_api_v1_status_rules__rule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     today_api_v1_today_get: {
         parameters: {
             query?: never;
@@ -7182,6 +7535,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UniversityOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    updates_api_v1_updates_get: {
+        parameters: {
+            query?: {
+                space_id?: string | null;
+                days?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateOut"][];
                 };
             };
             /** @description Validation Error */

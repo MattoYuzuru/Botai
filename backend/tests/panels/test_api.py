@@ -192,6 +192,7 @@ async def test_first_read_makes_the_default_panels_with_data(
         "valueNum",
         "scaleMax",
         "gradedAt",
+        "layer",
     }
 
     # the chart: numeric grades, oldest first, each in its own scale

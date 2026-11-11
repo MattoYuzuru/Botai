@@ -22,7 +22,7 @@ test.describe("«Учёба»: источники вуза", () => {
   test("по умолчанию: вузы, источники со статусами, документы вуза и никаких «Моих материалов»", async ({
     page,
   }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await expect(page.getByRole("heading", { level: 1, name: "Учёба" })).toBeVisible();
 
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
@@ -54,7 +54,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("карточка источника: что читает, описание чтения, артефакты и действия", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await sourcesOf(page, /^Высшая школа экономики/)
       .getByRole("button", { name: /^Личный кабинет:/ })
       .click();
@@ -93,7 +93,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("«Перечитать»: прогон и честный итог, без выдуманных процентов", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await sourcesOf(page, /^Высшая школа экономики/)
       .getByRole("button", { name: /^Личный кабинет:/ })
       .click();
@@ -105,7 +105,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("сломанный источник: «Починить» возвращает его в работу", async ({ page }) => {
-    await open(page, "/study?data=error", "connected");
+    await open(page, "/study?view=sources&data=error", "connected");
     const sources = sourcesOf(page, /^Высшая школа экономики/);
     await expect(sources.getByText("Ошибка")).toBeVisible();
     await sources.getByRole("button", { name: /^Личный кабинет:/ }).click();
@@ -117,7 +117,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("«Удалить источник»: опасное подтверждение, удаление и обновление списка", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     const sources = sourcesOf(page, /^Высшая школа экономики/);
     await expect(sources.getByRole("listitem")).toHaveCount(2);
     await sources.getByRole("button", { name: /^Личный кабинет:/ }).click();
@@ -136,7 +136,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("удаление при незавершённой задаче: 409 человеческим текстом, источник остаётся", async ({ page }) => {
-    await open(page, "/study?delete=busy", "connected");
+    await open(page, "/study?view=sources&delete=busy", "connected");
     const sources = sourcesOf(page, /^Высшая школа экономики/);
     await sources.getByRole("button", { name: /^Личный кабинет:/ }).click();
     const sheet = page.getByRole("dialog", { name: "Личный кабинет" });
@@ -153,7 +153,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("«Выключить источник» просит подтверждения; выключенный включается обратно", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await sourcesOf(page, /^Высшая школа экономики/)
       .getByRole("button", { name: /^Личный кабинет:/ })
       .click();
@@ -169,7 +169,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("«Сделать основным для расписания» переносит роль на выбранный источник", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     const sources = sourcesOf(page, /^Высшая школа экономики/);
     await sources.getByRole("button", { name: /^Расписание \(календарь\):/ }).click();
     const sheet = page.getByRole("dialog", { name: "Расписание (календарь)" });
@@ -185,7 +185,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("пусто: у вуза нет источников — честное состояние и «Добавить источник»", async ({ page }) => {
-    await open(page, "/study?sources=none", "connected");
+    await open(page, "/study?view=sources&sources=none", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     await expect(hse.getByText(/У вуза пока нет источников/)).toBeVisible();
     await expect(hse.getByText("Источников пока нет")).toBeVisible();
@@ -193,14 +193,14 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("настоящая ошибка загрузки видна, а не выдаётся за пустоту", async ({ page }) => {
-    await open(page, "/study?sources=fail", "connected");
+    await open(page, "/study?view=sources&sources=fail", "connected");
     const hse = page.getByRole("region", { name: /^Высшая школа экономики/ });
     await expect(hse.getByText(/Не удалось загрузить источники/)).toBeVisible();
     await expect(hse.getByText(/У вуза пока нет источников/)).toHaveCount(0);
   });
 
   test("нет сети: последние данные остаются, полоса честно говорит об офлайне", async ({ page, context }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await expect(sourcesOf(page, /^Высшая школа экономики/).getByRole("listitem")).toHaveCount(2);
     await context.setOffline(true);
     await expect(page.getByText(/Нет сети\. Показаны последние данные/)).toBeVisible();
@@ -218,7 +218,7 @@ test.describe("«Учёба»: источники вуза", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await expect(sourcesOf(page, /^Высшая школа экономики/).getByRole("listitem")).toHaveCount(2);
     await expectFitsWidth(page, 390, "Учёба");
     expect(await findSmallTapTargets(page)).toEqual([]);
@@ -234,7 +234,7 @@ test.describe("«Учёба»: источники вуза", () => {
   });
 
   test("a11y: один h1, регионы вузов, список источников и доступные имена действий", async ({ page }) => {
-    await open(page, "/study", "connected");
+    await open(page, "/study?view=sources", "connected");
     await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
     await expect(page.getByRole("region").first()).toBeVisible();
     const list = sourcesOf(page, /^Высшая школа экономики/);

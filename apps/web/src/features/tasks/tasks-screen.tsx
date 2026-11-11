@@ -21,7 +21,7 @@ import { ScreenSyncIndicator, SourceNotices, sourceStatusItems } from "@/feature
 import { useScope, useSpaceDirectory } from "@/features/data/use-space-directory";
 import { ConnectPrompt } from "@/features/today/connect-prompt";
 import { DeadlineSheet } from "./deadline-sheet";
-import { toDeadlineView } from "./deadlines";
+import { deadlineRowStatus, deadlineScore, deadlineStatus, toDeadlineView } from "./deadlines";
 import { GROUP_NOTE, groupDeadlines } from "./groups";
 
 const PAGE_SIZE = 10;
@@ -179,6 +179,9 @@ export function TasksScreen() {
                               timeZone={
                                 directory.byId.get(view.deadline.provenance.spaceId)?.timeZone ?? timeZone
                               }
+                              statusText={deadlineRowStatus(view)}
+                              statusNote={deadlineStatus(view.deadline).note}
+                              score={deadlineScore(view.deadline)}
                               onOpen={() => setOpenId(view.deadline.id)}
                             />
                           </li>

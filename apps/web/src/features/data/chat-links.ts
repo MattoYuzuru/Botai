@@ -53,6 +53,21 @@ export const replaceCalendarDraft = (title: string, university: string): string 
 export const replaceCalendarLink = (title: string, university: string): ChatLink =>
   chatDraftLink(replaceCalendarDraft(title, university));
 
+/**
+ * «Оценок пока нет» в «Учёбе»: агент ищет оценки во всех слоях — баллы за работы, накопленное, итоги, зачётку
+ * (D-043). Вуз называется, когда выбран один.
+ */
+export const findGradesDraft = (university?: string): string =>
+  university
+    ? `Найди мои оценки в источниках вуза «${university}»: баллы за работы, накопленные и итоговые оценки, зачётку`
+    : "Найди мои оценки во всех вузах: баллы за работы, накопленные и итоговые оценки, зачётку";
+
+export const findGradesLink = (university?: string): ChatLink => chatDraftLink(findGradesDraft(university));
+
+/** «Спросить агента» из карточки предмета: что с оценками по предмету и всё ли прочитано верно. */
+export const askCourseDraft = (course: string | null, university?: string): string =>
+  `Расскажи про мои оценки${course ? ` по предмету «${course}»` : ""}${university ? ` (${university})` : ""}: всё ли прочитано верно и что ещё не проверено?`;
+
 /** Просьба по состоянию источника, когда у него нет своего треда задачи. */
 function attentionDraft(connection: Connection, university: string): string {
   const source = `«${connection.title}» (${university})`;

@@ -35,7 +35,7 @@ export function SectionFrame({
   const navigate = useNavigate();
   const back = () => {
     if (router.history.canGoBack()) router.history.back();
-    else void navigate({ to: "/study" });
+    else void navigate({ to: "/study", search: { view: "sources" } });
   };
   return (
     <Screen

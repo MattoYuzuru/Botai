@@ -5,10 +5,12 @@
  *
  * Для проверки состояний данных адрес принимает `?data=`: `quiet` (вузы подключены, данных нет), `freeday` (сегодня
  * пар нет, на следующие дни они есть),
- * `repairing`, `waiting`, `error` — состояние одного из подключений. Значение запоминается на вкладку.
+ * `repairing`, `waiting`, `error` — состояние одного из подключений, `legacy` — оценки в форме старых playbook'ов
+ * (без слоёв и предметов, D-043). Значение запоминается на вкладку.
  */
 import { delay, HttpResponse, http } from "msw";
 import type { components } from "@/api/schema.gen";
+import type { StudyUpdate } from "@/api/v3-data";
 import { addDays, startOfDay } from "@/features/data/dates";
 import { runConnect } from "./connect-script";
 import {
@@ -19,9 +21,11 @@ import {
   seedDocuments,
   seedEvents,
   seedGrades,
+  seedLegacyGrades,
   seedNews,
   seedPeople,
   seedSourceOf,
+  seedUpdates,
 } from "./data-seed";
 import { findUser, type MockDb, persistDb, ulid } from "./db";
 import { JobSim } from "./job-sim";
@@ -37,8 +41,8 @@ export interface DataHandlerOptions {
   variant?: DataVariant | null;
 }
 
-export type DataVariant = "quiet" | "freeday" | "repairing" | "waiting" | "error";
-const VARIANTS: readonly DataVariant[] = ["quiet", "freeday", "repairing", "waiting", "error"];
+export type DataVariant = "quiet" | "freeday" | "repairing" | "waiting" | "error" | "legacy";
+const VARIANTS: readonly DataVariant[] = ["quiet", "freeday", "repairing", "waiting", "error", "legacy"];
 const STORAGE_KEY = "botai.mock.data";
 
 function readVariant(): DataVariant | null {
@@ -115,6 +119,8 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
   const variant = options.variant === undefined ? readVariant() : options.variant;
   applyVariant(db, variant);
   const quiet = variant === "quiet";
+  /** `legacy`: оценки в форме старых playbook'ов — без слоёв и предметов (`seedLegacyGrades`). */
+  const grades = () => (variant === "legacy" ? seedLegacyGrades(db) : seedGrades(db));
   /** `freeday`: у сегодняшнего дня пар нет ни в «Сегодня», ни в расписании; остальные дни как обычно. */
   const free = (event: { startsAt: string }) =>
     variant !== "freeday" ||
@@ -218,11 +224,18 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
           return ATTENTION_STATUSES.has(c.status) || (Number.isFinite(last) && now - last > 24 * 3_600_000);
         })
         .map((c) => c.id);
-      const body: S["TodayOut"] = {
+      // «Новое» на «Сегодня»: три дня, не больше пяти записей (D-044 §5.5).
+      const updates = quiet
+        ? []
+        : seedUpdates(db, 3, grades())
+            .filter((u) => liveProvenance(u.provenance, live))
+            .slice(0, 5);
+      const body: S["TodayOut"] & { updates: StudyUpdate[] } = {
         date: new Date(from + 12 * 3_600_000).toISOString().slice(0, 10),
         events,
         deadlines,
         attention,
+        updates,
       };
       return HttpResponse.json(body);
     }),
@@ -268,8 +281,74 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
       return HttpResponse.json(rows);
     }),
 
+    // Отметка студента на задании (D-045): сильнее источника; `null` снимает отметку.
+    http.patch("*/api/v1/deadlines/:deadlineId", async ({ params, request }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const id = String(params.deadlineId);
+      const body = (await request.json().catch(() => null)) as { userState?: unknown } | null;
+      const next = body?.userState;
+      if (next !== null && next !== "open" && next !== "submitted" && next !== "graded")
+        return problem(422, "validation", "Отметка — open, submitted, graded или null");
+      if (!seedDeadlines(db).some((row) => row.id === id))
+        return problem(404, "not_found", "Задание не найдено");
+      db.deadlineMarks ??= {};
+      if (next === null) delete db.deadlineMarks[id];
+      else db.deadlineMarks[id] = next;
+      save();
+      return HttpResponse.json(seedDeadlines(db).find((row) => row.id === id));
+    }),
+
+    http.get("*/api/v1/updates", async ({ request }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const url = new URL(request.url);
+      const spaceId = spaceFilter(url);
+      if (spaceId && !hasSpace(spaceId)) return problem(404, "not_found", "Пространство не найдено");
+      if (quiet) return HttpResponse.json([]);
+      const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 7) || 7, 1), 30);
+      const live = new Set(db.connections.filter((c) => c.status !== "disabled").map((c) => c.id));
+      return HttpResponse.json(
+        seedUpdates(db, days, grades())
+          .filter((u) => liveProvenance(u.provenance, live))
+          .filter((u) => !spaceId || u.provenance.spaceId === spaceId),
+      );
+    }),
+
+    http.get("*/api/v1/status-rules", async () => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      return HttpResponse.json(db.statusRules ?? []);
+    }),
+
+    http.delete("*/api/v1/status-rules/:ruleId", async ({ params }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const before = db.statusRules ?? [];
+      db.statusRules = before.filter((rule) => rule.id !== String(params.ruleId));
+      if (db.statusRules.length === before.length) return problem(404, "not_found", "Правило не найдено");
+      save();
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.get("*/api/v1/me/memory", async () => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      return HttpResponse.json(db.memory ?? []);
+    }),
+
+    http.delete("*/api/v1/me/memory/:noteId", async ({ params }) => {
+      await wait();
+      if (!signedIn()) return unauthorized();
+      const before = db.memory ?? [];
+      db.memory = before.filter((item) => item.id !== String(params.noteId));
+      if (db.memory.length === before.length) return problem(404, "not_found", "Запись не найдена");
+      save();
+      return new HttpResponse(null, { status: 204 });
+    }),
+
     listHandler("*/api/v1/courses", () => seedCourses(db)),
-    listHandler("*/api/v1/grades", () => seedGrades(db)),
+    listHandler("*/api/v1/grades", grades),
     listHandler("*/api/v1/people", () => seedPeople(db)),
     listHandler("*/api/v1/news", () => seedNews(db)),
 
@@ -289,7 +368,7 @@ export function createDataHandlers(db: MockDb, options: DataHandlerOptions = {})
         ["courses", mine(seedCourses(db))],
         ["scheduleEvents", events.length],
         ["deadlines", deadlines],
-        ["grades", mine(seedGrades(db))],
+        ["grades", mine(grades())],
         ["people", mine(seedPeople(db))],
         ["locations", rooms.size],
         ["news", mine(seedNews(db))],

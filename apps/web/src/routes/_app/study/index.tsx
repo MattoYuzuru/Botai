@@ -1,5 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { StudyScreenV4 } from "@/features/study/v4/study-screen-v4";
+import { isStudyView, StudyScreenV4, type StudyView } from "@/features/study/v4/study-screen-v4";
 
-/** «Учёба»: вуз — карточка, его источники — живые записи (03-sources-and-ux.md §5, D-013). */
-export const Route = createFileRoute("/_app/study/")({ component: StudyScreenV4 });
+/**
+ * «Учёба»: успеваемость и источники вузов (03-sources-and-ux.md §5, D-013, D-046). Раздел — в `?view=`
+ * (`grades` | `sources`); без него экран выбирает сам.
+ */
+export const Route = createFileRoute("/_app/study/")({
+  validateSearch: (search: Record<string, unknown>): { view?: StudyView } =>
+    isStudyView(search.view) ? { view: search.view } : {},
+  component: function Study() {
+    const { view } = Route.useSearch();
+    return <StudyScreenV4 view={view} />;
+  },
+});

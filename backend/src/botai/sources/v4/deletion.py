@@ -6,7 +6,9 @@ second, and only the second — switching off stays `service.disable_source`.
 
 What goes with the source:
 
-* `source_artifacts` and `source_state` — `ON DELETE CASCADE` on the `sources` row;
+* `source_artifacts`, `source_state` and the student's status rules of this source
+  (`status_rules`, D-045) — `ON DELETE CASCADE` on the `sources` row; the rules for every source
+  stay;
 * the normalized product rows the source wrote (`schedule_events`, `courses`, `assignments`,
   `deadlines`, `grades`, `people`, `locations`, `news_items`, `profile_fields`,
   `ranking_entries`) — its data must not survive as provenance-less rows that no read can see

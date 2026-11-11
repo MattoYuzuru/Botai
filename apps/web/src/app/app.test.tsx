@@ -191,7 +191,7 @@ describe("каркас приложения", () => {
 
   it("«Учёба»: профиль, оформление и выход", async () => {
     useScenario("connected");
-    const { router } = renderApp("/study");
+    const { router } = renderApp("/study?view=sources");
     expect(await screen.findByRole("heading", { level: 2, name: "Профиль и настройки" })).toBeInTheDocument();
     expect(await screen.findByText(DEMO.email)).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Тёмная" })).toBeInTheDocument();

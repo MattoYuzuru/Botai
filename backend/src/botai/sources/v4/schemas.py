@@ -222,6 +222,15 @@ class RunErrorOut(ApiModel):
     retryable: bool
 
 
+class RunWarningOut(ApiModel):
+    """A hint about the records of a run (D-043 §3.5); never an error."""
+
+    code: str
+    message: str
+    kinds: list[str]
+    examples: list[str]
+
+
 class ReadOutcomeOut(ApiModel):
     name: str
     url: str | None
@@ -282,3 +291,4 @@ class RunReportOut(ApiModel):
     persisted: bool
     domain: dict[str, DomainCountsOut]
     discovered_endpoints: list[DiscoveredEndpointOut]
+    warnings: list[RunWarningOut] = Field(default_factory=list)

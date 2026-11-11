@@ -1,7 +1,7 @@
 """Built-in v4 tools (plan 1.2): HTTP, files, asking the owner, reading traces.
 
-Later phases add `browser_*`, `code_exec`, `secret_*`, `source_*`, `rag_*`, `memory_*`, `job_*`
-by registering more `ToolHandler`s; the runtime does not change. Tool handlers are stateless
+Later phases add `browser_*`, `code_exec`, `secret_*`, `source_*`, `rag_*`, `memory_*`,
+`threads_*` by registering more `ToolHandler`s (`agent/v4/factory.py`); the runtime does not change. Tool handlers are stateless
 except for injected transports/executors — the run state lives in `ToolContext`.
 """
 

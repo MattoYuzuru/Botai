@@ -15,7 +15,16 @@ The v4 runner reads a playbook and coerces every record to the same column dicts
 * a kind without a domain table (`documents`, `messages`) stays in the run report and is counted as
   skipped, not silently dropped;
 * after the rows of `grades`, `profile` or `ranking` are written, the system panels of the
-  university are ensured (`panels.service.ensure_default_panels`, idempotent, D-039).
+  university are ensured (`panels.service.ensure_default_panels`, idempotent, D-039);
+* a deadline keeps the parser's state as `source_state`; the student's status rules decide its
+  `state` when they name its `state_text` (`domain.overrides`, D-045); the student's own mark
+  (`user_state`) is never written here;
+* `changed_at` of a grade or a deadline (the "Новое" feed, docs/v4/27 §5.5) means "the source
+  changed it": set to `now` when a row appears after the source's first successful sync — and
+  after the first sync that brought this kind at all, so a playbook that learns to read grades does
+  not flood the feed with history — and when a grade's value or a deadline's stored state (the
+  source's, through the rules) changes. A rule's recompute or a mark never sets it, and the sync
+  after a recompute finds the same stored state, so it is no news either.
 
 Writers of one source are serialized by an advisory transaction lock, so two concurrent syncs of
 one source cannot insert the same natural key twice.
@@ -33,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from botai.core.errors import BotaiError, ErrorCode
 from botai.db.models import Source
+from botai.domain import overrides
 from botai.panels import service as panels_service
 from botai.sources.normalize import ALL_MODELS, lock_connection
 from botai.sources.v4 import kinds as kinds_vocab
@@ -50,6 +60,25 @@ _EVENT_MATERIAL = (
     "teacher_text",
     "address",
 )
+
+
+# The kinds of the "Новое" feed (docs/v4/27 §5.5): their rows carry `changed_at`.
+_FEED_KINDS = frozenset({"grades", "deadlines"})
+
+
+def _is_news(kind: str, row: Any, fields: Mapping[str, Any], changed: Sequence[str]) -> bool:
+    """Whether an update of a stored row is a change the student should notice.
+
+    A grade whose value changed, or whose number changed from another number; a task whose state
+    changed. Reading the same data better is not news: a number found for the first time (a
+    playbook learned `max`) or a state read from words kept for the first time (`state_text`
+    appeared) leave `changed_at` alone, so a repaired playbook does not flood the feed."""
+    if kind == "grades":
+        return "value" in changed or ("value_num" in changed and row.value_num is not None)
+    if kind == "deadlines":
+        first_words = row.state_text is None and fields.get("state_text") is not None
+        return "state" in changed and not first_words
+    return False
 
 
 class DomainRecord(Protocol):
@@ -123,6 +152,11 @@ def _has_material_change(existing: Any, row: Mapping[str, Any]) -> bool:
     )
 
 
+async def _has_rows(session: AsyncSession, model: type[Any], source_id: str) -> bool:
+    found = await session.scalar(select(model.id).where(model.source_id == source_id).limit(1))
+    return found is not None
+
+
 async def write_records(
     session: AsyncSession,
     *,
@@ -131,11 +165,14 @@ async def write_records(
     records: Sequence[DomainRecord],
     now: datetime,
     revision: int | None = None,
+    synced_before: bool | None = None,
 ) -> dict[str, dict[str, int]]:
     """Upsert the records of one sync into the domain; returns counts per v4 kind.
 
     The caller owns the transaction (the runner commits status/state/artifacts together with these
-    rows). A record whose kind has no domain table is counted as skipped.
+    rows). A record whose kind has no domain table is counted as skipped. `synced_before` says
+    whether the source had a successful sync before this one (default: its `last_sync_at`, which
+    the runner reads before marking this sync).
     """
     if source.user_id != user_id:
         # The runner already resolved the source through the owner-scoped service; a mismatch here
@@ -143,6 +180,8 @@ async def write_records(
         raise BotaiError(ErrorCode.NOT_FOUND, "Источник не найден")
     if not records:
         return {}
+    if synced_before is None:
+        synced_before = source.last_sync_at is not None
     await _lock(session, source.id)
     by_kind: dict[str, list[DomainRecord]] = {}
     stats: dict[str, DomainStats] = {}
@@ -163,6 +202,14 @@ async def write_records(
                 st.skipped += 1
                 continue
             rows[record.external_id] = (record, record.fields)
+        if kind_name == "deadlines" and rows:
+            rows = await _apply_status_rules(session, user_id, source.id, rows)
+        # a new row is news only once this source and this kind were read before
+        new_is_news = (
+            kind_name in _FEED_KINDS
+            and synced_before
+            and await _has_rows(session, model, source.id)
+        )
         existing = await _existing(session, model, source.id, list(rows))
         for external_id, (record, fields) in rows.items():
             source_url, open_url = _provenance_urls(source, record)
@@ -180,12 +227,15 @@ async def write_records(
                         spec_revision=revision,
                         seen_at=now,
                         **dict(fields),
+                        **({"changed_at": now} if new_is_news else {}),
                     )
                 )
                 st.inserted += 1
                 continue
             material = kind_name == "schedule" and _has_material_change(row, fields)
             changed = [column for column, value in fields.items() if getattr(row, column) != value]
+            if _is_news(kind_name, row, fields, changed):
+                row.changed_at = now
             for column in changed:
                 setattr(row, column, fields[column])
             row.source_url, row.open_url = source_url, open_url
@@ -202,3 +252,20 @@ async def write_records(
             session, user_id=user_id, space_id=source.space_id
         )
     return {kind_name: st.as_dict() for kind_name, st in stats.items()}
+
+
+async def _apply_status_rules(
+    session: AsyncSession,
+    user_id: str,
+    source_id: str,
+    rows: dict[str, tuple[DomainRecord, Mapping[str, Any]]],
+) -> dict[str, tuple[DomainRecord, Mapping[str, Any]]]:
+    """The deadlines with the student's status rules applied: the parser's state is kept as
+    `source_state`, a rule (when one names the status text) decides `state` over it."""
+    rules = await overrides.rules_of(session, user_id, source_ids=[source_id])
+    out: dict[str, tuple[DomainRecord, Mapping[str, Any]]] = {}
+    for external_id, (record, fields) in rows.items():
+        parsed = fields.get("state")
+        ruled = overrides.rule_state(rules, source_id, fields.get("state_text")) if rules else None
+        out[external_id] = (record, {**fields, "source_state": parsed, "state": ruled or parsed})
+    return out

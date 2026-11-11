@@ -10,7 +10,7 @@ test.describe("«Задания»", () => {
     await open(page, "/tasks", "connected");
     await expect(screen(page)).toHaveAttribute("data-state", "ok");
     const headings = await page.getByRole("heading", { level: 2 }).allTextContents();
-    expect(headings).toEqual(["Просрочено2", "Сегодня1", "На неделе2", "Позже2", "Без срока1", "Сдано2"]);
+    expect(headings).toEqual(["Просрочено2", "Сегодня1", "На неделе2", "Позже2", "Без срока1", "Сдано5"]);
     await expect(page.getByRole("region", { name: /^Сегодня/ }).getByText(/Осталось\s+5/)).toBeVisible();
     await expect(page.getByRole("region", { name: /^На неделе/ }).getByText(/Скоро · 2/)).toBeVisible();
     const none = page.getByRole("region", { name: /^Без срока/ });
@@ -96,5 +96,29 @@ test.describe("«Задания»", () => {
       await expect(screen(page)).toHaveAttribute("data-state", "ok");
       await expectFitsWidth(page, width, `задания ${width}`);
     }
+  });
+
+  test("статус словами источника, балл проверенной работы и отметка «сдал» с откатом", async ({ page }) => {
+    await open(page, "/tasks", "connected");
+    await expect(page.getByRole("region", { name: /^На неделе/ }).getByText("На доработке")).toBeVisible();
+    const done = page.getByRole("region", { name: /^Сдано/ });
+    await done.getByRole("button", { name: /Показать/ }).click();
+    await expect(done.getByRole("button", { name: /Тест по теории вероятностей/ })).toContainText("10 из 10");
+    await expect(done.getByRole("button", { name: /Домашнее задание №3: пределы/ })).toContainText(
+      "Решение прикреплено",
+    );
+    await expect(done.getByRole("button", { name: /Конспект лекции 5/ })).toContainText("отмечено вами");
+
+    await page.getByRole("button", { name: /Эссе по продуктовой стратегии/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Эссе по продуктовой стратегии" });
+    await sheet.getByRole("button", { name: "Отметить сданным" }).click();
+    await expect(page.getByText("Задание отмечено сданным")).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "Вернуть в работу" })).toBeVisible();
+    await sheet.getByRole("button", { name: "Вернуть в работу" }).click();
+    await expect(sheet.getByRole("button", { name: "Отметить сданным" })).toBeVisible();
+    await sheet.getByRole("button", { name: "Снять мою отметку" }).click();
+    await expect(sheet.getByRole("button", { name: "Снять мою отметку" })).toHaveCount(0);
+    const box = await sheet.getByRole("button", { name: "Отметить сданным" }).boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
   });
 });

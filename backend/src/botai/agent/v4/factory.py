@@ -30,6 +30,7 @@ from botai.agent.v4.executor import (
     LocalExecutor,
     Workspace,
 )
+from botai.agent.v4.lazy_browser import LaunchFirst, LazyBrowser
 from botai.agent.v4.protocol import ToolHandler
 from botai.agent.v4.providers.base import Provider
 from botai.agent.v4.providers.factory import build_provider
@@ -38,11 +39,14 @@ from botai.agent.v4.tools import build_basic_tools
 from botai.agent.v4.tools.actions import build_action_tools
 from botai.agent.v4.tools.browser import build_browser_tools
 from botai.agent.v4.tools.code import build_code_tools
+from botai.agent.v4.tools.memory import MemoryToolkit, build_memory_tools
 from botai.agent.v4.tools.panels import PanelToolkit, build_panel_tools
 from botai.agent.v4.tools.rag import build_rag_tools
 from botai.agent.v4.tools.secrets import SecretBroker, build_secret_tools
 from botai.agent.v4.tools.sources import SourceToolkit, build_source_tools
 from botai.agent.v4.tools.spaces import SpaceToolkit, build_space_tools
+from botai.agent.v4.tools.study import StudyToolkit, build_study_tools
+from botai.agent.v4.tools.threads import ThreadToolkit, build_thread_tools
 from botai.agent.v4.trace_store import DbTraceStore
 from botai.agent.v4.traces import MemoryTraceStore, TraceStore
 from botai.browser.control import BrowserControl, ControlConfig
@@ -261,7 +265,7 @@ def build_source_toolkit(
     artifact_root: str | Path | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     cookies: Mapping[str, str] | None = None,
-    browser_control: BrowserControl | None = None,
+    browser_control: BrowserControl | LazyBrowser | None = None,
     broker: SecretBroker | None = None,
 ) -> SourceToolkit:
     """The `source_*` tools over the real DB, artifact root, Vault reader and executor.
@@ -332,6 +336,49 @@ def build_panel_toolkit(
     return PanelToolkit(sm=db, clock=services.clock, mask=mask)
 
 
+def build_study_toolkit(
+    services: Services, *, source_toolkit: SourceToolkit | None = None
+) -> StudyToolkit:
+    """`study_data` and the student's corrections over the real DB (D-044, D-045).
+
+    Required for the same reason as the source tools: without it the chat agent would go to the
+    university site for every grade it already has.
+    """
+    db = getattr(services, "db", None)
+    if db is None:
+        raise AgentWiringError(
+            "Учёба v4 включена, но у сервисов нет фабрики сессий БД: study_* инструменты нельзя "
+            "собрать (нужен services.db)."
+        )
+    # `study_data(refresh=true)` runs the very sync of `source_sync`: same runner, same writes.
+    sync = source_toolkit.sync_source if source_toolkit is not None else None
+    return StudyToolkit(sm=db, clock=services.clock, sync=sync)
+
+
+def build_memory_toolset(
+    services: Services,
+    *,
+    mask: Callable[[str], str] | None = None,
+    student_text: str | None = None,
+) -> list[ToolHandler]:
+    """`memory_*` (notes about the student) and `threads_*` (the student's other chats).
+
+    Both are what makes one conversation useful for the next ones (docs/v4/26-chat-memory.md).
+    The DB is required for the same reason as for the source tools: without it the agent would
+    say it cannot remember while the product claims it can.
+    """
+    db = getattr(services, "db", None)
+    if db is None:
+        raise AgentWiringError(
+            "Память v4 включена, но у сервисов нет фабрики сессий БД: memory_*/threads_* "
+            "инструменты нельзя собрать (нужен services.db)."
+        )
+    return [
+        *build_memory_tools(MemoryToolkit(sm=db, mask=mask, student_text=student_text)),
+        *build_thread_tools(ThreadToolkit(sm=db)),
+    ]
+
+
 def build_rag_toolset(services: Services) -> list[ToolHandler]:
     """The `rag_*` tools over the real DB session factory; a broken RAG config fails loudly.
 
@@ -352,7 +399,12 @@ def build_rag_toolset(services: Services) -> list[ToolHandler]:
 
 @dataclass(slots=True)
 class AgentWiring:
-    """Everything one v4 run needs; `aclose` releases the browser, executor and provider."""
+    """Everything one v4 run needs; `aclose` releases the browser, executor and provider.
+
+    `browser` is the run's lazy browser (`agent/v4/lazy_browser.py`): it exists from the start,
+    the Chromium context only after the first tool that needs it. `control` is that context when it
+    was launched (or injected), else None.
+    """
 
     runtime: AgentRuntime
     provider: Provider
@@ -360,24 +412,36 @@ class AgentWiring:
     trace_store: TraceStore
     workspace: Workspace
     executor: Executor
-    control: BrowserControl | None = None
+    browser: LazyBrowser | None = None
     broker: SecretBroker | None = None
     source_toolkit: SourceToolkit | None = None
     session_store: AgentSessionStore | None = None
     owns_provider: bool = False
 
+    @property
+    def control(self) -> BrowserControl | None:
+        return self.browser.control if self.browser is not None else None
+
+    async def open_browser(self) -> BrowserControl:
+        """The run's browser, launching it now if no tool has done so yet."""
+        if self.browser is None:
+            raise AgentWiringError("У этого run нет браузера (with_browser=False)")
+        return await self.browser.get()
+
     async def aclose(self) -> None:
         # Idempotent enough for the handler's finally: a second close is a no-op in the parts.
-        if self.control is not None:
+        # A browser that was never launched has no session to save and nothing to close.
+        control = self.control
+        if control is not None:
             if self.session_store is not None:
                 try:
-                    state = await capture_browser_session(self.control)
+                    state = await capture_browser_session(control)
                     await self.session_store.save(state)
                 except Exception:
                     log.warning("Не удалось сохранить браузерную сессию агента в Vault")
             # The run is over; a broken browser must not mask its result.
             with contextlib.suppress(Exception):
-                await self.control.close()
+                await control.close()
         if isinstance(self.executor, (ContainerExecutor, LocalExecutor)):
             self.executor.close()
         if self.broker is not None:
@@ -402,11 +466,19 @@ async def build_agent_wiring(
     artifact_root: str | Path | None = None,
     source_cookies: Mapping[str, str] | None = None,
     workspace_run_id: str | None = None,
+    student_text: str | None = None,
 ) -> AgentWiring:
     """Assemble the runtime for one run. The caller owns `aclose` (handler does it in finally).
 
     `workspace_run_id` names the workspace directory: the segments of one chat turn share it, so
     the files of an earlier segment are still there after a continuation (the browser is not).
+
+    The browser is lazy (D-044): with `with_browser` and no injected `control`, nothing is launched
+    here; the first `browser_*` call (or a browser `secret_use`/`action_execute`) launches it with
+    the saved agent session. An injected `control` is used at once, as before.
+
+    `student_text` is the student's own message of a chat turn: the evidence `memory_remember`
+    needs before it keeps a rule (none outside the chat).
 
     With `agent_engine=v4` the product tools are part of the run: `source_*` over the real source
     service/runner and `rag_*` over the real RAG service. A missing required collaborator (the DB
@@ -424,29 +496,36 @@ async def build_agent_wiring(
     active_provider = provider or build_provider(settings)
     store: TraceStore = trace_store or DbTraceStore(services.db, user_id=user_id, job_id=job_id)
     broker = SecretBroker(services.vault, user_id=user_id, scope_id=job_id or run_id)
-    active_control = control
     session_store: AgentSessionStore | None = None
-    restored_state: StorageState | None = None
-    if active_control is not None or with_browser:
+    browser: LazyBrowser | None = None
+    if control is not None:
         session_store = AgentSessionStore(services.vault, user_id=user_id)
-        saved_state = await session_store.load()
-        if saved_state:
-            restored_state = browser_storage_state(saved_state)
-    if active_control is None and with_browser:
-        active_control = await launch_browser_control(
-            services,
-            workspace=workspace,
-            mask=broker.mask,
-            storage_state=restored_state,
-        )
-    elif active_control is not None and restored_state is not None:
-        await active_control.new_context(storage_state=restored_state)
+        restored = await _restored_state(session_store)
+        if restored is not None:
+            await control.new_context(storage_state=restored)
+        browser = LazyBrowser(control=control)
+    elif with_browser:
+        store_for_launch = session_store = AgentSessionStore(services.vault, user_id=user_id)
+
+        async def launch() -> BrowserControl:
+            # The saved agent session goes into the very first context: no origin is visited to
+            # install it, exactly as with the eager launch.
+            return await launch_browser_control(
+                services,
+                workspace=workspace,
+                mask=broker.mask,
+                storage_state=await _restored_state(store_for_launch),
+            )
+
+        browser = LazyBrowser(launch)
+    handle = browser.handle() if browser is not None else None
     tools: list[ToolHandler] = [*build_basic_tools(), *build_code_tools(executor)]
-    if active_control is not None:
+    if browser is not None and handle is not None:
         tools.extend(
-            build_browser_tools(active_control, workspace=workspace.root, mask=broker.mask)
+            LaunchFirst(tool, browser)
+            for tool in build_browser_tools(handle, workspace=workspace.root, mask=broker.mask)
         )
-    tools.extend(build_secret_tools(broker, control=active_control, transport=http_transport))
+    tools.extend(build_secret_tools(broker, control=handle, transport=http_transport))
     source_toolkit: SourceToolkit | None = None
     if settings.agent_engine == "v4":
         source_toolkit = build_source_toolkit(
@@ -455,19 +534,23 @@ async def build_agent_wiring(
             artifact_root=artifact_root,
             transport=http_transport,
             cookies=source_cookies,
-            browser_control=active_control,
+            browser_control=browser,
             broker=broker,
         )
         tools.extend(build_source_tools(source_toolkit))
+        tools.extend(
+            build_study_tools(build_study_toolkit(services, source_toolkit=source_toolkit))
+        )
         tools.extend(build_space_tools(build_space_toolkit(services)))
         tools.extend(build_panel_tools(build_panel_toolkit(services, mask=broker.mask)))
         tools.extend(build_rag_toolset(services))
+        tools.extend(build_memory_toolset(services, mask=broker.mask, student_text=student_text))
         tools.extend(
             build_action_tools(
                 services=services,
                 user_id=user_id,
                 http_transport=http_transport,
-                control=active_control,
+                control=handle,
             )
         )
     # The broker masker is applied by the runtime to every tool result (code_exec stdout, fs_*,
@@ -486,12 +569,17 @@ async def build_agent_wiring(
         trace_store=store,
         workspace=workspace,
         executor=executor,
-        control=active_control,
+        browser=browser,
         broker=broker,
         source_toolkit=source_toolkit,
         session_store=session_store,
         owns_provider=provider is None,
     )
+
+
+async def _restored_state(store: AgentSessionStore) -> StorageState | None:
+    saved = await store.load()
+    return browser_storage_state(saved) if saved else None
 
 
 async def enqueue_agent_run(
@@ -538,8 +626,10 @@ __all__ = [
     "artifact_root_from_settings",
     "build_agent_wiring",
     "build_executor",
+    "build_memory_toolset",
     "build_rag_toolset",
     "build_source_toolkit",
+    "build_study_toolkit",
     "enqueue_agent_run",
     "launch_browser_control",
     "memory_trace_store",

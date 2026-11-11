@@ -13,6 +13,24 @@ beforeAll(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
+/**
+ * Панели — ноутбучной шириной: на телефоне «Успеваемость» сворачивает их под кнопку (это проверяет
+ * `performance-view.test.tsx`), здесь проверяются сами панели.
+ */
+function emulateLaptop() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query.includes("min-width: 1024px"),
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }));
+}
+
+beforeEach(emulateLaptop);
 beforeEach(() => {
   current.server.close();
   current = createDataServer("connected");
@@ -23,6 +41,7 @@ afterEach(() => {
   window.localStorage.clear();
   useActiveSpaceStore.setState({ id: "all" });
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 afterAll(() => {
   current.server.close();
@@ -31,7 +50,7 @@ afterAll(() => {
 
 const hse = () => current.db.spaces[0] as { id: string };
 const section = async () =>
-  (await screen.findByRole("heading", { level: 2, name: "Успеваемость" })).closest("section") as HTMLElement;
+  (await screen.findByRole("heading", { level: 2, name: "Панели" })).closest("section") as HTMLElement;
 const problem = (status: number, code: string) =>
   new HttpResponse(
     JSON.stringify({
@@ -48,7 +67,9 @@ describe("«Успеваемость»: панели из реестра", () =>
   it("«Все вузы»: группы по вузам, показатели, график, рейтинг и профиль только из ответа сервера", async () => {
     renderApp("/study");
     const panels = await section();
-    expect(within(panels).getByRole("heading", { level: 2, name: "Успеваемость" })).toBeInTheDocument();
+    // Внутри «Успеваемости» (D-046) блок подписан «Панели»: двух «Успеваемостей» на экране нет.
+    expect(within(panels).getByRole("heading", { level: 2, name: "Панели" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 2, name: "Успеваемость" })).toBeNull();
     const groups = await within(panels).findAllByRole("group", { name: /экономики|Центральный/ });
     expect(groups.map((group) => group.getAttribute("data-panels-space"))).toEqual([
       hse().id,
@@ -62,8 +83,8 @@ describe("«Успеваемость»: панели из реестра", () =>
     expect(latest).toHaveTextContent("8/ из 10");
     expect(latest).toHaveTextContent("Контрольная №2");
     expect(within(tiles).getByRole("group", { name: "Лучшая оценка" })).toHaveTextContent("10/ из 10");
-    // 7 из 8 оценок числовые: подпись говорит об этом словами, без выдуманного «среднего».
-    expect(within(tiles).getByRole("group", { name: "Оценок" })).toHaveTextContent("8из них с баллом: 7");
+    // 10 из 11 оценок за работы числовые: подпись говорит об этом словами, без выдуманного «среднего».
+    expect(within(tiles).getByRole("group", { name: "Оценок" })).toHaveTextContent("11из них с баллом: 10");
     // График со шкалой источника.
     // Шкала названа словами источника (и у графика, и у предпросмотра предложения агента).
     expect(within(first).getAllByText("Шкала источника: 10 баллов").length).toBeGreaterThan(0);
@@ -100,7 +121,7 @@ describe("«Успеваемость»: панели из реестра", () =>
     const row = within(list).getByText("Контрольная №2").closest("li") as HTMLElement;
     expect(row).toHaveTextContent("8 / 10");
     expect(row).toHaveTextContent("Математический анализ");
-    expect(row).toHaveTextContent("24 октября");
+    expect(row).toHaveTextContent("26 октября");
   });
 
   it("неизвестный тип панели скрыт, остальные на месте", async () => {
@@ -116,23 +137,23 @@ describe("«Успеваемость»: панели из реестра", () =>
     current.server.use(...createPanelsHandlers(current.db, { variant: "none" }));
     renderApp("/study");
     await screen.findByRole("heading", { level: 1, name: "Учёба" });
-    await screen.findByRole("region", { name: /^Высшая школа экономики/ });
-    expect(screen.queryByRole("heading", { name: "Успеваемость" })).toBeNull();
+    await screen.findByRole("heading", { level: 2, name: "Предметы" });
+    expect(screen.queryByRole("heading", { name: "Панели" })).toBeNull();
   });
 
   it("сбой сервера: спокойная строка, остальная «Учёба» работает", async () => {
     current.server.use(http.get("*/api/v1/panels", () => problem(500, "internal_error")));
     renderApp("/study");
     expect(await screen.findByText(/Панели успеваемости не загрузились/)).toBeInTheDocument();
-    expect(await screen.findByRole("region", { name: /^Высшая школа экономики/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "Предметы" })).toBeInTheDocument();
   });
 
   it("v3-движок (404): блока нет и ошибки нет", async () => {
     current.server.use(http.get("*/api/v1/panels", () => problem(404, "not_found")));
     renderApp("/study");
-    await screen.findByRole("region", { name: /^Высшая школа экономики/ });
+    await screen.findByRole("heading", { level: 2, name: "Предметы" });
     expect(screen.queryByText(/Панели успеваемости не загрузились/)).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Успеваемость" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Панели" })).toBeNull();
   });
 
   it("пустые данные: честный текст вместо пустой рамки", async () => {

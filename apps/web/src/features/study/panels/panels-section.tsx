@@ -1,4 +1,4 @@
-import { AccentScope, Banner, Button, MonogramBadge, Skeleton } from "@botai/design";
+import { AccentScope, Banner, Button, Icon, MonogramBadge, Skeleton } from "@botai/design";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { isApiError } from "@/api/errors";
@@ -75,7 +75,26 @@ function PanelGrid({
  * его панели сеткой; «Все вузы» — группы по вузам со знаком и акцентом, панели с `hiddenInAll` не показываются.
  * Нет панелей — блока нет (честнее пустой рамки: данных у вуза может ещё не быть).
  */
-export function PanelsSection({ scope }: { scope: Scope }) {
+export function PanelsSection({
+  scope,
+  title = SECTION_TITLE,
+  folded = false,
+  onFoldedChange,
+}: {
+  scope: Scope;
+  /**
+   * Панели свёрнуты: видны заголовок, «Настроить» и «Показать панели». На телефоне «Успеваемость» сворачивает их,
+   * когда выше уже есть «Предметы»: те же оценки не идут по экрану второй и третьей лентой.
+   */
+  folded?: boolean;
+  /** Есть — под заголовком кнопка «Показать панели» / «Скрыть панели». */
+  onFoldedChange?: (folded: boolean) => void;
+  /**
+   * Заголовок блока. Внутри «Успеваемости» (D-046) раздел уже так называется — там блок подписан «Панели»,
+   * чтобы на экране не было двух «Успеваемостей».
+   */
+  title?: string;
+}) {
   const me = useQuery(meQuery);
   const userId = me.data?.user.id ?? "anonymous";
   const collapsed = useCollapsedPanels(userId);
@@ -95,12 +114,7 @@ export function PanelsSection({ scope }: { scope: Scope }) {
 
   if (loading) {
     return (
-      <section
-        aria-label="Успеваемость"
-        aria-busy="true"
-        data-panels="loading"
-        className="flex flex-col gap-3"
-      >
+      <section aria-label={title} aria-busy="true" data-panels="loading" className="flex flex-col gap-3">
         <Skeleton width="40%" className="h-6" />
         <Skeleton className="h-28 rounded-lg" />
       </section>
@@ -116,6 +130,9 @@ export function PanelsSection({ scope }: { scope: Scope }) {
   }
   if (error || (configurable.length === 0 && suggestions.length === 0)) return null;
 
+  // Сворачивать есть что — панели или предложения агента; иначе кнопки нет и прятать нечего.
+  const foldable = Boolean(onFoldedChange) && shown.length + suggestions.length > 0;
+  const isFolded = foldable && folded;
   const shownGroups = groupBySpace(shown);
   const suggestionGroups = groupBySpace(suggestions);
   const spacesInOrder = scope.spaces.flatMap((space) => {
@@ -139,8 +156,8 @@ export function PanelsSection({ scope }: { scope: Scope }) {
       className="flex min-w-0 flex-col gap-3"
     >
       <div className="flex items-center justify-between gap-2 px-1">
-        <h2 id="study-panels-heading" className="type-title text-fg">
-          {SECTION_TITLE}
+        <h2 id="study-panels-heading" className="type-heading text-fg">
+          {title}
         </h2>
         {configurable.length > 0 && (
           <Button variant="ghost" leadingIcon="settings" onClick={() => setSettingsOpen(true)}>
@@ -149,11 +166,24 @@ export function PanelsSection({ scope }: { scope: Scope }) {
         )}
       </div>
 
+      {foldable && (
+        <Button
+          variant="secondary"
+          className="w-full"
+          aria-expanded={!isFolded}
+          aria-controls="study-panels-body"
+          onClick={() => onFoldedChange?.(!isFolded)}
+        >
+          {isFolded ? `Показать панели (${shown.length + suggestions.length})` : "Скрыть панели"}
+          <Icon name={isFolded ? "chevron-down" : "chevron-up"} size={20} />
+        </Button>
+      )}
+
       {shown.length === 0 && configurable.length > 0 && (
         <p className="px-1 type-ui text-fg-muted">Все панели выключены. Включить их можно в настройках.</p>
       )}
 
-      <div className="flex flex-col gap-6">
+      <div id="study-panels-body" hidden={isFolded} className="flex flex-col gap-6">
         {spacesInOrder.map(({ space, panels, proposals }) => (
           <AccentScope key={space.id} hue={space.accentHue}>
             <div

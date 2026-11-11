@@ -102,11 +102,13 @@ async def test_agent_restore_does_not_visit_origins_and_authorizes_first_request
     )
     try:
         assert requests == []  # native restore must make zero origin HTTP requests
-        assert wiring.control is not None
-        await wiring.control.navigate(origin + "/app")
-        assert await wiring.control.eval_js("async () => await window.ready") == 200
+        # The browser is lazy (D-044): opening it is when the saved session is installed.
+        browser = await wiring.open_browser()
+        assert requests == []
+        await browser.navigate(origin + "/app")
+        assert await browser.eval_js("async () => await window.ready") == 200
         assert requests == [("127.0.0.1", "/app"), ("127.0.0.1", "/api/data")]
-        state = await wiring.control.export_storage_state()
+        state = await browser.export_storage_state()
         assert [item["origin"] for item in state["origins"]] == [origin]
     finally:
         await wiring.aclose()

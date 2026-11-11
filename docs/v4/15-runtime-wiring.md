@@ -24,7 +24,7 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
 | `provider` | `providers.factory.build_provider(settings)` или инъекция | `mock` в тестах, DeepSeek/Anthropic/OpenAI по настройкам |
 | `executor` | `build_executor(settings, workspace)` | в production — контейнерная песочница, вне prod — `LocalExecutor` (§3) |
 | `workspace` | `workspace_for(root, run_id)` | каталог задачи (`<root>/<run_id>`), файлы общие для `code_exec`/`fs_*` |
-| `control` | `launch_browser_control(services, workspace, mask)` | Chromium на run; `upload_root=workspace`, `redact_body=broker.mask` |
+| `browser` / `control` | `LazyBrowser(launch)` → `launch_browser_control(services, workspace, mask)` | Chromium на run, **лениво** (D-044, §1.1): `control` — запущенный контекст или `None`; `upload_root=workspace`, `redact_body=broker.mask` |
 | `broker` | `SecretBroker(vault, user_id, scope_id)` | handle'ы первичных секретов и маскирование (§4) |
 | `trace_store` | `DbTraceStore(services.db, user_id, job_id)` | таблицы `agent_runs`/`agent_run_events` (§5) |
 | `tools` | `build_basic_tools + browser_* + code_exec + secret_*` | единый `ToolRegistry`, runtime не менялся |
@@ -38,11 +38,98 @@ trace_store, with_browser, control, exec_limits, http_transport)` возвращ
   `browser_tabs`, `browser_download`, `browser_upload`, `browser_session`;
 - код: `code_exec` (python/javascript/bash через executor; `javascript` → `js` на стыке);
 - секреты: `secret_request`, `secret_use`;
-- при `agent_engine=v4` дополнительно источники (`source_*`), RAG (`rag_*` при
-  `BOTAI_RAG_ENABLED`, иначе честно отсутствуют) и действия (`action_propose/execute/history`).
+- при `agent_engine=v4` дополнительно источники (`source_*`), учёба (`study_data`,
+  `study_status_rule`, `study_mark_task`, §1.2), RAG (`rag_*` при `BOTAI_RAG_ENABLED`, иначе
+  честно отсутствуют) и действия (`action_propose/execute/history`).
 
 `with_browser=False` собирает run без Chromium (дев-тесты, дешёвые задачи): браузерных
 инструментов в наборе нет, остальное работает.
+
+### 1.1. Ленивый браузер (D-044, 2026-11-11)
+
+Раньше Chromium-контекст поднимался при сборке wiring — на каждый ход чата, даже когда ответ
+шёл из сохранённых данных. Теперь (`agent/v4/lazy_browser.py`):
+
+- `build_agent_wiring` ничего не запускает: браузерные инструменты в наборе, но обёрнуты
+  `LaunchFirst` — первый `browser_*` запускает контекст, следующие используют его же;
+- `secret_use(kind=browser_field)` и `action_execute` с шагами браузера получают `handle()`:
+  первый вызов метода браузера запускает его;
+- сохранённая сессия агента (`AgentSessionStore`) читается из Vault внутри запуска и ставится в
+  первый же контекст — без визитов на origin, как раньше;
+- `source_session(action=load)` запускает браузер, `action=save` из незапущенного браузера —
+  ошибка `browser_not_started` (иначе пустая сессия затёрла бы рабочую);
+- `aclose`: незапущенный браузер не сохраняет сессию и не закрывается; запущенный — как раньше;
+- сбой запуска — ошибка инструмента `browser_unavailable` (retryable, в тексте только класс
+  исключения), а не упавший run;
+- переданный извне `control` используется сразу, как раньше (тесты, бенчмарк).
+
+Это касается всех v4-job'ов (CHAT, AGENT, CONNECT, REPAIR): их браузерные шаги проходят через те
+же инструменты.
+
+### 1.2. Учёба: данные студента без сайта (D-044, D-045)
+
+`agent/v4/tools/study.py`, `agent/v4/study_context.py`:
+
+- `study_data(kinds, space_id?, course?, query?, from?, to?, state?, layer?, limit≤100 (15),
+  refresh?, max_age_minutes? (15))` читает сохранённые записи через `domain.repo` (только живые
+  источники, слияние, дедупликация, как на экранах) — `grades`, `deadlines`, `schedule`,
+  `courses`, `profile`, `ranking`, `updates`. Ответ: сначала `now` и `sources` (статус и
+  `ageMinutes` каждого источника), затем по видам `{total, truncated, items}` — нужные поля и
+  ссылка на саму запись. Весь JSON держится в 16 000 знаков (`RESULT_BUDGET`): runtime режет
+  любой результат на `tool_result_chars` (20 000), поэтому инструмент сам пропорционально
+  урезает записи и честно ставит `truncated`, `total` остаётся полным. Только чтение;
+- `refresh=true` (`agent/v4/study_refresh.py`) — тот же детерминированный sync, что у
+  `source_sync` (`SourceToolkit.sync_source`), до чтения и в одном шаге модели. Кандидаты —
+  живые источники (в пределах `space_id`), которые дают запрошенные виды (по объявленным
+  `kinds` или по уже лежащим строкам). Синхронизированный меньше `max_age_minutes` назад —
+  `fresh`; без playbook или в `needs_reauth`/`needs_link`/`waiting_user` — `skipped`, не
+  пробуется; остальные — по три одновременно, каждый в своей сессии, под общим потолком 25 с
+  (не успевший — `timeout`, отменяется). У каждого источника в `sources[]`: `refresh`
+  (`ok|fresh|failed|timeout|skipped`), `refreshError` (код), `refreshReason` (словами:
+  «нужно войти в кабинет заново»), `changes` (вставлено/обновлено по видам), `warnings` (коды).
+  Неудачное обновление — не ошибка чтения: сохранённые данные приходят всегда. Таймаут
+  инструмента — 40 с;
+- `study_status_rule(set|list|delete)` и `study_mark_task(deadline_id, state|null)` — поправки
+  студента над `domain.overrides`; ответ говорит, сколько заданий пересчитано и изменилось;
+- **сводка учёбы** (`study_digest`) идёт в контекстное сообщение хода (данные, после
+  стабильного префикса; системный промпт полностью стабилен) вместо простого списка источников;
+  текст со страниц (названия, `stateText`, предметы, значения) проходит тот же `env.data_text`,
+  что и контекст хода. Цель — ответ без единого инструмента, поэтому по каждому вузу:
+  источники с id, статусом и «обновлено N мин/ч назад»; до 12 ближайших несданных заданий
+  (просроченные не больше 14 дней, без срока — в конце) со сроком, состоянием, словами
+  источника и баллом; 5 последних сданных; пары сегодня и завтра в поясе вуза (время,
+  название, вид, аудитория); до 20 последних оценок («8 из 10» или текст, слой, дата) и число
+  оценок по слоям; изменения за 7 дней. Заголовок говорит модели: «Если ответ есть в сводке —
+  отвечай сразу, без инструментов; за остальным — study_data». Потолок 4500 знаков: сначала
+  источники, затем разделы в порядке «несдано → пары сегодня → завтра → оценки → изменения →
+  сдано → слои» по всем вузам; раздел, чей первый пункт не помещается, пропускается, в конце
+  строка «сводка сокращена». Названия режутся до 60 знаков, порядок детерминирован. Студент с
+  ~15 заданиями и ~40 оценками — ≈3,3 тыс. знаков. Сбой любого чтения — сводка пропускается (в
+  лог только класс исключения), ход идёт со старым списком источников;
+- `source_sync` по умолчанию отдаёт компактный отчёт (counts, `domain`, ошибки, чтения,
+  число записей) и `warnings` сверху; записи — только `records=true`. `source_probe` и
+  остальные — полный отчёт с образцами, `warnings` тоже сверху.
+
+### 1.3. Адаптивное усилие рассуждения в чате (D-044, 2026-11-12)
+
+Живой замер: шаг модели при `effort=high` — 4–6 с, при `low` вдвое быстрее при том же
+поведении инструментов; `thinking=disabled` однажды раздул ход до 40 шагов, поэтому лёгкий режим
+— это `low`, а не выключенное рассуждение.
+
+- `RunTask.light_effort` и `RunTask.light_tools`: пока run вызывает только лёгкие инструменты,
+  каждый вызов модели идёт с `LlmRequest.effort = light_effort`; с первого вызова любого другого
+  инструмента и до конца run — `effort=None`, то есть усилие профиля `LLM_PROFILE_AGENT`
+  (`agent/llm.py::resolve`: поле запроса сильнее профиля, `thinking` профиля не меняется).
+- Возобновлённый run (чекпоинт, продолжение D-040) сразу начинает в полном режиме, если в его
+  разговоре уже есть вызов тяжёлого инструмента (`runtime.heavy_calls`).
+- Лёгкий набор чата — `chat.LIGHT_TOOLS`: `study_data`, `study_status_rule`,
+  `study_mark_task`, `memory_*`, `threads_search`, `threads_read`, `rag_search`, `panel_list`,
+  `source_list`, `ask_user`.
+- Настройка `BOTAI_AGENT_CHAT_LIGHT_EFFORT` (`low` по умолчанию, `high`/`max`; пустая строка —
+  выключено, усилие профиля всегда). Остальные job'ы (`AGENT`, `CONNECT`, `REPAIR`) не
+  меняются; провайдер, который не знает `effort` (Anthropic), его просто игнорирует.
+- В трассе: у каждого события `model_call` поле `effort` — `low`/`high`/`max`, если запрос его
+  задал, или `profile`.
 
 ## 2. Job `AGENT` и запись результата
 
@@ -191,6 +278,12 @@ uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run 
 | таблица handler'ов: v3 не меняется, v4 заменяет ровно CONNECT/SYNC/REPAIR | `tests/jobs/test_v4_dispatch_table.py` |
 | вопрос хода в чате: диалог/карточка, `ThreadRuntime.pending`, ответ и остановка | `tests/jobs/test_agent_chat_v4.py` |
 | маскирование выводов инструментов и чекпоинта | `tests/agent/v4/test_runtime_masking.py` |
+| ленивый браузер: нет запуска без `browser_*`, сессия в первом контексте, очистка | `tests/agent/v4/test_lazy_browser.py` |
+| `study_*`, сбой сводки | `tests/agent/v4/test_tools_study.py` |
+| сводка: разделы и порядок, потолок и приоритет, реалистичный студент | `tests/agent/v4/test_study_digest.py` |
+| адаптивное усилие: лёгкий набор, переход, возобновление, трасса, профиль | `tests/agent/v4/test_runtime_effort.py` |
+| `study_data(refresh)`: ok/fresh/failed/timeout/skipped, бюджет результата, санитайз сводки | `tests/agent/v4/test_study_refresh.py` |
+| чат: оценка одним `study_data` без браузера; вопрос о свежести — один `study_data(refresh=true)`; неудачное обновление — ответ без других инструментов; ответ из сводки за один шаг без инструментов, `effort=low` | `tests/jobs/test_agent_chat_study_v4.py` |
 | миграция upgrade/downgrade/upgrade | `tests/db/test_agent_traces_migration.py` |
 
 Живой L3 через этот путь прогонялся независимо (lane E): вход в ВШЭ по кредам из Keychain,
@@ -204,9 +297,8 @@ SSO, обнаружение `GET /api/get-myschedule`, 543 записи в фа�
   от v3: старая история не суммируется моделью (используется сохранённая сводка или окно
   последних ходов); нет v3-книги цитат `[S1]` (ответ ссылается на URL и карточки источников,
   которых реально касались инструменты); `factId=null`; нет quick-reply/кнопочной полировки;
-  контекст-метр — минимальная оценка; `blockedCalls=0`. Плюс риск стоимости: v4-ход поднимает
-  полный harness (включая Chromium на turn, если он нужен инструментам) — дороже и медленнее
-  дешёвого v3-чата; при необходимости браузер можно делать ленивым по политике.
+  контекст-метр — минимальная оценка; `blockedCalls=0`. Браузер ленивый (§1.1): ход без
+  `browser_*` Chromium не поднимает.
 - **Resume (D-040, [11-runtime.md](11-runtime.md) §5.1):** ход чата продолжается сегментами
   одного job'а из `agent_run_checkpoints`: после мягкого лимита, временной ошибки модели,
   рестарта воркера и восстановления сироты (`recover_orphans`) — со снимка, а не с нуля. Новое

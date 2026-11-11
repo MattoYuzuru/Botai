@@ -25,7 +25,7 @@ export function GradeTile({ value, scale, title, meta, onOpen, className }: Grad
         <span className="break-words type-title text-fg" data-numeric="">
           {value}
         </span>
-        {scale && <span className="type-caption text-fg-muted">{scale}</span>}
+        {scale && <span className="min-w-0 max-w-full truncate type-caption text-fg-muted">{scale}</span>}
       </span>
       {title && <span className="type-subheading text-fg">{title}</span>}
       {meta && (
