@@ -38,11 +38,13 @@ from botai.agent.v4.tools import build_basic_tools
 from botai.agent.v4.tools.actions import build_action_tools
 from botai.agent.v4.tools.browser import build_browser_tools
 from botai.agent.v4.tools.code import build_code_tools
+from botai.agent.v4.tools.memory import MemoryToolkit, build_memory_tools
 from botai.agent.v4.tools.panels import PanelToolkit, build_panel_tools
 from botai.agent.v4.tools.rag import build_rag_tools
 from botai.agent.v4.tools.secrets import SecretBroker, build_secret_tools
 from botai.agent.v4.tools.sources import SourceToolkit, build_source_tools
 from botai.agent.v4.tools.spaces import SpaceToolkit, build_space_tools
+from botai.agent.v4.tools.threads import ThreadToolkit, build_thread_tools
 from botai.agent.v4.trace_store import DbTraceStore
 from botai.agent.v4.traces import MemoryTraceStore, TraceStore
 from botai.browser.control import BrowserControl, ControlConfig
@@ -332,6 +334,27 @@ def build_panel_toolkit(
     return PanelToolkit(sm=db, clock=services.clock, mask=mask)
 
 
+def build_memory_toolset(
+    services: Services, *, mask: Callable[[str], str] | None = None
+) -> list[ToolHandler]:
+    """`memory_*` (notes about the student) and `threads_*` (the student's other chats).
+
+    Both are what makes one conversation useful for the next ones (docs/v4/26-chat-memory.md).
+    The DB is required for the same reason as for the source tools: without it the agent would
+    say it cannot remember while the product claims it can.
+    """
+    db = getattr(services, "db", None)
+    if db is None:
+        raise AgentWiringError(
+            "Память v4 включена, но у сервисов нет фабрики сессий БД: memory_*/threads_* "
+            "инструменты нельзя собрать (нужен services.db)."
+        )
+    return [
+        *build_memory_tools(MemoryToolkit(sm=db, mask=mask)),
+        *build_thread_tools(ThreadToolkit(sm=db)),
+    ]
+
+
 def build_rag_toolset(services: Services) -> list[ToolHandler]:
     """The `rag_*` tools over the real DB session factory; a broken RAG config fails loudly.
 
@@ -462,6 +485,7 @@ async def build_agent_wiring(
         tools.extend(build_space_tools(build_space_toolkit(services)))
         tools.extend(build_panel_tools(build_panel_toolkit(services, mask=broker.mask)))
         tools.extend(build_rag_toolset(services))
+        tools.extend(build_memory_toolset(services, mask=broker.mask))
         tools.extend(
             build_action_tools(
                 services=services,
@@ -538,6 +562,7 @@ __all__ = [
     "artifact_root_from_settings",
     "build_agent_wiring",
     "build_executor",
+    "build_memory_toolset",
     "build_rag_toolset",
     "build_source_toolkit",
     "enqueue_agent_run",
