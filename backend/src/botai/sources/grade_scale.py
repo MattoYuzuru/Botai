@@ -7,6 +7,9 @@ D-039: the application never averages, converts between scales or guesses. A gra
   `10 баллов`, `10-балльная`, `0-10`, `шкала 100`);
 * or the value carries its own scale (`8/10`, `8 из 10`, `86%`).
 
+A source may also give the top as a separate number (`maxScore: 10`, the agent's `max`): it is one
+more statement of the scale and must agree with the others.
+
 Anything else ("зачтено", "отлично", `B+`, a number without a scale, a number above its scale, two
 scales that disagree) gives `(None, None)`: the grade is still shown exactly as the source printed
 it, it just has no place on a chart.
@@ -89,8 +92,25 @@ def _as_text(value: Any) -> str | None:
     return text or None
 
 
-def grade_numbers(value: Any, scale: Any) -> tuple[float | None, float | None]:
-    """`(value_num, scale_max)` when the grade says both unambiguously, else `(None, None)`."""
+def scale_max_of(value: Any) -> float | None:
+    """The top of a scale given on its own as a number (`10`, `"10"`, `"10,0"`); positive only."""
+    top = plain_number(value)
+    return top if top is not None and top > 0 else None
+
+
+def format_number(number: float) -> str:
+    """A number as a student reads it: `10`, `7,5`, `0,25` (no trailing zeros, decimal comma)."""
+    text = f"{number:.3f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def grade_numbers(
+    value: Any, scale: Any, top: float | None = None
+) -> tuple[float | None, float | None]:
+    """`(value_num, scale_max)` when the grade says both unambiguously, else `(None, None)`.
+
+    `top` is the top of the scale the source gave separately as a number; the value's own scale
+    (`8/10`), the scale's text and `top` must all agree when they are given."""
     value_text = _as_text(value)
     if value_text is None:
         return None, None
@@ -99,9 +119,10 @@ def grade_numbers(value: Any, scale: Any) -> tuple[float | None, float | None]:
         return None, None
     scale_text = _as_text(scale)
     named_top = scale_top(scale_text) if scale_text is not None else None
-    if own_top is not None and named_top is not None and own_top != named_top:
-        return None, None  # two scales that disagree: not unambiguous
-    top = own_top if own_top is not None else named_top
-    if top is None or top <= 0 or number < 0 or number > top:
+    tops = {found for found in (own_top, named_top, top) if found is not None}
+    if len(tops) != 1:
+        return None, None  # no scale, or two scales that disagree: not unambiguous
+    (found_top,) = tops
+    if found_top <= 0 or number < 0 or number > found_top:
         return None, None
-    return number, top
+    return number, found_top

@@ -33,9 +33,9 @@ from botai.contracts.specs import Kind
 from botai.db import models as m
 from botai.sources.adapter import OCCURRENCE_PREFIX, AdapterResult, ExtractedDocument, Record
 from botai.sources.extract import clean_text, parse_datetime
-from botai.sources.grade_scale import grade_numbers, plain_number
-from botai.sources.states import task_state
-from botai.sources.vocab import ALL_REQUIRED, DomainKind
+from botai.sources.grade_scale import format_number, grade_numbers, plain_number, scale_max_of
+from botai.sources.states import STATES, task_state
+from botai.sources.vocab import ALL_REQUIRED, GRADE_LAYERS, DomainKind
 
 MODELS: dict[Kind, type[Any]] = {
     "courses": m.Course,
@@ -292,26 +292,57 @@ def _assignment(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] 
     }
 
 
+def task_status(state: Any, state_text: Any) -> tuple[str, str | None]:
+    """`(state, state_text)` of a task (D-043 §3.3).
+
+    `state` of the closed set is taken as it is; anything else is the source's own word and goes to
+    `state_text` (unless the parser gave one), the state then read from the words by
+    `task_state`."""
+    text_ = _present(_text(state_text, 120))
+    if isinstance(state, str) and state.strip().casefold() in STATES:
+        return state.strip().casefold(), text_
+    raw = _present(_text(state, 120)) if isinstance(state, str) else None
+    derived = task_state(text_) if text_ is not None else "unknown"
+    if derived == "unknown":
+        derived = task_state(state)
+    return derived, text_ or raw
+
+
 def _deadline(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None:
     due = _dt(f.get("dueAt"), tz)
     if due is None:
         return None
+    state, state_text = task_status(f.get("state"), f.get("stateText"))
     return {
         "title": _text(f.get("title"), 300),
         "course_external_id": _text(f.get("courseId"), 200),
         "assignment_external_id": _text(f.get("assignmentId"), 200),
         "due_at": due,
         "effective_due_at": _dt(f.get("effectiveDueAt"), tz),
-        "state": task_state(f.get("state")),
+        "state": state,
+        "state_text": state_text,
         "url": _url(f.get("url"), src),
     }
+
+
+def _layer(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    layer = value.strip().casefold()
+    return layer if layer in GRADE_LAYERS else None
+
+
+MAX_GRADE_COMMENT = 2000
 
 
 def _grade(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | None:
     value = _grade_value(f.get("value"))
     scale = _present(_text(f.get("scale"), 60))
+    top = scale_max_of(f.get("max"))
+    if scale is None and top is not None:
+        scale = f"из {format_number(top)}"
     # Numbers only when the source gave both plainly; never averaged or converted (D-039).
-    value_num, scale_max = grade_numbers(value, scale)
+    value_num, scale_max = grade_numbers(value, scale, top)
     return {
         "title": _present(_text(f.get("title"), 300)),
         "course_external_id": _text(f.get("courseId"), 200),
@@ -321,6 +352,12 @@ def _grade(f: Mapping[str, Any], src: str, tz: ZoneInfo) -> dict[str, Any] | Non
         "graded_at": _dt(f.get("gradedAt"), tz),
         "value_num": value_num,
         "scale_max": scale_max,
+        # the v4 fields (`vocab.V4_EXTRA_FIELDS`); a v3 recipe never maps them, so they stay NULL
+        "layer": _layer(f.get("layer")),
+        "period": _present(_text(f.get("period"), 60)),
+        "assignment_external_id": _text(f.get("assignmentId"), 200),
+        "url": _url(f.get("url"), src),
+        "comment": _present(_text(f.get("comment"), MAX_GRADE_COMMENT)),
     }
 
 

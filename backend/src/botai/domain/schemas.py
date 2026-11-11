@@ -80,16 +80,36 @@ class ScheduleEventOut(ApiModel):
     disagreement: EventDisagreement | None = None
 
 
+TaskState = Literal["open", "submitted", "graded", "missed", "unknown"]
+GradeLayer = Literal["item", "current", "final", "summary"]
+
+
+class DeadlineGradeOut(ApiModel):
+    """The grade of a task: the latest grade of the same source for this task (D-043)."""
+
+    value: str
+    scale: str | None
+    value_num: float | None
+    scale_max: float | None
+    url: str | None
+
+
 class DeadlineOut(ApiModel):
     id: str
     title: str
     due_at: datetime | None
     effective_due_at: datetime | None
-    state: Literal["open", "submitted", "graded", "missed", "unknown"]
+    # The effective state: the student's mark, else the source's state with the status rules
+    # applied (D-045); `state_source` says which decided it.
+    state: TaskState
     course_title: str | None
     description: str | None = None  # task text from the linked assignment, if the source has it
     url: str | None
     provenance: Provenance
+    state_text: str | None = None  # the status in the source's own words («Решение прикреплено»)
+    state_source: Literal["student", "rule", "source"] = "source"
+    changed_at: datetime | None = None  # the last change the student should notice (§5.5)
+    grade: DeadlineGradeOut | None = None
 
 
 class CourseOut(ApiModel):
@@ -115,6 +135,14 @@ class GradeOut(ApiModel):
     value_num: float | None = None
     scale_max: float | None = None
     course_id: str | None = None  # `CourseOut.id` of the grade's course, when the source links one
+    # D-043: the layer (null — the source did not say; shown as an item), the term or module, the
+    # graded task, the page of the grade, the grader's comment, the last noticeable change.
+    layer: GradeLayer | None = None
+    period: str | None = None
+    assignment_id: str | None = None
+    url: str | None = None
+    comment: str | None = None
+    changed_at: datetime | None = None
 
 
 class ProfileFieldOut(ApiModel):
@@ -160,6 +188,50 @@ class NewsOut(ApiModel):
     provenance: Provenance
 
 
+class UpdateOut(ApiModel):
+    """One recent change of the student's data: a grade that appeared or changed, a task whose
+    state changed (docs/v4/27 §5.5). Grade fields are set for `grade`, state fields for
+    `deadline`."""
+
+    kind: Literal["grade", "deadline"]
+    id: str
+    title: str | None
+    course_title: str | None
+    changed_at: datetime
+    url: str | None
+    provenance: Provenance
+    value: str | None = None
+    scale: str | None = None
+    value_num: float | None = None
+    scale_max: float | None = None
+    layer: GradeLayer | None = None
+    state: TaskState | None = None
+    state_text: str | None = None
+
+
+class StatusRuleOut(ApiModel):
+    """A rule of the student: the status `label` of a source (or of every source) means `state`."""
+
+    id: str
+    source_id: str | None
+    source_title: str | None
+    label: str
+    state: Literal["open", "submitted", "graded", "missed"]
+    created_at: datetime
+
+
+class StatusRuleIn(ApiModel):
+    source_id: str | None = None
+    label: str = Field(min_length=1, max_length=200)
+    state: Literal["open", "submitted", "graded", "missed"]
+
+
+class DeadlinePatchIn(ApiModel):
+    """The student's mark on one task; null clears it."""
+
+    user_state: Literal["open", "submitted", "graded"] | None
+
+
 class TodayOut(ApiModel):
     """Home screen: today's classes across spaces + nearest deadlines + connection health."""
 
@@ -167,3 +239,4 @@ class TodayOut(ApiModel):
     events: list[ScheduleEventOut]
     deadlines: list[DeadlineOut]
     attention: list[str]  # connection ids that are not ok (needs_reauth, repairing, ...)
+    updates: list[UpdateOut] = Field(default_factory=list)  # «Новое»: the last 3 days, at most 5

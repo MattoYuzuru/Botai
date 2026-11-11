@@ -17,7 +17,7 @@ const manifest = JSON.parse(readFileSync(join(WEB, "public/manifest.webmanifest"
   background_color: string;
   theme_color: string;
   icons: { src: string; sizes: string; type: string; purpose?: string }[];
-  shortcuts: { name: string; url: string }[];
+  shortcuts: { name: string; url: string; icons: { src: string }[] }[];
 };
 const html = readFileSync(join(WEB, "index.html"), "utf8");
 
@@ -51,7 +51,7 @@ describe("манифест PWA", () => {
     );
   });
 
-  it("иконки: 192 и 512 PNG, отдельная maskable, векторная Варя; файлы существуют и не пустые", () => {
+  it("иконки: 192 и 512 PNG, отдельная maskable и monochrome, векторная Варя; файлы существуют и не пустые", () => {
     const has = (size: string, purpose: string) =>
       manifest.icons.some(
         (icon) => icon.sizes === size && icon.type === "image/png" && icon.purpose === purpose,
@@ -59,6 +59,7 @@ describe("манифест PWA", () => {
     expect(has("192x192", "any")).toBe(true);
     expect(has("512x512", "any")).toBe(true);
     expect(has("512x512", "maskable")).toBe(true);
+    expect(has("512x512", "monochrome")).toBe(true);
     expect(manifest.icons.some((icon) => icon.type === "image/svg+xml")).toBe(true);
     for (const icon of manifest.icons) {
       const file = join(WEB, "public", icon.src);
@@ -73,14 +74,23 @@ describe("манифест PWA", () => {
   });
 
   it("ярлыки ведут на вкладки приложения", () => {
-    expect(manifest.shortcuts.map((shortcut) => shortcut.url)).toEqual(["/", "/schedule", "/tasks"]);
+    expect(manifest.shortcuts.map((shortcut) => shortcut.url)).toEqual([
+      "/",
+      "/schedule",
+      "/tasks",
+      "/study/grades",
+    ]);
+    expect(manifest.shortcuts.map((shortcut) => shortcut.name)).toContain("Оценки");
+    for (const shortcut of manifest.shortcuts) {
+      expect(shortcut.icons.map((icon) => icon.src)).toEqual(["/icons/varya-v4-192.png"]);
+    }
   });
 
   it("index.html ссылается на манифест и иконки, в том числе для iOS", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest"');
-    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/varya-v3-apple-touch-180.png"');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/icons/varya-v4-apple-touch-180.png"');
     expect(html).toContain('<meta name="apple-mobile-web-app-capable" content="yes"');
-    const apple = readFileSync(join(WEB, "public/icons/varya-v3-apple-touch-180.png"));
+    const apple = readFileSync(join(WEB, "public/icons/varya-v4-apple-touch-180.png"));
     expect([apple.readUInt32BE(16), apple.readUInt32BE(20)]).toEqual([180, 180]);
     // Увеличение страницы не запрещено (styleguide §7).
     expect(html).not.toMatch(/user-scalable|maximum-scale/);

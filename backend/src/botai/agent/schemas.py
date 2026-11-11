@@ -156,6 +156,8 @@ class MemoryNoteOut(ApiModel):
     id: str
     note: str
     created_at: datetime
+    # note: a fact about the student; rule: the student's standing instruction to the agent (D-045)
+    kind: Literal["note", "rule"] = "note"
 
 
 class ApproveIn(ApiModel):

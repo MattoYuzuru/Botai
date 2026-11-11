@@ -20,7 +20,7 @@ from typing import Any
 
 from botai.settings import get_settings
 
-DEFAULT_SYNC_INTERVAL_S = 21_600.0  # 6h: the same default as BOTAI_SOURCE_SYNC_INTERVAL_S
+DEFAULT_SYNC_INTERVAL_S = 10_800.0  # 3h (D-044): the default of BOTAI_SOURCE_SYNC_INTERVAL_S
 SYNC_RETRY_BASE = timedelta(minutes=15)
 SYNC_RETRY_CAP = timedelta(hours=6)
 MAX_FAILURE_COUNT = 32  # guards the exponent; the cap above ends the growth far earlier

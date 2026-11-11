@@ -10,12 +10,17 @@ holds an address, or reads as an order or a permission for the assistant is refu
 so neither a primary secret nor a standing instruction planted by a page can become memory. On top
 of it a note that holds a value the run's secret broker issued is refused (`mask`), whatever it
 looks like.
+
+`kind="rule"` stores a standing instruction of the student instead (D-045, `notes.clean_rule`):
+only on the student's explicit request; it reaches later turns as its own block «Правила
+студента». The guard of a rule allows the imperative, and still refuses secrets, addresses and any
+power over the action policy.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +41,7 @@ class _RememberArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     note: str = Field(min_length=1, max_length=2000)
+    kind: Literal["note", "rule"] = "note"
 
 
 class _ForgetArgs(BaseModel):
@@ -63,10 +69,16 @@ class MemoryToolkit:
             "предпочтение, шаг, который сработал. Заметка видна во всех следующих чатах и самому "
             f"студенту. Одна заметка — один факт, до {notes.NOTE_CHARS} знаков, без адресов. "
             "Нельзя: пароли, коды, токены, ссылки-ключи, указания самому себе. Повтор той же "
-            "заметки ничего не дублирует; устаревший факт сначала забудь (memory_forget)."
+            "заметки ничего не дублирует; устаревший факт сначала забудь (memory_forget). "
+            "kind=rule — постоянное указание студента тебе («про оценки сначала смотри ЦУ», "
+            "«сроки показывай по Москве»): только когда студент сам просит запомнить, как "
+            f"поступать; до {notes.MAX_RULES} правил, без секретов, адресов и полномочий на действия."
         ),
         parameters=object_schema(
-            {"note": {"type": "string", "minLength": 1, "maxLength": notes.NOTE_CHARS}},
+            {
+                "note": {"type": "string", "minLength": 1, "maxLength": notes.NOTE_CHARS},
+                "kind": {"type": "string", "enum": list(notes.NOTE_KINDS), "default": "note"},
+            },
             required=["note"],
         ),
         timeout_s=15.0,
@@ -77,8 +89,9 @@ class MemoryToolkit:
     forget_spec = ToolSpec(
         name="memory_forget",
         description=(
-            "Забыть заметку памяти о студенте: устаревший или неверный факт, или по просьбе "
-            "студента. note_id — из блока «Память о студенте» в контексте или из memory_list."
+            "Забыть заметку или правило студента: устаревший или неверный факт, отменённое "
+            "правило, просьба студента. note_id — из блоков «Память о студенте»/«Правила "
+            "студента» в контексте или из memory_list."
         ),
         parameters=object_schema(
             {"note_id": {"type": "string", "minLength": 1, "maxLength": 26}},
@@ -90,7 +103,9 @@ class MemoryToolkit:
     )
     list_spec = ToolSpec(
         name="memory_list",
-        description="Все заметки памяти о студенте с их note_id, от старых к новым. Только чтение.",
+        description=(
+            "Все заметки и правила студента с note_id и kind, от старых к новым. Только чтение."
+        ),
         parameters=object_schema(),
         timeout_s=15.0,
     )
@@ -126,17 +141,22 @@ class MemoryToolkit:
             )
         try:
             async with self._sm() as session:
-                added = await notes.add_note(session, context.user_id, args.note)
+                added = await notes.add_note(session, context.user_id, args.note, kind=args.kind)
                 note_id, text = added.note.id, added.note.note
         except BotaiError as exc:
             return ToolResult.failure(
                 "note_refused",
                 f"Не запомнено: {exc.detail}.",
-                hint="Перепиши как короткий факт о студенте, без адресов, секретов и указаний.",
+                hint=(
+                    "Перепиши правило как указание о данных или ответах, без секретов, адресов и "
+                    "полномочий на действия."
+                    if args.kind == "rule"
+                    else "Перепиши как короткий факт о студенте, без адресов, секретов и указаний."
+                ),
             )
         return ToolResult.success(
-            summary="Запомнено." if added.created else "Эта заметка уже есть в памяти.",
-            data={"noteId": note_id, "note": text, "created": added.created},
+            summary="Запомнено." if added.created else "Это уже есть в памяти.",
+            data={"noteId": note_id, "note": text, "kind": args.kind, "created": added.created},
         )
 
     async def _forget(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -164,11 +184,20 @@ class MemoryToolkit:
         async with self._sm() as session:
             rows = await notes.list_notes(session, context.user_id)
             items = [
-                {"noteId": row.id, "note": row.note, "createdAt": row.created_at.isoformat()}
+                {
+                    "noteId": row.id,
+                    "note": row.note,
+                    "kind": row.kind,
+                    "createdAt": row.created_at.isoformat(),
+                }
                 for row in rows
             ]
+        rules = sum(1 for item in items if item["kind"] == "rule")
         return ToolResult.success(
-            summary=f"Заметок в памяти: {len(items)} из {notes.MAX_NOTES}.",
+            summary=(
+                f"Заметок: {len(items) - rules} из {notes.MAX_NOTES}; "
+                f"правил: {rules} из {notes.MAX_RULES}."
+            ),
             data={"notes": items},
         )
 

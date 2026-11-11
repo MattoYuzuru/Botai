@@ -1405,8 +1405,82 @@
         "title": "Dataset",
         "type": "object"
       },
+      "DeadlineGradeOut": {
+        "description": "The grade of a task: the latest grade of the same source for this task (D-043).",
+        "properties": {
+          "scale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale"
+          },
+          "scaleMax": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scalemax"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "valueNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuenum"
+          }
+        },
+        "required": [
+          "value",
+          "scale",
+          "valueNum",
+          "scaleMax",
+          "url"
+        ],
+        "title": "DeadlineGradeOut",
+        "type": "object"
+      },
       "DeadlineOut": {
         "properties": {
+          "changedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changedat"
+          },
           "courseTitle": {
             "anyOf": [
               {
@@ -1453,6 +1527,16 @@
             ],
             "title": "Effectivedueat"
           },
+          "grade": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeadlineGradeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1470,6 +1554,27 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "stateSource": {
+            "default": "source",
+            "enum": [
+              "student",
+              "rule",
+              "source"
+            ],
+            "title": "Statesource",
+            "type": "string"
+          },
+          "stateText": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statetext"
           },
           "title": {
             "title": "Title",
@@ -1498,6 +1603,32 @@
           "provenance"
         ],
         "title": "DeadlineOut",
+        "type": "object"
+      },
+      "DeadlinePatchIn": {
+        "description": "The student's mark on one task; null clears it.",
+        "properties": {
+          "userState": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "submitted",
+                  "graded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Userstate"
+          }
+        },
+        "required": [
+          "userState"
+        ],
+        "title": "DeadlinePatchIn",
         "type": "object"
       },
       "DecisionIn": {
@@ -1953,6 +2084,40 @@
       },
       "GradeOut": {
         "properties": {
+          "assignmentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignmentid"
+          },
+          "changedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changedat"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
           "courseId": {
             "anyOf": [
               {
@@ -1991,6 +2156,34 @@
             "title": "Id",
             "type": "string"
           },
+          "layer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "item",
+                  "current",
+                  "final",
+                  "summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layer"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
           "provenance": {
             "$ref": "#/components/schemas/Provenance"
           },
@@ -2026,6 +2219,17 @@
               }
             ],
             "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
           },
           "value": {
             "title": "Value",
@@ -2108,6 +2312,23 @@
             "title": "Id",
             "type": "string"
           },
+          "layer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "item",
+                  "current",
+                  "final",
+                  "summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layer"
+          },
           "scale": {
             "anyOf": [
               {
@@ -2172,7 +2393,7 @@
         "type": "object"
       },
       "GradesData": {
-        "description": "`total` counts every grade of the dataset; `points` are the newest ones within the view's\nlimit (a chart: only numeric ones, at most `MAX_CHART_SERIES` scales); `latest`/`best` are\ntaken from the whole dataset.",
+        "description": "`total` counts every grade of the dataset; `points` are the newest ones within the view's\nlimit (a chart: only numeric grades of works — layer `item` or unknown — of at most\n`MAX_CHART_SERIES` scales); `latest` is taken from the whole dataset, `best` from the grades of\nworks only (a course total or a GPA is not \"a best grade\", D-043).",
         "properties": {
           "best": {
             "anyOf": [
@@ -2615,6 +2836,15 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "note",
+            "enum": [
+              "note",
+              "rule"
+            ],
+            "title": "Kind",
             "type": "string"
           },
           "note": {
@@ -5878,6 +6108,103 @@
         "title": "SpaceUpdate",
         "type": "object"
       },
+      "StatusRuleIn": {
+        "properties": {
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "submitted",
+              "graded",
+              "missed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "state"
+        ],
+        "title": "StatusRuleIn",
+        "type": "object"
+      },
+      "StatusRuleOut": {
+        "description": "A rule of the student: the status `label` of a source (or of every source) means `state`.",
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "sourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceid"
+          },
+          "sourceTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcetitle"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "submitted",
+              "graded",
+              "missed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sourceId",
+          "sourceTitle",
+          "label",
+          "state",
+          "createdAt"
+        ],
+        "title": "StatusRuleOut",
+        "type": "object"
+      },
       "SuggestionIn": {
         "properties": {
           "afterMessageId": {
@@ -6263,6 +6590,13 @@
             },
             "title": "Events",
             "type": "array"
+          },
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/UpdateOut"
+            },
+            "title": "Updates",
+            "type": "array"
           }
         },
         "required": [
@@ -6341,6 +6675,165 @@
           "accentHue"
         ],
         "title": "UniversityOut",
+        "type": "object"
+      },
+      "UpdateOut": {
+        "description": "One recent change of the student's data: a grade that appeared or changed, a task whose\nstate changed (docs/v4/27 §5.5). Grade fields are set for `grade`, state fields for\n`deadline`.",
+        "properties": {
+          "changedAt": {
+            "format": "date-time",
+            "title": "Changedat",
+            "type": "string"
+          },
+          "courseTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coursetitle"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "grade",
+              "deadline"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "layer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "item",
+                  "current",
+                  "final",
+                  "summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layer"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale"
+          },
+          "scaleMax": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scalemax"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "submitted",
+                  "graded",
+                  "missed",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "stateText": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statetext"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "valueNum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuenum"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "courseTitle",
+          "changedAt",
+          "url",
+          "provenance"
+        ],
+        "title": "UpdateOut",
         "type": "object"
       },
       "UsageDay": {
@@ -8523,6 +9016,59 @@
           }
         },
         "summary": "Deadlines",
+        "tags": [
+          "domain"
+        ]
+      }
+    },
+    "/api/v1/deadlines/{deadline_id}": {
+      "patch": {
+        "description": "The student's mark on one task (`open`, `submitted`, `graded`); null clears it.",
+        "operationId": "patch_deadline_api_v1_deadlines__deadline_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deadline_id",
+            "required": true,
+            "schema": {
+              "title": "Deadline Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeadlinePatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeadlineOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Deadline",
         "tags": [
           "domain"
         ]
@@ -11172,6 +11718,108 @@
         ]
       }
     },
+    "/api/v1/status-rules": {
+      "get": {
+        "description": "The student's status rules, newest first.",
+        "operationId": "list_status_rules_api_v1_status_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StatusRuleOut"
+                  },
+                  "title": "Response List Status Rules Api V1 Status Rules Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Status Rules",
+        "tags": [
+          "domain"
+        ]
+      },
+      "post": {
+        "description": "Create (or replace) the rule for a status of one source, or of every source; the stored\ntasks with that status are recomputed at once.",
+        "operationId": "create_status_rule_api_v1_status_rules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusRuleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusRuleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Status Rule",
+        "tags": [
+          "domain"
+        ]
+      }
+    },
+    "/api/v1/status-rules/{rule_id}": {
+      "delete": {
+        "description": "Remove a rule; its tasks fall back to another rule or to the source's words.",
+        "operationId": "delete_status_rule_api_v1_status_rules__rule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Status Rule",
+        "tags": [
+          "domain"
+        ]
+      }
+    },
     "/api/v1/today": {
       "get": {
         "operationId": "today_api_v1_today_get",
@@ -11238,6 +11886,84 @@
         "summary": "Search Universities",
         "tags": [
           "spaces"
+        ]
+      }
+    },
+    "/api/v1/updates": {
+      "get": {
+        "description": "Grades that appeared or changed and tasks whose state changed in the last `days`.",
+        "operationId": "updates_api_v1_updates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Space Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 60,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UpdateOut"
+                  },
+                  "title": "Response Updates Api V1 Updates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Updates",
+        "tags": [
+          "domain"
         ]
       }
     },

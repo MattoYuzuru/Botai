@@ -233,7 +233,17 @@
               "format": "date-time",
               "description": "Срок с учётом продления, если источник его отдаёт. Срочность считается по нему."
             },
-            "state": { "enum": ["open", "submitted", "graded", "missed", "unknown"] },
+            "state": {
+              "enum": ["open", "submitted", "graded", "missed", "unknown"],
+              "description": "Итоговое состояние: отметка студента, иначе состояние источника с правилами статуса (D-045)."
+            },
+            "stateText": {
+              "type": ["string", "null"],
+              "maxLength": 120,
+              "description": "Статус словами источника («Решение прикреплено»), D-043."
+            },
+            "stateSource": { "enum": ["student", "rule", "source"] },
+            "changedAt": { "type": ["string", "null"], "format": "date-time" },
             "url": { "type": ["string", "null"], "format": "uri" }
           }
         }
@@ -253,7 +263,20 @@
             "value": { "type": ["number", "string"] },
             "scale": { "type": ["string", "null"], "maxLength": 60 },
             "weight": { "type": ["number", "null"] },
-            "gradedAt": { "type": ["string", "null"], "format": "date-time" }
+            "gradedAt": { "type": ["string", "null"], "format": "date-time" },
+            "layer": {
+              "enum": ["item", "current", "final", "summary", null],
+              "description": "Слой оценки (D-043): работа, накопленный итог, итог за период, сводный показатель; null — источник не сказал."
+            },
+            "max": {
+              "type": ["number", "null"],
+              "exclusiveMinimum": 0,
+              "description": "Верх шкалы числом, когда источник дал его отдельно."
+            },
+            "period": { "type": ["string", "null"], "maxLength": 60 },
+            "url": { "type": ["string", "null"], "format": "uri" },
+            "comment": { "type": ["string", "null"], "maxLength": 2000 },
+            "changedAt": { "type": ["string", "null"], "format": "date-time" }
           }
         }
       ]

@@ -137,8 +137,22 @@ V4_KEY_FIELDS: dict[V4Kind, tuple[str, ...]] = {
 }
 V4_KIND_LABELS: dict[V4Kind, str] = {"profile": "Профиль", "ranking": "Рейтинг"}
 
+# Fields of v3 kinds that only the v4 source protocol speaks (D-043, docs/v4/27 §3): the v3
+# recipe language keeps `VOCAB` as it was.
+GRADE_LAYERS: tuple[str, ...] = ("item", "current", "final", "summary")
+V4_EXTRA_FIELDS: dict[Kind, frozenset[str]] = {
+    # `layer` of the grade, the top of its scale as a number (`max`), the term or module, the graded
+    # task, the page of the grade and the grader's comment.
+    "grades": frozenset({"layer", "max", "period", "assignmentId", "url", "comment"}),
+    # the status in the source's own words; `state` stays the closed vocabulary
+    "deadlines": frozenset({"stateText"}),
+}
+
 # What the v4 runner and the agent's source protocol read: the v3 kinds plus the v4-only ones.
-ALL_VOCAB: dict[DomainKind, frozenset[str]] = {**VOCAB, **V4_VOCAB}
+ALL_VOCAB: dict[DomainKind, frozenset[str]] = {
+    **{kind: fields | V4_EXTRA_FIELDS.get(kind, frozenset()) for kind, fields in VOCAB.items()},
+    **V4_VOCAB,
+}
 ALL_REQUIRED: dict[DomainKind, frozenset[str]] = {**REQUIRED, **V4_REQUIRED}
 ALL_KEY_FIELDS: dict[DomainKind, tuple[str, ...]] = {**KEY_FIELDS, **V4_KEY_FIELDS}
 ALL_KIND_LABELS: dict[DomainKind, str] = {**KIND_LABELS, **V4_KIND_LABELS}

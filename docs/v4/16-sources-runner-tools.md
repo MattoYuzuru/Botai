@@ -289,7 +289,7 @@ v3-подключения. Теперь оба пути читаются вме�
   dedupe очереди; connection-источники — прежним путём, остальные — payload `{source_id}`
   (dispatch `_sync_source_by_id`). Соединения, являющиеся носителем v4-источника, v3-планировщик
   пропускает — один план на модель.
-- **Интервал/бэкофф:** успешный sync → `now + BOTAI_SOURCE_SYNC_INTERVAL_S` (default 6 ч, min
+- **Интервал/бэкофф:** успешный sync → `now + BOTAI_SOURCE_SYNC_INTERVAL_S` (default 3 ч с D-044, min
   5 мин) и сброс счётчика ошибок; ошибка/needs_reauth → 15 мин ×2^(n−1) до 6 ч, счётчик в
   `last_error.sync_failures`; probe/canary/repair не планируют; disabled/archived отменяет план
   и никогда не выбирается.

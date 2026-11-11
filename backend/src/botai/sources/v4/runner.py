@@ -54,6 +54,7 @@ from botai.sources.v4 import artifacts, domain, identity, playbooks, service, st
 from botai.sources.v4 import browser as browser_v4
 from botai.sources.v4 import kinds as kinds_vocab
 from botai.sources.v4 import schedule as sync_schedule
+from botai.sources.v4.checks import RunWarning, run_warnings
 from botai.sources.v4.secrets import CALENDAR_URL_SLOT, calendar_link, calendar_secret_values
 from botai.sources.vocab import ALL_REQUIRED, ALL_VOCAB, DomainKind
 
@@ -266,6 +267,9 @@ class RunReport(BaseModel):
     domain: dict[str, dict[str, int]] = Field(default_factory=dict)
     # JSON API endpoints a browser plan observed and the next sync can prefer over DOM scraping.
     discovered_endpoints: list[dict[str, Any]] = Field(default_factory=list)
+    # Hints to the agent about typical parser mistakes in the records (`checks`, D-043 §3.5);
+    # never an error, never a reason not to write.
+    warnings: list[RunWarning] = Field(default_factory=list)
 
 
 class LiveReadResult(BaseModel):
@@ -695,6 +699,7 @@ class SourceRunner:
             notes=[*notes, *browser_run.outcome.notes, *parsed.notes],
             persisted=False,
             discovered_endpoints=discovered,
+            warnings=run_warnings(parsed.records),
         )
         if persist and run in ("sync", "repair"):
             report = await self._persist(
@@ -1663,6 +1668,8 @@ class SourceRunner:
         pages: Sequence[str] = (),
     ) -> RunReport:
         now = self._clock.now()
+        # Read before this sync marks the source: a new row is news only after a first success.
+        synced_before = source.last_sync_at is not None
         if update_status and source.status not in sync_schedule.UNPLANNED_STATUSES:
             interval = self._sync_interval()
             if report.ok:
@@ -1707,6 +1714,7 @@ class SourceRunner:
                 records=records,
                 now=now,
                 revision=version_row.version if version_row else None,
+                synced_before=synced_before,
             )
         site_map = {"browser_pages": [url for url in pages if url]} if pages else {}
         await state.upsert_source_state(

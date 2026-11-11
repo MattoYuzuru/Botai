@@ -187,3 +187,41 @@ async def test_a_long_unsummarised_thread_is_folded_from_its_newest_turns(env: E
         row = await session.get(ChatThread, thread)
     assert row is not None
     assert parse_summary(row.summary)[1] == SUMMARY
+
+
+async def test_a_rule_is_kept_shown_as_a_rule_and_reaches_the_next_chat_as_its_own_block(
+    env: Env, tmp_path: Path
+) -> None:
+    env.services.llm = ScriptedLlm(queue=[LlmResponse(content=SUMMARY)])
+    client, user, thread, space = await _student(env, with_space=True)
+    assert space is not None
+    rule = "Про оценки сначала смотри ЦУ, потом ВШЭ"
+
+    async def respond(request: LlmRequest) -> LlmResponse:
+        if "Запомни правило" in _text(request) and _steps(request) == 0:
+            return tool_response(call("memory_remember", {"note": rule, "kind": "rule"}, "r1"))
+        return answer("Хорошо.")
+
+    provider = FlowProvider(respond)
+    env.start(await _chat_worker(env, provider, tmp_path=tmp_path))
+    sent = await _post(client, thread, "Запомни правило: про оценки сначала смотри ЦУ.")
+    await env.wait_for(sent.json()["jobId"], {"done"}, within=30)
+
+    reply = await _last_message(env, thread)
+    assert reply is not None
+    assert reply.blocks[0]["markdown"].endswith(f"Запомнил правило: «{rule}».")
+    async with env.sm() as session:
+        kinds = list(
+            await session.scalars(select(UserMemory.kind).where(UserMemory.user_id == user))
+        )
+    assert kinds == ["rule"]
+    listed = (await client.get("/api/v1/me/memory")).json()
+    assert [(item["note"], item["kind"]) for item in listed] == [(rule, "rule")]
+
+    other = await _new_thread(client, space)
+    again = await _post(client, other, "Какие у меня оценки?")
+    await env.wait_for(again.json()["jobId"], {"done"}, within=30)
+    later = _text(provider.requests[-1])
+    assert "Правила студента (его собственные постоянные указания" in later
+    assert rule in later
+    assert "Память о студенте (заметки" not in later, "a rule is not presented as a note"

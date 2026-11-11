@@ -23,6 +23,7 @@ from botai.agent.v4.factory import (
     build_memory_toolset,
     build_source_toolkit,
     build_space_toolkit,
+    build_study_toolkit,
     memory_trace_store,
 )
 from botai.agent.v4.providers import MockProvider
@@ -43,6 +44,7 @@ SOURCE_TOOLS = {
 }
 RAG_TOOLS = {"rag_search", "rag_ingest"}
 MEMORY_TOOLS = {"memory_remember", "memory_forget", "memory_list", "threads_search", "threads_read"}
+STUDY_TOOLS = {"study_data", "study_status_rule", "study_mark_task"}
 
 
 def _wiring_kwargs(tmp_path: Path) -> dict[str, object]:
@@ -67,6 +69,8 @@ async def test_v4_run_gets_the_source_tools_over_the_real_collaborators(tmp_path
         assert names >= SOURCE_TOOLS | SPACE_TOOLS
         # What the student says is remembered and found again in later chats (26-chat-memory).
         assert names >= MEMORY_TOOLS
+        # The synced data are read without the site, and corrected by the student (D-044/D-045).
+        assert names >= STUDY_TOOLS
         # RAG is an explicit feature flag; without it the tools are not registered.
         assert not (RAG_TOOLS & names)
         assert wiring.source_toolkit is not None
@@ -99,6 +103,7 @@ async def test_the_v3_flag_keeps_the_old_toolset(tmp_path: Path) -> None:
         assert not (SOURCE_TOOLS & names)
         assert not (SPACE_TOOLS & names)
         assert not (MEMORY_TOOLS & names)
+        assert not (STUDY_TOOLS & names)
         assert wiring.source_toolkit is None
     finally:
         await wiring.aclose()
@@ -123,6 +128,11 @@ def test_the_source_toolkit_requires_its_session_factory() -> None:
 def test_the_memory_toolset_requires_its_session_factory() -> None:
     with pytest.raises(AgentWiringError, match=r"services\.db"):
         build_memory_toolset(fake_services(db=None))
+
+
+def test_the_study_toolkit_requires_its_session_factory() -> None:
+    with pytest.raises(AgentWiringError, match=r"services\.db"):
+        build_study_toolkit(fake_services(db=None))
 
 
 def test_the_space_toolkit_requires_its_session_factory() -> None:

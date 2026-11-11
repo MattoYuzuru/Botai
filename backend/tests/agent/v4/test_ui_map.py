@@ -65,3 +65,28 @@ def test_connect_and_repair_prompts_carry_the_discovery_rules() -> None:
     assert "ui_propose_panel" in flat
     assert "panel_list" in flat
     assert "Находки" in " ".join(CONNECT_SYSTEM_PROMPT.split())
+
+
+def test_the_prompts_carry_the_fast_answers_corrections_and_parser_rules() -> None:
+    from botai.agent.v4.chat import CORRECTION_FLOW, FAST_ANSWERS
+
+    assert FAST_ANSWERS in CHAT_SYSTEM_PROMPT
+    assert CORRECTION_FLOW in CHAT_SYSTEM_PROMPT
+    fast = " ".join(FAST_ANSWERS.split())
+    assert "ОДИН вызов study_data" in fast
+    assert "больше 15 минут назад — source_sync" in fast
+    assert "предложи расширить playbook" in fast
+    corrections = " ".join(CORRECTION_FLOW.split())
+    for tool in ("study_mark_task", "study_status_rule", "source_update_playbook"):
+        assert tool in corrections
+    assert "memory_remember(kind=rule)" in corrections
+    # The tool sentence names the new tools; the old «сначала получи их инструментом» is gone.
+    head = " ".join(CHAT_SYSTEM_PROMPT.split("Правила:")[0].split())
+    assert "study_data" in head
+    assert "study_status_rule, study_mark_task" in head
+    # Connect and repair must read the guides and act on the warnings before finishing.
+    discovery = " ".join(DISCOVERY_FLOW.split())
+    assert "guides в source_schema (grades, task_status, links)" in discovery
+    assert "assignmentId" in discovery
+    assert "warnings" in discovery
+    assert DISCOVERY_FLOW in CONNECT_SYSTEM_PROMPT

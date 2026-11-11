@@ -50,10 +50,11 @@ from botai.db.models import (
     ScheduleEvent,
     Space,
 )
-from botai.domain import sources
+from botai.domain import overrides, sources
 from botai.domain.merge import NEARBY, SpacePlan, merge_events
 from botai.domain.schemas import (
     CourseOut,
+    DeadlineGradeOut,
     DeadlineOut,
     EventAttribute,
     EventLink,
@@ -66,6 +67,7 @@ from botai.domain.schemas import (
     RankingEntryOut,
     ScheduleEventOut,
     TodayOut,
+    UpdateOut,
 )
 from botai.domain.sources import LiveSources
 
@@ -93,6 +95,9 @@ DONE_STATES = frozenset({"submitted", "graded"})
 
 MAX_ROWS = 2000
 TODAY_DEADLINES = 10
+TODAY_UPDATES = 5
+TODAY_UPDATES_DAYS = 3
+MAX_UPDATES = 100
 DEFAULT_TZ = "Europe/Moscow"
 
 # Rows are read this far beyond the window so that a class near its edge still finds, in the
@@ -102,6 +107,7 @@ MERGE_MARGIN = NEARBY + timedelta(days=1)
 _EVENT_KINDS = ("lecture", "seminar", "lab", "exam", "consultation", "other")
 _EVENT_FORMATS = ("offline", "online", "hybrid", "unknown")
 _DEADLINE_STATES = ("open", "submitted", "graded", "missed", "unknown")
+_GRADE_LAYERS = ("item", "current", "final", "summary")
 
 # The `source_priorities` kind of a section: the v4 schedule vocabulary for the schedule, the
 # reading-kind vocabulary of the domain tables for the rest (`sources.v4.kinds`).
@@ -118,7 +124,7 @@ _PRIORITY_KIND = {
 }
 
 
-def _choice(value: str | None, allowed: tuple[str, ...], default: str) -> Any:
+def _choice(value: str | None, allowed: tuple[str, ...], default: str | None) -> Any:
     return value if value in allowed else default
 
 
@@ -449,6 +455,63 @@ def _deadline_key(row: Deadline, live: LiveSources) -> tuple[str, str, str]:
     )
 
 
+# The effective state of a task (D-045): the student's mark, else the stored state (the source's,
+# with the status rules applied at write time).
+EFFECTIVE_STATE = func.coalesce(Deadline.user_state, Deadline.state)
+
+
+async def _deadline_grades(
+    session: AsyncSession, user_id: str, live: LiveSources, rows: Sequence[Deadline]
+) -> dict[tuple[str, str], Grade]:
+    """The latest grade of each task, by `(source, task id)`: a grade of the same source whose
+    `assignment_external_id` is the deadline's assignment id or its own external id (one query)."""
+    wanted = {
+        value
+        for row in rows
+        if row.source_id is not None
+        for value in (row.assignment_external_id, row.external_id)
+        if value
+    }
+    if not wanted:
+        return {}
+    found = await session.scalars(
+        select(Grade)
+        .where(
+            Grade.user_id == user_id,
+            live.filter_of(Grade),
+            Grade.source_id.is_not(None),
+            Grade.assignment_external_id.in_(sorted(wanted)),
+        )
+        .order_by(
+            func.coalesce(Grade.graded_at, Grade.changed_at, Grade.fetched_at).desc(),
+            Grade.id.desc(),
+        )
+    )
+    out: dict[tuple[str, str], Grade] = {}
+    for grade in found:
+        key = (grade.source_id or "", grade.assignment_external_id or "")
+        out.setdefault(key, grade)  # newest first: the first one is the latest
+    return out
+
+
+def _grade_of(row: Deadline, grades: dict[tuple[str, str], Grade]) -> DeadlineGradeOut | None:
+    if row.source_id is None:
+        return None
+    grade = None
+    for task_id in (row.assignment_external_id, row.external_id):
+        if task_id and (grade := grades.get((row.source_id, task_id))) is not None:
+            break
+    if grade is None:
+        return None
+    return DeadlineGradeOut(
+        value=grade.value,
+        scale=grade.scale,
+        value_num=grade.value_num,
+        scale_max=grade.scale_max,
+        url=grade.url,
+    )
+
+
 async def _deadlines(
     session: AsyncSession,
     user_id: str,
@@ -458,17 +521,35 @@ async def _deadlines(
     due_from: datetime | None = None,
     limit: int = MAX_ROWS,
 ) -> list[DeadlineOut]:
+    """Deadlines by due date with their effective state.
+
+    The done filter reads the effective state. A task the student marked in one source is marked
+    for its copies in the other sources of the university too: the marked rows are read alongside
+    (there are few) and their mark decides the state of the row the dedupe keeps."""
     if live.is_empty:
         return []
     due = func.coalesce(Deadline.effective_due_at, Deadline.due_at)
-    stmt = select(Deadline).where(Deadline.user_id == user_id, live.filter_of(Deadline))
+    base = (Deadline.user_id == user_id, live.filter_of(Deadline))
+    stmt = select(Deadline).where(*base)
     if not include_done:
-        stmt = stmt.where(Deadline.state.not_in(sorted(DONE_STATES)))
+        stmt = stmt.where(EFFECTIVE_STATE.not_in(sorted(DONE_STATES)))
     if due_from is not None:
         stmt = stmt.where(due >= due_from)
-    rows = (
-        await session.scalars(stmt.order_by(due.asc().nulls_last(), Deadline.id).limit(limit))
-    ).all()
+    rows = list(
+        (
+            await session.scalars(stmt.order_by(due.asc().nulls_last(), Deadline.id).limit(limit))
+        ).all()
+    )
+    marked_stmt = select(Deadline).where(*base, Deadline.user_state.is_not(None))
+    if due_from is not None:
+        marked_stmt = marked_stmt.where(due >= due_from)
+    marked = list((await session.scalars(marked_stmt.limit(MAX_ROWS))).all())
+    marks = {_deadline_key(row, live): row.user_state for row in marked if row.user_state}
+    seen = {row.id for row in rows}
+    extra = [row for row in marked if row.id not in seen]
+    if extra and not include_done:  # a marked copy decides its group even when it is done itself
+        rows.extend(extra)
+        rows.sort(key=lambda row: (_moment(row.effective_due_at or row.due_at) or "~", row.id))
     kind = _PRIORITY_KIND["deadlines"]
     preferences = await sources.preferences(session, user_id, live, [kind])
     kept: list[Deadline] = [
@@ -481,25 +562,71 @@ async def _deadlines(
             key_of=lambda row: _deadline_key(row, live),
         )
     ]
-    titles = await _course_titles(session, user_id, live, kept)
-    texts = await _assignment_descriptions(session, user_id, live, kept)
+    out = await _deadline_outs(session, user_id, live, kept, marks=marks)
+    if not include_done:
+        out = [item for item in out if item.state not in DONE_STATES]
+    return out[:limit]
+
+
+async def _deadline_outs(
+    session: AsyncSession,
+    user_id: str,
+    live: LiveSources,
+    rows: Sequence[Deadline],
+    *,
+    marks: dict[tuple[str, str, str], str] | None = None,
+) -> list[DeadlineOut]:
+    """The API form of deadlines: effective state, course, task text and grade (a few queries)."""
+    marks = marks or {}
+    rules = await overrides.rules_of(
+        session, user_id, source_ids={row.source_id for row in rows if row.source_id}
+    )
+    titles = await _course_titles(session, user_id, live, rows)
+    texts = await _assignment_descriptions(session, user_id, live, rows)
+    grades = await _deadline_grades(session, user_id, live, rows)
     out: list[DeadlineOut] = []
-    for r in kept:
+    for r in rows:
         source = live.resolve(r)
+        state, state_source = overrides.effective_state(
+            user_state=r.user_state or marks.get(_deadline_key(r, live)),
+            state=r.state,
+            state_text=r.state_text,
+            rule=overrides.rule_state(rules, r.source_id, r.state_text),
+        )
         out.append(
             DeadlineOut(
                 id=r.id,
                 title=r.title,
                 due_at=r.due_at,
                 effective_due_at=r.effective_due_at,
-                state=_choice(r.state, _DEADLINE_STATES, "unknown"),
+                state=_choice(state, _DEADLINE_STATES, "unknown"),
                 course_title=titles.get((source.id, r.course_external_id or "")),
                 description=texts.get((source.id, r.assignment_external_id or "")),
                 url=r.url,
                 provenance=_prov(r, live),
+                state_text=r.state_text,
+                state_source=state_source,
+                changed_at=r.changed_at,
+                grade=_grade_of(r, grades),
             )
         )
     return out
+
+
+async def get_deadline(
+    session: AsyncSession, user_id: str, deadline_id: str, *, now: datetime | None = None
+) -> DeadlineOut:
+    """One task of a live source, in the API form; a foreign or hidden one is `not_found`."""
+    now = now or SystemClock().now()
+    live = await sources.load(session, user_id, now=now)
+    row = await session.scalar(
+        select(Deadline).where(
+            Deadline.id == deadline_id, Deadline.user_id == user_id, live.filter_of(Deadline)
+        )
+    )
+    if row is None:
+        raise BotaiError(ErrorCode.NOT_FOUND, "Задание не найдено")
+    return (await _deadline_outs(session, user_id, live, [row]))[0]
 
 
 async def list_deadlines(
@@ -639,6 +766,12 @@ async def list_grades(
                 value_num=r.value_num,
                 scale_max=r.scale_max,
                 course_id=course[0] if course else None,
+                layer=_choice(r.layer, _GRADE_LAYERS, None),
+                period=r.period,
+                assignment_id=r.assignment_external_id,
+                url=r.url,
+                comment=r.comment,
+                changed_at=r.changed_at,
             )
         )
     return out
@@ -855,6 +988,114 @@ async def list_ranking(
     ]
 
 
+# --- recent changes («Новое», docs/v4/27 §5.5) ---------------------------------------------------
+
+
+async def _updates(
+    session: AsyncSession,
+    user_id: str,
+    live: LiveSources,
+    *,
+    since: datetime,
+    limit: int,
+) -> list[UpdateOut]:
+    if live.is_empty or limit <= 0:
+        return []
+    since = _aware(since)
+    grade_rows = list(
+        await session.scalars(
+            select(Grade)
+            .where(Grade.user_id == user_id, live.filter_of(Grade), Grade.changed_at >= since)
+            .order_by(Grade.changed_at.desc(), Grade.id.desc())
+            .limit(MAX_UPDATES)
+        )
+    )
+    deadline_rows = list(
+        await session.scalars(
+            select(Deadline)
+            .where(
+                Deadline.user_id == user_id,
+                live.filter_of(Deadline),
+                Deadline.changed_at >= since,
+            )
+            .order_by(Deadline.changed_at.desc(), Deadline.id.desc())
+            .limit(MAX_UPDATES)
+        )
+    )
+    preferences = await sources.preferences(
+        session, user_id, live, [_PRIORITY_KIND["grades"], _PRIORITY_KIND["deadlines"]]
+    )
+    grades: list[Grade] = sources.dedupe_preferring(
+        grade_rows,
+        live=live,
+        preferences=preferences,
+        kind=_PRIORITY_KIND["grades"],
+        key_of=lambda row: _grade_key(row, live),
+    )
+    deadlines: list[Deadline] = sources.dedupe_preferring(
+        deadline_rows,
+        live=live,
+        preferences=preferences,
+        kind=_PRIORITY_KIND["deadlines"],
+        key_of=lambda row: _deadline_key(row, live),
+    )
+    titles = await _course_titles(session, user_id, live, [*grades, *deadlines])
+    out: list[UpdateOut] = []
+    for g in grades:
+        source = live.resolve(g)
+        out.append(
+            UpdateOut(
+                kind="grade",
+                id=g.id,
+                title=g.title,
+                course_title=titles.get((source.id, g.course_external_id or "")),
+                changed_at=cast("datetime", g.changed_at),
+                url=g.url,
+                provenance=_prov(g, live),
+                value=g.value,
+                scale=g.scale,
+                value_num=g.value_num,
+                scale_max=g.scale_max,
+                layer=_choice(g.layer, _GRADE_LAYERS, None),
+            )
+        )
+    for d in deadlines:
+        source = live.resolve(d)
+        out.append(
+            UpdateOut(
+                kind="deadline",
+                id=d.id,
+                title=d.title,
+                course_title=titles.get((source.id, d.course_external_id or "")),
+                changed_at=cast("datetime", d.changed_at),
+                url=d.url,
+                provenance=_prov(d, live),
+                state=_choice(d.user_state or d.state, _DEADLINE_STATES, "unknown"),
+                state_text=d.state_text,
+            )
+        )
+    out.sort(key=lambda u: (u.changed_at, u.id), reverse=True)
+    return out[:limit]
+
+
+async def list_updates(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    space_id: str | None = None,
+    since: datetime,
+    limit: int = 20,
+    now: datetime | None = None,
+) -> list[UpdateOut]:
+    """Grades that appeared or changed and tasks whose state changed since `since`, newest first:
+    the student's live sources only, one row per entity across the sources of a university (the
+    priority order decides, like every other read)."""
+    now = now or SystemClock().now()
+    await _require_space(session, user_id, space_id)
+    live = await sources.load(session, user_id, now=now, space_id=space_id)
+    return await _updates(session, user_id, live, since=since, limit=min(limit, MAX_UPDATES))
+
+
 # --- home screen --------------------------------------------------------------------------------
 
 
@@ -905,9 +1146,17 @@ async def today(session: AsyncSession, user_id: str, *, now: datetime | None = N
         due_from=day_of(home)[0],
         limit=TODAY_DEADLINES,
     )
+    updates = await _updates(
+        session,
+        user_id,
+        live,
+        since=now - timedelta(days=TODAY_UPDATES_DAYS),
+        limit=TODAY_UPDATES,
+    )
     return TodayOut(
         date=now.astimezone(home).date().isoformat(),
         events=events,
         deadlines=deadlines,
         attention=live.attention(),
+        updates=updates,
     )

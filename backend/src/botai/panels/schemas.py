@@ -298,12 +298,14 @@ class GradePointOut(ApiModel):
     value_num: float | None
     scale_max: float | None
     graded_at: datetime | None
+    layer: Literal["item", "current", "final", "summary"] | None = None  # D-043; null: an item
 
 
 class GradesData(ApiModel):
     """`total` counts every grade of the dataset; `points` are the newest ones within the view's
-    limit (a chart: only numeric ones, at most `MAX_CHART_SERIES` scales); `latest`/`best` are
-    taken from the whole dataset."""
+    limit (a chart: only numeric grades of works — layer `item` or unknown — of at most
+    `MAX_CHART_SERIES` scales); `latest` is taken from the whole dataset, `best` from the grades of
+    works only (a course total or a GPA is not "a best grade", D-043)."""
 
     kind: Literal["grades"] = "grades"
     total: int

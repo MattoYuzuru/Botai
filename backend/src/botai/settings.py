@@ -170,10 +170,11 @@ class Settings(BaseSettings):
         validation_alias="BOTAI_SOURCE_ARTIFACTS_DIR",
     )
     # Planned sync of a v4 source after a successful run (phase 3.3): the worker scheduler enqueues
-    # a SYNC when `source.next_sync_at` is due. The minimum is 5 minutes: a shorter automatic loop
-    # would hammer a university site, and a person can always sync manually.
+    # a SYNC when `source.next_sync_at` is due. Default 3 h (D-044: a sync runs no model, $0). The
+    # minimum is 5 minutes: a shorter automatic loop would hammer a university site, and a person
+    # can always sync manually.
     source_sync_interval_s: int = Field(
-        default=21600, ge=300, validation_alias="BOTAI_SOURCE_SYNC_INTERVAL_S"
+        default=10800, ge=300, validation_alias="BOTAI_SOURCE_SYNC_INTERVAL_S"
     )
     # RAG (phase 2.5, D-011): index a source's fresh artifacts right after a successful sync/connect
     # run. The RAG path itself stays gated by BOTAI_RAG_ENABLED; this switch only turns the post-run

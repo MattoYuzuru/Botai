@@ -6,7 +6,12 @@
   has to be unrolled from it. The path accepts only the literal `me`: the id from the account
   answers 404, like a real endpoint that has no resource for a foreign id.
 * `/learn/tasks` (SPA): reads `/api/lms/tasks/student?state=...&state=...`, a query whose key
-  REPEATS. A request that omits some of the states gets only the tasks in the given ones.
+  REPEATS. A request that omits some of the states gets only the tasks in the given ones. A task
+  carries its `score` next to `exercise.maxScore` once it is checked, the ids of its course, theme
+  and longread (the page of one task is
+  `/learn/courses/{course}/themes/{theme}/longreads/{longread}`), and `stateLabel`, the status as
+  the page words it («Решение прикреплено», «Не приступал») — words a status vocabulary may not
+  know.
 
 Names, rooms, people and ids are invented. Nothing here resembles a real university.
 """
@@ -31,6 +36,15 @@ TIMETABLES_PATH = "/api/lms/students/me/timetables"
 TASKS_PATH = "/api/lms/tasks/student"
 ACCOUNT_ID = "5b1d7a52-0c64-4f0e-9a6b-8e8a7a9f3c11"  # what `/api/account/me` calls the student
 STATES = ("backlog", "inProgress", "review", "failed", "evaluated")
+# How the page words each state; «Не приступал» is unknown to the generic status vocabulary.
+STATE_LABELS = {
+    "backlog": "Не приступал",
+    "inProgress": "В работе",
+    "review": "Решение прикреплено",
+    "failed": "На доработке",
+    "evaluated": "Принято",
+}
+TASK_PAGE = "/learn/courses/{course}/themes/{theme}/longreads/{longread}"
 
 
 def _event(
@@ -183,6 +197,7 @@ def default_tasks() -> list[dict[str, Any]]:
         return {
             "id": 9000 + number,
             "state": state,
+            "stateLabel": STATE_LABELS[state],
             "score": score,
             "deadline": deadline,
             "submitAt": submit,
@@ -194,8 +209,8 @@ def default_tasks() -> list[dict[str, Any]]:
                 "deadline": deadline,
             },
             "course": {"id": course[0], "name": course[1], "isArchived": False},
-            "theme": {"name": theme},
-            "longread": {"name": f"Материалы {number}"},
+            "theme": {"id": 7000 + number, "name": theme},
+            "longread": {"id": 6000 + number, "name": f"Материалы {number}"},
         }
 
     algebra, databases = (4101, "Линейная алгебра"), (4102, "Основы баз данных")
@@ -376,4 +391,30 @@ async def tasks_page(request: Request) -> HTMLResponse | RedirectResponse:
         "app.innerHTML='<h1>Задания</h1><ul>'+tasks.map(t=>'<li>'+t.exercise.name+' · '"
         "+t.course.name+' · до '+t.deadline+' · '+t.state+'</li>').join('')+'</ul>';"
         "app.setAttribute('aria-busy','false');});",
+    )
+
+
+@router.get("/learn/courses/{course}/themes/{theme}/longreads/{longread}", response_model=None)
+async def task_page(
+    request: Request, course: int, theme: int, longread: int
+) -> HTMLResponse | RedirectResponse:
+    """The page of one task: what an exact link of a task opens."""
+    if not is_logged_in(request):
+        return RedirectResponse("/auth/login", status_code=302)
+    found = next(
+        (
+            task
+            for task in STATE.tasks
+            if task["course"]["id"] == course
+            and task["theme"]["id"] == theme
+            and task["longread"]["id"] == longread
+        ),
+        None,
+    )
+    if found is None:
+        return HTMLResponse("<!doctype html><title>Не найдено</title>", status_code=404)
+    name = found["exercise"]["name"]
+    return HTMLResponse(
+        f"<!doctype html><title>{name}</title>{_NAV}<main><h1>{name}</h1>"
+        f"<p>{found['stateLabel']}</p></main>"
     )

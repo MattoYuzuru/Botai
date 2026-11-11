@@ -107,7 +107,7 @@ describe("снимки и выход", () => {
   it("выход стирает офлайн-снимки service worker вместе с кэшем в памяти", async () => {
     const del = vi.fn(async () => true);
     vi.stubGlobal("caches", { delete: del });
-    renderApp("/study");
+    renderApp("/study?view=sources");
     await userEvent.click(await screen.findByRole("button", { name: "Выйти из BotAI" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("botai-api-v1"));
     vi.unstubAllGlobals();

@@ -356,6 +356,15 @@ class Deadline(_Domain, Base):
     effective_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown")
     url: Mapped[str | None] = mapped_column(Text)
+    # The status in the source's own words («Решение прикреплено», «На проверке»), shown as is;
+    # `state` is the closed vocabulary derived from it (or given by the parser, D-043).
+    state_text: Mapped[str | None] = mapped_column(String(120))
+    # The student's own mark on this task (open | submitted | graded), stronger than the source
+    # and than a status rule until cleared (D-045). NULL: no mark.
+    user_state: Mapped[str | None] = mapped_column(String(12))
+    # When the state last changed after the source's first sync, or the row appeared after it
+    # (D-044 §5.5): the "Новое" feed. NULL: never changed since it was first read.
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Grade(_Domain, Base):
@@ -371,6 +380,15 @@ class Grade(_Domain, Base):
     # ("8" of "10 баллов"); otherwise NULL. Never computed, never converted between scales (D-039).
     value_num: Mapped[float | None] = mapped_column(Float)
     scale_max: Mapped[float | None] = mapped_column(Float)
+    # The layer of the grade (D-043): item | current | final | summary; NULL when the source
+    # did not say (shown as an item).
+    layer: Mapped[str | None] = mapped_column(String(12))
+    period: Mapped[str | None] = mapped_column(String(60))  # term, module, year, as the source says
+    assignment_external_id: Mapped[str | None] = mapped_column(String(200))  # the graded task
+    url: Mapped[str | None] = mapped_column(Text)  # the page of this grade or of the graded work
+    comment: Mapped[str | None] = mapped_column(Text)  # the grader's comment, <= 2000 characters
+    # When the value changed after the source's first sync, or the row appeared after it (§5.5).
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Person(_Domain, Base):
@@ -737,6 +755,7 @@ class UserMemory(Base):
     __tablename__ = "user_memory"
     __table_args__ = (
         Index("ix_user_memory_user_created", "user_id", "created_at"),
+        CheckConstraint("kind IN ('note', 'rule')", name="kind_valid"),
         # the same note is kept once, whatever its case
         Index("uq_user_memory_user_id_note", "user_id", func.lower(text("note")), unique=True),
     )
@@ -745,6 +764,11 @@ class UserMemory(Base):
         String(26), ForeignKey(FK_USER, ondelete="CASCADE"), nullable=False
     )
     note: Mapped[str] = mapped_column(String(300), nullable=False)
+    # note: a fact the agent may use; rule: a standing instruction of the student (D-045), written
+    # only on an explicit request and given to the agent as its own block.
+    kind: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="note", server_default="note"
+    )
     created_at: Mapped[datetime] = ts_now()
 
 
@@ -1136,6 +1160,50 @@ class Panel(Base):
         onupdate=_utc_now,
         nullable=False,
     )
+
+
+# --- student's corrections of task statuses (D-045) ---------------------------------------------
+
+STATUS_RULE_STATES = ("open", "submitted", "graded", "missed")
+
+
+class StatusRule(Base):
+    """«In this source the status „Решение прикреплено“ means submitted»: a deterministic rule.
+
+    `label` is the normalized `deadlines.state_text` (casefolded, whitespace collapsed,
+    `botai.domain.overrides.normalize_label`). `source_id` NULL means every source of the user. A
+    rule is applied when a sync writes deadlines and recomputes the stored rows at once. One rule
+    per (user, source, label): two partial unique indexes, since a plain UNIQUE would not enforce
+    the NULL source.
+    """
+
+    __tablename__ = "status_rules"
+    __table_args__ = (
+        Index(
+            "uq_status_rules_user_source_label",
+            "user_id",
+            "source_id",
+            "label",
+            unique=True,
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_status_rules_user_label_all",
+            "user_id",
+            "label",
+            unique=True,
+            postgresql_where=text("source_id IS NULL"),
+        ),
+        CheckConstraint(f"state IN ({_in_list(STATUS_RULE_STATES)})", name="state_valid"),
+    )
+    id: Mapped[str] = pk_ulid()
+    user_id: Mapped[str] = _user_fk()
+    source_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("sources.id", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    state: Mapped[str] = mapped_column(String(12), nullable=False)
+    created_at: Mapped[datetime] = ts_now()
 
 
 # --- RAG (phase 2.5) ----------------------------------------------------------------------------

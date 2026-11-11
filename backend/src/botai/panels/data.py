@@ -4,7 +4,9 @@ Reads go through the tenant-scoped domain repositories, so a panel sees exactly 
 section screens see: live sources only, deduplicated by the source priorities. Nothing is
 computed from the student's data: `latest` and `best` pick one grade out of the dataset
 (`best` only inside one scale), numbers appear only where the source gave them, and every list is
-cut by the limit of the panel's view.
+cut by the limit of the panel's view. Layers are never mixed on a chart or in `best`: they read the
+grades of works (layer `item`, or none given); a course total, a final mark or a GPA would not be
+comparable with them (D-043).
 """
 
 from __future__ import annotations
@@ -51,7 +53,13 @@ def _point(grade: GradeOut) -> GradePointOut:
         value_num=grade.value_num,
         scale_max=grade.scale_max,
         graded_at=grade.graded_at,
+        layer=grade.layer,
     )
+
+
+def _is_item(grade: GradeOut) -> bool:
+    """A grade of one work: what a chart and the best grade compare (no layer means an item)."""
+    return grade.layer in (None, "item")
 
 
 def _is_numeric(grade: GradeOut) -> bool:
@@ -61,7 +69,7 @@ def _is_numeric(grade: GradeOut) -> bool:
 def _best(grades: list[GradeOut]) -> GradeOut | None:
     """The highest grade of the scale that most grades use: grades of different scales are never
     compared with each other."""
-    numeric = [g for g in grades if _is_numeric(g)]
+    numeric = [g for g in grades if _is_numeric(g) and _is_item(g)]
     if not numeric:
         return None
     sizes = Counter(g.scale_max for g in numeric)
@@ -77,7 +85,7 @@ def _moment(grade: GradeOut) -> float:
 def _chart_points(grades: list[GradeOut], spec: ChartSpec) -> list[GradeOut]:
     """Numeric grades of at most `MAX_CHART_SERIES` scales (the busiest ones), the newest
     `limit` of them; by date they are oldest first, so a line reads left to right."""
-    numeric = [g for g in grades if _is_numeric(g)]
+    numeric = [g for g in grades if _is_numeric(g) and _is_item(g)]
     if spec.view.x == "date":
         numeric = [g for g in numeric if g.graded_at is not None]
     sizes = Counter(g.scale_max for g in numeric)
