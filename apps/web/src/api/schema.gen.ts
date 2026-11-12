@@ -2433,6 +2433,11 @@ export interface components {
          * @description What a sync wrote into the product domain for one reading kind.
          */
         DomainCountsOut: {
+            /**
+             * Deleted
+             * @default 0
+             */
+            deleted: number;
             /** Inserted */
             inserted: number;
             /** Skipped */

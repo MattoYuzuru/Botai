@@ -220,7 +220,13 @@ async def test_a_sync_reads_grades_card_and_ratings_and_makes_the_panels_once(
 
     second = await _runner(sm, account, fakeuni_transport, fakeuni_cookies).sync(source_id)
     assert second.ok
-    assert second.domain["grades"] == {"inserted": 0, "updated": 0, "unchanged": 5, "skipped": 0}
+    assert second.domain["grades"] == {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 5,
+        "skipped": 0,
+        "deleted": 0,
+    }
     assert second.domain["ranking"]["inserted"] == 0
     assert await _count(sm, Panel, space_id=account.space_id) == 6  # no duplicates, nothing reset
     assert await _count(sm, Grade, source_id=source_id) == 5

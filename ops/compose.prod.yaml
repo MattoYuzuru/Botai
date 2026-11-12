@@ -83,7 +83,7 @@ x-app: &app
     BOTAI_RAG_AUTOINDEX: "${BOTAI_RAG_AUTOINDEX:-true}"
     # Background source syncs (phase 3.3): successful syncs are planned this far ahead; failures
     # back off exponentially (15m ... 6h). Minimum 300s. Sources without a playbook stay manual.
-    BOTAI_SOURCE_SYNC_INTERVAL_S: "${BOTAI_SOURCE_SYNC_INTERVAL_S:-21600}"
+    BOTAI_SOURCE_SYNC_INTERVAL_S: "${BOTAI_SOURCE_SYNC_INTERVAL_S:-10800}"
   volumes: [diagdata:/var/log/botai/diagnostics]
   restart: unless-stopped
   networks: [botai]

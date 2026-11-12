@@ -1901,6 +1901,11 @@
       "DomainCountsOut": {
         "description": "What a sync wrote into the product domain for one reading kind.",
         "properties": {
+          "deleted": {
+            "default": 0,
+            "title": "Deleted",
+            "type": "integer"
+          },
           "inserted": {
             "title": "Inserted",
             "type": "integer"

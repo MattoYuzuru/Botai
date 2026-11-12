@@ -228,6 +228,7 @@ async def test_resync_is_idempotent_and_updates_rows_in_place(
         "updated": 0,
         "unchanged": 4,
         "skipped": 0,
+        "deleted": 0,
     }
     assert second.domain["deadlines"]["inserted"] == 0
     async with tx_sessionmaker() as session:
@@ -264,6 +265,7 @@ async def test_resync_is_idempotent_and_updates_rows_in_place(
         "updated": 1,
         "unchanged": 3,
         "skipped": 0,
+        "deleted": 0,
     }
     async with tx_sessionmaker() as session:
         updated = await session.get(ScheduleEvent, before["ev-1"])

@@ -259,6 +259,7 @@ class DomainCountsOut(ApiModel):
     updated: int
     unchanged: int
     skipped: int
+    deleted: int = 0  # rows another playbook version left and this sync swept
 
 
 class DiscoveredEndpointOut(ApiModel):
